@@ -13,6 +13,8 @@ public struct ChatFeature: Sendable {
     public var currentTrace: [String] = []
     /// JSONL lines accumulating for the in-flight turn.
     public var currentEventLines: [String] = []
+    /// Developer-mode internals accumulating for the in-flight turn.
+    public var currentDevInfo = ChatMessage.DevInfo()
     public var developerMode = false
     public var isSettingsPresented = false
     public var conversationID: UUID?
@@ -65,6 +67,7 @@ public struct ChatFeature: Sendable {
         state.isProcessing = true
         state.currentTrace = []
         state.currentEventLines = []
+        state.currentDevInfo = ChatMessage.DevInfo()
 
         let userMessage = ChatMessage(id: uuid(), role: .user, body: .text(question), createdAt: now)
         state.messages.append(userMessage)
@@ -91,12 +94,28 @@ public struct ChatFeature: Sendable {
         if let json = try? event.jsonLine() {
           state.currentEventLines.append(json)
         }
+        switch event {
+        case .rewriteFinished(let standalone, _):
+          state.currentDevInfo.standaloneQuestion = standalone
+        case .generationFinished(_, let tokensPerSecond):
+          state.currentDevInfo.tokensPerSecond = tokensPerSecond
+        case .executionFinished(_, let elapsed):
+          state.currentDevInfo.executionMilliseconds = elapsed
+        case .repairStarted(let attempt):
+          state.currentDevInfo.repairAttempts = attempt
+        case .selfConsistencyStarted(_, let trigger):
+          state.currentDevInfo.voteTrigger = trigger
+        case .selfConsistencyFinished(_, _, let candidates):
+          state.currentDevInfo.candidates = candidates
+        default:
+          break
+        }
         guard case .turnFinished(let outcome) = event else { return .none }
 
         let body: ChatMessage.Body =
           switch outcome {
-          case .answered(let result, let narration, let sql):
-            .answer(result: result, narration: narration, sql: sql)
+          case .answered(let result, let narration, let sql, let notice):
+            .answer(result: result, narration: narration, sql: sql, notice: notice)
           case .needsClarification(let question):
             .clarification(question)
           case .failed(let message):
@@ -104,7 +123,8 @@ public struct ChatFeature: Sendable {
           }
         let assistantMessage = ChatMessage(
           id: uuid(), role: .assistant, body: body,
-          traceSteps: state.currentTrace, createdAt: now)
+          traceSteps: state.currentTrace, createdAt: now,
+          devInfo: state.currentDevInfo)
         state.messages.append(assistantMessage)
         state.isProcessing = false
 
@@ -137,7 +157,7 @@ public struct ChatFeature: Sendable {
       switch (message.role, message.body) {
       case (.user, .text(let question)):
         pendingQuestion = question
-      case (.assistant, .answer(_, let narration, _)):
+      case (.assistant, .answer(_, let narration, _, _)):
         if let question = pendingQuestion {
           turns.append(ConversationTurn(question: question, answerSummary: narration))
           pendingQuestion = nil

@@ -45,6 +45,10 @@ let package = Package(
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
       ]
     ),
+    .executableTarget(
+      name: "creg-eval-cli",
+      dependencies: ["CREGEngine"]
+    ),
     .testTarget(
       name: "CREGKitTests",
       dependencies: ["CREGEngine", "CREGFeatures"]

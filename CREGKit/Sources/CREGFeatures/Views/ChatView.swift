@@ -130,17 +130,16 @@ struct MessageCell: View {
           .padding(.horizontal, 14)
           .padding(.vertical, 9)
           .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
-      case .answer(let result, let narration, let sql):
+      case .answer(let result, let narration, let sql, let notice):
         assistantBubble(narration)
+        if let notice {
+          Label(notice, systemImage: "lightbulb")
+            .font(.caption)
+            .foregroundStyle(.orange)
+        }
         ResultTableView(result: result)
         if developerMode {
-          Text(sql)
-            .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+          DevFooterView(sql: sql, devInfo: message.devInfo)
         }
       }
       if !message.traceSteps.isEmpty {
@@ -160,8 +159,54 @@ struct MessageCell: View {
   private var text: String {
     switch message.body {
     case .text(let body), .clarification(let body), .failure(let body): body
-    case .answer(_, let narration, _): narration
+    case .answer(_, let narration, _, _): narration
     }
+  }
+}
+
+/// Developer-mode internals under an answer: SQL, per-stage stats, and
+/// self-consistency candidates with their votes (PRD §11).
+struct DevFooterView: View {
+  let sql: String
+  let devInfo: ChatMessage.DevInfo?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(sql)
+        .font(.caption.monospaced())
+        .textSelection(.enabled)
+      if let devInfo {
+        if let standalone = devInfo.standaloneQuestion {
+          Text("standalone: \(standalone)")
+        }
+        HStack(spacing: 12) {
+          if let tps = devInfo.tokensPerSecond {
+            Text(String(format: "%.1f tok/s", tps))
+          }
+          if let ms = devInfo.executionMilliseconds {
+            Text(String(format: "exec %.1f ms", ms))
+          }
+          if devInfo.repairAttempts > 0 {
+            Text("repairs: \(devInfo.repairAttempts)")
+          }
+          if let trigger = devInfo.voteTrigger {
+            Text("vote: \(trigger)")
+          }
+        }
+        ForEach(Array(devInfo.candidates.enumerated()), id: \.offset) { index, candidate in
+          HStack(alignment: .top, spacing: 4) {
+            Image(systemName: candidate.agreedWithWinner ? "checkmark.circle" : "xmark.circle")
+            Text("[\(index)] \(candidate.error ?? "\(candidate.rowCount ?? 0) rows") — \(candidate.sql)")
+              .lineLimit(3)
+          }
+        }
+      }
+    }
+    .font(.caption2)
+    .foregroundStyle(.secondary)
+    .padding(8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
   }
 }
 

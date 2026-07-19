@@ -85,18 +85,18 @@ import Testing
 @Suite struct QueryPipelineTests {
   static func makePipeline(
     executeResults: @escaping @Sendable (String) async throws -> QueryResult,
-    gateSensitivity: Double = 0
+    configuration: QueryPipeline.Configuration = .init(selfConsistencyN: 1)
   ) -> QueryPipeline {
     QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { question, repair in
+      sqlGen: SQLGenClient { question, repair, _ in
         SQLGeneration(
           sql: repair == nil ? "SELECT 1" : "SELECT 2",
           tokensPerSecond: 42, modelName: "test")
       },
       db: DatabaseClient(execute: executeResults),
       serializer: InferenceSerializer(),
-      configuration: .init(gateSensitivity: gateSensitivity)
+      configuration: configuration
     )
   }
 
@@ -109,7 +109,7 @@ import Testing
       events.append(event)
     }
     #expect(events.first == .turnStarted(question: "How many properties?"))
-    guard case .turnFinished(.answered(let result, _, let sql)) = events.last else {
+    guard case .turnFinished(.answered(let result, _, let sql, _)) = events.last else {
       Issue.record("expected answered outcome, got \(String(describing: events.last))")
       return
     }
@@ -131,11 +131,55 @@ import Testing
       events.append(event)
     }
     #expect(events.contains(.repairStarted(attempt: 1)))
-    guard case .turnFinished(.answered(_, _, let sql)) = events.last else {
+    guard case .turnFinished(.answered(_, _, let sql, _)) = events.last else {
       Issue.record("expected answered outcome after repair")
       return
     }
     #expect(sql == "SELECT 2")
+  }
+
+  @Test func emptyResultTriggersVoteAndMajorityWins() async throws {
+    // Greedy generation returns an empty result; the heuristic flags it,
+    // uncertainty gating triggers a 3-way vote, and the two agreeing
+    // sampled candidates flip the answer.
+    let counter = Counter()
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _, _, temperature in
+        let n = await counter.next()
+        return SQLGeneration(
+          sql: n == 0 ? "SELECT empty" : "SELECT good \(temperature)",
+          tokensPerSecond: 42, modelName: "test")
+      },
+      db: DatabaseClient { sql in
+        sql.contains("empty")
+          ? QueryResult(columns: ["n"], rows: [])
+          : QueryResult(columns: ["n"], rows: [[.integer(7)]])
+      },
+      serializer: InferenceSerializer(),
+      configuration: .init(selfConsistencyN: 3)
+    )
+    var events: [PipelineEvent] = []
+    for await event in pipeline.run("q", []) {
+      events.append(event)
+    }
+    #expect(events.contains { if case .heuristicFlagged = $0 { true } else { false } })
+    #expect(events.contains { if case .selfConsistencyStarted(3, "heuristic") = $0 { true } else { false } })
+    guard case .turnFinished(.answered(let result, _, let sql, let notice)) = events.last else {
+      Issue.record("expected answered outcome")
+      return
+    }
+    #expect(result.rows == [[.integer(7)]])
+    #expect(sql.hasPrefix("SELECT good"))
+    #expect(notice == nil)  // findings re-evaluated on the winning result
+  }
+
+  actor Counter {
+    private var value = -1
+    func next() -> Int {
+      value += 1
+      return value
+    }
   }
 
   @Test func repeatedFailuresGiveUpGracefully() async throws {
@@ -154,6 +198,46 @@ import Testing
       if case .executionFailed = $0 { return true } else { return false }
     }
     #expect(attempts.count == 3)  // initial + 2 repairs
+  }
+}
+
+@Suite struct HeuristicsTests {
+  @Test func literalExtractionSkipsDatesAndNumbers() {
+    let sql = "SELECT * FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND name = 'Kingsly Tower' AND x LIKE '%Y'"
+    #expect(ResultHeuristics.stringLiterals(in: sql) == ["Active", "Kingsly Tower"])
+  }
+
+  @Test func editDistanceBasics() {
+    #expect(ResultHeuristics.editDistance("kitten", "sitting") == 3)
+    #expect(ResultHeuristics.editDistance("same", "same") == 0)
+    #expect(ResultHeuristics.editDistance("", "abc") == 3)
+  }
+
+  @Test func closestMatchFindsNearMiss() {
+    let values = ["Kingsley Tower", "Palisade Tower", "Sable Tower"]
+    #expect(ResultHeuristics.closestMatch(to: "Kingsly Tower", in: values) == "Kingsley Tower")
+    #expect(ResultHeuristics.closestMatch(to: "Zebra Plaza Nine", in: values) == nil)
+  }
+
+  @Test func inspectSuggestsCorrection() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-heuristics-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(sql: "CREATE TABLE properties (name TEXT)")
+      try db.execute(sql: "INSERT INTO properties VALUES ('Kingsley Tower'), ('Sable Tower')")
+    }
+    let client = try DatabaseClient.live(url: url)
+    let heuristics = ResultHeuristics(db: client)
+    let findings = await heuristics.inspect(
+      sql: "SELECT name FROM properties WHERE name = 'Kingsly Tower'",
+      result: QueryResult(columns: ["name"], rows: []))
+    #expect(findings == [.literalNotFound(literal: "Kingsly Tower", suggestion: "Kingsley Tower")])
+
+    let ok = await heuristics.inspect(
+      sql: "SELECT name FROM properties WHERE name = 'Kingsley Tower'",
+      result: QueryResult(columns: ["name"], rows: [[.text("Kingsley Tower")]]))
+    #expect(ok.isEmpty)
   }
 }
 

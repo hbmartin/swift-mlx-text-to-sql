@@ -10,9 +10,21 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
 
   public enum Body: Equatable, Sendable, Codable {
     case text(String)
-    case answer(result: QueryResult, narration: String, sql: String)
+    case answer(result: QueryResult, narration: String, sql: String, notice: String?)
     case clarification(String)
     case failure(String)
+  }
+
+  /// Per-message internals surfaced by developer mode (PRD §11).
+  public struct DevInfo: Equatable, Sendable, Codable {
+    public var standaloneQuestion: String?
+    public var tokensPerSecond: Double?
+    public var executionMilliseconds: Double?
+    public var repairAttempts: Int = 0
+    public var voteTrigger: String?
+    public var candidates: [ConsistencyCandidate] = []
+
+    public init() {}
   }
 
   public var id: UUID
@@ -21,13 +33,18 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
   /// Plain-English thinking-trace lines (never SQL) shown in the disclosure.
   public var traceSteps: [String]
   public var createdAt: Date
+  public var devInfo: DevInfo?
 
-  public init(id: UUID, role: Role, body: Body, traceSteps: [String] = [], createdAt: Date) {
+  public init(
+    id: UUID, role: Role, body: Body, traceSteps: [String] = [],
+    createdAt: Date, devInfo: DevInfo? = nil
+  ) {
     self.id = id
     self.role = role
     self.body = body
     self.traceSteps = traceSteps
     self.createdAt = createdAt
+    self.devInfo = devInfo
   }
 }
 
@@ -48,6 +65,10 @@ extension PipelineEvent {
     case .executionFinished(let rowCount, _): "Looking through the results (\(rowCount) row\(rowCount == 1 ? "" : "s"))"
     case .executionFailed: "Fixing a hiccup and retrying"
     case .repairStarted: nil
+    case .heuristicFlagged: "Double-checking the result"
+    case .selfConsistencyStarted: "Reading the question a few ways to be sure"
+    case .selfConsistencyFinished(_, let agreement, let candidates):
+      "\(agreement) of \(candidates.count) readings agreed"
     case .narrationStarted: "Summarizing what I found"
     case .narrationFinished: nil
     case .turnFinished: nil

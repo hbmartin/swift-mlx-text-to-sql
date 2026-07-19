@@ -9,9 +9,10 @@ import Tokenizers
 
 /// The bundled SQL specialist: grammar-constrained SQL generation on MLX.
 public struct SQLGenClient: Sendable {
-  public var generate: @Sendable (_ standaloneQuestion: String, _ repair: RepairContext?) async throws -> SQLGeneration
+  /// `temperature` 0 = greedy (default path); >0 for self-consistency samples.
+  public var generate: @Sendable (_ standaloneQuestion: String, _ repair: RepairContext?, _ temperature: Double) async throws -> SQLGeneration
 
-  public init(generate: @escaping @Sendable (String, RepairContext?) async throws -> SQLGeneration) {
+  public init(generate: @escaping @Sendable (String, RepairContext?, Double) async throws -> SQLGeneration) {
     self.generate = generate
   }
 }
@@ -21,9 +22,17 @@ extension SQLGenClient {
   public static let defaultModelID = "mlx-community/Qwen2.5-Coder-3B-Instruct-4bit"
 
   public static func live(modelID: String = defaultModelID) -> SQLGenClient {
-    let generator = MLXSQLGenerator(modelID: modelID)
-    return SQLGenClient { question, repair in
-      try await generator.generate(question: question, repair: repair)
+    let generator = MLXSQLGenerator(source: .hub(modelID))
+    return SQLGenClient { question, repair, temperature in
+      try await generator.generate(question: question, repair: repair, temperature: temperature)
+    }
+  }
+
+  /// Load from a local weights directory (used by creg-eval-cli for parity runs).
+  public static func live(directory: URL) -> SQLGenClient {
+    let generator = MLXSQLGenerator(source: .directory(directory))
+    return SQLGenClient { question, repair, temperature in
+      try await generator.generate(question: question, repair: repair, temperature: temperature)
     }
   }
 }
@@ -31,14 +40,26 @@ extension SQLGenClient {
 /// Keeps the MLX model resident between turns (PRD §7.1) and runs
 /// grammar-constrained decoding via MLXStructured (XGrammar).
 actor MLXSQLGenerator {
-  private let modelID: String
-  private var container: ModelContainer?
-
-  init(modelID: String) {
-    self.modelID = modelID
+  enum Source {
+    case hub(String)
+    case directory(URL)
   }
 
-  func generate(question: String, repair: RepairContext?) async throws -> SQLGeneration {
+  private let source: Source
+  private var container: ModelContainer?
+
+  private nonisolated var modelName: String {
+    switch source {
+    case .hub(let id): id
+    case .directory(let url): url.lastPathComponent
+    }
+  }
+
+  init(source: Source) {
+    self.source = source
+  }
+
+  func generate(question: String, repair: RepairContext?, temperature: Double) async throws -> SQLGeneration {
     let container = try await loadedContainer()
     let grammar = try Self.grammarEBNF()
     let schema = try Self.schemaPrompt()
@@ -70,7 +91,7 @@ actor MLXSQLGenerator {
     return try await container.perform { (context: ModelContext) in
       let chat: [Chat.Message] = [.system(systemContent), .user(userContent)]
       let input = try await context.processor.prepare(input: UserInput(chat: chat))
-      var parameters = GenerateParameters(temperature: 0.1)
+      var parameters = GenerateParameters(temperature: Float(temperature))
       parameters.maxTokens = 512
       let stream = try await MLXStructured.generate(
         input: input,
@@ -93,7 +114,7 @@ actor MLXSQLGenerator {
       return SQLGeneration(
         sql: sql.trimmingCharacters(in: .whitespacesAndNewlines),
         tokensPerSecond: tokensPerSecond,
-        modelName: self.modelID
+        modelName: self.modelName
       )
     }
   }
@@ -102,14 +123,19 @@ actor MLXSQLGenerator {
     if let container { return container }
     MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
     let container: ModelContainer
-    if let bundled = Bundle.main.url(forResource: "SQLModel", withExtension: nil) {
-      container = try await loadModelContainer(
-        from: bundled, using: #huggingFaceTokenizerLoader())
-    } else {
-      // Walking-skeleton convenience: resolve from the Hugging Face cache or
-      // download on first run. The shipping build bundles the model instead.
-      container = try await #huggingFaceLoadModelContainer(
-        configuration: ModelConfiguration(id: modelID))
+    switch source {
+    case .directory(let url):
+      container = try await loadModelContainer(from: url, using: #huggingFaceTokenizerLoader())
+    case .hub(let modelID):
+      if let bundled = Bundle.main.url(forResource: "SQLModel", withExtension: nil) {
+        container = try await loadModelContainer(
+          from: bundled, using: #huggingFaceTokenizerLoader())
+      } else {
+        // Walking-skeleton convenience: resolve from the Hugging Face cache or
+        // download on first run. The shipping build bundles the model instead.
+        container = try await #huggingFaceLoadModelContainer(
+          configuration: ModelConfiguration(id: modelID))
+      }
     }
     self.container = container
     return container

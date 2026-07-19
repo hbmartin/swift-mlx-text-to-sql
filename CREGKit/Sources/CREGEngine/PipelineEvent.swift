@@ -18,6 +18,11 @@ public enum PipelineEvent: Sendable, Equatable, Codable {
   case executionFinished(rowCount: Int, elapsedMilliseconds: Double)
   case executionFailed(message: String, attempt: Int)
   case repairStarted(attempt: Int)
+  /// A correction-layer-A finding on the executed result.
+  case heuristicFlagged(HeuristicFinding)
+  /// Uncertainty-gated self-consistency voting (layers C+D) kicked in.
+  case selfConsistencyStarted(candidateCount: Int, trigger: String)
+  case selfConsistencyFinished(chosenSQL: String, agreement: Int, candidates: [ConsistencyCandidate])
   case narrationStarted
   case narrationFinished(narration: String, usedFM: Bool)
   case turnFinished(TurnOutcome)
