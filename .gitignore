@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+xcuserdata/
+*.xcarchive/
+.idea
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Model weights (fetched by script, never committed)
+/models/
