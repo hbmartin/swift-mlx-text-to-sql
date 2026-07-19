@@ -56,10 +56,40 @@ All ≤4B, 4-bit, run locally from `models/` (downloads confined to the repo):
 
 Configs: `s2-q25c-3b-gcd{on,off}` (baseline) vs `s2-ft-3b-gcd{on,off}`
 (QLoRA: 600 iterations, batch 4, 16 layers, lr 1e-4, prompt-masked, on the
-1,353-pair train split; adapter fused and re-quantized 4-bit).
+1,353-pair train split; adapter fused, quantization preserved). Training
+converged to train loss 0.001 / val loss 0.008.
 
-Results: see the table in `docs/final-report.md` (generated from
-`eval/out/s2-*.summary.json` by `tools/leaderboard.py`).
+| config | EX | valid SQL | T1 | T2 | T3 | s/item | entropy corr/wrong |
+|---|---|---|---|---|---|---|---|
+| **ft-3b gcd-on** | **0.665** | 0.930 | 0.714 | 0.699 | 0.278 | 2.9 | 0.017 / 0.066 |
+| ft-3b gcd-off | 0.665 | 0.925 | 0.714 | 0.699 | 0.278 | 2.9 | — |
+| base gcd-off | 0.225 | 0.760 | — | — | — | 3.1 | — |
+| base gcd-on | 0.155 | 0.675 | 0.286 | 0.113 | 0.111 | 6.3 | 0.311 / 0.408 |
+
+### Stage-2 readings
+
+1. **The fine-tune wins decisively: 0.665 vs 0.225 (+44 EX points, ~3×).**
+   Tier-2 (canonical semantics) went 0.11 → 0.70. The PRD's "single biggest
+   accuracy lever" claim is confirmed on this schema.
+2. **gold_v2 is harder for base models than gold_v1** (0.155 vs 0.350
+   gcd-on): the 140 generated items concentrate per-entity
+   canonical-semantics questions — the app's actual distribution.
+3. **GCD is free for the fine-tuned model** (identical EX on/off). The
+   model internalized the grammar, so constrained decoding costs nothing
+   and keeps its structural guarantees (SELECT-only, no hallucinated
+   tables). Ship with GCD on. For *base* models on the harder set, GCD
+   *reduced* EX (0.155 vs 0.225) — constraint pressure hurts weak models.
+4. **Entropy now works as an uncertainty signal** for the FT model
+   (0.017 correct vs 0.066 wrong, 4× separation; base: 0.31/0.41). A
+   layer-D threshold near mean entropy ≈ 0.03 is the empirically motivated
+   starting point.
+5. **Residual failure taxonomy (67 misses)** = template echo from overfit
+   (spurious memorized filters: a stray `AND market = …`, dropped
+   `rate_type` filters, joins injected where none needed) plus one genuine
+   canon inconsistency (training taught "hold" = `!= 'Sold'`; gold T1-04
+   reads "owned" as `= 'Owned'`). Next-iteration data priorities: lower
+   iterations/LR or more phrasing diversity to cut memorization; add
+   owned-vs-held phrasing contrast pairs; more tier-3 volume (0.278).
 
 ## Parity check (Swift CLI)
 
@@ -69,6 +99,10 @@ recorded in the final report.
 
 ## Decision
 
-Recorded in `docs/final-report.md` once stage 2 and parity complete: the
-bundled model is the highest gold-v2 EX config, with the fine-tune shipping
-only if it beats the best off-the-shelf configuration (plan decision 13).
+**Bundled: the CREG fine-tune (Qwen2.5-Coder-3B-Instruct-4bit + in-domain
+QLoRA, fused, GCD on), shipped as `models/SQLModel`.** It beats the best
+off-the-shelf configuration 0.665 vs 0.225 on gold_v2 and is ≥ base on
+every slice (hand-written 0.383 vs 0.350; generated 0.786 vs 0.071), so
+plan decision 13's condition is met. Parity: Swift production stack agrees
+with the Python harness on 59/60 items (0.400 vs 0.383). Full narrative
+and next-iteration priorities: `docs/final-report.md`.

@@ -18,15 +18,23 @@ surprise a future reader are recorded in [`docs/adr/`](./docs/adr/).
 | --- | --- | --- |
 | M0 | Repo hygiene: glossary, ADRs, .gitignore | ✅ done |
 | M1 | Schema freeze + seeded database generator + invariant tests | ✅ done |
-| M2 | Walking-skeleton app: full pipeline shape + grammar-constrained decoding | ✅ done (compile-verified; on-device smoke run pending) |
-| M3 | Gold set stage 1 (~60 triples) + Python eval harness | ⬜ next |
-| M4 | Correction layers A–D + developer mode | ⬜ |
-| M5 | Gold set → 200, factorial sweep, Swift parity CLI, model selection | ⬜ |
-| M6 | Close the fine-tune loop once (synthetic data → LoRA → eval → bundle if it wins) | ⬜ |
+| M2 | Walking-skeleton app: full pipeline shape + grammar-constrained decoding | ✅ done |
+| M3 | Gold set stage 1 (60 triples) + Python eval harness | ✅ done |
+| M4 | Correction layers A–D + developer mode | ✅ done |
+| M5 | Gold set → 200, sweep, Swift parity CLI, model selection | ✅ done |
+| M6 | Fine-tune loop closed: synthetic data → QLoRA → eval → **bundled** | ✅ done |
 
-"v1 done" = the fine-tune loop has been executed end-to-end at least once,
-with the winning model (fine-tuned or not) bundled. The winner is chosen
-empirically by the eval harness, never by pre-selection.
+**v1 is complete.** The fine-tuned model (Qwen2.5-Coder-3B + in-domain
+QLoRA) scored **EX 0.665** on the 200-item gold set vs 0.225 for the best
+off-the-shelf configuration and ships in the app bundle as `SQLModel` —
+the app is fully offline. The whole record: [`docs/final-report.md`](./docs/final-report.md)
+(selection: [`docs/model-selection.md`](./docs/model-selection.md), evals:
+[`docs/eval.md`](./docs/eval.md), data: [`docs/data-synthesis.md`](./docs/data-synthesis.md),
+corrections: [`docs/grounding-corrections.md`](./docs/grounding-corrections.md)).
+On-device smoke run remains a manual step (requires a signing team + an
+Apple Intelligence iPhone). Note: `models/` is gitignored — regenerate the
+bundled model via the commands in the final report (or `fetch_model.py` +
+`mlx_lm lora`/`fuse`) before building the app.
 
 ## Architecture
 

@@ -1,0 +1,25 @@
+{
+  "label": "s2-ft-3b-gcdoff",
+  "model": "../models/creg-sql-3b-ft",
+  "gcd": "off",
+  "gold": "gold_v2.jsonl",
+  "n": 200,
+  "ex": 0.665,
+  "valid_sql_rate": 0.925,
+  "ex_by_tier": {
+    "1": 0.714,
+    "2": 0.699,
+    "3": 0.278
+  },
+  "failure_buckets": {
+    "wrong-filter-or-value": 20,
+    "wrong-table-or-join": 20,
+    "empty-when-expected": 5,
+    "wrong-projection": 6,
+    "execution-error": 15,
+    "wrong-aggregation": 1
+  },
+  "mean_seconds": 1.82,
+  "mean_entropy_correct": 0.016,
+  "mean_entropy_wrong": 0.066
+}

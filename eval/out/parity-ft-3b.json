@@ -1,0 +1,491 @@
+{
+  "results" : [
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-01",
+      "predicted_sql" : "SELECT name FROM properties WHERE property_type = 'Office' AND market = 'Atlanta'",
+      "seconds" : 21,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-02",
+      "predicted_sql" : "SELECT COUNT(*) FROM tenants WHERE industry = 'Technology'",
+      "seconds" : 10,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-03",
+      "predicted_sql" : "SELECT name, year_built FROM properties WHERE year_built<1980",
+      "seconds" : 14,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-04",
+      "predicted_sql" : "SELECT SUM(rentable_sqft) FROM properties WHERE status != 'Sold'",
+      "seconds" : 11,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-05",
+      "predicted_sql" : "SELECT lender, interest_rate FROM loans",
+      "seconds" : 7,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-06",
+      "predicted_sql" : "SELECT AVG(interest_rate) FROM loans",
+      "seconds" : 5,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-07",
+      "predicted_sql" : "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date< '2027-07-01'",
+      "seconds" : 22,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-08",
+      "predicted_sql" : "SELECT fund_id FROM funds WHERE status != 'Harvesting' ORDER BY committed_capital DESC LIMIT 1",
+      "seconds" : 14,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-09",
+      "predicted_sql" : "SELECT name, disposition_date FROM properties WHERE status = 'Sold'",
+      "seconds" : 13,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-10",
+      "predicted_sql" : "SELECT MAX(base_rent_psf) FROM leases WHERE status = 'Active'",
+      "seconds" : 11,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-11",
+      "predicted_sql" : "SELECT p.market, COUNT(*) FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.market",
+      "seconds" : 24,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-12",
+      "predicted_sql" : "SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id WHERE l.status IN ('Active', 'Holdover') GROUP BY t.name",
+      "seconds" : 23,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-13",
+      "predicted_sql" : "SELECT SUM(l.annual_base_rent) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status = 'Active'",
+      "seconds" : 19,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T1-14",
+      "predicted_sql" : "SELECT name FROM properties WHERE building_class = 'Class A' AND market = 'New York' AND status != 'Sold'",
+      "seconds" : 21,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-15",
+      "predicted_sql" : "SELECT current_balance, maturity_date FROM loans WHERE maturity_date< '2028-01-01'",
+      "seconds" : 13,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-16",
+      "predicted_sql" : "SELECT AVG(ownership_pct) FROM properties WHERE status != 'Sold'",
+      "seconds" : 12,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-17",
+      "predicted_sql" : "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND has_renewal_option = 1",
+      "seconds" : 19,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-18",
+      "predicted_sql" : "SELECT MIN(commencement_date) FROM leases",
+      "seconds" : 5,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-19",
+      "predicted_sql" : "SELECT DISTINCT submarket FROM properties WHERE market = 'Chicago' AND status != 'Sold'",
+      "seconds" : 17,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T1-20",
+      "predicted_sql" : "SELECT name, vintage_year FROM funds",
+      "seconds" : 7,
+      "tier" : 1
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-21",
+      "predicted_sql" : "SELECT p.name FROM properties p JOIN property_financials f ON f.property_id = p.property_id WHERE f.period_end = (SELECT MAX(period_end) FROM property_financials WHERE property_id = p.property_id)",
+      "seconds" : 31,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-22",
+      "predicted_sql" : "SELECT p.property_type, SUM(l.annual_base_rent) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type",
+      "seconds" : 25,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-23",
+      "predicted_sql" : "SELECT f.name, SUM(l.annual_base_rent) FROM leases l JOIN properties p ON p.property_id = l.property_id JOIN funds f ON f.fund_id = p.fund_id WHERE l.status IN ('Active', 'Holdover') GROUP BY f.name",
+      "seconds" : 32,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-24",
+      "predicted_sql" : "SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id JOIN properties p ON p.property_id = l.property_id WHERE p.name = 'Kingsley Tower' AND l.status IN ('Active', 'Holdover')",
+      "seconds" : 34,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-25",
+      "predicted_sql" : "SELECT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id WHERE l.status IN ('Active', 'Holdover') GROUP BY t.name ORDER BY SUM(l.leased_sqft) DESC LIMIT 5",
+      "seconds" : 25,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-26",
+      "predicted_sql" : "SELECT p.name, l.lender FROM loans l JOIN properties p ON p.property_id = l.property_id WHERE l.maturity_date >= '2026-07-01' AND l.maturity_date< '2028-07-01'",
+      "seconds" : 27,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-27",
+      "predicted_sql" : "SELECT p.name, SUM(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end >= '2026-07-01' AND f.period_end <= '2027-07-01'",
+      "seconds" : 28,
+      "tier" : 2
+    },
+    {
+      "error" : "SQLite error 1: no such column: period_end - while executing `SELECT name FROM properties WHERE period_end >= '2026-01-01' AND period_end <= '2026-12-31' AND f.occupancy_rate< 0.70`",
+      "ex" : false,
+      "id" : "T2-28",
+      "predicted_sql" : "SELECT name FROM properties WHERE period_end >= '2026-01-01' AND period_end <= '2026-12-31' AND f.occupancy_rate< 0.70",
+      "seconds" : 25,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-29",
+      "predicted_sql" : "SELECT p.property_type, AVG(f.occupancy_rate) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end = '2026-06-30' GROUP BY p.property_type",
+      "seconds" : 26,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-30",
+      "predicted_sql" : "SELECT SUM(current_balance) FROM loans WHERE maturity_date >= '2025-01-01' AND maturity_date <= '2025-12-31'",
+      "seconds" : 17,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-31",
+      "predicted_sql" : "SELECT t.name, l.property_id FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE t.industry = 'Government' AND l.status IN ('Active', 'Holdover')",
+      "seconds" : 28,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-32",
+      "predicted_sql" : "SELECT t.name, p.name, l.expiration_date FROM leases l JOIN properties p ON p.property_id = l.property_id JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date< '2027-07-01'",
+      "seconds" : 53,
+      "tier" : 2
+    },
+    {
+      "error" : "SQLite error 1: no such column: ln.status - while executing `SELECT p.name, ln.ltv FROM loans ln JOIN properties p ON p.property_id = ln.property_id WHERE ln.status != 'Sold'`",
+      "ex" : false,
+      "id" : "T2-33",
+      "predicted_sql" : "SELECT p.name, ln.ltv FROM loans ln JOIN properties p ON p.property_id = ln.property_id WHERE ln.status != 'Sold'",
+      "seconds" : 22,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-34",
+      "predicted_sql" : "SELECT f.name, SUM(current_market_value) FROM properties p JOIN funds f ON f.fund_id = p.fund_id WHERE p.status != 'Sold' GROUP BY f.name",
+      "seconds" : 27,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-35",
+      "predicted_sql" : "SELECT p.name FROM properties p JOIN funds fu ON fu.fund_id = p.fund_id WHERE fu.name = 'CREG Opportunity Fund III' AND p.status != 'Sold'",
+      "seconds" : 25,
+      "tier" : 2
+    },
+    {
+      "error" : "SQLite error 1: no such column: property_type - while executing `SELECT AVG(base_rent_psf) FROM leases WHERE property_type = 'Office' AND commencement_date >= '2024-01-01' AND status IN ('Active', 'Holdover')`",
+      "ex" : false,
+      "id" : "T2-36",
+      "predicted_sql" : "SELECT AVG(base_rent_psf) FROM leases WHERE property_type = 'Office' AND commencement_date >= '2024-01-01' AND status IN ('Active', 'Holdover')",
+      "seconds" : 23,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-37",
+      "predicted_sql" : "SELECT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id WHERE l.status IN ('Active', 'Holdover') GROUP BY t.name HAVING COUNT(DISTINCT l.property_id) > 1",
+      "seconds" : 31,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-38",
+      "predicted_sql" : "SELECT SUM(l.security_deposit) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.name = 'Palisade Tower' AND l.status = 'Active'",
+      "seconds" : 25,
+      "tier" : 2
+    },
+    {
+      "error" : "SQLite error 1: no such column: t.property_type - while executing `SELECT SUM(l.leased_sqft) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE t.property_type = 'Healthcare' AND l.status IN ('Active', 'Holdover')`",
+      "ex" : false,
+      "id" : "T2-39",
+      "predicted_sql" : "SELECT SUM(l.leased_sqft) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE t.property_type = 'Healthcare' AND l.status IN ('Active', 'Holdover')",
+      "seconds" : 25,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T2-40",
+      "predicted_sql" : "SELECT p.name, f.period_end, f.net_operating_income FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.name = 'Sable Tower' AND f.period_end >= '2026-01-01' AND f.period_end <= '2026-12-31'",
+      "seconds" : 38,
+      "tier" : 2
+    },
+    {
+      "error" : "SQLite error 1: no such column: tenant_id - while executing `SELECT name FROM properties WHERE status != 'Sold' AND tenant_id IN (SELECT tenant_id FROM leases WHERE status = 'Holdover' AND expiration_date >= '2026-07-01' AND expiration_date <= '2026-12-31' )`",
+      "ex" : false,
+      "id" : "T2-41",
+      "predicted_sql" : "SELECT name FROM properties WHERE status != 'Sold' AND tenant_id IN (SELECT tenant_id FROM leases WHERE status = 'Holdover' AND expiration_date >= '2026-07-01' AND expiration_date <= '2026-12-31' )",
+      "seconds" : 38,
+      "tier" : 2
+    },
+    {
+      "error" : "SQLite error 1: no such column: l.gross_potential_rent - while executing `SELECT p.market, SUM(l.gross_potential_rent) AS total_gross_potential_rent, SUM(f.effective_gross_income) AS total_effective_gross_income FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.market`",
+      "ex" : false,
+      "id" : "T2-42",
+      "predicted_sql" : "SELECT p.market, SUM(l.gross_potential_rent) AS total_gross_potential_rent, SUM(f.effective_gross_income) AS total_effective_gross_income FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.market",
+      "seconds" : 29,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-43",
+      "predicted_sql" : "SELECT lender FROM loans GROUP BY lender ORDER BY COUNT(*) DESC LIMIT 1",
+      "seconds" : 10,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-44",
+      "predicted_sql" : "SELECT dscr FROM loans WHERE property_id = (SELECT property_id FROM properties WHERE name = 'Kingsley Tower')",
+      "seconds" : 22,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "T2-45",
+      "predicted_sql" : "SELECT STRFTIME('%Y', expiration_date) AS yr, COUNT(*) FROM leases WHERE status = 'Active' GROUP BY yr",
+      "seconds" : 18,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T3-46",
+      "predicted_sql" : "SELECT p.name, v.valuation_date FROM properties p JOIN valuations v ON v.property_id = p.property_id WHERE p.status != 'Sold' AND v.valuation_date = (SELECT MAX(valuation_date) FROM valuations WHERE property_id = p.property_id)",
+      "seconds" : 40,
+      "tier" : 3
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T3-47",
+      "predicted_sql" : "WITH cte AS (SELECT p.name AS grp, SUM(f.net_operating_income) AS net FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end >= '2026-07-01' AND f.period_end <= '2027-07-01' GROUP BY p.name) SELECT grp, net, RANK() OVER (ORDER BY net DESC) AS rnk FROM cte",
+      "seconds" : 44,
+      "tier" : 3
+    },
+    {
+      "error" : "SQLite error 1: no such column: l.market - while executing `SELECT p.name FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status = 'Active' ORDER BY l.market ASC, l.base_rent_psf DESC`",
+      "ex" : false,
+      "id" : "T3-48",
+      "predicted_sql" : "SELECT p.name FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status = 'Active' ORDER BY l.market ASC, l.base_rent_psf DESC",
+      "seconds" : 25,
+      "tier" : 3
+    },
+    {
+      "error" : "SQLite error 1: unrecognized token: \"'\" - while executing `SELECT p.property_type, SUM(l.annual_base_rent) \/ (SELECT SUM(l.annual_base_rent) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type\n!='$' AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('`",
+      "ex" : false,
+      "id" : "T3-49",
+      "predicted_sql" : "SELECT p.property_type, SUM(l.annual_base_rent) \/ (SELECT SUM(l.annual_base_rent) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type\n!='$' AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_id) AND l.status IN ('Active', 'Holdover') AND l.property_id IN (SELECT p.property_id FROM properties p JOIN leases l ON l.property_id = p.property_id WHERE l.status IN ('",
+      "seconds" : 327,
+      "tier" : 3
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T3-50",
+      "predicted_sql" : "SELECT p.name, a.occupancy_rate, b.occupancy_rate FROM properties p JOIN property_financials a ON a.property_id = p.property_id AND a.period_end = '2025-06-30' JOIN property_financials b ON b.property_id = p.property_id AND b.period_end = '2026-06-30'",
+      "seconds" : 45,
+      "tier" : 3
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T3-51",
+      "predicted_sql" : "SELECT p.name, l.leased_sqft FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.property_type = 'Office' AND l.status = 'Active' ORDER BY l.leased_sqft DESC LIMIT 1",
+      "seconds" : 32,
+      "tier" : 3
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "T3-52",
+      "predicted_sql" : "SELECT p.name, SUM(f.capex) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end >= '2024-01-01' AND f.period_end <= '2024-12-31' GROUP BY p.name ORDER BY SUM(f.capex) DESC LIMIT 5",
+      "seconds" : 36,
+      "tier" : 3
+    },
+    {
+      "error" : "SQLite error 1: no such column: f.occupancy_rate - while executing `SELECT f.name FROM funds f JOIN property_financials p ON p.fund_id = f.fund_id WHERE p.period_end = '2026-06-30' AND f.occupancy_rate > 0.90`",
+      "ex" : false,
+      "id" : "T3-53",
+      "predicted_sql" : "SELECT f.name FROM funds f JOIN property_financials p ON p.fund_id = f.fund_id WHERE p.period_end = '2026-06-30' AND f.occupancy_rate > 0.90",
+      "seconds" : 28,
+      "tier" : 3
+    },
+    {
+      "error" : "SQLite error 1: no such column: v.annual_base_rent - while executing `SELECT p.name, v.annual_base_rent FROM properties p JOIN valuations v ON v.property_id = p.property_id WHERE v.valuation_date >= '2026-01-01' AND v.valuation_date <= '2026-12-31' ORDER BY v.annual_base_rent DESC LIMIT 5`",
+      "ex" : false,
+      "id" : "T3-54",
+      "predicted_sql" : "SELECT p.name, v.annual_base_rent FROM properties p JOIN valuations v ON v.property_id = p.property_id WHERE v.valuation_date >= '2026-01-01' AND v.valuation_date <= '2026-12-31' ORDER BY v.annual_base_rent DESC LIMIT 5",
+      "seconds" : 32,
+      "tier" : 3
+    },
+    {
+      "error" : "SQLite error 1: no such column: l.dscr - while executing `SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY t.name HAVING MIN(l.dscr) >= '2025-01-01' AND MIN(l.dscr) <= '2025-12-31'`",
+      "ex" : false,
+      "id" : "T3-55",
+      "predicted_sql" : "SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY t.name HAVING MIN(l.dscr) >= '2025-01-01' AND MIN(l.dscr) <= '2025-12-31'",
+      "seconds" : 44,
+      "tier" : 3
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "F-56",
+      "predicted_sql" : "SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id JOIN properties p ON p.property_id = l.property_id WHERE p.name = 'Kingsly Tower' AND l.status IN ('Active', 'Holdover')",
+      "seconds" : 35,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "F-57",
+      "predicted_sql" : "SELECT SUM(l.leased_sqft) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE t.name = 'Yates Medical' AND l.status IN ('Active', 'Holdover')",
+      "seconds" : 31,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : true,
+      "id" : "A-58",
+      "predicted_sql" : "SELECT SUM(current_market_value) FROM properties WHERE market = 'New York' AND status != 'Sold'",
+      "seconds" : 16,
+      "tier" : 2
+    },
+    {
+      "error" : null,
+      "ex" : false,
+      "id" : "MT-59",
+      "predicted_sql" : "SELECT SUM(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.property_type = 'Office' AND f.period_end >= '2025-01-01' AND f.period_end <= '2025-12-31'",
+      "seconds" : 31,
+      "tier" : 2
+    },
+    {
+      "error" : "SQLite error 1: no such column: t.has_renewal_option - while executing `SELECT DISTINCT t.name FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date< '2027-07-01' AND t.has_renewal_option = 1`",
+      "ex" : false,
+      "id" : "MT-60",
+      "predicted_sql" : "SELECT DISTINCT t.name FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date< '2027-07-01' AND t.has_renewal_option = 1",
+      "seconds" : 42,
+      "tier" : 2
+    }
+  ],
+  "summary" : {
+    "ex" : 0.40000000000000002,
+    "model" : "..\/models\/creg-sql-3b-ft",
+    "n" : 60,
+    "runtime" : "swift-mlx",
+    "valid_sql_rate" : 0.80000000000000004
+  }
+}

@@ -11,6 +11,7 @@
 		C4E60000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000006 /* Assets.xcassets */; };
 		C4E60000000000000000000F /* creg.sqlite in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000007 /* creg.sqlite */; };
 		C4E60000000000000000001A /* CREGFeatures in Frameworks */ = {isa = PBXBuildFile; productRef = C4E600000000000000000012 /* CREGFeatures */; };
+		C4E60000000000000000001B /* SQLModel in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000019 /* SQLModel */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -18,6 +19,7 @@
 		C4E600000000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C4E600000000000000000007 /* creg.sqlite */ = {isa = PBXFileReference; lastKnownFileType = file; name = creg.sqlite; path = db/creg.sqlite; sourceTree = SOURCE_ROOT; };
 		C4E600000000000000000008 /* CREG.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CREG.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C4E600000000000000000019 /* SQLModel */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SQLModel; path = models/SQLModel; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -37,6 +39,7 @@
 			children = (
 				C4E600000000000000000004 /* CREG */,
 				C4E600000000000000000007 /* creg.sqlite */,
+				C4E600000000000000000019 /* SQLModel */,
 				C4E600000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -124,6 +127,7 @@
 			files = (
 				C4E60000000000000000000E /* Assets.xcassets in Resources */,
 				C4E60000000000000000000F /* creg.sqlite in Resources */,
+				C4E60000000000000000001B /* SQLModel in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
