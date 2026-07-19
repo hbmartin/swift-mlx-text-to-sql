@@ -100,6 +100,12 @@ class EntropyOnlyProcessor:
         return logits
 
 
+def strip_special_tokens(text: str) -> str:
+    """Some tokenizers leak chat-template specials (<|im_end|>) into decoded
+    text; strip them before executing anything."""
+    return re.sub(r"<\|[a-zA-Z0-9_]+\|>", "", text)
+
+
 def extract_sql(text: str) -> str:
     """Pull the SQL statement out of unconstrained model output."""
     text = text.strip()
@@ -181,6 +187,7 @@ def main() -> None:
                         sampler=sampler, logits_processors=[processor])
         elapsed = time.perf_counter() - start
 
+        text = strip_special_tokens(text)
         predicted_sql = text.strip() if args.gcd == "on" else extract_sql(text)
         gold_rows = execute(DB, item["sql"])
         error = None
