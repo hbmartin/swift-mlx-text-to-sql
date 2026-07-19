@@ -1,0 +1,24 @@
+{
+  "label": "q25c-3b-gcdoff",
+  "model": "../models/Qwen2.5-Coder-3B-Instruct-4bit",
+  "gcd": "off",
+  "gold": "gold_v1.jsonl",
+  "n": 60,
+  "ex": 0.333,
+  "valid_sql_rate": 0.783,
+  "ex_by_tier": {
+    "1": 0.7,
+    "2": 0.133,
+    "3": 0.2
+  },
+  "failure_buckets": {
+    "wrong-projection": 6,
+    "wrong-filter-or-value": 10,
+    "execution-error": 13,
+    "empty-when-expected": 5,
+    "wrong-table-or-join": 6
+  },
+  "mean_seconds": 2.72,
+  "mean_entropy_correct": 0.2597,
+  "mean_entropy_wrong": 0.321
+}
