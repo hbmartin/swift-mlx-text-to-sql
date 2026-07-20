@@ -86,12 +86,14 @@ extension QueryPipeline {
             @Sendable func generateAndExecute(
               repair: RepairContext?, temperature: Double
             ) async throws -> (sql: String, result: Result<QueryResult, Error>) {
-              continuation.yield(.generationStarted(modelName: ""))
+              continuation.yield(.generationStarted)
               let generation = try await serializer.run {
                 try await sqlGen.generate(standalone, repair, temperature)
               }
               continuation.yield(.generationFinished(
-                sql: generation.sql, tokensPerSecond: generation.tokensPerSecond))
+                sql: generation.sql,
+                tokensPerSecond: generation.tokensPerSecond,
+                modelName: generation.modelName))
               continuation.yield(.executionStarted(sql: generation.sql))
               do {
                 let result = try await db.execute(generation.sql)
@@ -189,10 +191,21 @@ extension QueryPipeline {
             // 8. Narration
             continuation.yield(.narrationStarted)
             let finalResult = result
-            let narration = try await serializer.run {
-              try await activeFM.narrate(standalone, finalResult)
+            let narration: String
+            let narrationUsedFM: Bool
+            do {
+              narration = try await serializer.run {
+                try await activeFM.narrate(standalone, finalResult)
+              }
+              narrationUsedFM = fmAvailable
+            } catch is CancellationError {
+              throw CancellationError()
+            } catch {
+              narration = try await FMClient.fallback().narrate(standalone, finalResult)
+              narrationUsedFM = false
             }
-            continuation.yield(.narrationFinished(narration: narration, usedFM: fmAvailable))
+            continuation.yield(.narrationFinished(
+              narration: narration, usedFM: narrationUsedFM))
             continuation.yield(.turnFinished(.answered(
               result: result, narration: narration, sql: chosenSQL,
               notice: findings.first?.userNotice)))

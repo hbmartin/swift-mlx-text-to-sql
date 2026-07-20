@@ -24,6 +24,7 @@ Usage:  uv run python -m synth.generate_training
 import json
 import random
 import sqlite3
+import warnings
 from pathlib import Path
 
 import xgrammar
@@ -36,12 +37,14 @@ DB = REPO_ROOT / "db" / "creg.sqlite"
 GOLD = REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl"
 GRAMMAR_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "sql_grammar.ebnf"
 SCHEMA_PROMPT = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "schema_prompt.txt"
+AS_OF_DATE_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "as_of_date.txt"
 OUT_DIR = REPO_ROOT / "fine-tuning" / "synth" / "out"
 
 SEED = 424242
 TARGET = 3000
 VALID_FRACTION = 0.05
 OCCUPYING = "('Active', 'Holdover')"
+AS_OF_DATE = AS_OF_DATE_PATH.read_text().strip()
 
 SYSTEM_PROMPT = """You translate questions about a commercial real estate portfolio into a single \
 SQLite SELECT statement. Only SELECT is possible. Use only these tables and columns:
@@ -53,7 +56,7 @@ Rules:
 property_financials row, never derived from leases.
 - "Current value" of a property is properties.current_market_value; the \
 valuations table is appraisal history only.
-- Dates are ISO text (YYYY-MM-DD); today is 2026-07-01.
+- Dates are ISO text (YYYY-MM-DD); today is {as_of_date}.
 - Rates are 0-1 fractions.
 Output only the SQL statement."""
 
@@ -85,8 +88,7 @@ def load_entities(conn) -> dict:
 
 
 def build_candidates(rng: random.Random, e: dict) -> list[dict]:
-    """Yield (question, sql, family, tier) candidates — intentionally more
-    than TARGET; the gate and dedup thin them out."""
+    """Yield schema-grounded (question, SQL, family, tier) candidates."""
     out: list[dict] = []
 
     def add(family, tier, question, sql):
@@ -123,10 +125,14 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
             "What did we pay for {p}, and when?",
         ], p=p), f"SELECT acquisition_date, acquisition_price FROM properties WHERE name = '{p}'")
     for p in e["held"]:
-        add("prop_active_leases", 2, phr([
+        question = phr([
             "How many active leases are at {p}?", "Active lease count at {p}?",
             "How many tenants have active leases in {p}?",
-        ], p=p), f"SELECT COUNT(*) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.name = '{p}' AND l.status = 'Active'")
+        ], p=p)
+        count_expr = "COUNT(DISTINCT l.tenant_id)" if "tenants" in question.lower() else "COUNT(*)"
+        add(
+            "prop_active_leases", 2, question,
+            f"SELECT {count_expr} FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.name = '{p}' AND l.status = 'Active'")
         add("prop_rentroll", 2, phr([
             "What's the current rent roll at {p}?",
             "Total annual base rent at {p} right now?",
@@ -241,13 +247,13 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
         add("expiry_count", 1, phr([
             "How many active leases expire in the next {n} months?",
             "How many leases roll within {n} months?",
-        ], n=n), f"SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date < '{end}'")
+        ], n=n), f"SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '{AS_OF_DATE}' AND expiration_date < '{end}'")
         add("expiry_list", 2, phr([
             "Which tenants have active leases expiring in the next {n} months?",
-        ], n=n), f"SELECT DISTINCT t.name FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date < '{end}'")
+        ], n=n), f"SELECT DISTINCT t.name FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '{AS_OF_DATE}' AND l.expiration_date < '{end}'")
         add("expiry_sqft", 2, phr([
             "How much leased square footage expires within {n} months?",
-        ], n=n), f"SELECT SUM(leased_sqft) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date < '{end}'")
+        ], n=n), f"SELECT SUM(leased_sqft) FROM leases WHERE status = 'Active' AND expiration_date >= '{AS_OF_DATE}' AND expiration_date < '{end}'")
     for y in ["2027", "2028", "2029", "2030", "2031"]:
         add("loan_maturity_year", 2, phr([
             "Which loans mature in {y}? Show property and balance.",
@@ -382,9 +388,17 @@ def main() -> None:
                       for line in GOLD.read_text().splitlines() if line.strip()}
 
     candidates = build_candidates(rng, entities)
+    if len(candidates) < TARGET:
+        warnings.warn(
+            f"only {len(candidates)} raw candidates generated, below TARGET={TARGET}; "
+            "add template coverage or lower TARGET",
+            stacklevel=1,
+        )
     rng.shuffle(candidates)
 
-    stats = {"raw": len(candidates), "gold_dup": 0, "batch_dup": 0,
+    stats = {"target": TARGET, "raw": len(candidates),
+             "raw_shortfall": max(0, TARGET - len(candidates)),
+             "gold_dup": 0, "batch_dup": 0,
              "exec_error": 0, "degenerate": 0, "not_in_grammar": 0, "kept": 0}
     seen: set[str] = set()
     kept: list[dict] = []
@@ -413,7 +427,8 @@ def main() -> None:
             break
     stats["kept"] = len(kept)
 
-    system_prompt = SYSTEM_PROMPT.format(schema=SCHEMA_PROMPT.read_text().strip())
+    system_prompt = SYSTEM_PROMPT.format(
+        schema=SCHEMA_PROMPT.read_text().strip(), as_of_date=AS_OF_DATE)
     records = [
         {"messages": [
             {"role": "system", "content": system_prompt},

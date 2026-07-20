@@ -138,6 +138,38 @@ import Testing
     #expect(sql == "SELECT 2")
   }
 
+  @Test func narrationFailureKeepsExecutedAnswer() async throws {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in throw NSError(domain: "fm", code: 1) }
+    )
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: SQLGenClient { _, _, _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 42, modelName: "test")
+      },
+      db: DatabaseClient { _ in
+        QueryResult(columns: ["n"], rows: [[.integer(1)]])
+      },
+      serializer: InferenceSerializer(),
+      configuration: .init(selfConsistencyN: 1)
+    )
+    var events: [PipelineEvent] = []
+    for await event in pipeline.run("q", []) {
+      events.append(event)
+    }
+    #expect(events.contains(.narrationFinished(
+      narration: "Here's what I found — 1 row.", usedFM: false)))
+    guard case .turnFinished(.answered(let result, let narration, _, _)) = events.last else {
+      Issue.record("expected the executed answer to survive narration failure")
+      return
+    }
+    #expect(result.rows == [[.integer(1)]])
+    #expect(narration == "Here's what I found — 1 row.")
+  }
+
   @Test func emptyResultTriggersVoteAndMajorityWins() async throws {
     // Greedy generation returns an empty result; the heuristic flags it,
     // uncertainty gating triggers a 3-way vote, and the two agreeing
@@ -165,6 +197,17 @@ import Testing
     }
     #expect(events.contains { if case .heuristicFlagged = $0 { true } else { false } })
     #expect(events.contains { if case .selfConsistencyStarted(3, "heuristic") = $0 { true } else { false } })
+    guard case .selfConsistencyFinished(_, let agreement, let candidates) =
+      events.first(where: {
+        if case .selfConsistencyFinished = $0 { true } else { false }
+      })
+    else {
+      Issue.record("expected self-consistency vote result")
+      return
+    }
+    #expect(agreement == 2)
+    #expect(candidates.filter(\.agreedWithWinner).count == 2)
+    #expect(candidates.filter { !$0.agreedWithWinner }.count == 1)
     guard case .turnFinished(.answered(let result, _, let sql, let notice)) = events.last else {
       Issue.record("expected answered outcome")
       return

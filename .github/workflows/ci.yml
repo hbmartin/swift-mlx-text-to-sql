@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  swift-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Swift package
+        run: swift test
+        working-directory: CREGKit
+
+  python-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: python3 -m pip install uv
+      - name: Test evaluation and data tooling
+        run: uv run pytest
+        working-directory: fine-tuning

@@ -103,10 +103,15 @@ def main() -> None:
             "What's the current market value of {p}?",
         ], p=p), f"SELECT current_market_value FROM properties WHERE name = '{p}'", ["canonical"])
     for p in rng.sample(held_props, 8):
-        add("prop_leasecount", 2, pick([
+        question = pick([
             "How many active leases are in place at {p}?",
             "How many tenants hold active leases at {p}?",
-        ], p=p), f"SELECT COUNT(*) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.name = '{p}' AND l.status = 'Active'", ["count", "join"])
+        ], p=p)
+        count_expr = "COUNT(DISTINCT l.tenant_id)" if "tenants" in question.lower() else "COUNT(*)"
+        add(
+            "prop_leasecount", 2, question,
+            f"SELECT {count_expr} FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.name = '{p}' AND l.status = 'Active'",
+            ["count", "join"])
     for p in rng.sample(financial_props, 8):
         add("prop_noi25", 2, pick([
             "What was {p}'s total NOI in 2025?",

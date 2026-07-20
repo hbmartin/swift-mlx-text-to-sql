@@ -16,8 +16,8 @@ including the HF cache); detailed notes in `docs/`.
 
 | | EX (200-item gold) | valid SQL | tier 2 | s/item |
 |---|---|---|---|---|
-| Best off-the-shelf (Qwen2.5-Coder-3B, no GCD) | 0.225 | 0.760 | 0.11 | 3.1 |
-| **CREG fine-tune (same base + in-domain QLoRA, GCD on)** | **0.665** | **0.930** | **0.70** | **2.9** |
+| Best off-the-shelf (Qwen2.5-Coder-3B, no GCD) | 0.226 | 0.760 | 0.18 | 2.9 |
+| **CREG fine-tune (same base + in-domain QLoRA, GCD on)** | **0.663** | **0.930** | **0.70** | **2.9** |
 
 The PRD's central bet — that a single fixed schema plus in-domain
 fine-tuning beats generic capability — is confirmed: **+44 EX points (~3×)**
@@ -29,7 +29,7 @@ gold_v2 into its 60 hand-written items and 140 template-generated items,
 | slice | base | fine-tune |
 |---|---|---|
 | generated 140 (in-family phrasings) | 0.071 | **0.786** |
-| hand-written 60 (novel phrasings) | 0.350 | 0.383 |
+| hand-written SQL-scored 59 (novel phrasings) | 0.356 | 0.373 |
 
 The fine-tune fully learned the schema's canonical semantics *as expressed
 by the template families* but transfers weakly to novel phrasings —
@@ -54,20 +54,20 @@ fine-tune ≥ base on every slice.
    grammar in validation, which caught a missing alias-reference production.
 3. **Candidates were four ≤4B 4-bit models** (both Qwen2.5-Coder sizes,
    Qwen3-1.7B, and XiYanSQL-3B converted locally). Stage-1 (60 gold):
-   the general coder Qwen2.5-Coder-3B (0.350) beat the *dedicated SQL
-   fine-tune* XiYanSQL (0.317) — cross-domain SQL skill does not transfer
+   the general coder Qwen2.5-Coder-3B (0.356) beat the *dedicated SQL
+   fine-tune* XiYanSQL (0.322) — cross-domain SQL skill does not transfer
    to this schema's canonical semantics, which is the PRD's thesis restated
    from the other side.
 4. **GCD is a per-model decision, empirically**: it helped the leader on
    easy gold (+1.7 EX), *hurt* it on hard gold (−7 EX), drove the 1.5B into
    degenerate `TOTAL(TOTAL(…` loops, and cost the fine-tuned model exactly
-   nothing (0.665 both ways). Decision: **ship with GCD on** — for the
+   nothing (0.663 both ways). Decision: **ship with GCD on** — for the
    fine-tuned model the structural guarantees (SELECT-only, no invented
    tables) are free.
 5. **The gold set was deliberately made harder as it grew**: the 140
    generated stage-2 items concentrate per-entity canonical-semantics
    questions (the app's real distribution), which is why base-model EX
-   *fell* from 0.350 to 0.155–0.225 while the fine-tune hit 0.665. The gap
+   *fell* from 0.356 to 0.156–0.226 while the fine-tune hit 0.663. The gap
    is the point: it measures the semantics, not generic SQL.
 6. **Training data = 1,424 template-generated pairs** (seed-separated from
    gold, normalized-question dedup, every pair executed + grammar-checked;
@@ -103,16 +103,19 @@ runtime correction layers, as designed.
 
 `creg-eval-cli` (the app's exact MLX-Swift + MLXStructured + prompt stack,
 built via xcodebuild because SPM CLI builds of mlx-swift lack the Metal
-library) re-scored the bundled model on the 60-item gold set:
+library) re-scored the bundled model on the 60-item gold set. Primary EX
+excludes the one clarification-gated item; its fallback SQL is reported
+separately:
 
-| runtime | EX (same 60 items) | valid SQL | disagreements |
+| runtime | primary EX (same 59 SQL items) | valid SQL (all 60) | disagreements |
 |---|---|---|---|
-| Python harness (mlx_lm + xgrammar) | 0.383 | 0.817 | — |
-| Swift production stack | 0.400 | 0.800 | **1 / 60 items** |
+| Python harness (mlx_lm + xgrammar) | 0.373 | 0.817 | — |
+| Swift production stack | 0.390 | 0.800 | **1 / 59 items** |
 
 One item flipped (Swift's generation chose a different-but-correct query).
-The two stacks agree on 59/60 — the Python harness's selections are valid
-for what actually ships (ADR 0003's premise holds).
+The two stacks agree on 58/59 primary SQL items, and both produce the expected
+best-guess fallback SQL for the clarification item. The Python harness's
+selections are valid for what actually ships (ADR 0003's premise holds).
 
 ## What ships
 

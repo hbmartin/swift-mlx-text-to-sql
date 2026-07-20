@@ -62,8 +62,8 @@ extension HistoryClient {
             let payloads = try String.fetchAll(
               db, sql: "SELECT payload FROM message WHERE conversation_id = ? ORDER BY position",
               arguments: [id.uuidString])
-            let messages = try payloads.map {
-              try decoder.decode(ChatMessage.self, from: Data($0.utf8))
+            let messages = payloads.compactMap {
+              try? decoder.decode(ChatMessage.self, from: Data($0.utf8))
             }
             return (id, messages)
           }

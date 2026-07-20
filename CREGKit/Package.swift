@@ -34,6 +34,7 @@ let package = Package(
         .product(name: "GRDB", package: "GRDB.swift"),
       ],
       resources: [
+        .copy("Resources/as_of_date.txt"),
         .copy("Resources/sql_grammar.ebnf"),
         .copy("Resources/schema_prompt.txt"),
       ]

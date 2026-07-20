@@ -10,7 +10,7 @@ Checks per item:
 
 Writes a markdown review table for the judge pass.
 
-Usage:  uv run python tools/validate_gold.py [--gold PATH] [--report PATH]
+Usage:  uv run python -m tools.validate_gold [--gold PATH] [--report PATH]
 """
 
 import argparse
@@ -65,7 +65,7 @@ def main() -> None:
                 flags.append("NULL-SCALAR")
         if flags:
             problems += 1
-        first = "" if not rows else str(rows[0])[:60].replace("|", "\\|")
+        first = "" if not rows else str(rows[0]).replace("\n", " ").replace("|", "\\|")
         lines.append(
             f"| {item['id']} | {item['tier']} | {'-' if rows is None else len(rows)} "
             f"| {'ok' if in_grammar else 'NO'} | {'; '.join(flags) or 'ok'} | {first} |"

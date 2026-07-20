@@ -97,8 +97,9 @@ public struct ChatFeature: Sendable {
         switch event {
         case .rewriteFinished(let standalone, _):
           state.currentDevInfo.standaloneQuestion = standalone
-        case .generationFinished(_, let tokensPerSecond):
+        case .generationFinished(_, let tokensPerSecond, let modelName):
           state.currentDevInfo.tokensPerSecond = tokensPerSecond
+          state.currentDevInfo.modelName = modelName
         case .executionFinished(_, let elapsed):
           state.currentDevInfo.executionMilliseconds = elapsed
         case .repairStarted(let attempt):

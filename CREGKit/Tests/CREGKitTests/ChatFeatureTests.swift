@@ -1,11 +1,16 @@
 import ComposableArchitecture
 import Foundation
+import GRDB
 import Testing
 
 @testable import CREGEngine
 @testable import CREGFeatures
 
 private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")]])
+
+private func testUUID(_ value: Int) -> UUID {
+  UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", value))!
+}
 
 @MainActor
 @Suite struct ChatFeatureTests {
@@ -15,8 +20,9 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
         continuation.yield(.turnStarted(question: question))
         continuation.yield(.gateStarted)
         continuation.yield(.gateFinished(.proceed))
-        continuation.yield(.generationStarted(modelName: "test"))
-        continuation.yield(.generationFinished(sql: "SELECT name FROM properties", tokensPerSecond: 42))
+        continuation.yield(.generationStarted)
+        continuation.yield(.generationFinished(
+          sql: "SELECT name FROM properties", tokensPerSecond: 42, modelName: "test"))
         continuation.yield(.executionStarted(sql: "SELECT name FROM properties"))
         continuation.yield(.executionFinished(rowCount: 1, elapsedMilliseconds: 3))
         continuation.yield(.narrationStarted)
@@ -57,6 +63,7 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
     #expect(result == answer)
     #expect(narration == "One property found.")
     #expect(sql == "SELECT name FROM properties")
+    #expect(assistant?.devInfo?.modelName == "test")
     #expect(assistant?.traceSteps.isEmpty == false)
     // trace lines never contain SQL
     #expect(assistant?.traceSteps.allSatisfy { !$0.contains("SELECT") } == true)
@@ -64,14 +71,38 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
 
   @Test func conversationTurnsPairQuestionsWithAnswers() {
     let messages: IdentifiedArrayOf<ChatMessage> = [
-      ChatMessage(id: UUID(0), role: .user, body: .text("q1"), createdAt: .distantPast),
+      ChatMessage(id: testUUID(0), role: .user, body: .text("q1"), createdAt: .distantPast),
       ChatMessage(
-        id: UUID(1), role: .assistant,
+        id: testUUID(1), role: .assistant,
         body: .answer(result: answer, narration: "a1", sql: "s", notice: nil), createdAt: .distantPast),
-      ChatMessage(id: UUID(2), role: .user, body: .text("q2"), createdAt: .distantPast),
-      ChatMessage(id: UUID(3), role: .assistant, body: .failure("boom"), createdAt: .distantPast),
+      ChatMessage(id: testUUID(2), role: .user, body: .text("q2"), createdAt: .distantPast),
+      ChatMessage(id: testUUID(3), role: .assistant, body: .failure("boom"), createdAt: .distantPast),
     ]
     let turns = ChatFeature.conversationTurns(from: messages)
     #expect(turns == [ConversationTurn(question: "q1", answerSummary: "a1")])
+  }
+
+  @Test func historyLoadSkipsCorruptMessages() async throws {
+    let databaseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-history-\(UUID().uuidString).sqlite")
+    let history = try HistoryClient.live(databaseURL: databaseURL)
+    let (conversationID, _) = try await history.loadCurrentConversation()
+    let valid = ChatMessage(
+      id: UUID(), role: .user, body: .text("still readable"), createdAt: .distantPast)
+    try await history.appendMessage(conversationID, valid)
+
+    let queue = try DatabaseQueue(path: databaseURL.path)
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          INSERT INTO message (id, conversation_id, position, payload)
+          VALUES (?, ?, ?, ?)
+          """,
+        arguments: [UUID().uuidString, conversationID.uuidString, 2, "{not-json"])
+    }
+
+    let (loadedID, messages) = try await history.loadCurrentConversation()
+    #expect(loadedID == conversationID)
+    #expect(messages == [valid])
   }
 }

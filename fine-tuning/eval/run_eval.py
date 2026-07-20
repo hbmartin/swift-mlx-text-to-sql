@@ -18,15 +18,18 @@ import mlx.core as mx
 import numpy as np
 import xgrammar
 from mlx_lm import generate, load
-from mlx_lm.sample_utils import make_sampler
+from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-from eval.ex import ExecutionError, execute, results_match
+from eval.ex import ExecutionError, RowCapExceeded, execute, results_match
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DB = REPO_ROOT / "db" / "creg.sqlite"
 GRAMMAR_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "sql_grammar.ebnf"
 SCHEMA_PROMPT_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "schema_prompt.txt"
+AS_OF_DATE_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "as_of_date.txt"
 OUT_DIR = REPO_ROOT / "eval" / "out"
+REPETITION_PENALTY = 1.1
+REPETITION_CONTEXT_SIZE = 64
 
 # Mirrors the app's system prompt (SQLGenClient.swift) for Mac/app parity.
 SYSTEM_PROMPT = """You translate questions about a commercial real estate portfolio into a single \
@@ -39,7 +42,7 @@ Rules:
 property_financials row, never derived from leases.
 - "Current value" of a property is properties.current_market_value; the \
 valuations table is appraisal history only.
-- Dates are ISO text (YYYY-MM-DD); today is 2026-07-01.
+- Dates are ISO text (YYYY-MM-DD); today is {as_of_date}.
 - Rates are 0-1 fractions.
 Output only the SQL statement."""
 
@@ -139,21 +142,51 @@ def taxonomy(predicted_sql: str, gold_sql: str, error: str | None,
     return "wrong-filter-or-value"
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def rounded_mean(values: list[float], digits: int) -> float | None:
+    return round(float(np.mean(values)), digits) if values else None
+
+
+def report_sql_score(
+    sql_role: str, sql_ex: bool | None, sql_score_status: str, sql_bucket: str
+) -> tuple[bool | None, str, str, bool | None, str | None, str | None]:
+    """Keep fallback SQL diagnostics without adding them to primary EX."""
+    if sql_role == "best_guess_fallback":
+        return (
+            None,
+            "excluded-fallback-sql",
+            "excluded-fallback-sql",
+            sql_ex,
+            sql_score_status,
+            sql_bucket,
+        )
+    return sql_ex, sql_score_status, sql_bucket, None, None, None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="local path or HF id")
     parser.add_argument("--gcd", choices=["on", "off"], default="on")
     parser.add_argument("--gold", type=Path, default=REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl")
     parser.add_argument("--label", required=True, help="config label for output files")
-    parser.add_argument("--max-tokens", type=int, default=512)
-    parser.add_argument("--max-items", type=int, default=None)
+    parser.add_argument("--max-tokens", type=positive_int, default=512)
+    parser.add_argument("--max-items", type=positive_int, default=None)
     args = parser.parse_args()
 
     schema = SCHEMA_PROMPT_PATH.read_text().strip()
-    system_prompt = SYSTEM_PROMPT.format(schema=schema)
+    as_of_date = AS_OF_DATE_PATH.read_text().strip()
+    system_prompt = SYSTEM_PROMPT.format(schema=schema, as_of_date=as_of_date)
     items = [json.loads(line) for line in args.gold.read_text().splitlines() if line.strip()]
-    if args.max_items:
+    if args.max_items is not None:
         items = items[: args.max_items]
+    if not items:
+        parser.error("the selected gold set is empty")
 
     model, tokenizer = load(args.model)
     hf_tokenizer = getattr(tokenizer, "_tokenizer", tokenizer)
@@ -183,58 +216,117 @@ def main() -> None:
         processor = (XGrammarLogitsProcessor(compiled, vocab_size)
                      if compiled is not None else EntropyOnlyProcessor())
         start = time.perf_counter()
+        repetition_processors = make_logits_processors(
+            repetition_penalty=REPETITION_PENALTY,
+            repetition_context_size=REPETITION_CONTEXT_SIZE,
+        )
         text = generate(model, tokenizer, prompt=prompt, max_tokens=args.max_tokens,
-                        sampler=sampler, logits_processors=[processor])
+                        sampler=sampler,
+                        logits_processors=[processor, *repetition_processors])
         elapsed = time.perf_counter() - start
 
         text = strip_special_tokens(text)
         predicted_sql = text.strip() if args.gcd == "on" else extract_sql(text)
-        gold_rows = execute(DB, item["sql"])
+        gold_rows = None
+        gold_cap_error = None
+        try:
+            gold_rows = execute(DB, item["sql"])
+        except RowCapExceeded as exc:
+            gold_cap_error = str(exc)
         error = None
         predicted_rows = None
-        try:
-            predicted_rows = execute(DB, predicted_sql)
-        except ExecutionError as exc:
-            error = str(exc)
-        ex = predicted_rows is not None and results_match(predicted_rows, gold_rows)
-        bucket = "correct" if ex else taxonomy(predicted_sql, item["sql"], error,
-                                               predicted_rows, gold_rows)
         entropies = processor.entropies
+        generation_truncated = len(entropies) >= args.max_tokens
+        predicted_cap_error = None
+        if not generation_truncated:
+            try:
+                predicted_rows = execute(DB, predicted_sql)
+            except RowCapExceeded as exc:
+                predicted_cap_error = str(exc)
+            except ExecutionError as exc:
+                error = str(exc)
+
+        if generation_truncated:
+            sql_ex = False
+            sql_score_status = "generation-truncated"
+            sql_bucket = "generation-truncated"
+        elif gold_cap_error is not None or predicted_cap_error is not None:
+            sql_ex = None
+            sql_score_status = "row-cap-exceeded"
+            sql_bucket = "row-cap-exceeded"
+        elif error is not None:
+            sql_ex = False
+            sql_score_status = "execution-error"
+            sql_bucket = "execution-error"
+        else:
+            sql_ex = results_match(predicted_rows, gold_rows)
+            sql_score_status = "scored"
+            sql_bucket = "correct" if sql_ex else taxonomy(
+                predicted_sql, item["sql"], None, predicted_rows, gold_rows)
+        sql_role = item.get("sql_role", "primary")
+        (
+            ex, score_status, bucket,
+            fallback_ex, fallback_score_status, fallback_bucket,
+        ) = report_sql_score(sql_role, sql_ex, sql_score_status, sql_bucket)
+        valid_sql = not generation_truncated and error is None
         results.append({
             "id": item["id"], "tier": item["tier"], "tags": item.get("tags", []),
+            "expected_gate_action": item.get("expected_gate_action"),
+            "sql_role": sql_role,
             "question": question, "gold_sql": item["sql"], "predicted_sql": predicted_sql,
-            "ex": ex, "bucket": bucket, "error": error,
+            "ex": ex, "score_status": score_status, "bucket": bucket, "error": error,
+            "fallback_ex": fallback_ex,
+            "fallback_score_status": fallback_score_status,
+            "fallback_bucket": fallback_bucket,
+            "valid_sql": valid_sql,
+            "row_cap_error": gold_cap_error or predicted_cap_error,
             "predicted_rowcount": None if predicted_rows is None else len(predicted_rows),
-            "gold_rowcount": len(gold_rows),
+            "gold_rowcount": None if gold_rows is None else len(gold_rows),
             "seconds": round(elapsed, 2),
             "gen_tokens": len(entropies),
             "mean_entropy": round(float(np.mean(entropies)), 4) if entropies else None,
             "max_entropy": round(float(np.max(entropies)), 4) if entropies else None,
         })
-        status = "✓" if ex else f"✗ {bucket}"
+        status = "✓" if ex is True else f"{'–' if ex is None else '✗'} {bucket}"
         print(f"[{item['id']}] {status} ({elapsed:.1f}s)", flush=True)
 
     n = len(results)
-    ex_n = sum(r["ex"] for r in results)
-    valid_n = sum(r["error"] is None for r in results)
+    scored = [r for r in results if r["ex"] is not None]
+    fallback_scored = [r for r in results if r["fallback_ex"] is not None]
+    ex_n = sum(r["ex"] is True for r in scored)
+    valid_n = sum(r["valid_sql"] for r in results)
     buckets: dict[str, int] = {}
     for r in results:
-        if not r["ex"]:
+        if r["ex"] is False:
             buckets[r["bucket"]] = buckets.get(r["bucket"], 0) + 1
     by_tier = {}
     for tier in sorted({r["tier"] for r in results}):
-        tier_rs = [r for r in results if r["tier"] == tier]
-        by_tier[str(tier)] = round(sum(r["ex"] for r in tier_rs) / len(tier_rs), 3)
+        tier_rs = [r for r in scored if r["tier"] == tier]
+        by_tier[str(tier)] = (
+            round(sum(r["ex"] is True for r in tier_rs) / len(tier_rs), 3)
+            if tier_rs else None
+        )
     summary = {
         "label": args.label, "model": args.model, "gcd": args.gcd,
-        "gold": args.gold.name, "n": n,
-        "ex": round(ex_n / n, 3), "valid_sql_rate": round(valid_n / n, 3),
+        "gold": args.gold.name, "n": n, "scored_n": len(scored),
+        "unscorable_n": n - len(scored),
+        "fallback_sql_n": sum(r["sql_role"] == "best_guess_fallback" for r in results),
+        "fallback_sql_scored_n": len(fallback_scored),
+        "fallback_sql_ex": (
+            round(sum(r["fallback_ex"] is True for r in fallback_scored)
+                  / len(fallback_scored), 3)
+            if fallback_scored else None
+        ),
+        "ex": round(ex_n / len(scored), 3) if scored else None,
+        "valid_sql_rate": round(valid_n / n, 3),
         "ex_by_tier": by_tier, "failure_buckets": buckets,
         "mean_seconds": round(float(np.mean([r["seconds"] for r in results])), 2),
-        "mean_entropy_correct": round(float(np.mean(
-            [r["mean_entropy"] for r in results if r["ex"] and r["mean_entropy"]] or [0])), 4),
-        "mean_entropy_wrong": round(float(np.mean(
-            [r["mean_entropy"] for r in results if not r["ex"] and r["mean_entropy"]] or [0])), 4),
+        "mean_entropy_correct": rounded_mean(
+            [r["mean_entropy"] for r in results
+             if r["ex"] is True and r["mean_entropy"] is not None], 4),
+        "mean_entropy_wrong": rounded_mean(
+            [r["mean_entropy"] for r in results
+             if r["ex"] is False and r["mean_entropy"] is not None], 4),
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / f"{args.label}.jsonl").write_text(

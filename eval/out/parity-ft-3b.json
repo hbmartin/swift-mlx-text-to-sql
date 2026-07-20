@@ -458,10 +458,13 @@
     },
     {
       "error" : null,
-      "ex" : true,
+      "ex" : null,
+      "expected_gate_action" : "clarify",
+      "fallback_ex" : true,
       "id" : "A-58",
       "predicted_sql" : "SELECT SUM(current_market_value) FROM properties WHERE market = 'New York' AND status != 'Sold'",
       "seconds" : 16,
+      "sql_role" : "best_guess_fallback",
       "tier" : 2
     },
     {
@@ -482,10 +485,13 @@
     }
   ],
   "summary" : {
-    "ex" : 0.40000000000000002,
+    "ex" : 0.3898305084745763,
+    "fallback_sql_ex" : 1.0,
+    "fallback_sql_n" : 1,
     "model" : "..\/models\/creg-sql-3b-ft",
     "n" : 60,
     "runtime" : "swift-mlx",
+    "scored_n" : 59,
     "valid_sql_rate" : 0.80000000000000004
   }
 }

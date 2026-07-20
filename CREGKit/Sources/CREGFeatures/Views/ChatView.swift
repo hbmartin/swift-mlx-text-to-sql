@@ -49,7 +49,8 @@ public struct ChatView: View {
         Button {
           store.isSettingsPresented = true
         } label: {
-          Image(systemName: "gearshape")
+          Label("Settings", systemImage: "gearshape")
+            .labelStyle(.iconOnly)
         }
       }
     }
@@ -82,7 +83,8 @@ public struct ChatView: View {
       Button {
         store.send(.sendTapped)
       } label: {
-        Image(systemName: "arrow.up.circle.fill")
+        Label("Send message", systemImage: "arrow.up.circle.fill")
+          .labelStyle(.iconOnly)
           .font(.title2)
       }
       .disabled(
@@ -176,6 +178,9 @@ struct DevFooterView: View {
         .font(.caption.monospaced())
         .textSelection(.enabled)
       if let devInfo {
+        if let modelName = devInfo.modelName {
+          Text("model: \(modelName)")
+        }
         if let standalone = devInfo.standaloneQuestion {
           Text("standalone: \(standalone)")
         }

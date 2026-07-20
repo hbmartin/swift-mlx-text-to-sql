@@ -9,14 +9,23 @@ Methodology and results for every eval stage. Configs are cells of the PRD
 - **Metric:** Execution Accuracy (EX) — order-insensitive multiset equality
   of result sets, reals rounded to 4dp (`fine-tuning/eval/ex.py`). Secondary:
   valid-SQL rate (executes without error), mean seconds/item, EX by tier.
+  Queries returning more than 10,000 rows are explicitly unscorable and
+  excluded from the EX denominator rather than compared as truncated prefixes.
+  The clarification-gated item is likewise excluded from primary SQL EX;
+  its annotated best-guess query is retained and reported separately as
+  `fallback_sql_ex`.
 - **Prompt:** byte-identical to the app's runtime prompt (compact schema
   serialization with enumerated low-cardinality values + canonical-semantics
-  rules + fixed today of 2026-07-01). Greedy decoding, max 512 tokens.
+  rules + fixed today of 2026-07-01). Greedy decoding with a 1.1 repetition
+  penalty over the previous 64 tokens, max 512 tokens. Generations that reach
+  the cap are classified as `generation-truncated` and are not executed.
 - **GCD:** `on` = xgrammar token-bitmask logits processor over the same
   `sql_grammar.ebnf` the app uses; `off` = unconstrained + SQL extraction
   (fence stripping, first statement). Both paths strip leaked chat-template
   special tokens before execution (a 1.5B tokenizer leaked `<|im_end|>`
-  into decoded text, zeroing its first run — fixed harness-side).
+  into decoded text, zeroing its first run — fixed harness-side). Boolean
+  predicate chains are bounded in the grammar to prevent unproductive
+  repeated-clause loops.
 - **Entropy logging:** per-token pre-mask softmax entropy recorded per item
   (mean/max), correct-vs-wrong aggregates in each summary — the empirical
   input for the layer-D gating threshold.

@@ -36,7 +36,8 @@ list changed versus pre-Holdover data. Verified consistent, kept.
 Tiers: 20 × T1 (single-table), 30 × T2 (joins/aggregates/dates),
 10 × T3 (windows/CTEs/nesting), including 2 fuzzy-entity items (misspelled
 "Kingsly Tower", partial "Yates Medical"), 1 tagged-ambiguous item with a
-best-guess gold ("exposure in New York"), and 2 multi-turn items carrying
+separately annotated expected gate action and best-guess SQL fallback
+("exposure in New York"), and 2 multi-turn items carrying
 `history` + a `standalone` rewrite (the harness evaluates the standalone
 form; the rewrite itself is the FM's job).
 
@@ -75,10 +76,12 @@ and every instantiation is execution-validated.
 
 `synth/generate_training.py`, **seed 424242** (deliberately different from
 the gold seed so entity samples differ). ~45 template families ×
-paraphrase rotation × entity/timeframe combinatorics → 2,006 raw
+paraphrase rotation × entity/timeframe combinatorics → 1,441 raw
 candidates → **1,424 kept** (357 T1 / 1,003 T2 / 64 T3), split 1,353 train /
-71 valid. The tier-2 weighting is intentional: the stage-1 eval shows base
-models fail overwhelmingly on tier-2 canonical semantics.
+71 valid. The configured target is 3,000, so the generator records the
+1,559-item raw shortfall and warns rather than implying that filtering caused
+the smaller dataset. The tier-2 weighting is intentional: the stage-1 eval
+shows base models fail overwhelmingly on tier-2 canonical semantics.
 
 Quality gate per candidate (stats logged to `synth/out/gate_stats.json`):
 
@@ -92,9 +95,9 @@ Quality gate per candidate (stats logged to `synth/out/gate_stats.json`):
 5. batch-level dedup
 
 Format: chat JSONL whose system prompt is byte-identical to the app's
-runtime prompt (schema serialization + canonical rules + today's date), so
-the model trains on exactly the distribution it will see. Assistant turn is
-the bare SQL.
+runtime prompt (schema serialization + canonical rules + the fixed AS_OF date,
+2026-07-01), so the model trains on exactly the distribution it will see.
+Assistant turn is the bare SQL.
 
 Deliberate exclusions, per the runtime architecture: no multi-turn examples
 (the FM rewrites follow-ups into standalone questions before the SQL model
@@ -102,7 +105,7 @@ ever sees them) and no clarification behavior (that's the FM ambiguity
 gate). EXISTS-based SQL is avoided in favor of `NOT IN (SELECT …)` because
 the frozen grammar does not include EXISTS.
 
-Leakage accounting: 2 of 2,006 raw candidates collided with gold questions
+Leakage accounting: 3 of 1,441 raw candidates collided with gold questions
 and were dropped by the gate; the exact-match dedup plus seed separation is
 the leakage control for this round. Family *shapes* intentionally overlap
 with gold — teaching the schema's canonical query shapes is the entire

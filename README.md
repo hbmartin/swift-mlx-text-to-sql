@@ -25,7 +25,7 @@ surprise a future reader are recorded in [`docs/adr/`](./docs/adr/).
 | M6 | Fine-tune loop closed: synthetic data → QLoRA → eval → **bundled** | ✅ done |
 
 **v1 is complete.** The fine-tuned model (Qwen2.5-Coder-3B + in-domain
-QLoRA) scored **EX 0.665** on the 200-item gold set vs 0.225 for the best
+QLoRA) scored **EX 0.663** on the 199 SQL-scored gold items vs 0.226 for the best
 off-the-shelf configuration and ships in the app bundle as `SQLModel` —
 the app is fully offline. The whole record: [`docs/final-report.md`](./docs/final-report.md)
 (selection: [`docs/model-selection.md`](./docs/model-selection.md), evals:
@@ -43,7 +43,7 @@ models are involved — Apple's on-device Foundation Model (FM) for
 conversational glue and the bundled MLX SQL specialist for constrained
 generation — and they never run concurrently:
 
-```
+```text
 user message
   → FM: follow-up rewrite (decontextualize into a standalone question)
   → FM: ambiguity gate (dial parked at "always pass through" in v1)
@@ -62,7 +62,7 @@ one stream, two consumers, built as data rather than display strings.
 
 ### Code layout
 
-```
+```text
 CREG.xcodeproj            Xcode project (single app target, iOS 26)
 CREG/                     App shell: entry point + assets (no logic)
 CREGKit/                  Local SPM package
@@ -80,7 +80,7 @@ CREGKit/                  Local SPM package
     ChatMessage.swift       Transcript model + event→trace-line mapping
     HistoryClient.swift     history.sqlite persistence + JSONL export
     Views/                  Chat, result table, trace, settings, root
-  Tests/CREGKitTests/     11 tests: authorizer, serializer, pipeline, feature, grammar
+  Tests/CREGKitTests/     18 tests: authorizer, serializer, pipeline, feature, grammar
 db/
   schema.sql              FROZEN seven-table DDL (input to grammar + training)
   creg.sqlite             Generated portfolio database (committed, regenerable)
@@ -89,7 +89,7 @@ fine-tuning/              uv Python project (never bare python/pip)
   tools/generate_grammar.py  schema+data → EBNF grammar + schema prompt
   tools/fetch_model.py    Download model weights into models/ (gitignored)
   eval/ex.py              Execution-accuracy scoring core (M3)
-  tests/                  12 data-invariant tests + 6 EX tests
+  tests/                  28 invariant, EX, grammar, and harness tests
 docs/adr/                 0001 schema semantics, 0002 MLX-over-CoreML, 0003 hybrid harness
 ```
 
@@ -160,15 +160,16 @@ or later) on iOS 26, [`uv`](https://docs.astral.sh/uv/). MLX does not run in
 the iOS simulator and FoundationModels needs an Apple Intelligence device, so
 the dev loop is on-device.
 
-**App:** open `CREG.xcodeproj`, set your signing team (bundle id is a
-placeholder `dev.haroldmartin.CREG`), build to the device. On first launch
-the SQL model (`mlx-community/Qwen2.5-Coder-3B-Instruct-4bit`, the skeleton
-placeholder — the harness re-decides later) downloads from Hugging Face
-(~1.7 GB, one-time, needs network). For a fully offline build:
-`uv run python tools/fetch_model.py`, then add the downloaded folder to the
-CREG target as a folder reference named `SQLModel` — the app prefers it over
-the network path. If the FM is unavailable on device, the pipeline degrades
-gracefully: no rewrite/gate, templated narration.
+**App:** the release path bundles the fine-tuned `models/SQLModel` directory
+in the CREG target as a folder reference named `SQLModel`; the app loads that
+directory without network access. Open `CREG.xcodeproj`, set your signing team
+(bundle id is a placeholder `dev.haroldmartin.CREG`), and build to the device.
+If you are developing without the release bundle, `uv run python
+tools/fetch_model.py` fetches the pinned Qwen base into `models/`; add that
+downloaded directory to the target as `SQLModel`. Only when no bundled
+`SQLModel` exists does the walking-skeleton fallback resolve the base model
+from the Hugging Face cache or network. If the FM is unavailable on device,
+the pipeline degrades gracefully: no rewrite/gate, templated narration.
 
 Smoke test on device: "Which properties have the highest vacancy?",
 "What's my rent roll by property type?", "Which leases expire in the next
@@ -193,7 +194,13 @@ xcodebuild -project CREG.xcodeproj -scheme CREG -destination 'generic/platform=i
   -skipPackagePluginValidation -skipMacroValidation CODE_SIGNING_ALLOWED=NO build
 ```
 
-## Next steps
+The Swift and Python test commands also run in the shared GitHub Actions
+workflow on pushes and pull requests.
+
+## Historical implementation plan (completed)
+
+The following M3–M6 sequence records how v1 was delivered; it is retained as
+implementation history rather than a list of outstanding work.
 
 **M3 — Gold set stage 1 + Python harness.** Draft ~60
 (question → gold SQL → gold result) triples covering all seven tables and

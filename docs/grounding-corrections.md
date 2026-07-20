@@ -10,7 +10,8 @@ The grammar (`sql_grammar.ebnf`, generated from the live DB by
 SELECT-only; FROM/JOIN targets restricted to the seven real tables plus
 CTE names locked to `cte`/`cte0`–`cte9` (so a hallucinated table can never
 be a row source); qualified column references restricted to real columns;
-no PRAGMA/ATTACH/multi-statement.
+SQLite-valid aggregate arities enforced; boolean predicate chains bounded
+to prevent degenerate decoding loops; no PRAGMA/ATTACH/multi-statement.
 
 Two deliberate openings, with rationale:
 

@@ -32,12 +32,16 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+AS_OF_DATE_PATH = (
+    REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "as_of_date.txt"
+)
+
 SEED = 20260719
-AS_OF = date(2026, 7, 1)          # "today" for all status/current-value logic
+AS_OF = date.fromisoformat(AS_OF_DATE_PATH.read_text().strip())
 WINDOW_START = date(2023, 7, 1)   # first financials month
 WINDOW_MONTHS = 36                # through 2026-06
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCHEMA = REPO_ROOT / "db" / "schema.sql"
 DEFAULT_OUT = REPO_ROOT / "db" / "creg.sqlite"
 

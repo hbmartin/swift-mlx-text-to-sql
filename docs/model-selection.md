@@ -19,14 +19,14 @@ All ≤4B, 4-bit, run locally from `models/` (downloads confined to the repo):
 
 | config | EX | valid SQL | T1 | T2 | T3 | s/item | top failure buckets |
 |---|---|---|---|---|---|---|---|
-| q25c-3b-gcdon | **0.350** | 0.850 | 0.70 | 0.17 | 0.20 | 5.3 | wrong-filter-or-value 9, execution-error 9, wrong-projection 7 |
-| q25c-3b-gcdoff | 0.333 | 0.783 | 0.70 | 0.13 | 0.20 | 2.7 | execution-error 13, wrong-filter-or-value 10 |
-| xiyan-3b-gcdoff | 0.317 | 0.867 | 0.65 | 0.20 | 0.00 | 3.9 | wrong-filter-or-value 15, execution-error 8 |
-| xiyan-3b-gcdon | 0.267 | 0.800 | 0.60 | 0.13 | 0.00 | 4.8 | wrong-filter-or-value 14, execution-error 12 |
-| q25c-15b-gcdoff | 0.233 | 0.717 | 0.60 | 0.07 | 0.00 | 1.1 | execution-error 17 |
-| q3-17b-gcdoff | 0.200 | 0.750 | 0.45 | 0.10 | 0.00 | 2.0 | execution-error 15 |
-| q25c-15b-gcdon | 0.200 | 0.533 | 0.55 | 0.03 | 0.00 | 3.2 | execution-error 28 (degenerate `TOTAL(` loops) |
-| q3-17b-gcdon | 0.183 | 0.733 | 0.45 | 0.07 | 0.00 | 6.6 | execution-error 16 |
+| q25c-3b-gcdon | **0.356** | 0.850 | 0.70 | 0.17 | 0.20 | 5.3 | wrong-filter-or-value 9, execution-error 9, wrong-projection 7 |
+| q25c-3b-gcdoff | 0.339 | 0.783 | 0.70 | 0.14 | 0.20 | 2.7 | execution-error 13, wrong-filter-or-value 10 |
+| xiyan-3b-gcdoff | 0.322 | 0.867 | 0.65 | 0.21 | 0.00 | 3.9 | wrong-filter-or-value 12, wrong-projection 8 |
+| xiyan-3b-gcdon | 0.271 | 0.800 | 0.60 | 0.14 | 0.00 | 4.8 | wrong-filter-or-value 12, execution-error 12 |
+| q25c-15b-gcdoff | 0.237 | 0.717 | 0.60 | 0.07 | 0.00 | 1.1 | execution-error 16 |
+| q3-17b-gcdoff | 0.203 | 0.750 | 0.45 | 0.10 | 0.00 | 2.0 | execution-error 15 |
+| q25c-15b-gcdon | 0.203 | 0.533 | 0.55 | 0.03 | 0.00 | 3.2 | execution-error 27 (degenerate `TOTAL(` loops) |
+| q3-17b-gcdon | 0.186 | 0.733 | 0.45 | 0.07 | 0.00 | 6.6 | execution-error 16 |
 
 ### Stage-1 readings
 
@@ -61,24 +61,24 @@ converged to train loss 0.001 / val loss 0.008.
 
 | config | EX | valid SQL | T1 | T2 | T3 | s/item | entropy corr/wrong |
 |---|---|---|---|---|---|---|---|
-| **ft-3b gcd-on** | **0.665** | 0.930 | 0.714 | 0.699 | 0.278 | 2.9 | 0.017 / 0.066 |
-| ft-3b gcd-off | 0.665 | 0.925 | 0.714 | 0.699 | 0.278 | 2.9 | — |
-| base gcd-off | 0.225 | 0.760 | — | — | — | 3.1 | — |
-| base gcd-on | 0.155 | 0.675 | 0.286 | 0.113 | 0.111 | 6.3 | 0.311 / 0.408 |
+| **ft-3b gcd-on** | **0.663** | 0.930 | 0.714 | 0.697 | 0.278 | 2.9 | 0.017 / 0.066 |
+| ft-3b gcd-off | 0.663 | 0.925 | 0.714 | 0.697 | 0.278 | 1.8 | — |
+| base gcd-off | 0.226 | 0.760 | 0.388 | 0.182 | 0.111 | 2.9 | — |
+| base gcd-on | 0.156 | 0.675 | 0.286 | 0.114 | 0.111 | 6.3 | 0.311 / 0.408 |
 
 ### Stage-2 readings
 
-1. **The fine-tune wins decisively: 0.665 vs 0.225 (+44 EX points, ~3×).**
-   Tier-2 (canonical semantics) went 0.11 → 0.70. The PRD's "single biggest
+1. **The fine-tune wins decisively: 0.663 vs 0.226 (+44 EX points, ~3×).**
+   Tier-2 (canonical semantics) went 0.18 → 0.70. The PRD's "single biggest
    accuracy lever" claim is confirmed on this schema.
-2. **gold_v2 is harder for base models than gold_v1** (0.155 vs 0.350
+2. **gold_v2 is harder for base models than gold_v1** (0.156 vs 0.356
    gcd-on): the 140 generated items concentrate per-entity
    canonical-semantics questions — the app's actual distribution.
 3. **GCD is free for the fine-tuned model** (identical EX on/off). The
    model internalized the grammar, so constrained decoding costs nothing
    and keeps its structural guarantees (SELECT-only, no hallucinated
    tables). Ship with GCD on. For *base* models on the harder set, GCD
-   *reduced* EX (0.155 vs 0.225) — constraint pressure hurts weak models.
+   *reduced* EX (0.156 vs 0.226) — constraint pressure hurts weak models.
 4. **Entropy now works as an uncertainty signal** for the FT model
    (0.017 correct vs 0.066 wrong, 4× separation; base: 0.31/0.41). A
    layer-D threshold near mean entropy ≈ 0.03 is the empirically motivated
@@ -101,8 +101,8 @@ recorded in the final report.
 
 **Bundled: the CREG fine-tune (Qwen2.5-Coder-3B-Instruct-4bit + in-domain
 QLoRA, fused, GCD on), shipped as `models/SQLModel`.** It beats the best
-off-the-shelf configuration 0.665 vs 0.225 on gold_v2 and is ≥ base on
-every slice (hand-written 0.383 vs 0.350; generated 0.786 vs 0.071), so
-plan decision 13's condition is met. Parity: Swift production stack agrees
-with the Python harness on 59/60 items (0.400 vs 0.383). Full narrative
+off-the-shelf configuration 0.663 vs 0.226 on gold_v2 and is ≥ base on
+every slice (hand-written 0.373 vs 0.356; generated 0.786 vs 0.071), so
+plan decision 13's condition is met. The clarification-gated item is reported
+separately as fallback SQL and excluded from primary EX. Full narrative
 and next-iteration priorities: `docs/final-report.md`.

@@ -35,8 +35,8 @@ acceptance, flags needing judge attention, first result row.
 | T2-28 | 2 | 3 | ok | ok | ('Hawthorne District',) |
 | T2-29 | 2 | 7 | ok | ok | ('Hospitality', 0.9501) |
 | T2-30 | 2 | 1 | ok | ok | (131653832.6,) |
-| T2-31 | 2 | 20 | ok | ok | ('Atlanta County Health Services Office', 'Lexington Industr |
-| T2-32 | 2 | 17 | ok | ok | ('Petrov Trading Company', 'Juniper Logistics Center', '2026 |
+| T2-31 | 2 | 20 | ok | ok | ('Atlanta County Health Services Office', 'Lexington Industrial Park') |
+| T2-32 | 2 | 17 | ok | ok | ('Petrov Trading Company', 'Juniper Logistics Center', '2026-08-31') |
 | T2-33 | 2 | 46 | ok | ok | ('Prescott Distribution Park', 0.474) |
 | T2-34 | 2 | 4 | ok | ok | ('CREG Core Income Fund', 3170335000.0) |
 | T2-35 | 2 | 2 | ok | ok | ('The Willow Residences',) |

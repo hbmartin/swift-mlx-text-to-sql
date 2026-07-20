@@ -17,6 +17,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
 
   /// Per-message internals surfaced by developer mode (PRD §11).
   public struct DevInfo: Equatable, Sendable, Codable {
+    public var modelName: String?
     public var standaloneQuestion: String?
     public var tokensPerSecond: Double?
     public var executionMilliseconds: Double?

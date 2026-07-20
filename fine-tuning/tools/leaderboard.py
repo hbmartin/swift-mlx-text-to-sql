@@ -24,7 +24,9 @@ def main() -> None:
     summaries.sort(key=lambda s: (-s["ex"], s["mean_seconds"]))
 
     lines = [
-        "| config | gold | n | EX | valid SQL | T1 | T2 | T3 | s/item | top failure buckets |",
+        "# Evaluation leaderboard",
+        "",
+        "| config | gold | SQL scored / total | EX | valid SQL | T1 | T2 | T3 | s/item | top failure buckets |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in summaries:
@@ -32,7 +34,8 @@ def main() -> None:
         buckets = sorted(s.get("failure_buckets", {}).items(), key=lambda kv: -kv[1])[:3]
         bucket_str = ", ".join(f"{k}:{v}" for k, v in buckets) or "—"
         lines.append(
-            f"| {s['label']} | {s['gold']} | {s['n']} | **{s['ex']:.3f}** "
+            f"| {s['label']} | {s['gold']} "
+            f"| {s.get('scored_n', s['n'])}/{s['n']} | **{s['ex']:.3f}** "
             f"| {s['valid_sql_rate']:.3f} | {tiers.get('1', '—')} | {tiers.get('2', '—')} "
             f"| {tiers.get('3', '—')} | {s['mean_seconds']} | {bucket_str} |"
         )

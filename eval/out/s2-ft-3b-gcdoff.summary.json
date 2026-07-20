@@ -4,11 +4,11 @@
   "gcd": "off",
   "gold": "gold_v2.jsonl",
   "n": 200,
-  "ex": 0.665,
+  "ex": 0.663,
   "valid_sql_rate": 0.925,
   "ex_by_tier": {
     "1": 0.714,
-    "2": 0.699,
+    "2": 0.697,
     "3": 0.278
   },
   "failure_buckets": {
@@ -20,6 +20,11 @@
     "wrong-aggregation": 1
   },
   "mean_seconds": 1.82,
-  "mean_entropy_correct": 0.016,
-  "mean_entropy_wrong": 0.066
+  "mean_entropy_correct": 0.0159,
+  "mean_entropy_wrong": 0.066,
+  "scored_n": 199,
+  "unscorable_n": 1,
+  "fallback_sql_n": 1,
+  "fallback_sql_scored_n": 1,
+  "fallback_sql_ex": 1.0
 }

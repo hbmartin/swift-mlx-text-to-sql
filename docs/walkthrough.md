@@ -112,8 +112,8 @@ Four candidate models, all 4-bit, GCD on and off, 60 questions
 
 | candidate | best EX |
 |---|---|
-| Qwen2.5-Coder-3B (general coding model) | **0.350** |
-| XiYanSQL-3B (*specifically fine-tuned for text-to-SQL*) | 0.317 |
+| Qwen2.5-Coder-3B (general coding model) | **0.356** |
+| XiYanSQL-3B (*specifically fine-tuned for text-to-SQL*) | 0.322 |
 | Qwen2.5-Coder-1.5B / Qwen3-1.7B | 0.18–0.23 |
 
 The SQL-specialist losing is a great lesson: it learned *other databases'*
@@ -130,8 +130,8 @@ entities, gated each one (must execute, must be grammar-legal, must not
 appear in the gold set — never train on your exam), trained, and
 re-evaluated on a harder 200-question gold set:
 
-**Base model: 0.225. Fine-tuned: 0.665.** Tier-2 (the semantics-heavy
-questions) went from 0.11 to 0.70.
+**Base model: 0.226. Fine-tuned: 0.663.** Tier-2 (the semantics-heavy
+questions) went from 0.18 to 0.70.
 
 Now the part to absorb most carefully. Splitting that 200 into the 140
 template-generated questions and the 60 hand-written ones:
@@ -139,7 +139,7 @@ template-generated questions and the 60 hand-written ones:
 | slice | base | fine-tuned |
 |---|---|---|
 | template-family questions (140) | 0.071 | **0.786** |
-| novel hand-written phrasings (60) | 0.350 | 0.383 |
+| novel hand-written SQL-scored phrasings (59) | 0.356 | 0.373 |
 
 The model *mastered the semantics as expressed by the templates* and
 generalized weakly beyond them. Training loss had dropped to 0.001 — that
@@ -187,7 +187,7 @@ None of this is in any textbook; all of it is half the work.
 ## Where it landed
 
 A fully offline iPhone app — 1.7 GB with model and database bundled — that
-answers portfolio questions at 0.665 EX single-shot *before* the correction
+answers portfolio questions at 0.663 EX single-shot *before* the correction
 layers add their lift at runtime, with a Swift-vs-Python parity check
 agreeing on 59/60 items (always verify your lab harness matches production
 — ours did, but "surely it's the same" is not evidence).

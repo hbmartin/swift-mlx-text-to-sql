@@ -4,22 +4,27 @@
   "gcd": "off",
   "gold": "gold_v1.jsonl",
   "n": 60,
-  "ex": 0.317,
+  "ex": 0.322,
   "valid_sql_rate": 0.867,
   "ex_by_tier": {
     "1": 0.65,
-    "2": 0.2,
+    "2": 0.207,
     "3": 0.0
   },
   "failure_buckets": {
-    "wrong-projection": 5,
-    "wrong-filter-or-value": 15,
+    "wrong-projection": 8,
+    "wrong-filter-or-value": 12,
     "execution-error": 8,
     "empty-when-expected": 3,
     "wrong-aggregation": 6,
-    "wrong-table-or-join": 4
+    "wrong-table-or-join": 3
   },
   "mean_seconds": 3.94,
   "mean_entropy_correct": 0.1985,
-  "mean_entropy_wrong": 0.2588
+  "mean_entropy_wrong": 0.2537,
+  "scored_n": 59,
+  "unscorable_n": 1,
+  "fallback_sql_n": 1,
+  "fallback_sql_scored_n": 1,
+  "fallback_sql_ex": 0.0
 }

@@ -12,8 +12,8 @@ public enum PipelineEvent: Sendable, Equatable, Codable {
   case rewriteFinished(standaloneQuestion: String, usedFM: Bool)
   case gateStarted
   case gateFinished(GateDecision)
-  case generationStarted(modelName: String)
-  case generationFinished(sql: String, tokensPerSecond: Double)
+  case generationStarted
+  case generationFinished(sql: String, tokensPerSecond: Double, modelName: String)
   case executionStarted(sql: String)
   case executionFinished(rowCount: Int, elapsedMilliseconds: Double)
   case executionFailed(message: String, attempt: Int)

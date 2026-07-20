@@ -67,15 +67,16 @@ extension FMClient {
         return rewritten.isEmpty ? question : rewritten
       },
       gate: { question, sensitivity in
-        // Sensitivity 0 parks the gate at "always pass through" (v1 default).
-        guard sensitivity > 0 else { return .proceed }
+        // Below 0.5 the probe verdict cannot trigger clarification, so avoid
+        // spending an FM inference on a decision that will be discarded.
+        guard sensitivity >= 0.5 else { return .proceed }
         let session = LanguageModelSession(instructions: """
           You judge whether a question about a commercial real estate portfolio database \
           is answerable as-is. Prefer answering with a best guess; only flag questions \
           that are genuinely ambiguous, where a wrong guess would mislead.
           """)
         let probe = try await session.respond(to: question, generating: GateProbe.self).content
-        if probe.needsClarification, !probe.clarifyingQuestion.isEmpty, sensitivity >= 0.5 {
+        if probe.needsClarification, !probe.clarifyingQuestion.isEmpty {
           return .clarify(question: probe.clarifyingQuestion)
         }
         return .proceed

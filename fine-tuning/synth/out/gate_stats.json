@@ -1,5 +1,7 @@
 {
+  "target": 3000,
   "raw": 1441,
+  "raw_shortfall": 1559,
   "gold_dup": 3,
   "batch_dup": 0,
   "exec_error": 0,

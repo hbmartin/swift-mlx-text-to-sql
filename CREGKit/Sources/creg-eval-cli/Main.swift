@@ -15,6 +15,14 @@ struct EvalCLI {
     let question: String
     let standalone: String?
     let sql: String
+    let expectedGateAction: String?
+    let sqlRole: String?
+
+    enum CodingKeys: String, CodingKey {
+      case id, tier, question, standalone, sql
+      case expectedGateAction = "expected_gate_action"
+      case sqlRole = "sql_role"
+    }
   }
 
   static func argument(_ name: String) -> String? {
@@ -38,13 +46,20 @@ struct EvalCLI {
       let items = try goldText.split(separator: "\n")
         .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         .map { try JSONDecoder().decode(GoldItem.self, from: Data($0.utf8)) }
+      guard !items.isEmpty else {
+        print("creg-eval-cli: gold set is empty at \(goldPath)")
+        exit(2)
+      }
 
       let db = try DatabaseClient.live(url: URL(fileURLWithPath: dbPath), rowCap: 10_000)
       let sqlGen = SQLGenClient.live(directory: URL(fileURLWithPath: modelPath))
 
       var results: [[String: Any]] = []
       var correct = 0
+      var scored = 0
       var valid = 0
+      var fallbackCorrect = 0
+      var fallbackScored = 0
       for item in items {
         let question = item.standalone ?? item.question
         let start = ContinuousClock.now
@@ -65,21 +80,50 @@ struct EvalCLI {
         } catch {
           errorMessage = "generation: \(error)"
         }
-        if ex { correct += 1 }
-        let seconds = Double(start.duration(to: .now).components.seconds)
+        let isFallbackSQL = item.sqlRole == "best_guess_fallback"
+        if isFallbackSQL {
+          fallbackScored += 1
+          if ex { fallbackCorrect += 1 }
+        } else {
+          scored += 1
+          if ex { correct += 1 }
+        }
+        let duration = start.duration(to: .now).components
+        let seconds =
+          Double(duration.seconds) + Double(duration.attoseconds) / 1_000_000_000_000_000_000
+        let reportedEX: Any = isFallbackSQL ? NSNull() : ex
+        let fallbackEX: Any = isFallbackSQL ? ex : NSNull()
         results.append([
-          "id": item.id, "tier": item.tier, "ex": ex,
+          "id": item.id, "tier": item.tier, "ex": reportedEX,
+          "expected_gate_action": item.expectedGateAction ?? NSNull(),
+          "sql_role": item.sqlRole ?? "primary", "fallback_ex": fallbackEX,
           "predicted_sql": predictedSQL, "error": errorMessage ?? NSNull(),
           "seconds": seconds,
         ])
-        print("[\(item.id)] \(ex ? "✓" : "✗")\(errorMessage.map { " (\($0.prefix(60)))" } ?? "")")
+        let status = isFallbackSQL ? "– fallback SQL" : (ex ? "✓" : "✗")
+        print("[\(item.id)] \(status)\(errorMessage.map { " (\($0.prefix(60)))" } ?? "")")
       }
 
+      let primaryEX: Any
+      if scored > 0 {
+        primaryEX = Double(correct) / Double(scored)
+      } else {
+        primaryEX = NSNull()
+      }
+      let fallbackSQLEx: Any
+      if fallbackScored > 0 {
+        fallbackSQLEx = Double(fallbackCorrect) / Double(fallbackScored)
+      } else {
+        fallbackSQLEx = NSNull()
+      }
       let summary: [String: Any] = [
         "runtime": "swift-mlx",
         "model": modelPath,
         "n": items.count,
-        "ex": Double(correct) / Double(items.count),
+        "scored_n": scored,
+        "fallback_sql_n": fallbackScored,
+        "fallback_sql_ex": fallbackSQLEx,
+        "ex": primaryEX,
         "valid_sql_rate": Double(valid) / Double(items.count),
       ]
       let payload: [String: Any] = ["summary": summary, "results": results]
