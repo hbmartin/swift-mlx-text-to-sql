@@ -1,0 +1,18 @@
+{
+  "label": "smoke",
+  "model": "../models/Qwen2.5-Coder-3B-Instruct-4bit",
+  "gcd": "on",
+  "gold": "gold_v1.jsonl",
+  "n": 3,
+  "ex": 0.667,
+  "valid_sql_rate": 1.0,
+  "ex_by_tier": {
+    "1": 0.667
+  },
+  "failure_buckets": {
+    "wrong-projection": 1
+  },
+  "mean_seconds": 3.66,
+  "mean_entropy_correct": 0.192,
+  "mean_entropy_wrong": 0.1353
+}

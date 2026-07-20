@@ -89,7 +89,24 @@ public struct SQLGeneration: Sendable, Equatable {
 
 /// How a pipeline turn ended.
 public enum TurnOutcome: Sendable, Equatable, Codable {
-  case answered(result: QueryResult, narration: String, sql: String)
+  /// `notice` carries a correction-layer heads-up (fuzzy-literal suggestion,
+  /// empty-result warning) shown alongside the answer.
+  case answered(result: QueryResult, narration: String, sql: String, notice: String?)
   case needsClarification(question: String)
   case failed(message: String)
+}
+
+/// One candidate in a self-consistency vote (correction layer C).
+public struct ConsistencyCandidate: Sendable, Equatable, Codable {
+  public var sql: String
+  public var rowCount: Int?
+  public var error: String?
+  public var agreedWithWinner: Bool
+
+  public init(sql: String, rowCount: Int?, error: String?, agreedWithWinner: Bool) {
+    self.sql = sql
+    self.rowCount = rowCount
+    self.error = error
+    self.agreedWithWinner = agreedWithWinner
+  }
 }

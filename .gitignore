@@ -19,3 +19,6 @@ __pycache__/
 
 # Model weights (fetched by script, never committed)
 /models/
+
+# Profiling artifacts
+*.profraw

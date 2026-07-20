@@ -1,0 +1,25 @@
+{
+  "label": "q3-17b-gcdon",
+  "model": "../models/Qwen3-1.7B-4bit",
+  "gcd": "on",
+  "gold": "gold_v1.jsonl",
+  "n": 60,
+  "ex": 0.183,
+  "valid_sql_rate": 0.733,
+  "ex_by_tier": {
+    "1": 0.45,
+    "2": 0.067,
+    "3": 0.0
+  },
+  "failure_buckets": {
+    "execution-error": 16,
+    "wrong-filter-or-value": 11,
+    "wrong-projection": 6,
+    "empty-when-expected": 8,
+    "wrong-aggregation": 3,
+    "wrong-table-or-join": 5
+  },
+  "mean_seconds": 6.55,
+  "mean_entropy_correct": 0.0456,
+  "mean_entropy_wrong": 0.0653
+}

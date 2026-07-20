@@ -1,0 +1,25 @@
+{
+  "label": "xiyan-3b-gcdoff",
+  "model": "../models/XiYanSQL-QwenCoder-3B-2502-4bit",
+  "gcd": "off",
+  "gold": "gold_v1.jsonl",
+  "n": 60,
+  "ex": 0.317,
+  "valid_sql_rate": 0.867,
+  "ex_by_tier": {
+    "1": 0.65,
+    "2": 0.2,
+    "3": 0.0
+  },
+  "failure_buckets": {
+    "wrong-projection": 5,
+    "wrong-filter-or-value": 15,
+    "execution-error": 8,
+    "empty-when-expected": 3,
+    "wrong-aggregation": 6,
+    "wrong-table-or-join": 4
+  },
+  "mean_seconds": 3.94,
+  "mean_entropy_correct": 0.1985,
+  "mean_entropy_wrong": 0.2588
+}

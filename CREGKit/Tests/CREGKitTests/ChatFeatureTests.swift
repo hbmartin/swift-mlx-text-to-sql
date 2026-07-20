@@ -22,7 +22,8 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
         continuation.yield(.narrationStarted)
         continuation.yield(.narrationFinished(narration: "One property found.", usedFM: false))
         continuation.yield(.turnFinished(.answered(
-          result: answer, narration: "One property found.", sql: "SELECT name FROM properties")))
+          result: answer, narration: "One property found.", sql: "SELECT name FROM properties",
+          notice: nil)))
         continuation.finish()
       }
     }
@@ -49,7 +50,7 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
     #expect(store.state.messages.count == 2)
     #expect(store.state.isProcessing == false)
     let assistant = store.state.messages.last
-    guard case .answer(let result, let narration, let sql)? = assistant?.body else {
+    guard case .answer(let result, let narration, let sql, _)? = assistant?.body else {
       Issue.record("expected an answer message, got \(String(describing: assistant?.body))")
       return
     }
@@ -66,7 +67,7 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
       ChatMessage(id: UUID(0), role: .user, body: .text("q1"), createdAt: .distantPast),
       ChatMessage(
         id: UUID(1), role: .assistant,
-        body: .answer(result: answer, narration: "a1", sql: "s"), createdAt: .distantPast),
+        body: .answer(result: answer, narration: "a1", sql: "s", notice: nil), createdAt: .distantPast),
       ChatMessage(id: UUID(2), role: .user, body: .text("q2"), createdAt: .distantPast),
       ChatMessage(id: UUID(3), role: .assistant, body: .failure("boom"), createdAt: .distantPast),
     ]
