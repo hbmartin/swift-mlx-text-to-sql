@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "debug-no-cache-20260721",
+  "status": "complete",
+  "configuration": "Debug",
+  "command": [
+    "xcodebuild",
+    "-project",
+    "CREG.xcodeproj",
+    "-scheme",
+    "CREG",
+    "-configuration",
+    "Debug",
+    "-destination",
+    "generic/platform=iOS",
+    "-derivedDataPath",
+    "/Volumes/SanSmall/creg-build-verification-20260721/debug-derived",
+    "CODE_SIGNING_ALLOWED=NO",
+    "-skipPackagePluginValidation",
+    "-skipMacroValidation",
+    "build"
+  ],
+  "isolated_environment": {
+    "CREG_MODELS_DIR": "/Volumes/SanSmall/creg-build-verification-20260721/debug-models",
+    "HF_HOME": "/Volumes/SanSmall/creg-build-verification-20260721/debug-hf",
+    "model_cache_was_empty": true
+  },
+  "bundle": {
+    "path": "/Volumes/SanSmall/creg-build-verification-20260721/debug-derived/Build/Products/Debug-iphoneos/CREG.app",
+    "manifest_present": true,
+    "source_manifest_sha256": "be2bc2ff256577e72173bd1bf52422c4a38650c0b91101c3c971e9b53f3d7b73",
+    "bundled_manifest_sha256": "be2bc2ff256577e72173bd1bf52422c4a38650c0b91101c3c971e9b53f3d7b73",
+    "sql_model_present": false
+  },
+  "expected_behavior": "The build succeeds without SQLModel and the runtime downloads the pinned production revision on first use."
+}

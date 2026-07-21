@@ -1,0 +1,77 @@
+{
+  "configuration": {
+    "always_vote": true,
+    "anchor_temperature": 0.0,
+    "candidate_count": 3,
+    "max_tokens": 512,
+    "sample_temperature": 0.1,
+    "top_k": 0,
+    "top_p": 1.0,
+    "trial_seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "outputs": {
+    "items": {
+      "path": "items.jsonl",
+      "sha256": "031d3c617f5f8a9b68d6031384c92e31d6c51ff37f432f38c9cda5e34f1503a0"
+    },
+    "summary": {
+      "path": "summary.json",
+      "sha256": "ff25da64535a644193cd7d1b0e6bc728880cb55478127006d3d7d793c268bd7a"
+    }
+  },
+  "run_id": "n3-ft-xiyansql-qwencoder-3b-gcd-on-sample-t-0_1",
+  "schema_version": 1,
+  "sources": [
+    {
+      "manifest_sha256": "8822991d10f0174e3a04927a763841500f19ec322bfe0c722b203bcf52516949",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "20f962f8b452c48d161d9d51e7163609f30edff36070ee51cc9b653529bef8db",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-0"
+    },
+    {
+      "manifest_sha256": "447aedee63634caac8f0228025954f905d785c7a7662d31a638052f16d89997b",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-1"
+    },
+    {
+      "manifest_sha256": "f40b61d360a8aea593e209a9aa79444a91c13653c50b7bea09289295dbb73c0d",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-2"
+    },
+    {
+      "manifest_sha256": "50f6ed88dbef6604cbcc7c0f8655191006fdfc4a38af013d2438ada6795d96fe",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-3"
+    },
+    {
+      "manifest_sha256": "c45b5b8eb1b2e0474d16748a1ef19eec5ccbbd5567aadeddda8dd3206585e8d2",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-4"
+    },
+    {
+      "manifest_sha256": "17df5b3a2d2761155685875f1ac601fe0a469bca8fd6569f547d499048261113",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/consistency-source-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-5"
+    },
+    {
+      "manifest_sha256": "8c0173ddbfc7376a1855219fdeaf8b584b3cdfc90692a701c874a3fc22ee4c36",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/consistency-source-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-6"
+    },
+    {
+      "manifest_sha256": "fc536b35daaa454013916115d6b66825477db18b1d592d5017cb41b9c4394a4f",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/consistency-source-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-7"
+    },
+    {
+      "manifest_sha256": "7c5d6271b68d35b7d020019a2291df1e809760bfc31b816a72375aee5d4b10df",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/consistency-source-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-8"
+    },
+    {
+      "manifest_sha256": "36b32dba4b736a5d6b66a938225927276bed2744f3efe8d6cdcd20c752f952d0",
+      "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs/consistency-source-ft-xiyansql-qwencoder-3b-gcd-on-t-0_1-s-9"
+    }
+  ],
+  "status": "complete"
+}

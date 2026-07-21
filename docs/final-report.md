@@ -1,136 +1,192 @@
-# CREG v1 — Final Report
+# PR #1 follow-up final report
 
-**v1 is complete per plan decision 13:** the app runs the full corrected
-pipeline on device, the eval harness selected the model empirically, the
-fine-tune loop was closed end-to-end once, and the fine-tuned model won by a
-wide margin and is bundled. This report records every consequential choice
-of the autonomous run (2026-07-19) and its outcome. Companion notes:
-`docs/data-synthesis.md`, `docs/eval.md`, `docs/grounding-corrections.md`,
-`docs/model-selection.md`, ADRs in `docs/adr/`.
+Status: **complete for the approved reproducibility, correctness, telemetry,
+evaluation, fine-tuning, publication, parity, build, and documentation
+scope**.
 
-Run ground rules set by the user: fabricate test data as needed; Claude as
-judge for this round; all downloads confined to the repo (`models/`,
-including the HF cache); detailed notes in `docs/`.
+## Outcome
 
-## Headline result
+The earlier model-selection claim has been replaced with a complete,
+content-addressed evidence chain. The verified production artifact is:
 
-| | EX (200-item gold) | valid SQL | tier 2 | s/item |
-|---|---|---|---|---|
-| Best off-the-shelf (Qwen2.5-Coder-3B, no GCD) | 0.225 | 0.760 | 0.11 | 3.1 |
-| **CREG fine-tune (same base + in-domain QLoRA, GCD on)** | **0.665** | **0.930** | **0.70** | **2.9** |
+- model: `ft-xiyansql-qwencoder-3b`;
+- repository:
+  `hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit`;
+- revision: `7f97a54819b9329338a5353266d6d2a1294eb341`;
+- quantization: MLX affine 4-bit, group size 64;
+- generation: GCD on, temperature 0.0, top-p 1.0, top-k disabled,
+  512-token cap; and
+- voting: always vote, N=3, one deterministic anchor plus two
+  temperature-0.7 samples.
 
-The PRD's central bet — that a single fixed schema plus in-domain
-fine-tuning beats generic capability — is confirmed: **+44 EX points (~3×)**
-from 1,353 synthetic training pairs and ~90 minutes of Mac training time.
+The public model is
+[available at its immutable Hub commit](https://huggingface.co/hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit/tree/7f97a54819b9329338a5353266d6d2a1294eb341).
+Because its lineage includes Qwen2.5-Coder-3B, CREG treats it as
+non-commercial and distributes both upstream license texts, a modification
+notice, attribution, “Built/Improved using Qwen,” and the explicit
+non-commercial warning.
 
-The honest decomposition, because it defines the next iteration: splitting
-gold_v2 into its 60 hand-written items and 140 template-generated items,
+## Evidence summary
 
-| slice | base | fine-tune |
+| Gate | Result | Evidence |
 |---|---|---|
-| generated 140 (in-family phrasings) | 0.071 | **0.786** |
-| hand-written 60 (novel phrasings) | 0.350 | 0.383 |
+| Four-family screen | Qwen 3B and XiYan 3B selected for training | `screen-c73e14c5f7b91c79` |
+| Identical QLoRA jobs | Both 600-iteration runs complete and loadable | `eval/training-runs/` |
+| Public finalist verification | Both snapshots fresh-downloaded and exact | `eval/publications/` |
+| Temperature standardization | Temperature 0 retained for all four artifacts | four `temperature-*` analyses |
+| Production selection | XiYan fine-tune, 65.50% EX / 93.00% valid SQL | `production-cddac7c992c20eae` |
+| N=3 calibration | Sample T=0.7, 66.80% EX / 95.40% valid SQL | `consistency-926c85c7ebc25eae` |
+| Full Swift parity | 0.50 EX-point and 1.00 valid-SQL-point drift | `parity-cda177e757fbb0b6` |
+| Python tests | 44 passed | `uv run --frozen pytest` |
+| Swift tests | 38 passed | `swift test` |
+| No-cache Debug | Manifest only; runtime-download path | `debug-no-cache-20260721` |
+| Clean-cache Release | Exact 12-file, 1.747 GB model bundled | `release-xiyansql-qwencoder-3b-7f97a548` |
 
-The fine-tune fully learned the schema's canonical semantics *as expressed
-by the template families* but transfers weakly to novel phrasings —
-template-side paraphrase rotation is not a substitute for the PRD's
-dev-time LLM paraphrase step (§13 method 4), which is the top data
-priority for iteration two. The ship decision is unaffected: the
-fine-tune ≥ base on every slice.
+Analysis identifiers name directories under `eval/analyses/`; build
+identifiers name directories under `eval/build-verification/`.
 
-## The choices, in order, and why
+## Reproducibility and artifact identity
 
-1. **Schema semantics were frozen before any modeling** (ADR 0001):
-   month-only financials grain, snapshot vacancy, valuations-as-history,
-   no units table. Every later stage (grammar, gold set, training data,
-   prompts) encodes these rules identically — which is exactly why the
-   fine-tune could learn them.
-2. **Grammar via mlx-swift-structured (XGrammar), not MLXGuidedGeneration**:
-   the PRD's first choice does not exist on GitHub; the spike took an hour
-   and settled it. The grammar is generated from the live DB, SELECT-only,
-   with hallucinated tables unrepresentable; two deliberate openings (free
-   string literals, bare alias identifiers) route residual failures to the
-   correction layers instead. Gold queries are round-tripped through the
-   grammar in validation, which caught a missing alias-reference production.
-3. **Candidates were four ≤4B 4-bit models** (both Qwen2.5-Coder sizes,
-   Qwen3-1.7B, and XiYanSQL-3B converted locally). Stage-1 (60 gold):
-   the general coder Qwen2.5-Coder-3B (0.350) beat the *dedicated SQL
-   fine-tune* XiYanSQL (0.317) — cross-domain SQL skill does not transfer
-   to this schema's canonical semantics, which is the PRD's thesis restated
-   from the other side.
-4. **GCD is a per-model decision, empirically**: it helped the leader on
-   easy gold (+1.7 EX), *hurt* it on hard gold (−7 EX), drove the 1.5B into
-   degenerate `TOTAL(TOTAL(…` loops, and cost the fine-tuned model exactly
-   nothing (0.665 both ways). Decision: **ship with GCD on** — for the
-   fine-tuned model the structural guarantees (SELECT-only, no invented
-   tables) are free.
-5. **The gold set was deliberately made harder as it grew**: the 140
-   generated stage-2 items concentrate per-entity canonical-semantics
-   questions (the app's real distribution), which is why base-model EX
-   *fell* from 0.350 to 0.155–0.225 while the fine-tune hit 0.665. The gap
-   is the point: it measures the semantics, not generic SQL.
-6. **Training data = 1,424 template-generated pairs** (seed-separated from
-   gold, normalized-question dedup, every pair executed + grammar-checked;
-   2 gold collisions dropped). System prompt byte-identical to the runtime
-   prompt. Trained: QLoRA 600 iters, batch 4, 16 layers, lr 1e-4,
-   prompt-masked; fused with quantization preserved.
-7. **Correction layers were built before the model was chosen** so they are
-   model-independent: fuzzy-literal suggestions (layer A), self-repair
-   (layer 2), self-consistency voting gated on deterministic uncertainty
-   proxies (C+D), narration-as-confirmation (B). The harness's entropy
-   logging now supplies the empirical layer-D threshold for the fine-tuned
-   model: correct answers average 0.017, wrong 0.066 — a clean 4×
-   separation (base model: 0.31/0.41, nearly useless). Proxy triggers were
-   the right v1 call; entropy gating at ~0.03 is the v1.1 upgrade.
-8. **Claude as judge** (this round, per user instruction): gold stage 1 was
-   authored and result-reviewed item-by-item; stage 2 and training data
-   were judged at family level with per-item machine gates (execute /
-   non-degenerate / grammar / dedup). The audit trail is
-   `docs/gold-review-v*.md` + `synth/out/gate_stats.json`.
+`model-manifest.json` is now the source of truth for acquisition, evaluation,
+publication, Xcode packaging, runtime loading, and telemetry. It pins the four
+requested upstream revisions, both public derivatives, conversion settings,
+quantization, licenses, complete file inventories, SHA-256 values, and
+directory digests. Floating revisions are rejected.
 
-## Fine-tune failure taxonomy → next-iteration priorities
+The one-model fetch path was replaced by manifest-driven `--all`, `--model`,
+and `--production` modes. XiYan conversion declares every option and records
+both source and converted-tree identity. Weights remain outside Git.
 
-67/200 still miss. Reading the misses: (a) **template echo** — memorized
-filters surfacing where they don't belong (train loss 0.001 = overfit;
-next run: fewer iterations or 10× phrasing diversity); (b) one **canon
-inconsistency** the loop exposed: training taught "hold" = `!= 'Sold'`
-while gold T1-04 reads "owned" = `= 'Owned'` — add contrast pairs;
-(c) **tier-3 volume** (0.278 EX; only 64 of 1,424 training pairs were
-tier-3 — raise to ~300); (d) fuzzy/multi-turn items still depend on the
-runtime correction layers, as designed.
+Every Evaluation Run is immutable and non-overwriting. Its manifest records
+the canonical command, Git and dirty state, environment and dependency
+versions, lockfile hashes, model/tokenizer/prompt/grammar/schema/database/
+gold/artifact hashes, generation settings, and derived-model provenance.
+Every item records typed rows, SQL, errors, failure bucket, entropy, token
+metrics, truncation, and integer-microsecond timings.
 
-## Parity check (Swift production stack)
+The merged PR #1 outputs are preserved only at
+`eval/runs/legacy-pr1-merged/` with `incomplete-provenance`. Its manifest
+states that the original fine-tuned artifact, seed, and complete training
+configuration are unavailable. No current claim depends on it.
 
-`creg-eval-cli` (the app's exact MLX-Swift + MLXStructured + prompt stack,
-built via xcodebuild because SPM CLI builds of mlx-swift lack the Metal
-library) re-scored the bundled model on the 60-item gold set:
+## Training and publication
 
-| runtime | EX (same 60 items) | valid SQL | disagreements |
-|---|---|---|---|
-| Python harness (mlx_lm + xgrammar) | 0.383 | 0.817 | — |
-| Swift production stack | 0.400 | 0.800 | **1 / 60 items** |
+The synthetic corpus was regenerated before each job and required
+byte-for-byte equality. Gold_v2 remained fully held out. Both selected base
+families used the same complete QLoRA YAML: seed 424242, 600 iterations,
+batch size 4, 16 adapted layers, learning rate `1e-4`, prompt masking, and
+all mlx-lm defaults explicit.
 
-One item flipped (Swift's generation chose a different-but-correct query).
-The two stacks agree on 59/60 — the Python harness's selections are valid
-for what actually ships (ADR 0003's premise holds).
+The jobs ran for 1:05:18 (Qwen) and 1:08:48 (XiYan), fused successfully, kept
+4-bit quantization, and loaded through `mlx_lm.load`. Validation loss was
+lowest at iteration 400 and regressed by 600 for both families; this visible
+overfitting signal is documented. The approved experiment used the identical
+final-600 checkpoint, and held-out execution—not training loss—selected the
+winner.
 
-## What ships
+Both finalists were published under the requested `hbmartin/creg-sql-…`
+names. The publisher created model cards with full configuration and
+provenance, resolved immutable Hub commits, forced fresh downloads, and
+compared every file before registration.
 
-- Bundled model: `models/SQLModel` (= fused `creg-sql-3b-ft`,
-  Qwen2.5-Coder-3B-Instruct + CREG QLoRA, 4-bit, ~1.7 GB), referenced by
-  the Xcode project as an app resource; `SQLGenClient` prefers it over any
-  network path — the app is fully offline.
-- GCD on (XGrammar EBNF), serializer-guaranteed non-overlapping inference,
-  correction layers A–D, developer mode, JSONL session export.
+## Evaluation findings
 
-## Deviations from the PRD, all recorded when made
+The four-family gold_v1 screen selected Qwen2.5-Coder-3B and XiYanSQL 3B.
+GCD was not globally beneficial: it helped or tied the fine-tunes but hurt
+several bases and imposed substantial latency on weak models. The matrix
+therefore chose GCD independently for every artifact.
 
-- MLXGuidedGeneration doesn't exist → XGrammar path (PRD anticipated this).
-- ~10k rows → ~2.5k with exact accounting invariants (plan decision 6).
-- Claude judged instead of Opus-CLI + human sign-off (user's instruction
-  for this round).
-- Schema-serialization and self-consistency-N harness axes documented but
-  not swept (compute budget went to the fine-tune loop, which was the
-  decision-relevant experiment).
-- Swift-side layer D uses deterministic proxies; entropy threshold comes
-  from the harness (see `docs/grounding-corrections.md`).
+On gold_v2, identical fine-tuning improved Qwen from 22.00% to 52.50% EX and
+XiYan from 28.50% to 65.50%. The selected XiYan fine-tune beat the Qwen
+fine-tune by 13.0 points with a paired 95% interval of [+6.5, +19.5], so no
+tie-break was needed.
+
+Five-seed temperature studies tested 0.0, 0.1, 0.3, and 0.7 for both bases
+and both fine-tunes. No nonzero temperature delivered both a two-point mean
+EX improvement and a paired interval excluding zero. All four normal
+generation configurations therefore remain deterministic.
+
+Self-consistency is a separate role-specific calibration. Two
+temperature-0.7 samples around the deterministic anchor improved aggregate
+EX to 66.80% and valid SQL to 95.40% across 1,000 item-trials, with 40 No
+Consensus outcomes and roughly 2.17× the single-shot p95 latency.
+
+## Runtime correctness
+
+Positional generation calls were replaced by `SQLGenerationRequest`.
+Candidate roles are explicit for initial, repair, deterministic anchor, and
+consistency sample. Production settings come from the verified manifest;
+nonzero candidates use fresh cryptographically random UInt64 seeds passed to
+MLX and persisted.
+
+Voting groups executed results by stable SHA-256 identity. It requires a
+strict majority and has explicit Consensus, No Consensus, and degraded
+anchor-failure/truncation outcomes. It never relies on Swift `Hasher`,
+dictionary iteration, or a plurality. No Consensus shows the executed
+complete anchor and a user-facing notice.
+
+Python and Swift share golden canonical-result fixtures. Numeric SQLite
+storage classes normalize with four-decimal half-even rounding; TEXT,
+complete BLOB bytes, and NULL remain distinct; duplicates and arity matter;
+row order and labels do not. Row-cap truncation is explicit and cannot be
+mistaken for a complete match.
+
+Grounding now resolves literals to columns conservatively, supports only
+`=` and `IN`, checks only declared entity/categorical domains, and records
+typed skips for dates, free-form fields, LIKE, ranges, expressions, and
+unresolved bindings. Successful complete domains cache per column; failed or
+partial loads do not. A catalog degradation preserves the valid answer,
+records exact table/column/error telemetry, suppresses an unsupported notice,
+and retries later. Empty edit-distance inputs are handled explicitly.
+
+## Telemetry and persistence
+
+The mutable “latest value wins” fields were replaced by immutable
+`TurnTelemetry`. It contains original and standalone questions, rewrite/gate
+decisions, stage and total integer-microsecond timings, every candidate
+request/result, complete typed rows, repair chain, grounding activity, vote
+trigger/outcome, selected candidate, and selection reason.
+
+Candidate IDs survive generation and execution, so repairs and vote samples
+cannot overwrite baseline data. Developer mode, chat history, and JSONL
+render the same record. Schema-versioned custom decoding preserves old
+history. App and evaluation row caps are 500 and 10,000 respectively, with
+explicit truncation. Exports are documented as portfolio data.
+
+## Build and parity
+
+The broken static `models/SQLModel` reference is gone. Xcode invokes the
+manifest fetcher through the frozen `uv` environment. Debug is cache-only at
+build time and falls back to first-use pinned download. Release must download
+or reuse, verify, and bundle the exact selected snapshot.
+
+The clean Release build independently downloaded the public winner and the
+bundle inspector matched the source and embedded manifest SHA-256, all 12
+files, the 1,747,812,702-byte model tree, both licenses, and the notice. MLX
+Swift is pinned exactly to 0.31.4 and mlx-swift-lm to 3.31.4.
+
+Full parity ran all 200 gold_v2 items. Python scored 65.50% EX / 93.00%
+valid SQL; Swift scored 65.00% / 92.00%. Every one of 14 differences is
+explained. One identical malformed query exposed a real SQLite 3.53.3 versus
+3.43.2 behavior difference, which remains a documented compatibility
+limitation.
+
+## Remaining limitations
+
+Completion here does not turn CREG into a general or production financial
+system. It remains limited to one frozen synthetic schema and read-only use.
+Physical-device memory, thermal, energy, and end-to-end latency still require
+validation on target iPhones. The training corpus needs broader linguistic
+diversity to reduce template-family overfitting. SQL generation should be
+hardened against engine-version-sensitive correlated aliases. Any model,
+prompt, grammar, tokenizer, dependency, schema, database, or gold-set change
+requires new immutable evidence and full parity.
+
+Telemetry exports include questions, generated SQL, errors, seeds, and full
+rows up to the cap. They must be handled as portfolio data.
+
+## Historical PR #1 result
+
+PR #1's prior winner and scores are intentionally not repeated as verified
+results. They remain available only in the prominently labeled
+`incomplete-provenance` legacy archive for historical diagnosis.

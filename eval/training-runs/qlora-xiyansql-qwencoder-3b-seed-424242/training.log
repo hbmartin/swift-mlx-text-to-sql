@@ -1,0 +1,81 @@
+Loading configuration file /Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/config/qlora.yaml
+Loading pretrained model
+Loading datasets
+Training
+Trainable parameters: 0.216% (6.652M/3085.939M)
+Starting training..., iters: 600
+Calculating loss...:   0%|          | 0/17 [00:00<?, ?it/s]Calculating loss...:   6%|▌         | 1/17 [00:03<01:01,  3.87s/it]Calculating loss...:  12%|█▏        | 2/17 [00:07<00:57,  3.84s/it]Calculating loss...:  18%|█▊        | 3/17 [00:11<00:53,  3.83s/it]Calculating loss...:  24%|██▎       | 4/17 [00:15<00:49,  3.82s/it]Calculating loss...:  29%|██▉       | 5/17 [00:18<00:45,  3.77s/it]Calculating loss...:  35%|███▌      | 6/17 [00:22<00:41,  3.74s/it]Calculating loss...:  41%|████      | 7/17 [00:26<00:37,  3.76s/it]Calculating loss...:  47%|████▋     | 8/17 [00:30<00:33,  3.74s/it]Calculating loss...:  53%|█████▎    | 9/17 [00:33<00:29,  3.72s/it]Calculating loss...:  59%|█████▉    | 10/17 [00:37<00:25,  3.71s/it]Calculating loss...:  65%|██████▍   | 11/17 [00:41<00:22,  3.70s/it]Calculating loss...:  71%|███████   | 12/17 [00:44<00:18,  3.69s/it]Calculating loss...:  76%|███████▋  | 13/17 [00:48<00:14,  3.69s/it]Calculating loss...:  82%|████████▏ | 14/17 [00:52<00:11,  3.68s/it]Calculating loss...:  88%|████████▊ | 15/17 [00:55<00:07,  3.68s/it]Calculating loss...:  94%|█████████▍| 16/17 [00:59<00:03,  3.68s/it]Calculating loss...: 100%|██████████| 17/17 [01:03<00:00,  3.72s/it]Calculating loss...: 100%|██████████| 17/17 [01:03<00:00,  3.73s/it]
+Iter 1: Val loss 0.810, Val took 63.413s
+Iter 10: Train loss 0.234, Learning Rate 1.000e-04, It/sec 0.153, Tokens/sec 30.828, Trained Tokens 2013, Peak mem 17.130 GB
+Iter 20: Train loss 0.197, Learning Rate 1.000e-04, It/sec 0.155, Tokens/sec 28.216, Trained Tokens 3835, Peak mem 17.130 GB
+Iter 30: Train loss 0.127, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 28.069, Trained Tokens 5622, Peak mem 17.130 GB
+Iter 40: Train loss 0.098, Learning Rate 1.000e-04, It/sec 0.155, Tokens/sec 27.538, Trained Tokens 7399, Peak mem 17.130 GB
+Iter 50: Train loss 0.106, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 26.525, Trained Tokens 9093, Peak mem 17.130 GB
+Iter 60: Train loss 0.073, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 28.071, Trained Tokens 10893, Peak mem 17.130 GB
+Iter 70: Train loss 0.118, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 26.254, Trained Tokens 12581, Peak mem 17.130 GB
+Iter 80: Train loss 0.069, Learning Rate 1.000e-04, It/sec 0.155, Tokens/sec 26.570, Trained Tokens 14292, Peak mem 17.130 GB
+Iter 90: Train loss 0.064, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 26.526, Trained Tokens 15983, Peak mem 17.130 GB
+Iter 100: Train loss 0.029, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 27.958, Trained Tokens 17775, Peak mem 17.130 GB
+Iter 100: Saved adapter weights to /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/adapters.safetensors and /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/0000100_adapters.safetensors.
+Iter 110: Train loss 0.025, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 27.083, Trained Tokens 19499, Peak mem 17.157 GB
+Iter 120: Train loss 0.059, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 28.055, Trained Tokens 21290, Peak mem 17.157 GB
+Iter 130: Train loss 0.052, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 25.572, Trained Tokens 22911, Peak mem 17.157 GB
+Iter 140: Train loss 0.014, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 28.793, Trained Tokens 24744, Peak mem 17.157 GB
+Iter 150: Train loss 0.014, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 28.558, Trained Tokens 26560, Peak mem 17.157 GB
+Iter 160: Train loss 0.032, Learning Rate 1.000e-04, It/sec 0.155, Tokens/sec 31.361, Trained Tokens 28580, Peak mem 17.157 GB
+Iter 170: Train loss 0.013, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 26.960, Trained Tokens 30299, Peak mem 17.157 GB
+Iter 180: Train loss 0.011, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 28.243, Trained Tokens 32108, Peak mem 17.157 GB
+Iter 190: Train loss 0.067, Learning Rate 1.000e-04, It/sec 0.155, Tokens/sec 28.860, Trained Tokens 33965, Peak mem 17.157 GB
+Calculating loss...:   0%|          | 0/17 [00:00<?, ?it/s]Calculating loss...:   6%|▌         | 1/17 [00:03<00:59,  3.69s/it]Calculating loss...:  12%|█▏        | 2/17 [00:07<00:56,  3.78s/it]Calculating loss...:  18%|█▊        | 3/17 [00:11<00:53,  3.85s/it]Calculating loss...:  24%|██▎       | 4/17 [00:15<00:49,  3.78s/it]Calculating loss...:  29%|██▉       | 5/17 [00:18<00:44,  3.75s/it]Calculating loss...:  35%|███▌      | 6/17 [00:22<00:40,  3.72s/it]Calculating loss...:  41%|████      | 7/17 [00:26<00:37,  3.70s/it]Calculating loss...:  47%|████▋     | 8/17 [00:29<00:33,  3.69s/it]Calculating loss...:  53%|█████▎    | 9/17 [00:33<00:29,  3.68s/it]Calculating loss...:  59%|█████▉    | 10/17 [00:37<00:25,  3.68s/it]Calculating loss...:  65%|██████▍   | 11/17 [00:40<00:22,  3.67s/it]Calculating loss...:  71%|███████   | 12/17 [00:44<00:18,  3.67s/it]Calculating loss...:  76%|███████▋  | 13/17 [00:48<00:14,  3.71s/it]Calculating loss...:  82%|████████▏ | 14/17 [00:52<00:11,  3.74s/it]Calculating loss...:  88%|████████▊ | 15/17 [00:55<00:07,  3.72s/it]Calculating loss...:  94%|█████████▍| 16/17 [00:59<00:03,  3.70s/it]Calculating loss...: 100%|██████████| 17/17 [01:03<00:00,  3.74s/it]Calculating loss...: 100%|██████████| 17/17 [01:03<00:00,  3.72s/it]
+Iter 200: Val loss 0.014, Val took 63.272s
+Iter 200: Train loss 0.017, Learning Rate 1.000e-04, It/sec 0.155, Tokens/sec 27.883, Trained Tokens 35762, Peak mem 17.157 GB
+Iter 200: Saved adapter weights to /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/adapters.safetensors and /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/0000200_adapters.safetensors.
+Iter 210: Train loss 0.005, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 28.682, Trained Tokens 37598, Peak mem 17.157 GB
+Iter 220: Train loss 0.005, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 28.989, Trained Tokens 39456, Peak mem 17.157 GB
+Iter 230: Train loss 0.002, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 30.930, Trained Tokens 41437, Peak mem 17.157 GB
+Iter 240: Train loss 0.008, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 28.216, Trained Tokens 43227, Peak mem 17.157 GB
+Iter 250: Train loss 0.012, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 27.156, Trained Tokens 44964, Peak mem 17.157 GB
+Iter 260: Train loss 0.030, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 27.778, Trained Tokens 46742, Peak mem 17.157 GB
+Iter 270: Train loss 0.018, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 26.030, Trained Tokens 48410, Peak mem 17.158 GB
+Iter 280: Train loss 0.015, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 28.260, Trained Tokens 50215, Peak mem 17.158 GB
+Iter 290: Train loss 0.007, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 28.239, Trained Tokens 52020, Peak mem 17.158 GB
+Iter 300: Train loss 0.007, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 27.787, Trained Tokens 53781, Peak mem 17.158 GB
+Iter 300: Saved adapter weights to /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/adapters.safetensors and /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/0000300_adapters.safetensors.
+Iter 310: Train loss 0.014, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 27.987, Trained Tokens 55550, Peak mem 17.158 GB
+Iter 320: Train loss 0.009, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 26.318, Trained Tokens 57226, Peak mem 17.158 GB
+Iter 330: Train loss 0.015, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 28.739, Trained Tokens 59060, Peak mem 17.158 GB
+Iter 340: Train loss 0.011, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 30.877, Trained Tokens 61024, Peak mem 17.158 GB
+Iter 350: Train loss 0.001, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 30.402, Trained Tokens 62962, Peak mem 17.158 GB
+Iter 360: Train loss 0.007, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 28.102, Trained Tokens 64760, Peak mem 17.158 GB
+Iter 370: Train loss 0.003, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 27.331, Trained Tokens 66493, Peak mem 17.158 GB
+Iter 380: Train loss 0.002, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 29.070, Trained Tokens 68353, Peak mem 17.158 GB
+Iter 390: Train loss 0.004, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 25.183, Trained Tokens 69950, Peak mem 17.158 GB
+Calculating loss...:   0%|          | 0/17 [00:00<?, ?it/s]Calculating loss...:   6%|▌         | 1/17 [00:03<01:00,  3.81s/it]Calculating loss...:  12%|█▏        | 2/17 [00:07<00:55,  3.73s/it]Calculating loss...:  18%|█▊        | 3/17 [00:11<00:51,  3.70s/it]Calculating loss...:  24%|██▎       | 4/17 [00:14<00:47,  3.69s/it]Calculating loss...:  29%|██▉       | 5/17 [00:18<00:44,  3.73s/it]Calculating loss...:  35%|███▌      | 6/17 [00:22<00:40,  3.71s/it]Calculating loss...:  41%|████      | 7/17 [00:25<00:36,  3.70s/it]Calculating loss...:  47%|████▋     | 8/17 [00:29<00:33,  3.69s/it]Calculating loss...:  53%|█████▎    | 9/17 [00:33<00:29,  3.68s/it]Calculating loss...:  59%|█████▉    | 10/17 [00:37<00:26,  3.72s/it]Calculating loss...:  65%|██████▍   | 11/17 [00:40<00:22,  3.70s/it]Calculating loss...:  71%|███████   | 12/17 [00:44<00:18,  3.69s/it]Calculating loss...:  76%|███████▋  | 13/17 [00:48<00:14,  3.68s/it]Calculating loss...:  82%|████████▏ | 14/17 [00:51<00:11,  3.68s/it]Calculating loss...:  88%|████████▊ | 15/17 [00:55<00:07,  3.72s/it]Calculating loss...:  94%|█████████▍| 16/17 [00:59<00:03,  3.75s/it]Calculating loss...: 100%|██████████| 17/17 [01:03<00:00,  3.72s/it]Calculating loss...: 100%|██████████| 17/17 [01:03<00:00,  3.71s/it]
+Iter 400: Val loss 0.005, Val took 63.065s
+Iter 400: Train loss 0.001, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 27.136, Trained Tokens 71675, Peak mem 17.158 GB
+Iter 400: Saved adapter weights to /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/adapters.safetensors and /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/0000400_adapters.safetensors.
+Iter 410: Train loss 0.002, Learning Rate 1.000e-04, It/sec 0.154, Tokens/sec 27.211, Trained Tokens 73442, Peak mem 17.158 GB
+Iter 420: Train loss 0.001, Learning Rate 1.000e-04, It/sec 0.147, Tokens/sec 24.368, Trained Tokens 75096, Peak mem 17.158 GB
+Iter 430: Train loss 0.003, Learning Rate 1.000e-04, It/sec 0.145, Tokens/sec 25.834, Trained Tokens 76873, Peak mem 17.158 GB
+Iter 440: Train loss 0.000, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 29.451, Trained Tokens 78750, Peak mem 17.158 GB
+Iter 450: Train loss 0.000, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 30.441, Trained Tokens 80689, Peak mem 17.158 GB
+Iter 460: Train loss 0.006, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 29.181, Trained Tokens 82546, Peak mem 17.158 GB
+Iter 470: Train loss 0.000, Learning Rate 1.000e-04, It/sec 0.159, Tokens/sec 26.836, Trained Tokens 84237, Peak mem 17.158 GB
+Iter 480: Train loss 0.001, Learning Rate 1.000e-04, It/sec 0.156, Tokens/sec 30.393, Trained Tokens 86186, Peak mem 17.158 GB
+Iter 490: Train loss 0.000, Learning Rate 1.000e-04, It/sec 0.159, Tokens/sec 28.343, Trained Tokens 87967, Peak mem 17.158 GB
+Iter 500: Train loss 0.003, Learning Rate 1.000e-04, It/sec 0.159, Tokens/sec 26.840, Trained Tokens 89659, Peak mem 17.158 GB
+Iter 500: Saved adapter weights to /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/adapters.safetensors and /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/0000500_adapters.safetensors.
+Iter 510: Train loss 0.003, Learning Rate 1.000e-04, It/sec 0.159, Tokens/sec 27.861, Trained Tokens 91408, Peak mem 17.158 GB
+Iter 520: Train loss 0.000, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 27.494, Trained Tokens 93157, Peak mem 17.158 GB
+Iter 530: Train loss 0.000, Learning Rate 1.000e-04, It/sec 0.159, Tokens/sec 24.735, Trained Tokens 94712, Peak mem 17.158 GB
+Iter 540: Train loss 0.002, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 28.841, Trained Tokens 96538, Peak mem 17.158 GB
+Iter 550: Train loss 0.003, Learning Rate 1.000e-04, It/sec 0.157, Tokens/sec 30.205, Trained Tokens 98457, Peak mem 17.158 GB
+Iter 560: Train loss 0.001, Learning Rate 1.000e-04, It/sec 0.161, Tokens/sec 25.500, Trained Tokens 100040, Peak mem 17.158 GB
+Iter 570: Train loss 0.008, Learning Rate 1.000e-04, It/sec 0.160, Tokens/sec 29.104, Trained Tokens 101862, Peak mem 17.158 GB
+Iter 580: Train loss 0.001, Learning Rate 1.000e-04, It/sec 0.158, Tokens/sec 29.710, Trained Tokens 103740, Peak mem 17.158 GB
+Iter 590: Train loss 0.004, Learning Rate 1.000e-04, It/sec 0.153, Tokens/sec 25.225, Trained Tokens 105386, Peak mem 17.158 GB
+Calculating loss...:   0%|          | 0/17 [00:00<?, ?it/s]Calculating loss...:   6%|▌         | 1/17 [00:03<01:00,  3.76s/it]Calculating loss...:  12%|█▏        | 2/17 [00:07<00:56,  3.75s/it]Calculating loss...:  18%|█▊        | 3/17 [00:11<00:53,  3.82s/it]Calculating loss...:  24%|██▎       | 4/17 [00:15<00:49,  3.80s/it]Calculating loss...:  29%|██▉       | 5/17 [00:19<00:45,  3.81s/it]Calculating loss...:  35%|███▌      | 6/17 [00:22<00:42,  3.83s/it]Calculating loss...:  41%|████      | 7/17 [00:26<00:39,  3.91s/it]Calculating loss...:  47%|████▋     | 8/17 [00:30<00:35,  3.90s/it]Calculating loss...:  53%|█████▎    | 9/17 [00:34<00:31,  3.89s/it]Calculating loss...:  59%|█████▉    | 10/17 [00:38<00:27,  3.87s/it]Calculating loss...:  65%|██████▍   | 11/17 [00:42<00:23,  3.85s/it]Calculating loss...:  71%|███████   | 12/17 [00:46<00:19,  3.93s/it]Calculating loss...:  76%|███████▋  | 13/17 [00:50<00:15,  3.98s/it]Calculating loss...:  82%|████████▏ | 14/17 [00:54<00:11,  3.96s/it]Calculating loss...:  88%|████████▊ | 15/17 [00:58<00:07,  3.94s/it]Calculating loss...:  94%|█████████▍| 16/17 [01:02<00:03,  3.93s/it]Calculating loss...: 100%|██████████| 17/17 [01:06<00:00,  3.94s/it]Calculating loss...: 100%|██████████| 17/17 [01:06<00:00,  3.89s/it]
+Iter 600: Val loss 0.008, Val took 66.212s
+Iter 600: Train loss 0.007, Learning Rate 1.000e-04, It/sec 0.151, Tokens/sec 27.099, Trained Tokens 107177, Peak mem 17.158 GB
+Iter 600: Saved adapter weights to /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/adapters.safetensors and /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/0000600_adapters.safetensors.
+Saved final weights to /Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-xiyansql-qwencoder-3b-seed-424242/adapters.safetensors.

@@ -168,7 +168,7 @@ struct MessageCell: View {
 /// self-consistency candidates with their votes (PRD §11).
 struct DevFooterView: View {
   let sql: String
-  let devInfo: ChatMessage.DevInfo?
+  let devInfo: TurnTelemetry?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -176,16 +176,18 @@ struct DevFooterView: View {
         .font(.caption.monospaced())
         .textSelection(.enabled)
       if let devInfo {
-        if let standalone = devInfo.standaloneQuestion {
-          Text("standalone: \(standalone)")
-        }
+        Text("original: \(devInfo.originalQuestion)")
+        Text("standalone: \(devInfo.standaloneQuestion)")
+        Text(verbatim:
+          "rewrite applied=\(devInfo.rewriteApplied) FM=\(devInfo.rewriteUsedFM) · gate=\(devInfo.gateDecision.map { String(describing: $0) } ?? "none") FM=\(devInfo.gateUsedFM) · narration FM=\(devInfo.narrationUsedFM)"
+        )
+        Text(
+          "stages μs: rewrite \(duration(devInfo.stageTimings.rewriteMicroseconds)) · gate \(duration(devInfo.stageTimings.gateMicroseconds)) · grounding \(duration(devInfo.stageTimings.groundingMicroseconds)) · voting \(duration(devInfo.stageTimings.votingMicroseconds)) · narration \(duration(devInfo.stageTimings.narrationMicroseconds)) · total \(devInfo.stageTimings.totalMicroseconds)"
+        )
         HStack(spacing: 12) {
-          if let tps = devInfo.tokensPerSecond {
-            Text(String(format: "%.1f tok/s", tps))
-          }
-          if let ms = devInfo.executionMilliseconds {
-            Text(String(format: "exec %.1f ms", ms))
-          }
+          Text(String(
+            format: "total %.1f ms",
+            Double(devInfo.stageTimings.totalMicroseconds) / 1_000))
           if devInfo.repairAttempts > 0 {
             Text("repairs: \(devInfo.repairAttempts)")
           }
@@ -193,11 +195,58 @@ struct DevFooterView: View {
             Text("vote: \(trigger)")
           }
         }
-        ForEach(Array(devInfo.candidates.enumerated()), id: \.offset) { index, candidate in
-          HStack(alignment: .top, spacing: 4) {
-            Image(systemName: candidate.agreedWithWinner ? "checkmark.circle" : "xmark.circle")
-            Text("[\(index)] \(candidate.error ?? "\(candidate.rowCount ?? 0) rows") — \(candidate.sql)")
-              .lineLimit(3)
+        if let outcome = devInfo.voteOutcome {
+          Text("outcome: \(String(describing: outcome))")
+        }
+        if let reason = devInfo.selectionReason {
+          Text(
+            "selected: \(devInfo.selectedCandidateID?.rawValue ?? "none") · reason: \(reason.rawValue)"
+          )
+        }
+        if let grounding = devInfo.grounding {
+          Text(
+            "grounding: \(grounding.checks.count) checks, \(grounding.skipped.count) skips, \(grounding.degradations.count) degradations"
+          )
+          ForEach(
+            Array(grounding.degradations.enumerated()), id: \.offset
+          ) { entry in
+            Text(
+              "grounding degradation: \(String(describing: entry.element))")
+          }
+        }
+        ForEach(devInfo.candidates) { candidate in
+          VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .top, spacing: 4) {
+              Image(systemName: candidate.selected
+                ? "checkmark.circle.fill" : "circle")
+              Text(
+                "\(candidate.id.rawValue) · \(role(candidate.role)) · \(candidate.model.repository)@\(candidate.model.revision.prefix(8)) · GCD \(candidate.gcd.rawValue) · T=\(candidate.temperature.formatted()) · seed=\(candidate.seed.map(String.init) ?? "none")"
+              )
+            }
+            if let generated = candidate.generationMicroseconds {
+              Text(
+                String(
+                  format: "generation %.1f ms · %.1f tok/s · %@ tokens",
+                  Double(generated) / 1_000,
+                  candidate.tokensPerSecond ?? 0,
+                  candidate.tokenCount.map(String.init) ?? "unknown"))
+            }
+            if let result = candidate.result {
+              Text(
+                String(
+                  format: "execution %.1f ms · %d rows%@ · group %@",
+                  Double(candidate.executionMicroseconds ?? 0) / 1_000,
+                  result.rowCount,
+                  result.isTruncated ? " (truncated)" : "",
+                  candidate.resultDigest ?? "none"))
+            }
+            if let error = candidate.error {
+              Text("error: \(error)")
+            }
+            if let candidateSQL = candidate.sql {
+              Text(candidateSQL)
+                .lineLimit(3)
+            }
           }
         }
       }
@@ -207,6 +256,19 @@ struct DevFooterView: View {
     .padding(8)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+  }
+
+  private func role(_ role: CandidateRole) -> String {
+    switch role {
+    case .initial: "initial"
+    case .repair(let attempt): "repair-\(attempt)"
+    case .deterministicAnchor: "anchor"
+    case .consistencySample(let index): "sample-\(index)"
+    }
+  }
+
+  private func duration(_ microseconds: Int64?) -> String {
+    microseconds.map(String.init) ?? "n/a"
   }
 }
 

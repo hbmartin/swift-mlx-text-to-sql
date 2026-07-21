@@ -1,0 +1,354 @@
+{
+  "analysis": "production-artifact-selection",
+  "comparisons_to_top_ex": [
+    {
+      "candidate": {
+        "bundle_size_bytes": 1747851791,
+        "ex": 0.22,
+        "gcd": "off",
+        "model_key": "qwen25-coder-3b",
+        "n_items": 200,
+        "p95_microseconds": 2842436,
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "temperature": 0.0,
+        "valid_sql_rate": 0.76,
+        "worst_tier_ex": 0.1111111111111111
+      },
+      "candidate_minus_baseline": -0.435,
+      "ci95": [
+        -0.525,
+        -0.345
+      ],
+      "incumbent": {
+        "bundle_size_bytes": 1747812702,
+        "ex": 0.655,
+        "gcd": "on",
+        "model_key": "ft-xiyansql-qwencoder-3b",
+        "n_items": 200,
+        "p95_microseconds": 3056151,
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "temperature": 0.0,
+        "valid_sql_rate": 0.93,
+        "worst_tier_ex": 0.3888888888888889
+      },
+      "method": "paired-item-clustered-bootstrap",
+      "n_items": 200,
+      "repetitions": 10000,
+      "schema_version": 1,
+      "seed": 424242,
+      "tied": false
+    },
+    {
+      "candidate": {
+        "bundle_size_bytes": 1747786195,
+        "ex": 0.285,
+        "gcd": "off",
+        "model_key": "xiyansql-qwencoder-3b",
+        "n_items": 200,
+        "p95_microseconds": 1711678,
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "temperature": 0.0,
+        "valid_sql_rate": 0.88,
+        "worst_tier_ex": 0.0
+      },
+      "candidate_minus_baseline": -0.37,
+      "ci95": [
+        -0.455,
+        -0.285
+      ],
+      "incumbent": {
+        "bundle_size_bytes": 1747812702,
+        "ex": 0.655,
+        "gcd": "on",
+        "model_key": "ft-xiyansql-qwencoder-3b",
+        "n_items": 200,
+        "p95_microseconds": 3056151,
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "temperature": 0.0,
+        "valid_sql_rate": 0.93,
+        "worst_tier_ex": 0.3888888888888889
+      },
+      "method": "paired-item-clustered-bootstrap",
+      "n_items": 200,
+      "repetitions": 10000,
+      "schema_version": 1,
+      "seed": 424242,
+      "tied": false
+    },
+    {
+      "candidate": {
+        "bundle_size_bytes": 1747800455,
+        "ex": 0.525,
+        "gcd": "on",
+        "model_key": "ft-qwen25-coder-3b",
+        "n_items": 200,
+        "p95_microseconds": 3017271,
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "temperature": 0.0,
+        "valid_sql_rate": 0.895,
+        "worst_tier_ex": 0.3333333333333333
+      },
+      "candidate_minus_baseline": -0.13,
+      "ci95": [
+        -0.195,
+        -0.065
+      ],
+      "incumbent": {
+        "bundle_size_bytes": 1747812702,
+        "ex": 0.655,
+        "gcd": "on",
+        "model_key": "ft-xiyansql-qwencoder-3b",
+        "n_items": 200,
+        "p95_microseconds": 3056151,
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "temperature": 0.0,
+        "valid_sql_rate": 0.93,
+        "worst_tier_ex": 0.3888888888888889
+      },
+      "method": "paired-item-clustered-bootstrap",
+      "n_items": 200,
+      "repetitions": 10000,
+      "schema_version": 1,
+      "seed": 424242,
+      "tied": false
+    }
+  ],
+  "configurations": [
+    {
+      "bundle_size_bytes": 1747851791,
+      "ex": 0.22,
+      "gcd": "off",
+      "model_key": "qwen25-coder-3b",
+      "n_items": 200,
+      "p95_microseconds": 2842436,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.76,
+      "worst_tier_ex": 0.1111111111111111
+    },
+    {
+      "bundle_size_bytes": 1747786195,
+      "ex": 0.285,
+      "gcd": "off",
+      "model_key": "xiyansql-qwencoder-3b",
+      "n_items": 200,
+      "p95_microseconds": 1711678,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.88,
+      "worst_tier_ex": 0.0
+    },
+    {
+      "bundle_size_bytes": 1747800455,
+      "ex": 0.525,
+      "gcd": "on",
+      "model_key": "ft-qwen25-coder-3b",
+      "n_items": 200,
+      "p95_microseconds": 3017271,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.895,
+      "worst_tier_ex": 0.3333333333333333
+    },
+    {
+      "bundle_size_bytes": 1747812702,
+      "ex": 0.655,
+      "gcd": "on",
+      "model_key": "ft-xiyansql-qwencoder-3b",
+      "n_items": 200,
+      "p95_microseconds": 3056151,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.93,
+      "worst_tier_ex": 0.3888888888888889
+    }
+  ],
+  "inputs": [
+    {
+      "manifest_sha256": "1875f4efc7e75ecfe2ef0c569846a5ef5ec2ee88ceb50078d9fcd0ec07b038e5",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "a61f0d329c342ff8506cd6025a259c0fda7cc80ec6c923d26327dd93fad0118c",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-1"
+    },
+    {
+      "manifest_sha256": "b22f4e151a9ff739066815d9db20c5d1b68fec2a086ee54b949b030170399f87",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-2"
+    },
+    {
+      "manifest_sha256": "b860bf4561a5e87a5084734e0e52f90fbc6282ea35d04dd3a4d5a65ec8cdd3ab",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-3"
+    },
+    {
+      "manifest_sha256": "cf2792d4753ce68db934374e754f268a0eb42cd98fb83215ae235b399a573d84",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-4"
+    },
+    {
+      "manifest_sha256": "8822991d10f0174e3a04927a763841500f19ec322bfe0c722b203bcf52516949",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "bece003f7398f22ff11e39239174c726a15a9f212244eb485dc3688257bab311",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-1"
+    },
+    {
+      "manifest_sha256": "ba6758c244add7ea4542b9c21de9c8d5a27379c673482de9595c4a0d5181ca5a",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-2"
+    },
+    {
+      "manifest_sha256": "93c2908ffe05bc392b97903163856b9113e075399b63a09eca09b0343d2027ba",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-3"
+    },
+    {
+      "manifest_sha256": "144868679a3f4a9b8c3219b50a661ce28c1c4cd1a669abd080fc96cbef16d588",
+      "path": "eval/runs/matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-4"
+    },
+    {
+      "manifest_sha256": "f9d2a22a857042012599cb25f4a0d44d596c68cd379f2128ea949e721df3a0ea",
+      "path": "eval/runs/matrix-temperature-gold-v2-qwen25-coder-3b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "50a7fd2b4f65fd9650e5341ff39d336689cf210a43fbfe3b29d32828006bdbf3",
+      "path": "eval/runs/matrix-temperature-gold-v2-qwen25-coder-3b-gcd-off-t-0_0-s-1"
+    },
+    {
+      "manifest_sha256": "14293c5dc1e83fe06e194909b38ce26a0eeb0d039e359d00b02d77e40b908e38",
+      "path": "eval/runs/matrix-temperature-gold-v2-qwen25-coder-3b-gcd-off-t-0_0-s-2"
+    },
+    {
+      "manifest_sha256": "b2101121dfae6730154c84b7284ea42f9f07191db521e7229923bf758bf0a524",
+      "path": "eval/runs/matrix-temperature-gold-v2-qwen25-coder-3b-gcd-off-t-0_0-s-3"
+    },
+    {
+      "manifest_sha256": "9c1b0a7ac62ef4847b4b257c2c222960bae62392128ba5fa86393bfa11baec30",
+      "path": "eval/runs/matrix-temperature-gold-v2-qwen25-coder-3b-gcd-off-t-0_0-s-4"
+    },
+    {
+      "manifest_sha256": "fa4c608bf38c734b17be4aab7694fba219691c0435ea74d02469836974f57d03",
+      "path": "eval/runs/matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "b58c86be45cf7fbe2017207d9cb1e22080ca2473d8dcb0dc50707ae81b9c2746",
+      "path": "eval/runs/matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-1"
+    },
+    {
+      "manifest_sha256": "812699e05eaab9ae5fae2d3a3206b5e8e95bbc7e88e50fbfdd4ff51b2f5dcdd6",
+      "path": "eval/runs/matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-2"
+    },
+    {
+      "manifest_sha256": "07d0e3a25df76cbe13ebfe26c2bf960c1bf6c2c98b6dbf199a2eae4c4a310813",
+      "path": "eval/runs/matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-3"
+    },
+    {
+      "manifest_sha256": "bef61c766949feeb6c60c12b9e4b0aa95262340ad462b5eb7a7103a708ee9f9a",
+      "path": "eval/runs/matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-4"
+    }
+  ],
+  "schema_version": 1,
+  "selected": {
+    "bundle_size_bytes": 1747812702,
+    "ex": 0.655,
+    "gcd": "on",
+    "model_key": "ft-xiyansql-qwencoder-3b",
+    "n_items": 200,
+    "p95_microseconds": 3056151,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "temperature": 0.0,
+    "valid_sql_rate": 0.93,
+    "worst_tier_ex": 0.3888888888888889
+  },
+  "tie_breaks": [
+    "valid SQL",
+    "worst-tier execution accuracy",
+    "p95 latency",
+    "bundle size"
+  ],
+  "tie_pool": [
+    {
+      "bundle_size_bytes": 1747812702,
+      "ex": 0.655,
+      "gcd": "on",
+      "model_key": "ft-xiyansql-qwencoder-3b",
+      "n_items": 200,
+      "p95_microseconds": 3056151,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.93,
+      "worst_tier_ex": 0.3888888888888889
+    }
+  ],
+  "tie_rule": "absolute EX difference under 0.02 or paired item-clustered bootstrap 95% interval contains zero"
+}

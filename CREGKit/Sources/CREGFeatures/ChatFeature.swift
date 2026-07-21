@@ -13,8 +13,6 @@ public struct ChatFeature: Sendable {
     public var currentTrace: [String] = []
     /// JSONL lines accumulating for the in-flight turn.
     public var currentEventLines: [String] = []
-    /// Developer-mode internals accumulating for the in-flight turn.
-    public var currentDevInfo = ChatMessage.DevInfo()
     public var developerMode = false
     public var isSettingsPresented = false
     public var conversationID: UUID?
@@ -67,7 +65,6 @@ public struct ChatFeature: Sendable {
         state.isProcessing = true
         state.currentTrace = []
         state.currentEventLines = []
-        state.currentDevInfo = ChatMessage.DevInfo()
 
         let userMessage = ChatMessage(id: uuid(), role: .user, body: .text(question), createdAt: now)
         state.messages.append(userMessage)
@@ -94,23 +91,8 @@ public struct ChatFeature: Sendable {
         if let json = try? event.jsonLine() {
           state.currentEventLines.append(json)
         }
-        switch event {
-        case .rewriteFinished(let standalone, _):
-          state.currentDevInfo.standaloneQuestion = standalone
-        case .generationFinished(_, let tokensPerSecond):
-          state.currentDevInfo.tokensPerSecond = tokensPerSecond
-        case .executionFinished(_, let elapsed):
-          state.currentDevInfo.executionMilliseconds = elapsed
-        case .repairStarted(let attempt):
-          state.currentDevInfo.repairAttempts = attempt
-        case .selfConsistencyStarted(_, let trigger):
-          state.currentDevInfo.voteTrigger = trigger
-        case .selfConsistencyFinished(_, _, let candidates):
-          state.currentDevInfo.candidates = candidates
-        default:
-          break
-        }
-        guard case .turnFinished(let outcome) = event else { return .none }
+        guard case .turnFinished(let outcome, let telemetry) = event
+        else { return .none }
 
         let body: ChatMessage.Body =
           switch outcome {
@@ -124,7 +106,7 @@ public struct ChatFeature: Sendable {
         let assistantMessage = ChatMessage(
           id: uuid(), role: .assistant, body: body,
           traceSteps: state.currentTrace, createdAt: now,
-          devInfo: state.currentDevInfo)
+          devInfo: telemetry)
         state.messages.append(assistantMessage)
         state.isProcessing = false
 
@@ -204,6 +186,15 @@ private enum LiveDependencies {
   static let serializer = InferenceSerializer()
 
   static let pipeline: QueryPipeline = {
+    let production: ProductionGenerationConfiguration
+    do {
+      production = try ModelManifestLoader.production()
+    } catch {
+      return .unavailable(
+        message:
+          "The production model is not configured: \(error.localizedDescription)")
+    }
+
     let db: DatabaseClient
     if let url = Bundle.main.url(forResource: "creg", withExtension: "sqlite"),
       let client = try? DatabaseClient.live(url: url)
@@ -218,9 +209,13 @@ private enum LiveDependencies {
     }
     return QueryPipeline.live(
       fm: .live(),
-      sqlGen: .live(),
+      sqlGen: .live(model: production.model),
       db: db,
-      serializer: serializer
+      serializer: serializer,
+      configuration: .init(
+        production: production,
+        gateSensitivity: 0,
+        maxRepairAttempts: 2)
     )
   }()
 

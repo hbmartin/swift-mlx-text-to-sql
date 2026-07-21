@@ -12,18 +12,27 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
   static func scriptedPipeline() -> QueryPipeline {
     QueryPipeline { question, _ in
       AsyncStream { continuation in
+        var telemetry = TurnTelemetry(originalQuestion: question)
+        telemetry.stageTimings.totalMicroseconds = 3_000
         continuation.yield(.turnStarted(question: question))
+        continuation.yield(.questionResolved(
+          standaloneQuestion: question,
+          rewriteApplied: false,
+          usedFM: false,
+          elapsedMicroseconds: 0))
         continuation.yield(.gateStarted)
-        continuation.yield(.gateFinished(.proceed))
-        continuation.yield(.generationStarted(modelName: "test"))
-        continuation.yield(.generationFinished(sql: "SELECT name FROM properties", tokensPerSecond: 42))
-        continuation.yield(.executionStarted(sql: "SELECT name FROM properties"))
-        continuation.yield(.executionFinished(rowCount: 1, elapsedMilliseconds: 3))
         continuation.yield(.narrationStarted)
-        continuation.yield(.narrationFinished(narration: "One property found.", usedFM: false))
-        continuation.yield(.turnFinished(.answered(
-          result: answer, narration: "One property found.", sql: "SELECT name FROM properties",
-          notice: nil)))
+        continuation.yield(.narrationFinished(
+          narration: "One property found.",
+          usedFM: false,
+          elapsedMicroseconds: 100))
+        continuation.yield(.turnFinished(
+          outcome: .answered(
+            result: answer,
+            narration: "One property found.",
+            sql: "SELECT name FROM properties",
+            notice: nil),
+          telemetry: telemetry))
         continuation.finish()
       }
     }
@@ -60,6 +69,8 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
     #expect(assistant?.traceSteps.isEmpty == false)
     // trace lines never contain SQL
     #expect(assistant?.traceSteps.allSatisfy { !$0.contains("SELECT") } == true)
+    #expect(assistant?.devInfo?.originalQuestion == "Which property leads?")
+    #expect(assistant?.devInfo?.standaloneQuestion == "Which property leads?")
   }
 
   @Test func conversationTurnsPairQuestionsWithAnswers() {
@@ -73,5 +84,91 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
     ]
     let turns = ChatFeature.conversationTurns(from: messages)
     #expect(turns == [ConversationTurn(question: "q1", answerSummary: "a1")])
+  }
+
+  @Test func fullTelemetryPersistsAndLegacyDeveloperInfoStillLoads()
+    throws
+  {
+    let model = ModelReference(
+      key: "test",
+      repository: "test/model",
+      revision: String(repeating: "a", count: 40))
+    let request = SQLGenerationRequest(
+      candidateID: CandidateID(rawValue: "initial"),
+      role: .initial,
+      model: model,
+      question: "q",
+      gcd: .on,
+      temperature: 0,
+      seed: nil)
+    var candidate = CandidateTelemetry(request: request)
+    candidate.sql = "SELECT 1"
+    candidate.result = QueryResult(
+      columns: ["n"],
+      rows: [[.integer(1)]],
+      elapsedMicroseconds: 77)
+    candidate.resultDigest =
+      CanonicalSQLResult(candidate.result!).digest
+    candidate.selected = true
+    var telemetry = TurnTelemetry(originalQuestion: "q")
+    telemetry.candidates = [candidate]
+    telemetry.selectedCandidateID = candidate.id
+    telemetry.selectionReason = .initialSuccess
+    telemetry.stageTimings.totalMicroseconds = 123
+
+    let message = ChatMessage(
+      id: UUID(0),
+      role: .assistant,
+      body: .answer(
+        result: candidate.result!,
+        narration: "one",
+        sql: "SELECT 1",
+        notice: nil),
+      createdAt: Date(timeIntervalSince1970: 0),
+      devInfo: telemetry)
+    let encoded = try JSONEncoder().encode(message)
+    let decoded = try JSONDecoder().decode(
+      ChatMessage.self, from: encoded)
+    #expect(decoded.devInfo == telemetry)
+    #expect(decoded.devInfo?.candidates.first?.result?.rows == [
+      [.integer(1)]
+    ])
+
+    var legacyObject =
+      try #require(
+        JSONSerialization.jsonObject(with: encoded)
+          as? [String: Any])
+    legacyObject["devInfo"] = [
+      "standaloneQuestion": "old q",
+      "tokensPerSecond": 12.0,
+      "executionMilliseconds": 3.0,
+      "repairAttempts": 0,
+      "candidates": [],
+    ]
+    let legacyData = try JSONSerialization.data(
+      withJSONObject: legacyObject)
+    let legacy = try JSONDecoder().decode(
+      ChatMessage.self, from: legacyData)
+    #expect(legacy.body == message.body)
+    #expect(legacy.devInfo == nil)
+  }
+
+  @Test func legacyMillisecondQueryResultDecodesToMicroseconds() throws {
+    // Obtain the compiler's enum representation while preserving an old
+    // timing key, rather than depending on a hand-authored SQLValue shape.
+    let current = QueryResult(
+      columns: ["n"],
+      rows: [[.integer(1)]],
+      elapsedMicroseconds: 2_500)
+    var object =
+      try #require(
+        JSONSerialization.jsonObject(
+          with: JSONEncoder().encode(current)) as? [String: Any])
+    object.removeValue(forKey: "elapsedMicroseconds")
+    object["elapsedMilliseconds"] = 2.5
+    let decoded = try JSONDecoder().decode(
+      QueryResult.self,
+      from: JSONSerialization.data(withJSONObject: object))
+    #expect(decoded.elapsedMicroseconds == 2_500)
   }
 }

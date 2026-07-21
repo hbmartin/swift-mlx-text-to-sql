@@ -1,0 +1,32 @@
+{
+  "bundle_size_bytes": 1747786195,
+  "ex": 0.285,
+  "ex_by_tier": {
+    "1": 0.40816326530612246,
+    "2": 0.2781954887218045,
+    "3": 0.0
+  },
+  "failure_buckets": {
+    "empty-when-expected": 22,
+    "execution-error": 24,
+    "wrong-aggregation": 12,
+    "wrong-filter-or-value": 57,
+    "wrong-projection": 7,
+    "wrong-table-or-join": 21
+  },
+  "gcd": "off",
+  "gold": "gold_v2.jsonl",
+  "mean_entropy_correct": 0.2658830210853089,
+  "mean_entropy_wrong": 0.29986410774364447,
+  "mean_microseconds": 1342200,
+  "model_key": "xiyansql-qwencoder-3b",
+  "model_repository": "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
+  "model_revision": "0d35ce19d4e4d78d82d19b18b3e0f1c7a86eb535",
+  "n": 200,
+  "p95_microseconds": 1707220,
+  "run_id": "matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-1",
+  "schema_version": 1,
+  "seed": 1,
+  "temperature": 0.0,
+  "valid_sql_rate": 0.88
+}

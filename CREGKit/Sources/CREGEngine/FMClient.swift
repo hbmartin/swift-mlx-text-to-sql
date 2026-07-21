@@ -1,5 +1,5 @@
 import Foundation
-import FoundationModels
+@_weakLinked import FoundationModels
 
 /// Apple Foundation Model operations: the conversational glue around the SQL
 /// specialist (PRD §8.3). Every closure must be called through the
@@ -30,6 +30,7 @@ public struct FMClient: Sendable {
 // MARK: - Live implementation
 
 @Generable
+@available(macOS 26.0, iOS 26.0, *)
 private struct GateProbe {
   @Guide(description: "True only when the question is genuinely ambiguous and cannot be answered with a reasonable best guess.")
   var needsClarification: Bool
@@ -39,6 +40,14 @@ private struct GateProbe {
 
 extension FMClient {
   public static func live() -> FMClient {
+    if #available(macOS 26.0, iOS 26.0, *) {
+      return foundationModelClient()
+    }
+    return fallback()
+  }
+
+  @available(macOS 26.0, iOS 26.0, *)
+  private static func foundationModelClient() -> FMClient {
     FMClient(
       availability: {
         switch SystemLanguageModel.default.availability {

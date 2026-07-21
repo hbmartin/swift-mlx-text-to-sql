@@ -1,0 +1,32 @@
+{
+  "bundle_size_bytes": 1747786195,
+  "ex": 0.65,
+  "ex_by_tier": {
+    "1": 0.6530612244897959,
+    "2": 0.6917293233082706,
+    "3": 0.3333333333333333
+  },
+  "failure_buckets": {
+    "empty-when-expected": 2,
+    "execution-error": 15,
+    "wrong-aggregation": 2,
+    "wrong-filter-or-value": 28,
+    "wrong-projection": 6,
+    "wrong-table-or-join": 17
+  },
+  "gcd": "off",
+  "gold": "gold_v2.jsonl",
+  "mean_entropy_correct": 0.03203832056579271,
+  "mean_entropy_wrong": 0.1389946713058395,
+  "mean_microseconds": 1245750,
+  "model_key": "ft-xiyansql-qwencoder-3b",
+  "model_repository": null,
+  "model_revision": null,
+  "n": 200,
+  "p95_microseconds": 1559472,
+  "run_id": "matrix-fine-tune-gold-v2-ft-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-0",
+  "schema_version": 1,
+  "seed": 0,
+  "temperature": 0.0,
+  "valid_sql_rate": 0.925
+}

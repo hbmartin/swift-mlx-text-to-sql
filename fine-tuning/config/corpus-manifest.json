@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "generator_seed": 424242,
+  "gold_holdout": "eval/gold/gold_v2.jsonl",
+  "files": [
+    {
+      "path": "fine-tuning/synth/out/train.jsonl",
+      "sha256": "3a9ad4806692cdc89e8e68c77e29c5e1eedaefac5745c3a87bd4e4fb1758021e"
+    },
+    {
+      "path": "fine-tuning/synth/out/valid.jsonl",
+      "sha256": "b0e72fde78f50e80bc5bdd4664eb7e87695db8a52e042067cfb32ddfc0fcec33"
+    },
+    {
+      "path": "fine-tuning/synth/out/gate_stats.json",
+      "sha256": "d63b2ae38ec22276dc7706c34d9f12b5f301909e50f01c3c7412043abd22f442"
+    }
+  ]
+}

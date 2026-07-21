@@ -1,0 +1,109 @@
+{
+  "command": "/Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/.venv/bin/python3 /Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/eval/run_eval.py --model-key qwen3-1_7b --gold /Volumes/SanSmall/swift-mlx-text-to-sql/eval/gold/gold_v1.jsonl --gcd on --temperature 0.0 --seed 0 --run-id matrix-screen-gold-v1-qwen3-1_7b-gcd-on-t-0_0-s-0 --runs-dir /Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs",
+  "completed_at": "2026-07-20T17:31:24Z",
+  "configuration": {
+    "gcd": "on",
+    "item_seed_formula": "run_seed * 1000000 + zero_based_item_index",
+    "max_tokens": 512,
+    "run_seed": 0,
+    "temperature": 0.0,
+    "timing_unit": "microseconds",
+    "top_k": 0,
+    "top_p": 1.0
+  },
+  "dependencies": {
+    "mlx": "0.32.0",
+    "mlx-lm": "0.31.3",
+    "numpy": "2.5.1",
+    "transformers": "5.14.1",
+    "xgrammar": "0.2.3"
+  },
+  "git": {
+    "branch": "codex/pr1-review-fixes",
+    "commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+    "dirty": true
+  },
+  "hardware": {
+    "cpu_count": 14,
+    "machine": "arm64",
+    "model": "Mac16,7",
+    "os_version": "ProductName:\t\tmacOS\nProductVersion:\t\t15.7.7\nBuildVersion:\t\t24G720",
+    "physical_memory_bytes": 51539607552,
+    "platform": "macOS-15.7.7-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 17.0.0 (clang-1700.6.4.2)]",
+    "swift": "Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)\nTarget: arm64-apple-macosx15.0"
+  },
+  "inputs": {
+    "database": {
+      "path": "db/creg.sqlite",
+      "sha256": "7e2a7ce7cc40e2d3b449c8e8e24e6ae91867de08028c3aea7635abf33f754b38",
+      "size": 401408
+    },
+    "gold": {
+      "path": "eval/gold/gold_v1.jsonl",
+      "sha256": "4b164712d99890682a7f63a9deb6138ab243ef9007b12b54e18fb8497158d888",
+      "size": 18242
+    },
+    "grammar": {
+      "path": "CREGKit/Sources/CREGEngine/Resources/sql_grammar.ebnf",
+      "sha256": "53b5506c65bea25f6cfc93f3868aeb14e613da50e2ef15ec3b7aa418f1d77e60",
+      "size": 5001
+    },
+    "model_manifest": {
+      "path": "model-manifest.json",
+      "sha256": "5130104fab94eefc6e61269de217e1bfe0eea986db95a3963df58ca0a564a5dc",
+      "size": 11107
+    },
+    "schema_prompt": {
+      "path": "CREGKit/Sources/CREGEngine/Resources/schema_prompt.txt",
+      "sha256": "94736a402704e8db98f446a8d8c961780d3ff2d424920a0da8975fc36e0b1101",
+      "size": 2432
+    },
+    "swift_package_lock": {
+      "path": "CREGKit/Package.resolved",
+      "sha256": "162fc1560b1563392721b698e58a3fb04aadb7087731f04af42ed0a22d16267d",
+      "size": 8697
+    },
+    "system_prompt_sha256": "28f89133847e9383cb8a0426ba612735bb1fd278ad5246df578b8e799a9571b3",
+    "tokenizer": {
+      "path": "models/Qwen3-1.7B-4bit/tokenizer.json",
+      "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "size": 11422654
+    },
+    "uv_lock": {
+      "path": "fine-tuning/uv.lock",
+      "sha256": "034b816d176c52f6a0ba5eb5f657f1dc1a7fbd222edd564e32e75361adb91cd3",
+      "size": 343471
+    }
+  },
+  "item_count": 60,
+  "model": {
+    "artifact_lock": {
+      "path": "models/Qwen3-1.7B-4bit/.creg-artifact.json",
+      "sha256": "a43e5628a2b13398d2f3f422d65461ca1cb099d1972492bb6643672aab643d8f",
+      "size": 3724
+    },
+    "bundle_size_bytes": 984015687,
+    "directory_sha256": "369f48277b4b10bdec8a779d097b4156d9a63a900c47f13fa745b2a24ef64b3c",
+    "key": "qwen3-1_7b",
+    "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/models/Qwen3-1.7B-4bit",
+    "repository": "mlx-community/Qwen3-1.7B-4bit",
+    "revision": "3b1b1768f8f8cf8351c712464f906e86c2b8269e",
+    "training_provenance": null
+  },
+  "outputs": {
+    "items": {
+      "path": "items.jsonl",
+      "sha256": "c68f3b5a71af1d9e94818e4d75a9d4037408f64999b4cb56a57edb38b2fa4fd8"
+    },
+    "summary": {
+      "path": "summary.json",
+      "sha256": "3b3dcc7dc58fe7557fb389e1ee9a0d8b8d9adc194e7849b66c7c3e8ca674ac57"
+    }
+  },
+  "run_id": "matrix-screen-gold-v1-qwen3-1_7b-gcd-on-t-0_0-s-0",
+  "schema_version": 1,
+  "started_at": "2026-07-20T17:26:33Z",
+  "status": "complete"
+}

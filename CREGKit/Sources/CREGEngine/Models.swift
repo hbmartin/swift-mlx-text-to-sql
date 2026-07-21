@@ -28,16 +28,67 @@ public struct QueryResult: Sendable, Equatable, Codable {
   public var rows: [[SQLValue]]
   /// True when the row set was cut off at the client's row cap.
   public var isTruncated: Bool
-  public var elapsedMilliseconds: Double
+  /// Monotonic execution duration. Microseconds are the persisted canonical
+  /// unit across the app and both evaluation harnesses.
+  public var elapsedMicroseconds: Int64
 
-  public init(columns: [String], rows: [[SQLValue]], isTruncated: Bool = false, elapsedMilliseconds: Double = 0) {
+  public init(
+    columns: [String],
+    rows: [[SQLValue]],
+    isTruncated: Bool = false,
+    elapsedMicroseconds: Int64 = 0
+  ) {
     self.columns = columns
     self.rows = rows
     self.isTruncated = isTruncated
-    self.elapsedMilliseconds = elapsedMilliseconds
+    self.elapsedMicroseconds = elapsedMicroseconds
+  }
+
+  /// Source-compatible bridge for callers and stored histories created before
+  /// microseconds became the canonical timing unit.
+  public init(
+    columns: [String],
+    rows: [[SQLValue]],
+    isTruncated: Bool = false,
+    elapsedMilliseconds: Double
+  ) {
+    self.init(
+      columns: columns,
+      rows: rows,
+      isTruncated: isTruncated,
+      elapsedMicroseconds: Int64((elapsedMilliseconds * 1_000).rounded()))
   }
 
   public var rowCount: Int { rows.count }
+  public var elapsedMilliseconds: Double { Double(elapsedMicroseconds) / 1_000 }
+
+  enum CodingKeys: String, CodingKey {
+    case columns, rows, isTruncated, elapsedMicroseconds, elapsedMilliseconds
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    columns = try values.decode([String].self, forKey: .columns)
+    rows = try values.decode([[SQLValue]].self, forKey: .rows)
+    isTruncated = try values.decodeIfPresent(Bool.self, forKey: .isTruncated) ?? false
+    if let microseconds = try values.decodeIfPresent(
+      Int64.self, forKey: .elapsedMicroseconds)
+    {
+      elapsedMicroseconds = microseconds
+    } else {
+      let milliseconds =
+        try values.decodeIfPresent(Double.self, forKey: .elapsedMilliseconds) ?? 0
+      elapsedMicroseconds = Int64((milliseconds * 1_000).rounded())
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(columns, forKey: .columns)
+    try values.encode(rows, forKey: .rows)
+    try values.encode(isTruncated, forKey: .isTruncated)
+    try values.encode(elapsedMicroseconds, forKey: .elapsedMicroseconds)
+  }
 }
 
 /// One prior exchange, used to rewrite follow-ups into standalone questions.
@@ -64,7 +115,7 @@ public enum FMAvailability: Sendable, Equatable {
 }
 
 /// Context passed back to the SQL model when repairing a failed query.
-public struct RepairContext: Sendable, Equatable {
+public struct RepairContext: Sendable, Equatable, Codable {
   public var failedSQL: String
   public var errorMessage: String
 
@@ -74,16 +125,287 @@ public struct RepairContext: Sendable, Equatable {
   }
 }
 
-/// Output of one constrained SQL generation.
-public struct SQLGeneration: Sendable, Equatable {
+public struct CandidateID: RawRepresentable, Sendable, Equatable, Hashable, Codable,
+  CustomStringConvertible
+{
+  public var rawValue: String
+
+  public init(rawValue: String) {
+    self.rawValue = rawValue
+  }
+
+  public var description: String { rawValue }
+}
+
+public enum CandidateRole: Sendable, Equatable, Hashable, Codable {
+  case initial
+  case repair(attempt: Int)
+  case deterministicAnchor
+  case consistencySample(index: Int)
+}
+
+public enum GCDMode: String, Sendable, Equatable, Hashable, Codable {
+  case on
+  case off
+}
+
+public struct ModelReference: Sendable, Equatable, Hashable, Codable {
+  public var key: String
+  public var repository: String
+  public var revision: String
+  public var quantization: String
+
+  public init(
+    key: String,
+    repository: String,
+    revision: String,
+    quantization: String = "4-bit"
+  ) {
+    self.key = key
+    self.repository = repository
+    self.revision = revision
+    self.quantization = quantization
+  }
+
+  public static let selectionPending = ModelReference(
+    key: "selection-pending",
+    repository: "selection-pending",
+    revision: String(repeating: "0", count: 40)
+  )
+}
+
+public struct SQLGenerationRequest: Sendable, Equatable, Codable {
+  public var candidateID: CandidateID
+  public var role: CandidateRole
+  public var model: ModelReference
+  public var question: String
+  public var repair: RepairContext?
+  public var gcd: GCDMode
+  public var temperature: Double
+  public var seed: UInt64?
+  public var maxTokens: Int
+
+  public init(
+    candidateID: CandidateID,
+    role: CandidateRole,
+    model: ModelReference,
+    question: String,
+    repair: RepairContext? = nil,
+    gcd: GCDMode,
+    temperature: Double,
+    seed: UInt64?,
+    maxTokens: Int = 512
+  ) {
+    self.candidateID = candidateID
+    self.role = role
+    self.model = model
+    self.question = question
+    self.repair = repair
+    self.gcd = gcd
+    self.temperature = temperature
+    self.seed = seed
+    self.maxTokens = maxTokens
+  }
+}
+
+/// Output of one SQL generation.
+public struct SQLGeneration: Sendable, Equatable, Codable {
   public var sql: String
   public var tokensPerSecond: Double
+  public var tokenCount: Int?
+  public var elapsedMicroseconds: Int64
   public var modelName: String
 
-  public init(sql: String, tokensPerSecond: Double, modelName: String) {
+  public init(
+    sql: String,
+    tokensPerSecond: Double,
+    modelName: String,
+    tokenCount: Int? = nil,
+    elapsedMicroseconds: Int64 = 0
+  ) {
     self.sql = sql
     self.tokensPerSecond = tokensPerSecond
     self.modelName = modelName
+    self.tokenCount = tokenCount
+    self.elapsedMicroseconds = elapsedMicroseconds
+  }
+}
+
+public struct CandidateTelemetry: Sendable, Equatable, Codable, Identifiable {
+  public var id: CandidateID
+  public var role: CandidateRole
+  public var model: ModelReference
+  public var question: String
+  public var repairContext: RepairContext?
+  public var gcd: GCDMode
+  public var temperature: Double
+  public var seed: UInt64?
+  public var maxTokens: Int
+  public var sql: String?
+  public var tokensPerSecond: Double?
+  public var tokenCount: Int?
+  public var generationMicroseconds: Int64?
+  public var executionMicroseconds: Int64?
+  public var result: QueryResult?
+  public var error: String?
+  public var resultDigest: String?
+  public var selected: Bool
+
+  public init(request: SQLGenerationRequest) {
+    self.id = request.candidateID
+    self.role = request.role
+    self.model = request.model
+    self.question = request.question
+    self.repairContext = request.repair
+    self.gcd = request.gcd
+    self.temperature = request.temperature
+    self.seed = request.seed
+    self.maxTokens = request.maxTokens
+    self.selected = false
+  }
+}
+
+public enum VoteOutcome: Sendable, Equatable, Codable {
+  case consensus(resultDigest: String, agreement: Int, candidateCount: Int)
+  case noConsensus(anchorCandidateID: CandidateID, candidateCount: Int)
+  case anchorFailed(fallbackCandidateID: CandidateID, message: String)
+}
+
+public enum CandidateSelectionReason: String, Sendable, Equatable, Codable {
+  case initialSuccess
+  case repairSuccess
+  case majorityVote
+  case noConsensusDeterministicAnchor
+  case noConsensusAnchorFailed
+}
+
+public struct StageTimings: Sendable, Equatable, Codable {
+  public var rewriteMicroseconds: Int64?
+  public var gateMicroseconds: Int64?
+  public var groundingMicroseconds: Int64?
+  public var votingMicroseconds: Int64?
+  public var narrationMicroseconds: Int64?
+  public var totalMicroseconds: Int64
+
+  public init(totalMicroseconds: Int64 = 0) {
+    self.totalMicroseconds = totalMicroseconds
+  }
+}
+
+public struct TurnTelemetry: Sendable, Equatable, Codable {
+  public static let currentSchemaVersion = 1
+
+  public var schemaVersion: Int
+  public var originalQuestion: String
+  public var standaloneQuestion: String
+  public var rewriteApplied: Bool
+  public var rewriteUsedFM: Bool
+  public var gateUsedFM: Bool
+  public var narrationUsedFM: Bool
+  public var gateDecision: GateDecision?
+  public var stageTimings: StageTimings
+  public var candidates: [CandidateTelemetry]
+  public var repairAttempts: Int
+  public var voteTrigger: String?
+  public var voteOutcome: VoteOutcome?
+  public var selectedCandidateID: CandidateID?
+  public var selectionReason: CandidateSelectionReason?
+  public var grounding: GroundingReport?
+  public var terminalError: String?
+
+  public init(originalQuestion: String) {
+    self.schemaVersion = Self.currentSchemaVersion
+    self.originalQuestion = originalQuestion
+    self.standaloneQuestion = originalQuestion
+    self.rewriteApplied = false
+    self.rewriteUsedFM = false
+    self.gateUsedFM = false
+    self.narrationUsedFM = false
+    self.stageTimings = StageTimings()
+    self.candidates = []
+    self.repairAttempts = 0
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case schemaVersion
+    case originalQuestion
+    case standaloneQuestion
+    case rewriteApplied
+    case rewriteUsedFM
+    case gateUsedFM
+    case narrationUsedFM
+    case gateDecision
+    case stageTimings
+    case candidates
+    case repairAttempts
+    case voteTrigger
+    case voteOutcome
+    case selectedCandidateID
+    case selectionReason
+    case grounding
+    case terminalError
+  }
+
+  /// Schema-versioned tolerant decoding keeps chat history readable as
+  /// telemetry fields are added. Missing fields receive neutral values;
+  /// unsupported future schema versions fail explicitly.
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    guard
+      values.contains(.schemaVersion)
+        || values.contains(.originalQuestion)
+    else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .schemaVersion,
+        in: values,
+        debugDescription:
+          "Legacy developer info is not structured turn telemetry")
+    }
+    schemaVersion =
+      try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+    guard schemaVersion <= Self.currentSchemaVersion else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .schemaVersion,
+        in: values,
+        debugDescription:
+          "Unsupported turn telemetry schema \(schemaVersion); current is \(Self.currentSchemaVersion)")
+    }
+    originalQuestion =
+      try values.decodeIfPresent(String.self, forKey: .originalQuestion) ?? ""
+    standaloneQuestion =
+      try values.decodeIfPresent(String.self, forKey: .standaloneQuestion)
+      ?? originalQuestion
+    rewriteApplied =
+      try values.decodeIfPresent(Bool.self, forKey: .rewriteApplied) ?? false
+    rewriteUsedFM =
+      try values.decodeIfPresent(Bool.self, forKey: .rewriteUsedFM) ?? false
+    gateUsedFM =
+      try values.decodeIfPresent(Bool.self, forKey: .gateUsedFM) ?? false
+    narrationUsedFM =
+      try values.decodeIfPresent(Bool.self, forKey: .narrationUsedFM) ?? false
+    gateDecision =
+      try values.decodeIfPresent(GateDecision.self, forKey: .gateDecision)
+    stageTimings =
+      try values.decodeIfPresent(StageTimings.self, forKey: .stageTimings)
+      ?? StageTimings()
+    candidates =
+      try values.decodeIfPresent([CandidateTelemetry].self, forKey: .candidates)
+      ?? []
+    repairAttempts =
+      try values.decodeIfPresent(Int.self, forKey: .repairAttempts) ?? 0
+    voteTrigger =
+      try values.decodeIfPresent(String.self, forKey: .voteTrigger)
+    voteOutcome =
+      try values.decodeIfPresent(VoteOutcome.self, forKey: .voteOutcome)
+    selectedCandidateID =
+      try values.decodeIfPresent(CandidateID.self, forKey: .selectedCandidateID)
+    selectionReason =
+      try values.decodeIfPresent(
+        CandidateSelectionReason.self, forKey: .selectionReason)
+    grounding =
+      try values.decodeIfPresent(GroundingReport.self, forKey: .grounding)
+    terminalError =
+      try values.decodeIfPresent(String.self, forKey: .terminalError)
   }
 }
 
@@ -94,19 +416,4 @@ public enum TurnOutcome: Sendable, Equatable, Codable {
   case answered(result: QueryResult, narration: String, sql: String, notice: String?)
   case needsClarification(question: String)
   case failed(message: String)
-}
-
-/// One candidate in a self-consistency vote (correction layer C).
-public struct ConsistencyCandidate: Sendable, Equatable, Codable {
-  public var sql: String
-  public var rowCount: Int?
-  public var error: String?
-  public var agreedWithWinner: Bool
-
-  public init(sql: String, rowCount: Int?, error: String?, agreedWithWinner: Bool) {
-    self.sql = sql
-    self.rowCount = rowCount
-    self.error = error
-    self.agreedWithWinner = agreedWithWinner
-  }
 }

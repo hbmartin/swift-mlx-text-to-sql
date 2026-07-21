@@ -1,0 +1,114 @@
+{
+  "evaluation_runs": [
+    {
+      "manifest_sha256": "becae97c3393e1f7c8ebbc7a1414afbf95e467a9d0ed50498c03baa802e38954",
+      "run_id": "matrix-fine-tune-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0",
+      "summary_sha256": "82dfe226d8376069cc2a4ccc6f48551c41f02c74efbea31205a9226e3a0ff3a6"
+    },
+    {
+      "manifest_sha256": "83850b41bb1ec00343e485f5a7e3fbd092785b60edcd78f68cb7ed98354b9b77",
+      "run_id": "matrix-fine-tune-gold-v2-ft-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-0",
+      "summary_sha256": "c7a73729ea1855c26b89ae7fefb42f01372436efc3ddce10fa43e1dc26c6f348"
+    }
+  ],
+  "fresh_download_verified": true,
+  "fresh_snapshot": "models/fresh-downloads/qlora-xiyansql-qwencoder-3b-seed-424242",
+  "license": {
+    "path": "models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit/LICENSE",
+    "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+    "size": 11343
+  },
+  "licenses": [
+    {
+      "path": "models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit/LICENSE",
+      "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      "size": 11343
+    },
+    {
+      "path": "models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit/QWEN_LICENSE",
+      "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+      "size": 7388
+    }
+  ],
+  "model_card": {
+    "path": "models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit/README.md",
+    "sha256": "73ac7add06c1dbc037afd6807a1822ba550a7c83bf4d91ac86fdcb8cf8ba2c0b",
+    "size": 5575
+  },
+  "model_files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+      "size": 1570
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      "size": 11343
+    },
+    {
+      "path": "NOTICE",
+      "sha256": "bf8cecc65e55ad4e863623d147523815c2ba2a4da5757158aa86d175ca2dbeff",
+      "size": 712
+    },
+    {
+      "path": "QWEN_LICENSE",
+      "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+      "size": 7388
+    },
+    {
+      "path": "README.md",
+      "sha256": "73ac7add06c1dbc037afd6807a1822ba550a7c83bf4d91ac86fdcb8cf8ba2c0b",
+      "size": 5575
+    },
+    {
+      "path": "chat_template.jinja",
+      "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+      "size": 2507
+    },
+    {
+      "path": "config.json",
+      "sha256": "2b64883ee023c8889e74167aaf1678f483d4f7cd25c6ffe67913e7221853fa25",
+      "size": 918
+    },
+    {
+      "path": "generation_config.json",
+      "sha256": "d4f1faac1a2b20dfd9ec42963a12075a1ff362b5e584b92599b40c8fdd60d1b1",
+      "size": 156
+    },
+    {
+      "path": "model.safetensors",
+      "sha256": "21b5e02b183d01e91b9a34630bf49d8efb80032d6fcd4b9680cb45efa8b1fb52",
+      "size": 1736293583
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "sha256": "768ed307e13625ce3a2dd4d3126df3e2fb1c9c6486dfba548183402f4f1a3e5c",
+      "size": 66330
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8",
+      "size": 11421892
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "96a839ecb5b49320e11231e46a83fef3f26e9741deb9f1dc0939a6f273441b0c",
+      "size": 728
+    }
+  ],
+  "model_tree_sha256": "a3befce92b39afe29c0c0b01c534bd81731f151940470697d5f2038c89efd8c6",
+  "notice": {
+    "path": "models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit/NOTICE",
+    "sha256": "bf8cecc65e55ad4e863623d147523815c2ba2a4da5757158aa86d175ca2dbeff",
+    "size": 712
+  },
+  "public": true,
+  "publication_record": "eval/publications/publish-qlora-xiyansql-qwencoder-3b-seed-424242/publication.json",
+  "publication_run_id": "publish-qlora-xiyansql-qwencoder-3b-seed-424242",
+  "repository": "hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit",
+  "revision": "7f97a54819b9329338a5353266d6d2a1294eb341",
+  "schema_version": 1,
+  "training_fused_tree_sha256": "af4ec6faa63ef2dbae8731004f61e9d621c256ca826a7aa84451eabe239a0840",
+  "training_run_id": "qlora-xiyansql-qwencoder-3b-seed-424242"
+}

@@ -74,11 +74,14 @@ and every instantiation is execution-validated.
 ## 3. Synthetic training data (`fine-tuning/synth/`)
 
 `synth/generate_training.py`, **seed 424242** (deliberately different from
-the gold seed so entity samples differ). ~45 template families ×
-paraphrase rotation × entity/timeframe combinatorics → 2,006 raw
-candidates → **1,424 kept** (357 T1 / 1,003 T2 / 64 T3), split 1,353 train /
-71 valid. The tier-2 weighting is intentional: the stage-1 eval shows base
-models fail overwhelmingly on tier-2 canonical semantics.
+the gold seed so entity samples differ). Sixty-five recorded template
+families × paraphrase rotation × entity/timeframe combinatorics produced
+1,441 raw candidates. The committed gate retained **1,424** (357 T1 /
+1,003 T2 / 64 T3), split into 1,353 training and 71 validation records. The
+remaining 17 were 3 normalized gold-question collisions and 14 degenerate
+results; there were no execution failures, grammar failures, or within-batch
+duplicates. The tier-2 weighting is intentional: the stage-1 evaluation
+shows base models fail overwhelmingly on tier-2 canonical semantics.
 
 Quality gate per candidate (stats logged to `synth/out/gate_stats.json`):
 
@@ -102,8 +105,12 @@ ever sees them) and no clarification behavior (that's the FM ambiguity
 gate). EXISTS-based SQL is avoided in favor of `NOT IN (SELECT …)` because
 the frozen grammar does not include EXISTS.
 
-Leakage accounting: 2 of 2,006 raw candidates collided with gold questions
-and were dropped by the gate; the exact-match dedup plus seed separation is
-the leakage control for this round. Family *shapes* intentionally overlap
-with gold — teaching the schema's canonical query shapes is the entire
-purpose of in-domain fine-tuning (PRD §8.2).
+Leakage accounting: 3 of 1,441 raw candidates collided with normalized gold
+questions and were dropped by the gate. Before each finalist trains, the
+runner regenerates `train.jsonl`, `valid.jsonl`, and `gate_stats.json` into
+its immutable training-run directory and requires byte-for-byte equality
+with the SHA-256 values in `fine-tuning/config/corpus-manifest.json`.
+`gold_v2.jsonl` is recorded separately as an untouched 200-item holdout.
+Exact-match dedup plus seed separation is the leakage control for this round.
+Family *shapes* intentionally overlap with gold—teaching the schema's
+canonical query shapes is the purpose of in-domain fine-tuning (PRD §8.2).

@@ -1,0 +1,40 @@
+# Complete replacement for the incompletely recorded PR #1 training command.
+# The finalist runner must override `model` and `adapter_path`; sentinel values
+# make a missing override fail rather than selecting an implicit upstream.
+model: REQUIRED_FINALIST_MODEL_OVERRIDE
+train: true
+fine_tune_type: lora
+optimizer: adam
+optimizer_config:
+  adam: {}
+  adamw: {}
+  muon: {}
+  sgd: {}
+  adafactor: {}
+data: synth/out
+seed: 424242
+num_layers: 16
+batch_size: 4
+iters: 600
+val_batches: 25
+learning_rate: 0.0001
+steps_per_report: 10
+steps_per_eval: 200
+grad_accumulation_steps: 1
+resume_adapter_file: null
+adapter_path: REQUIRED_IMMUTABLE_ADAPTER_PATH_OVERRIDE
+save_every: 100
+test: false
+test_batches: 500
+max_seq_length: 2048
+config: null
+grad_checkpoint: false
+clear_cache_threshold: 0
+lr_schedule: null
+lora_parameters:
+  rank: 8
+  dropout: 0.0
+  scale: 20.0
+mask_prompt: true
+report_to: null
+project_name: creg-sql

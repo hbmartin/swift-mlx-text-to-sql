@@ -1,14 +1,30 @@
-| config | gold | n | EX | valid SQL | T1 | T2 | T3 | s/item | top failure buckets |
-|---|---|---|---|---|---|---|---|---|---|
-| s2-ft-3b-gcdoff | gold_v2.jsonl | 200 | **0.665** | 0.925 | 0.714 | 0.699 | 0.278 | 1.82 | wrong-filter-or-value:20, wrong-table-or-join:20, execution-error:15 |
-| s2-ft-3b-gcdon | gold_v2.jsonl | 200 | **0.665** | 0.930 | 0.714 | 0.699 | 0.278 | 2.87 | wrong-filter-or-value:21, wrong-table-or-join:20, execution-error:14 |
-| q25c-3b-gcdon | gold_v1.jsonl | 60 | **0.350** | 0.850 | 0.7 | 0.167 | 0.2 | 5.26 | wrong-filter-or-value:9, execution-error:9, wrong-projection:7 |
-| q25c-3b-gcdoff | gold_v1.jsonl | 60 | **0.333** | 0.783 | 0.7 | 0.133 | 0.2 | 2.72 | execution-error:13, wrong-filter-or-value:10, wrong-projection:6 |
-| xiyan-3b-gcdoff | gold_v1.jsonl | 60 | **0.317** | 0.867 | 0.65 | 0.2 | 0.0 | 3.94 | wrong-filter-or-value:15, execution-error:8, wrong-aggregation:6 |
-| xiyan-3b-gcdon | gold_v1.jsonl | 60 | **0.267** | 0.800 | 0.6 | 0.133 | 0.0 | 4.76 | wrong-filter-or-value:14, execution-error:12, wrong-projection:5 |
-| q25c-15b-gcdoff | gold_v1.jsonl | 60 | **0.233** | 0.717 | 0.6 | 0.067 | 0.0 | 1.06 | execution-error:17, wrong-filter-or-value:8, wrong-table-or-join:7 |
-| s2-q25c-3b-gcdoff | gold_v2.jsonl | 200 | **0.225** | 0.760 | 0.388 | 0.18 | 0.111 | 2.85 | execution-error:48, wrong-filter-or-value:39, wrong-table-or-join:37 |
-| q3-17b-gcdoff | gold_v1.jsonl | 60 | **0.200** | 0.750 | 0.45 | 0.1 | 0.0 | 1.97 | execution-error:15, wrong-filter-or-value:11, empty-when-expected:8 |
-| q25c-15b-gcdon | gold_v1.jsonl | 60 | **0.200** | 0.533 | 0.55 | 0.033 | 0.0 | 3.18 | execution-error:28, wrong-aggregation:6, wrong-table-or-join:6 |
-| q3-17b-gcdon | gold_v1.jsonl | 60 | **0.183** | 0.733 | 0.45 | 0.067 | 0.0 | 6.55 | execution-error:16, wrong-filter-or-value:11, empty-when-expected:8 |
-| s2-q25c-3b-gcdon | gold_v2.jsonl | 200 | **0.155** | 0.675 | 0.286 | 0.113 | 0.111 | 6.29 | execution-error:65, wrong-filter-or-value:39, wrong-table-or-join:29 |
+# Verified production-selection leaderboard
+
+This leaderboard contains each artifact’s statistically selected
+configuration over all 200 gold_v2 items and five seeds. The complete
+four-way decision is
+`eval/analyses/production-cddac7c992c20eae/analysis.json`.
+
+| Rank | Artifact | GCD | Temp. | EX | Valid SQL | Worst-tier EX | p95 |
+|---:|---|:---:|---:|---:|---:|---:|---:|
+| 1 | **XiYanSQL-QwenCoder-3B QLoRA** | on | 0.0 | **65.50%** | **93.00%** | **38.89%** | 3.056 s |
+| 2 | Qwen2.5-Coder-3B QLoRA | on | 0.0 | 52.50% | 89.50% | 33.33% | 3.017 s |
+| 3 | XiYanSQL-QwenCoder-3B base | off | 0.0 | 28.50% | 88.00% | 0.00% | 1.712 s |
+| 4 | Qwen2.5-Coder-3B base | off | 0.0 | 22.00% | 76.00% | 11.11% | 2.842 s |
+
+Every artifact retained temperature 0 because no nonzero setting improved
+mean EX by at least two points with a paired interval excluding zero. The
+XiYan fine-tune is the sole production tie-pool member; its +13.0-point
+advantage over the Qwen fine-tune has a paired 95% interval of
+[+6.5, +19.5] points.
+
+The selected artifact subsequently passed N=3 calibration and the blocking
+all-200 Swift parity gate. Production single-shot results are 65.50% EX /
+93.00% valid SQL in Python and 65.00% / 92.00% in Swift. The calibrated
+always-vote policy reached 66.80% EX / 95.40% valid SQL over 1,000
+item-trials. `model-manifest.json` now marks the exact public revision and
+generation configuration `verified`.
+
+Historical PR #1 tables are preserved under
+`eval/runs/legacy-pr1-merged/` and marked `incomplete-provenance`; they are not
+current leaderboard entries.

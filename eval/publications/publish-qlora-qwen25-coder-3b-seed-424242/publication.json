@@ -1,0 +1,99 @@
+{
+  "evaluation_runs": [
+    {
+      "manifest_sha256": "d4fc59848b564687150548b3fb18c41e1264d7a3288f5a20c2b9e781a4de3b93",
+      "run_id": "matrix-fine-tune-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-0",
+      "summary_sha256": "0b36868b348f7f22aac919f726cd562eaa1ad292277f04c92d0c5de0fb879ec6"
+    },
+    {
+      "manifest_sha256": "81c926f40d9c922cdcd5f73a9ceee3928ab76d610512e76ca0ffc12c2a4ac645",
+      "run_id": "matrix-fine-tune-gold-v2-ft-qwen25-coder-3b-gcd-off-t-0_0-s-0",
+      "summary_sha256": "37c09bfc5e42df537c82268c7a7614e7488313ed525a9781b1a6e63f62790f87"
+    }
+  ],
+  "fresh_download_verified": true,
+  "fresh_snapshot": "models/fresh-downloads/qlora-qwen25-coder-3b-seed-424242",
+  "license": {
+    "path": "models/creg-sql-qwen25-coder-3b-mlx-4bit/LICENSE",
+    "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+    "size": 7388
+  },
+  "licenses": [
+    {
+      "path": "models/creg-sql-qwen25-coder-3b-mlx-4bit/LICENSE",
+      "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+      "size": 7388
+    }
+  ],
+  "model_card": {
+    "path": "models/creg-sql-qwen25-coder-3b-mlx-4bit/README.md",
+    "sha256": "67490ee99af978f632d81cc32dc10a355281d45c91e6146bc84b99edf13372ff",
+    "size": 5566
+  },
+  "model_files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+      "size": 1570
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+      "size": 7388
+    },
+    {
+      "path": "NOTICE",
+      "sha256": "bf8cecc65e55ad4e863623d147523815c2ba2a4da5757158aa86d175ca2dbeff",
+      "size": 712
+    },
+    {
+      "path": "README.md",
+      "sha256": "67490ee99af978f632d81cc32dc10a355281d45c91e6146bc84b99edf13372ff",
+      "size": 5566
+    },
+    {
+      "path": "chat_template.jinja",
+      "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+      "size": 2507
+    },
+    {
+      "path": "config.json",
+      "sha256": "814fefdcfda3055e4de85557bf7f33abfff411cb68667d1b77566c562a5f0697",
+      "size": 865
+    },
+    {
+      "path": "model.safetensors",
+      "sha256": "71a82d5e6420e0979c511441923a8df6e2418bad87745bf04612cffb5564cdf9",
+      "size": 1736292896
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "sha256": "768ed307e13625ce3a2dd4d3126df3e2fb1c9c6486dfba548183402f4f1a3e5c",
+      "size": 66330
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8",
+      "size": 11421892
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "ee8f6d44bf2353e6d3686c3adaf70e1ccfe9e6ed6822d0ab2f28cafdd7754792",
+      "size": 729
+    }
+  ],
+  "model_tree_sha256": "c09f7ec567a5d45dbbb3fbbd35b1e9db6933b6db5bf0e6ab1fd772af275c5204",
+  "notice": {
+    "path": "models/creg-sql-qwen25-coder-3b-mlx-4bit/NOTICE",
+    "sha256": "bf8cecc65e55ad4e863623d147523815c2ba2a4da5757158aa86d175ca2dbeff",
+    "size": 712
+  },
+  "public": true,
+  "publication_record": "eval/publications/publish-qlora-qwen25-coder-3b-seed-424242/publication.json",
+  "publication_run_id": "publish-qlora-qwen25-coder-3b-seed-424242",
+  "repository": "hbmartin/creg-sql-mlx-community-qwen2-5-coder-3b-instruct-4bit-mlx-4bit",
+  "revision": "430d38301eedb6c61e48c25c7d38a2b227bf56c6",
+  "schema_version": 1,
+  "training_fused_tree_sha256": "5cbda9c9115f01df2a8a3a23a0de0a07447de6f3a5053f8c05a89c6bf33a3aa6",
+  "training_run_id": "qlora-qwen25-coder-3b-seed-424242"
+}

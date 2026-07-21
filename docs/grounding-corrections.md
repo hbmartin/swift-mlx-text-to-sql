@@ -1,89 +1,78 @@
-# Grounding & correction-layer notes
+# Grounding and correction behavior
 
-What guards against wrong answers, layer by layer, and the judgment calls
-made while building them.
+The runtime keeps valid query results available while making uncertainty and
+degradation explicit. Every generated Candidate Query retains its identity
+through generation, execution, repair, grounding, voting, persistence, and
+developer rendering.
 
-## Structural layer: grammar-constrained decoding
+## Structural and execution defenses
 
-The grammar (`sql_grammar.ebnf`, generated from the live DB by
-`tools/generate_grammar.py`) makes invalid output *unrepresentable*:
-SELECT-only; FROM/JOIN targets restricted to the seven real tables plus
-CTE names locked to `cte`/`cte0`–`cte9` (so a hallucinated table can never
-be a row source); qualified column references restricted to real columns;
-no PRAGMA/ATTACH/multi-statement.
+`sql_grammar.ebnf` restricts constrained generation to one read-only SQLite
+query over the frozen schema. The database is separately opened read-only
+with an authorizer that permits only read operations. A SQLite execution
+error triggers at most two identified repair candidates; each repair records
+the failed SQL and exact error without overwriting the initial candidate.
 
-Two deliberate openings, with rationale:
+## Column-aware Grounding Checks
 
-1. **Free string literals.** `'...'` contents are unconstrained — needed for
-   LIKE patterns and name matching. Consequence: wrong literals are the top
-   remaining silent-failure channel → handled by heuristic layer A below.
-   Enumerating low-cardinality values into the *prompt* (schema_prompt.txt
-   lists actual values for market/status/type/etc.) is the grounding
-   mechanism instead; grammar-level enumeration would add nothing while free
-   strings exist.
-2. **Bare lowercase identifiers as expressions.** Required so SELECT aliases
-   work in ORDER BY / GROUP BY / HAVING (`ORDER BY vacancy`). Validated by
-   round-tripping the gold set through the grammar — without this, the
-   canonical vacancy query itself was unrepresentable. Consequence: a
-   made-up bare identifier compiles but fails at execution → caught by
-   layer 2 (self-repair). Qualified references (`p.xxx`) stay fully
-   constrained.
+Grounding is conservative and runs only when a successful query returns no
+rows (or a single all-NULL scalar needs a result-shape notice).
 
-Behind the grammar: read-only SQLite connection + `sqlite3_set_authorizer`
-denying everything but SELECT/READ/FUNCTION/RECURSIVE plus
-TRANSACTION/SAVEPOINT (GRDB wraps reads in transactions; on a read-only
-connection these are harmless — discovered when the authorizer's first
-version broke `BEGIN DEFERRED TRANSACTION`).
+- Only string literals in supported `=` and `IN` predicates are considered.
+- Qualified columns resolve through declared table aliases.
+- An unqualified column resolves only when exactly one source table declares
+  it.
+- Checks run only for the declared entity/categorical column catalog.
+- A literal is compared only with the complete distinct value domain of its
+  resolved column. Suggestions therefore come from that same column.
+- Findings contain the qualified column, literal, and optional suggestion.
 
-## Layer 2: execution-error self-repair
+Dates, free-form columns, LIKE patterns, ranges, unresolved columns, and
+expression-wrapped predicates are skipped with a typed reason. They never
+borrow values from a global cross-column catalog and never produce a
+correction claim.
 
-On SQLite error, re-prompt the same model with the failed SQL + error string,
-≤ 2 retries, then graceful failure. Implemented in `QueryPipeline`; exercised
-by unit tests (error → repair → success, and triple-failure → give-up).
+Successful complete value-domain loads are cached per qualified column.
+Errors and row-capped partial loads are never cached. A catalog error records
+the exact table, column, and error as a Grounding Degradation; the valid query
+result is returned, unsupported correction notices are suppressed, and a
+later turn retries the load.
 
-## Layer A: result-shape + value-grounding heuristics (always on)
+## Voting
 
-`ResultHeuristics` (CREGEngine): on every successful execution —
+When voting is configured, every vote contains an executed temperature-zero
+Deterministic Anchor. The calibrated portfolio is exactly that anchor plus
+`N-1` explicitly identified candidates at the manifest's sample temperature.
+If the normal production candidate used a nonzero temperature, it remains in
+telemetry but is outside this calibrated portfolio; it is available only for
+the visible degraded fallback when the anchor fails and no group wins.
+Candidate results are grouped by the shared typed canonical representation:
 
-- **Empty result + unmatched literal** → fuzzy match against an entity
-  catalog (property/tenant/fund names, markets, submarkets, cities, lenders,
-  appraisers; loaded once from the read-only DB). Containment/prefix match
-  first, then edit distance with an acceptance bound of max(2, len/4).
-  Produces "Nothing matched 'Kingsly Tower' — did you mean 'Kingsley
-  Tower'?" as a notice on the answer.
-- **Empty result, literals fine** → "a filter may be too narrow" notice.
-- **Single all-NULL row** (degenerate aggregate) → notice.
+- INTEGER and REAL share a numeric domain after four-decimal half-even
+  normalization.
+- TEXT, full BLOB bytes, and NULL remain distinct domains.
+- Duplicate rows remain significant; row order and column labels do not.
+- Row arity must match, and a truncated result is not a complete Result
+  Group member.
 
-Literals skipped: dates/numbers/LIKE fragments and short enum-ish strings
-(< 3 chars). Notices ride on the answer (`TurnOutcome.answered.notice`) —
-per the PRD's product philosophy, show the confident answer and make
-correction one tap/turn, don't block.
+A Result Group wins only with more than half of all configured candidates,
+including candidates that failed. If no group reaches that threshold, the
+complete Deterministic Anchor is selected and the answer shows a concise No
+Consensus notice. If the anchor fails or is truncated, a successful primary
+result may be retained only with the distinct visible degraded-fallback
+notice and telemetry reason. There is no plurality winner or iteration-order
+tie-break.
 
-## Layers C + D: self-consistency voting, uncertainty-gated
+## Telemetry
 
-Layer C (`QueryPipeline`): sample N−1 extra candidates at temperature 0.7
-alongside the greedy one, execute all, cluster by result signature
-(order-insensitive multiset of rows, reals rounded to 4dp — identical
-normalization to the harness's EX), majority wins; the vote and candidates
-are surfaced in developer mode and the event log.
+The immutable `TurnTelemetry` record includes the original and standalone
+question, FM and gate decisions, integer-microsecond stage durations, every
+candidate request and result, repairs, grounding checks/skips/degradations,
+vote trigger/outcome, selected candidate, and selection reason. Candidate
+rows are retained to the applicable cap (500 in the app, 10,000 in
+evaluation), including explicit truncation status. Chat history, final JSONL,
+and developer mode use this same record.
 
-Layer D decides *when* C runs. Design decision for v1 Swift: **deterministic
-proxies** — a heuristic-A finding, or a repaired execution, triggers the
-vote (or `alwaysVote` for ablation). True token-entropy gating lives in the
-Python harness (`run_eval.py` logs per-token pre-mask entropy for every gold
-item, correct vs wrong) so the threshold can be chosen empirically; wiring
-entropy into the Swift path needs a custom token iterator around
-MLXStructured's `GrammarMaskedLogitProcessor` and is deferred until the
-harness shows the entropy signal separates correct from wrong answers
-(stage-1 data: means are close — 0.19 correct vs 0.14 wrong on the first
-config — so the proxy triggers are currently the *better* gate).
-
-## Layer B: narration-as-confirmation
-
-The FM's one-line narration restates what was looked at; the user judges
-intent. In place since M2; templated fallback when the FM is unavailable.
-
-## Deferred (v2, per PRD)
-
-Layer E — explicit FM round-trip semantic check (narration vs question
-divergence detection).
+Exported telemetry contains portfolio questions, SQL, and complete result
+rows. Treat it as portfolio data and share it only through an approved
+channel.

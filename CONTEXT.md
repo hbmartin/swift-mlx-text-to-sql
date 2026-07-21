@@ -50,8 +50,36 @@ Mortgage debt secured by a property (lender, balances, rate, maturity, LTV, DSCR
 **Standalone Question**:
 A user turn after follow-up rewriting: self-contained, answerable without conversation context.
 
+**Candidate Query**:
+One identified SQL proposal generated for a turn, including its role, model revision, decoding configuration, seed, execution, and result.
+_Avoid_: sample, answer candidate
+
+**Result Group**:
+Candidate Queries whose complete typed result rows have the same canonical SHA-256 identity; row order is ignored, duplicate rows remain significant.
+_Avoid_: result signature, hash bucket
+
+**Consensus**:
+A Result Group containing a strict majority of the configured Candidate Queries.
+_Avoid_: plurality, best vote
+
+**No Consensus**:
+A vote in which no Result Group contains a strict majority of the configured Candidate Queries; the Deterministic Anchor is selected.
+_Avoid_: tie
+
+**Deterministic Anchor**:
+An executed temperature-zero Candidate Query that provides the stable fallback for every vote.
+_Avoid_: greedy winner, default candidate
+
 **Ambiguity Gate**:
 The decision point that either passes a standalone question through or asks the user one clarifying question.
+
+**Grounding Check**:
+A comparison between one literal in a supported equality or membership predicate and the complete value domain of its unambiguously resolved entity or categorical column.
+_Avoid_: literal scan, global catalog check
+
+**Grounding Degradation**:
+A failed or incomplete Grounding Check that leaves a valid query result usable, suppresses an unsupported correction notice, and remains eligible for retry on a later turn.
+_Avoid_: grounding failure, cache miss
 
 **Narration**:
 The one-line plain-English summary of what was looked at and found; doubles as a back-translation of intent for the user to judge.
@@ -66,4 +94,12 @@ The four defenses against wrong answers: (A) result-shape and value-grounding he
 Hand-verified (question → SQL → result) triples held out from all training data; the measuring stick for accuracy.
 
 **Execution Accuracy (EX)**:
-The fraction of gold-set questions whose predicted SQL returns the same result set as the gold SQL, order-insensitive.
+The fraction of Gold Set questions whose Candidate Query returns the same complete typed row multiset as the gold SQL; numeric values use four-decimal half-even normalization.
+
+**Evaluation Run**:
+One immutable model, Gold Set, grammar mode, temperature, and seed execution whose command, inputs, environment, item rows, timings, and summary are content-addressed.
+_Avoid_: result file, benchmark output
+
+**Production Generation Configuration**:
+The manifest-backed model revision, grammar mode, temperatures, sampling limits, and voting policy used by the app and parity harness.
+_Avoid_: runtime defaults, model settings

@@ -1,0 +1,15 @@
+CREG Qwen Attribution and Modification Notice
+
+Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT,
+Copyright (c) Alibaba Cloud. All Rights Reserved.
+
+Built/Improved using Qwen.
+
+CREG distributes only the exact model revision identified by its model
+manifest and accompanying model card. A CREG fine-tuned artifact modifies its
+identified base through QLoRA adapter training, fusion, and verified MLX 4-bit
+materialization. The model card identifies the base and intermediate authors,
+code/data revisions, training configuration, and artifact hashes.
+
+Qwen-derived CREG artifacts are for non-commercial research and evaluation
+only. Review the included Qwen Research License before use or redistribution.

@@ -1,0 +1,32 @@
+{
+  "bundle_size_bytes": 1747800455,
+  "ex": 0.51,
+  "ex_by_tier": {
+    "1": 0.5102040816326531,
+    "2": 0.5488721804511278,
+    "3": 0.2222222222222222
+  },
+  "failure_buckets": {
+    "empty-when-expected": 7,
+    "execution-error": 28,
+    "wrong-aggregation": 1,
+    "wrong-filter-or-value": 40,
+    "wrong-projection": 8,
+    "wrong-table-or-join": 14
+  },
+  "gcd": "on",
+  "gold": "gold_v2.jsonl",
+  "mean_entropy_correct": 0.023866821782281642,
+  "mean_entropy_wrong": 0.11211328110607208,
+  "mean_microseconds": 2411546,
+  "model_key": "ft-qwen25-coder-3b",
+  "model_repository": "hbmartin/creg-sql-mlx-community-qwen2-5-coder-3b-instruct-4bit-mlx-4bit",
+  "model_revision": "430d38301eedb6c61e48c25c7d38a2b227bf56c6",
+  "n": 200,
+  "p95_microseconds": 3125684,
+  "run_id": "matrix-temperature-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_7-s-2",
+  "schema_version": 1,
+  "seed": 2,
+  "temperature": 0.7,
+  "valid_sql_rate": 0.86
+}

@@ -1,18 +1,23 @@
-"""Eval harness runner: gold set -> model -> (optional GCD) -> execute -> EX.
+"""Manifest-backed text-to-SQL evaluation runner.
 
-One invocation = one config cell of the PRD §12 matrix. Emits per-item results
-JSONL and a summary JSON into eval/out/, and prints the summary.
+One invocation is one immutable model × gold × GCD × temperature × seed cell.
+It emits manifest.json, items.jsonl, and summary.json under eval/runs/<run-id>.
 
-Usage:
-  uv run python -m eval.run_eval --model ../models/Qwen2.5-Coder-3B-Instruct-4bit \
-      --gcd on --gold ../eval/gold/gold_v1.jsonl --label qwen25c-3b-gcd
+Example:
+  uv run python -m eval.run_eval \
+    --model-key qwen25-coder-3b --gcd on --temperature 0 --seed 0 \
+    --gold ../eval/gold/gold_v1.jsonl
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import re
+import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 import numpy as np
@@ -20,40 +25,56 @@ import xgrammar
 from mlx_lm import generate, load
 from mlx_lm.sample_utils import make_sampler
 
-from eval.ex import ExecutionError, execute, results_match
+from eval.ex import (
+    ExecutionError,
+    QueryExecution,
+    execute_with_metadata,
+    result_digest,
+    results_match,
+    typed_rows,
+)
+from eval.prompt_contract import build_system_prompt
+from eval.run_artifacts import (
+    DEFAULT_RUNS_DIR,
+    REPO_ROOT,
+    command_line,
+    create_run_directory,
+    default_run_id,
+    dependency_versions,
+    git_provenance,
+    hardware_provenance,
+    input_hash,
+    percentile,
+    sha256_bytes,
+    sha256_file,
+    write_json,
+)
+from tools.fetch_model import ArtifactError, load_manifest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 DB = REPO_ROOT / "db" / "creg.sqlite"
-GRAMMAR_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "sql_grammar.ebnf"
-SCHEMA_PROMPT_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "schema_prompt.txt"
-OUT_DIR = REPO_ROOT / "eval" / "out"
-
-# Mirrors the app's system prompt (SQLGenClient.swift) for Mac/app parity.
-SYSTEM_PROMPT = """You translate questions about a commercial real estate portfolio into a single \
-SQLite SELECT statement. Only SELECT is possible. Use only these tables and columns:
-
-{schema}
-
-Rules:
-- Vacancy means 1 - occupancy_rate from each property's latest monthly \
-property_financials row, never derived from leases.
-- "Current value" of a property is properties.current_market_value; the \
-valuations table is appraisal history only.
-- Dates are ISO text (YYYY-MM-DD); today is 2026-07-01.
-- Rates are 0-1 fractions.
-Output only the SQL statement."""
+MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
+GRAMMAR_PATH = (
+    REPO_ROOT
+    / "CREGKit"
+    / "Sources"
+    / "CREGEngine"
+    / "Resources"
+    / "sql_grammar.ebnf"
+)
+SCHEMA_PROMPT_PATH = (
+    REPO_ROOT
+    / "CREGKit"
+    / "Sources"
+    / "CREGEngine"
+    / "Resources"
+    / "schema_prompt.txt"
+)
 
 AGG_RE = re.compile(r"\b(COUNT|SUM|AVG|MIN|MAX|TOTAL)\s*\(", re.I)
 TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.I)
 
 
 class XGrammarLogitsProcessor:
-    """Grammar-constrained decoding for mlx_lm via xgrammar token bitmasks.
-
-    Also records mean pre-mask token entropy per step — the signal the M4
-    uncertainty gate (correction layer D) thresholds on.
-    """
-
     def __init__(self, compiled_grammar, vocab_size: int):
         self.matcher = xgrammar.GrammarMatcher(compiled_grammar)
         self.bitmask = xgrammar.allocate_token_bitmask(1, vocab_size)
@@ -67,47 +88,46 @@ class XGrammarLogitsProcessor:
                 self.matcher.accept_token(int(tokens[-1].item()))
         self.prev_len = tokens.shape[-1]
         if self.matcher.is_terminated():
-            return logits  # grammar complete; let the model emit EOS freely
+            return logits
 
         flat = np.array(logits.astype(mx.float32)).reshape(-1)
-        probs = np.exp(flat - flat.max())
-        probs /= probs.sum()
-        self.entropies.append(float(-(probs * np.log(probs + 1e-12)).sum()))
+        probabilities = np.exp(flat - flat.max())
+        probabilities /= probabilities.sum()
+        self.entropies.append(
+            float(-(probabilities * np.log(probabilities + 1e-12)).sum())
+        )
 
         self.matcher.fill_next_token_bitmask(self.bitmask)
         bits = self.bitmask.numpy().astype(np.uint32)
-        allowed = ((bits[:, :, None] >> np.arange(32, dtype=np.uint32)) & 1).astype(bool)
+        allowed = (
+            (bits[:, :, None] >> np.arange(32, dtype=np.uint32)) & 1
+        ).astype(bool)
         allowed = allowed.reshape(1, -1)[:, : self.vocab_size]
-
-        width = logits.shape[-1]
-        mask = np.full((width,), -np.inf, dtype=np.float32)
-        n = min(width, self.vocab_size)
-        mask[:n][allowed[0, :n]] = 0.0
+        mask = np.full((logits.shape[-1],), -np.inf, dtype=np.float32)
+        count = min(logits.shape[-1], self.vocab_size)
+        mask[:count][allowed[0, :count]] = 0.0
         return logits + mx.array(mask).reshape(logits.shape[-1:])
 
 
 class EntropyOnlyProcessor:
-    """Records entropy without constraining (for GCD-off runs)."""
-
     def __init__(self):
         self.entropies: list[float] = []
 
     def __call__(self, tokens: mx.array, logits: mx.array) -> mx.array:
         flat = np.array(logits.astype(mx.float32)).reshape(-1)
-        probs = np.exp(flat - flat.max())
-        probs /= probs.sum()
-        self.entropies.append(float(-(probs * np.log(probs + 1e-12)).sum()))
+        probabilities = np.exp(flat - flat.max())
+        probabilities /= probabilities.sum()
+        self.entropies.append(
+            float(-(probabilities * np.log(probabilities + 1e-12)).sum())
+        )
         return logits
 
 
 def strip_special_tokens(text: str) -> str:
-    """Some tokenizers leak chat-template specials (<|im_end|>) into decoded
-    text; strip them before executing anything."""
     return re.sub(r"<\|[a-zA-Z0-9_]+\|>", "", text)
 
 
 def extract_sql(text: str) -> str:
-    """Pull the SQL statement out of unconstrained model output."""
     text = text.strip()
     fence = re.search(r"```(?:sql)?\s*(.*?)```", text, re.S | re.I)
     if fence:
@@ -118,130 +138,377 @@ def extract_sql(text: str) -> str:
     return text.split(";")[0].strip()
 
 
-def taxonomy(predicted_sql: str, gold_sql: str, error: str | None,
-             predicted_rows, gold_rows) -> str:
+def taxonomy(
+    predicted_sql: str,
+    gold_sql: str,
+    error: str | None,
+    predicted: QueryExecution | None,
+    gold: QueryExecution,
+) -> str:
     if error is not None:
         return "execution-error"
-    if predicted_rows is not None and gold_rows and len(predicted_rows) == 0:
+    if predicted is not None and predicted.is_truncated:
+        return "predicted-result-truncated"
+    if gold.is_truncated:
+        return "gold-result-truncated"
+    if predicted is not None and len(gold) > 0 and len(predicted) == 0:
         return "empty-when-expected"
-    pred_tables = set(t.lower() for t in TABLE_RE.findall(predicted_sql))
-    gold_tables = set(t.lower() for t in TABLE_RE.findall(gold_sql))
-    if pred_tables != gold_tables:
+    predicted_tables = {table.lower() for table in TABLE_RE.findall(predicted_sql)}
+    gold_tables = {table.lower() for table in TABLE_RE.findall(gold_sql)}
+    if predicted_tables != gold_tables:
         return "wrong-table-or-join"
-    pred_aggs = sorted(a.upper() for a in AGG_RE.findall(predicted_sql))
-    gold_aggs = sorted(a.upper() for a in AGG_RE.findall(gold_sql))
-    if pred_aggs != gold_aggs:
+    predicted_aggregates = sorted(
+        aggregate.upper() for aggregate in AGG_RE.findall(predicted_sql)
+    )
+    gold_aggregates = sorted(
+        aggregate.upper() for aggregate in AGG_RE.findall(gold_sql)
+    )
+    if predicted_aggregates != gold_aggregates:
         return "wrong-aggregation"
-    if (predicted_rows is not None and gold_rows is not None
-            and len(predicted_rows) > 0 and len(gold_rows) > 0
-            and len(predicted_rows[0]) != len(gold_rows[0])):
+    if (
+        predicted
+        and gold
+        and len(predicted[0]) != len(gold[0])
+    ):
         return "wrong-projection"
     return "wrong-filter-or-value"
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="local path or HF id")
-    parser.add_argument("--gcd", choices=["on", "off"], default="on")
-    parser.add_argument("--gold", type=Path, default=REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl")
-    parser.add_argument("--label", required=True, help="config label for output files")
+def artifact_path(artifact: dict[str, Any], models_dir: Path) -> Path:
+    conversion = artifact.get("conversion")
+    directory = (
+        conversion["output_directory"]
+        if conversion is not None
+        else artifact["local_directory"]
+    )
+    return models_dir / directory
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-key", required=True)
+    parser.add_argument("--manifest", type=Path, default=MODEL_MANIFEST)
+    parser.add_argument("--models-dir", type=Path, default=REPO_ROOT / "models")
+    parser.add_argument("--gcd", choices=["on", "off"], required=True)
+    parser.add_argument("--temperature", type=float, required=True)
+    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument(
+        "--gold",
+        type=Path,
+        default=REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl",
+    )
+    parser.add_argument("--run-id")
+    parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     parser.add_argument("--max-tokens", type=int, default=512)
-    parser.add_argument("--max-items", type=int, default=None)
-    args = parser.parse_args()
+    parser.add_argument("--max-items", type=int)
+    return parser.parse_args()
 
-    schema = SCHEMA_PROMPT_PATH.read_text().strip()
-    system_prompt = SYSTEM_PROMPT.format(schema=schema)
-    items = [json.loads(line) for line in args.gold.read_text().splitlines() if line.strip()]
-    if args.max_items:
+
+def main() -> None:
+    args = parse_args()
+    if args.temperature < 0:
+        raise SystemExit("--temperature must be non-negative")
+    manifest_path = args.manifest.resolve()
+    manifest = load_manifest(manifest_path)
+    artifacts = {model["key"]: model for model in manifest["models"]}
+    if args.model_key not in artifacts:
+        raise SystemExit(
+            f"unknown --model-key {args.model_key!r}; choose one of {sorted(artifacts)}"
+        )
+    artifact = artifacts[args.model_key]
+    model_path = artifact_path(artifact, args.models_dir.resolve())
+    artifact_lock = model_path / ".creg-artifact.json"
+    if not model_path.is_dir() or not artifact_lock.is_file():
+        raise SystemExit(
+            f"verified model is missing: run `uv run python tools/fetch_model.py "
+            f"--model {args.model_key}` first"
+        )
+
+    gold_path = args.gold.resolve()
+    items = [
+        json.loads(line)
+        for line in gold_path.read_text().splitlines()
+        if line.strip()
+    ]
+    if args.max_items is not None:
         items = items[: args.max_items]
+    if not items:
+        raise SystemExit("gold set is empty")
 
-    model, tokenizer = load(args.model)
+    run_id = args.run_id or default_run_id(
+        args.model_key, gold_path, args.gcd, args.temperature, args.seed
+    )
+    run_directory = create_run_directory(args.runs_dir.resolve(), run_id)
+    schema = SCHEMA_PROMPT_PATH.read_text().strip()
+    system_prompt = build_system_prompt(schema)
+    artifact_lock_payload = json.loads(artifact_lock.read_text())
+
+    run_manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "status": "running",
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "command": command_line(),
+        "git": git_provenance(),
+        "hardware": hardware_provenance(),
+        "dependencies": dependency_versions(),
+        "model": {
+            "key": args.model_key,
+            "repository": artifact.get("repository") or "local-derived",
+            "revision": artifact.get("revision")
+            or f"sha256:{artifact_lock_payload['directory_sha256']}",
+            "path": str(model_path),
+            "artifact_lock": input_hash(artifact_lock),
+            "directory_sha256": artifact_lock_payload.get(
+                "directory_sha256"
+            ),
+            "bundle_size_bytes": sum(
+                file["size"]
+                for file in (
+                    artifact_lock_payload.get("all_files")
+                    or artifact_lock_payload["verified_files"]
+                )
+            ),
+            "training_provenance": artifact_lock_payload.get(
+                "training_provenance"
+            ),
+        },
+        "configuration": {
+            "gcd": args.gcd,
+            "temperature": args.temperature,
+            "run_seed": args.seed,
+            "item_seed_formula": "run_seed * 1000000 + zero_based_item_index",
+            "top_p": 1.0,
+            "top_k": 0,
+            "max_tokens": args.max_tokens,
+            "timing_unit": "microseconds",
+        },
+        "inputs": {
+            "model_manifest": input_hash(manifest_path),
+            "uv_lock": input_hash(REPO_ROOT / "fine-tuning" / "uv.lock"),
+            "swift_package_lock": input_hash(
+                REPO_ROOT / "CREGKit" / "Package.resolved"
+            ),
+            "database": input_hash(DB),
+            "gold": input_hash(gold_path),
+            "grammar": input_hash(GRAMMAR_PATH),
+            "schema_prompt": input_hash(SCHEMA_PROMPT_PATH),
+            "system_prompt_sha256": sha256_bytes(system_prompt.encode()),
+            "tokenizer": input_hash(model_path / "tokenizer.json"),
+        },
+        "item_count": len(items),
+    }
+    write_json(run_directory / "manifest.json", run_manifest)
+
+    model, tokenizer = load(str(model_path))
     hf_tokenizer = getattr(tokenizer, "_tokenizer", tokenizer)
-
     compiled = None
+    vocabulary_size = None
     if args.gcd == "on":
         tokenizer_info = xgrammar.TokenizerInfo.from_huggingface(hf_tokenizer)
         compiler = xgrammar.GrammarCompiler(tokenizer_info)
         compiled = compiler.compile_grammar(GRAMMAR_PATH.read_text())
-        vocab_size = tokenizer_info.vocab_size
+        vocabulary_size = tokenizer_info.vocab_size
 
-    sampler = make_sampler(temp=0.0)
-    results = []
-    for item in items:
-        question = item.get("standalone") or item["question"]
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Question: {question}"},
-        ]
-        try:
-            prompt = hf_tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
-        except TypeError:
-            prompt = hf_tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False)
+    sampler = make_sampler(
+        temp=args.temperature,
+        top_p=1.0,
+        top_k=0,
+    )
+    results: list[dict[str, Any]] = []
+    items_path = run_directory / "items.jsonl"
+    with items_path.open("x") as output:
+        for index, item in enumerate(items):
+            item_seed = args.seed * 1_000_000 + index
+            mx.random.seed(item_seed)
+            question = item.get("standalone") or item["question"]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Question: {question}"},
+            ]
+            try:
+                prompt = hf_tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    tokenize=False,
+                    enable_thinking=False,
+                )
+            except TypeError:
+                prompt = hf_tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, tokenize=False
+                )
 
-        processor = (XGrammarLogitsProcessor(compiled, vocab_size)
-                     if compiled is not None else EntropyOnlyProcessor())
-        start = time.perf_counter()
-        text = generate(model, tokenizer, prompt=prompt, max_tokens=args.max_tokens,
-                        sampler=sampler, logits_processors=[processor])
-        elapsed = time.perf_counter() - start
+            processor = (
+                XGrammarLogitsProcessor(compiled, vocabulary_size)
+                if compiled is not None and vocabulary_size is not None
+                else EntropyOnlyProcessor()
+            )
+            item_started_ns = time.perf_counter_ns()
+            generation_started_ns = time.perf_counter_ns()
+            text = generate(
+                model,
+                tokenizer,
+                prompt=prompt,
+                max_tokens=args.max_tokens,
+                sampler=sampler,
+                logits_processors=[processor],
+            )
+            generation_microseconds = (
+                time.perf_counter_ns() - generation_started_ns
+            ) // 1_000
 
-        text = strip_special_tokens(text)
-        predicted_sql = text.strip() if args.gcd == "on" else extract_sql(text)
-        gold_rows = execute(DB, item["sql"])
-        error = None
-        predicted_rows = None
-        try:
-            predicted_rows = execute(DB, predicted_sql)
-        except ExecutionError as exc:
-            error = str(exc)
-        ex = predicted_rows is not None and results_match(predicted_rows, gold_rows)
-        bucket = "correct" if ex else taxonomy(predicted_sql, item["sql"], error,
-                                               predicted_rows, gold_rows)
-        entropies = processor.entropies
-        results.append({
-            "id": item["id"], "tier": item["tier"], "tags": item.get("tags", []),
-            "question": question, "gold_sql": item["sql"], "predicted_sql": predicted_sql,
-            "ex": ex, "bucket": bucket, "error": error,
-            "predicted_rowcount": None if predicted_rows is None else len(predicted_rows),
-            "gold_rowcount": len(gold_rows),
-            "seconds": round(elapsed, 2),
-            "gen_tokens": len(entropies),
-            "mean_entropy": round(float(np.mean(entropies)), 4) if entropies else None,
-            "max_entropy": round(float(np.max(entropies)), 4) if entropies else None,
-        })
-        status = "✓" if ex else f"✗ {bucket}"
-        print(f"[{item['id']}] {status} ({elapsed:.1f}s)", flush=True)
+            text = strip_special_tokens(text)
+            predicted_sql = text.strip() if args.gcd == "on" else extract_sql(text)
+            gold = execute_with_metadata(DB, item["sql"])
+            predicted: QueryExecution | None = None
+            error: str | None = None
+            try:
+                predicted = execute_with_metadata(DB, predicted_sql)
+            except ExecutionError as execution_error:
+                error = str(execution_error)
+            ex = predicted is not None and results_match(predicted, gold)
+            bucket = (
+                "correct"
+                if ex
+                else taxonomy(predicted_sql, item["sql"], error, predicted, gold)
+            )
+            entropies = processor.entropies
+            record = {
+                "schema_version": 1,
+                "id": item["id"],
+                "tier": item["tier"],
+                "tags": item.get("tags", []),
+                "question": question,
+                "gold_sql": item["sql"],
+                "predicted_sql": predicted_sql,
+                "ex": ex,
+                "bucket": bucket,
+                "error": error,
+                "run_seed": args.seed,
+                "item_seed": item_seed,
+                "generation_microseconds": generation_microseconds,
+                "predicted_execution_microseconds": (
+                    predicted.elapsed_microseconds
+                    if predicted is not None
+                    else None
+                ),
+                "gold_execution_microseconds": gold.elapsed_microseconds,
+                "elapsed_microseconds": (
+                    time.perf_counter_ns() - item_started_ns
+                )
+                // 1_000,
+                "generation_tokens": len(entropies),
+                "mean_entropy": float(np.mean(entropies)) if entropies else None,
+                "max_entropy": float(np.max(entropies)) if entropies else None,
+                "predicted": (
+                    None
+                    if predicted is None
+                    else {
+                        "row_count": len(predicted),
+                        "is_truncated": predicted.is_truncated,
+                        "digest": (
+                            None
+                            if predicted.is_truncated
+                            else result_digest(predicted)
+                        ),
+                        "rows": typed_rows(predicted),
+                    }
+                ),
+                "gold": {
+                    "row_count": len(gold),
+                    "is_truncated": gold.is_truncated,
+                    "digest": (
+                        None if gold.is_truncated else result_digest(gold)
+                    ),
+                    "rows": typed_rows(gold),
+                },
+            }
+            results.append(record)
+            output.write(
+                json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+            )
+            output.flush()
+            status = "✓" if ex else f"✗ {bucket}"
+            print(
+                f"[{item['id']}] {status} ({record['elapsed_microseconds'] / 1_000_000:.3f}s)",
+                flush=True,
+            )
 
-    n = len(results)
-    ex_n = sum(r["ex"] for r in results)
-    valid_n = sum(r["error"] is None for r in results)
+    count = len(results)
+    correct = sum(record["ex"] for record in results)
+    valid = sum(record["error"] is None for record in results)
     buckets: dict[str, int] = {}
-    for r in results:
-        if not r["ex"]:
-            buckets[r["bucket"]] = buckets.get(r["bucket"], 0) + 1
-    by_tier = {}
-    for tier in sorted({r["tier"] for r in results}):
-        tier_rs = [r for r in results if r["tier"] == tier]
-        by_tier[str(tier)] = round(sum(r["ex"] for r in tier_rs) / len(tier_rs), 3)
+    for record in results:
+        if not record["ex"]:
+            buckets[record["bucket"]] = buckets.get(record["bucket"], 0) + 1
+    by_tier: dict[str, float] = {}
+    for tier in sorted({record["tier"] for record in results}):
+        tier_results = [record for record in results if record["tier"] == tier]
+        by_tier[str(tier)] = sum(
+            record["ex"] for record in tier_results
+        ) / len(tier_results)
+    timings = [record["elapsed_microseconds"] for record in results]
     summary = {
-        "label": args.label, "model": args.model, "gcd": args.gcd,
-        "gold": args.gold.name, "n": n,
-        "ex": round(ex_n / n, 3), "valid_sql_rate": round(valid_n / n, 3),
-        "ex_by_tier": by_tier, "failure_buckets": buckets,
-        "mean_seconds": round(float(np.mean([r["seconds"] for r in results])), 2),
-        "mean_entropy_correct": round(float(np.mean(
-            [r["mean_entropy"] for r in results if r["ex"] and r["mean_entropy"]] or [0])), 4),
-        "mean_entropy_wrong": round(float(np.mean(
-            [r["mean_entropy"] for r in results if not r["ex"] and r["mean_entropy"]] or [0])), 4),
+        "schema_version": 1,
+        "run_id": run_id,
+        "model_key": args.model_key,
+        "model_repository": artifact["repository"],
+        "model_revision": artifact["revision"],
+        "bundle_size_bytes": run_manifest["model"]["bundle_size_bytes"],
+        "gcd": args.gcd,
+        "temperature": args.temperature,
+        "seed": args.seed,
+        "gold": gold_path.name,
+        "n": count,
+        "ex": correct / count,
+        "valid_sql_rate": valid / count,
+        "ex_by_tier": by_tier,
+        "failure_buckets": buckets,
+        "mean_microseconds": round(sum(timings) / len(timings)),
+        "p95_microseconds": percentile(timings, 0.95),
+        "mean_entropy_correct": float(
+            np.mean(
+                [
+                    record["mean_entropy"]
+                    for record in results
+                    if record["ex"] and record["mean_entropy"] is not None
+                ]
+                or [0]
+            )
+        ),
+        "mean_entropy_wrong": float(
+            np.mean(
+                [
+                    record["mean_entropy"]
+                    for record in results
+                    if not record["ex"] and record["mean_entropy"] is not None
+                ]
+                or [0]
+            )
+        ),
     }
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / f"{args.label}.jsonl").write_text(
-        "\n".join(json.dumps(r) for r in results) + "\n")
-    (OUT_DIR / f"{args.label}.summary.json").write_text(json.dumps(summary, indent=2))
-    print(json.dumps(summary, indent=2))
+    write_json(run_directory / "summary.json", summary)
+    run_manifest["status"] = "complete"
+    run_manifest["completed_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+    )
+    run_manifest["outputs"] = {
+        "items": {
+            "path": "items.jsonl",
+            "sha256": sha256_file(items_path),
+        },
+        "summary": {
+            "path": "summary.json",
+            "sha256": sha256_file(run_directory / "summary.json"),
+        },
+    }
+    write_json(run_directory / "manifest.json", run_manifest)
+    print(json.dumps(summary, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ArtifactError as error:
+        print(f"evaluation failed: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

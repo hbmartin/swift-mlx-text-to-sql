@@ -1,0 +1,304 @@
+{
+  "base": {
+    "key": "qwen25-coder-3b",
+    "lock": {
+      "path": "models/Qwen2.5-Coder-3B-Instruct-4bit/.creg-artifact.json",
+      "sha256": "7dbb948f5b6cf7d9e773cecb2de15195ca542532337cad75a7b0e9161cc70974",
+      "size": 3746
+    },
+    "repository": "mlx-community/Qwen2.5-Coder-3B-Instruct-4bit",
+    "revision": "3dd939c621c08e5753d5b89f35a2642cd83b98ca"
+  },
+  "candidate_manifest_entry": {
+    "base_key": "qwen25-coder-3b",
+    "derived": true,
+    "display_name": "creg-sql-qwen25-coder-3b-mlx-4bit",
+    "format": "mlx",
+    "key": "ft-qwen25-coder-3b",
+    "license": {
+      "commercial_use": false,
+      "id": "qwen-research",
+      "required_distribution_file": {
+        "path": "LICENSE",
+        "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+        "size": 7388
+      },
+      "source_repository": "Qwen/Qwen2.5-Coder-3B-Instruct",
+      "source_revision": "488639f1ff808d1d3d0ba301aef8c11461451ec5",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct/blob/488639f1ff808d1d3d0ba301aef8c11461451ec5/LICENSE"
+    },
+    "local_directory": "creg-sql-qwen25-coder-3b-mlx-4bit",
+    "publication_status": "local-unpublished",
+    "quantization": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "repository": null,
+    "required_files": [
+      {
+        "path": "README.md",
+        "sha256": "f3270b3cb7c42dee36dcff63717fd8e7dc3bdaacd58e05e34ac093dc05d7ad58",
+        "size": 81
+      },
+      {
+        "path": "chat_template.jinja",
+        "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+        "size": 2507
+      },
+      {
+        "path": "config.json",
+        "sha256": "814fefdcfda3055e4de85557bf7f33abfff411cb68667d1b77566c562a5f0697",
+        "size": 865
+      },
+      {
+        "path": "model.safetensors",
+        "sha256": "71a82d5e6420e0979c511441923a8df6e2418bad87745bf04612cffb5564cdf9",
+        "size": 1736292896
+      },
+      {
+        "path": "model.safetensors.index.json",
+        "sha256": "768ed307e13625ce3a2dd4d3126df3e2fb1c9c6486dfba548183402f4f1a3e5c",
+        "size": 66330
+      },
+      {
+        "path": "tokenizer.json",
+        "sha256": "3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8",
+        "size": 11421892
+      },
+      {
+        "path": "tokenizer_config.json",
+        "sha256": "ee8f6d44bf2353e6d3686c3adaf70e1ccfe9e6ed6822d0ab2f28cafdd7754792",
+        "size": 729
+      }
+    ],
+    "revision": null,
+    "snapshot_directory_sha256": "5cbda9c9115f01df2a8a3a23a0de0a07447de6f3a5053f8c05a89c6bf33a3aa6",
+    "training_provenance": {
+      "adapter_files": [
+        {
+          "path": "0000100_adapters.safetensors",
+          "sha256": "9e4efcb0a1a5d03dbb9caf2ef144010b7180ea12a825e4291f25b8c57bdcfb2a",
+          "size": 26631752
+        },
+        {
+          "path": "0000200_adapters.safetensors",
+          "sha256": "7bcb5219775e1992e8158aec769cafac61bd0f8fda41a59f481a7a56626c6f3c",
+          "size": 26631752
+        },
+        {
+          "path": "0000300_adapters.safetensors",
+          "sha256": "fe2846176875fdf7fe7250038d573aecb3ab5e454dbf6aeb8f28cf30cb8963c4",
+          "size": 26631752
+        },
+        {
+          "path": "0000400_adapters.safetensors",
+          "sha256": "82a25eee57fd40f647edc3a8e6bf993723f7af2a8c980a25c99bc293f8b88ae7",
+          "size": 26631752
+        },
+        {
+          "path": "0000500_adapters.safetensors",
+          "sha256": "afd7933b68883d4a1eccca0a5d5becddd336b7da3934c5efc0a8a3c01ac6f22c",
+          "size": 26631752
+        },
+        {
+          "path": "0000600_adapters.safetensors",
+          "sha256": "fbcbd706dc628db1a8c4fd7137f7ec944573a16c13ccf47216952434f223f719",
+          "size": 26631752
+        },
+        {
+          "path": "adapter_config.json",
+          "sha256": "d99703cbe50fa6c8e07872c9a21ba3fc0354c1a9a037af4dc2cdb4f9c070bd21",
+          "size": 1248
+        },
+        {
+          "path": "adapters.safetensors",
+          "sha256": "fbcbd706dc628db1a8c4fd7137f7ec944573a16c13ccf47216952434f223f719",
+          "size": 26631752
+        }
+      ],
+      "base_directory_sha256": "bb07390155226383c705229516cb9e333fcbf58e38d490a768bac78da530cd4b",
+      "base_repository": "mlx-community/Qwen2.5-Coder-3B-Instruct-4bit",
+      "base_revision": "3dd939c621c08e5753d5b89f35a2642cd83b98ca",
+      "code_commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+      "code_dirty": true,
+      "code_inputs": {
+        "corpus_generator": {
+          "path": "fine-tuning/synth/generate_training.py",
+          "sha256": "416f1370045de5fffe69a557fa1486fd80f4de645a7f4311b9ae878e3ccd79c9",
+          "size": 28913
+        },
+        "model_manifest": {
+          "path": "model-manifest.json",
+          "sha256": "3c5c293da1760ea054862d35ddd2e231f458a5bfec8d1386e5fd4bb72044fb9c",
+          "size": 11805
+        },
+        "training_runner": {
+          "path": "fine-tuning/tools/train_finalists.py",
+          "sha256": "b2765239ade40bd3231f057de1aec431ac227e7a8ce9769fc4651df29303943c",
+          "size": 9560
+        },
+        "uv_lock": {
+          "path": "fine-tuning/uv.lock",
+          "sha256": "034b816d176c52f6a0ba5eb5f657f1dc1a7fbd222edd564e32e75361adb91cd3",
+          "size": 343471
+        }
+      },
+      "configuration": {
+        "path": "fine-tuning/config/qlora.yaml",
+        "sha256": "63a139bb79e5ad77d0241b9b76d0c2892a3459019bcfad04367d8d932800b545",
+        "size": 914
+      },
+      "corpus_manifest": {
+        "path": "fine-tuning/config/corpus-manifest.json",
+        "sha256": "4e3d25923a8426ba3c09349d240a1c77aca79daf5c69631694d28dfe4374cabe",
+        "size": 561
+      },
+      "run_id": "qlora-qwen25-coder-3b-seed-424242",
+      "seed": 424242,
+      "training_log_sha256": "bd81f135e0699d846a4a08ca1552c74c48a6fefca6b419e1d727a3d90e59ae32"
+    },
+    "training_run": "qlora-qwen25-coder-3b-seed-424242"
+  },
+  "command": [
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/.venv/bin/python3",
+    "-m",
+    "mlx_lm",
+    "lora",
+    "--config",
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/config/qlora.yaml",
+    "--model",
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/models/Qwen2.5-Coder-3B-Instruct-4bit",
+    "--data",
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/eval/training-runs/qlora-qwen25-coder-3b-seed-424242/regenerated-corpus",
+    "--adapter-path",
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-qwen25-coder-3b-seed-424242"
+  ],
+  "completed_at": "2026-07-20T19:44:16Z",
+  "configuration": {
+    "path": "fine-tuning/config/qlora.yaml",
+    "sha256": "63a139bb79e5ad77d0241b9b76d0c2892a3459019bcfad04367d8d932800b545",
+    "size": 914
+  },
+  "corpus": {
+    "files": [
+      {
+        "byte_for_byte_equal": true,
+        "committed": {
+          "path": "fine-tuning/synth/out/train.jsonl",
+          "sha256": "3a9ad4806692cdc89e8e68c77e29c5e1eedaefac5745c3a87bd4e4fb1758021e",
+          "size": 4481328
+        },
+        "regenerated": {
+          "path": "eval/training-runs/qlora-qwen25-coder-3b-seed-424242/regenerated-corpus/train.jsonl",
+          "sha256": "3a9ad4806692cdc89e8e68c77e29c5e1eedaefac5745c3a87bd4e4fb1758021e",
+          "size": 4481328
+        }
+      },
+      {
+        "byte_for_byte_equal": true,
+        "committed": {
+          "path": "fine-tuning/synth/out/valid.jsonl",
+          "sha256": "b0e72fde78f50e80bc5bdd4664eb7e87695db8a52e042067cfb32ddfc0fcec33",
+          "size": 235129
+        },
+        "regenerated": {
+          "path": "eval/training-runs/qlora-qwen25-coder-3b-seed-424242/regenerated-corpus/valid.jsonl",
+          "sha256": "b0e72fde78f50e80bc5bdd4664eb7e87695db8a52e042067cfb32ddfc0fcec33",
+          "size": 235129
+        }
+      },
+      {
+        "byte_for_byte_equal": true,
+        "committed": {
+          "path": "fine-tuning/synth/out/gate_stats.json",
+          "sha256": "d63b2ae38ec22276dc7706c34d9f12b5f301909e50f01c3c7412043abd22f442",
+          "size": 1758
+        },
+        "regenerated": {
+          "path": "eval/training-runs/qlora-qwen25-coder-3b-seed-424242/regenerated-corpus/gate_stats.json",
+          "sha256": "d63b2ae38ec22276dc7706c34d9f12b5f301909e50f01c3c7412043abd22f442",
+          "size": 1758
+        }
+      }
+    ],
+    "gold_v2_held_out": {
+      "path": "eval/gold/gold_v2.jsonl",
+      "sha256": "2bde4dedc23bc7938d0250f2e2d5e22502903c8caad6c0951e1bbca9d0d77036",
+      "size": 64877
+    },
+    "manifest": {
+      "path": "fine-tuning/config/corpus-manifest.json",
+      "sha256": "4e3d25923a8426ba3c09349d240a1c77aca79daf5c69631694d28dfe4374cabe",
+      "size": 561
+    }
+  },
+  "fuse_command": [
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/.venv/bin/python3",
+    "-m",
+    "mlx_lm",
+    "fuse",
+    "--model",
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/models/Qwen2.5-Coder-3B-Instruct-4bit",
+    "--adapter-path",
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-qwen25-coder-3b-seed-424242",
+    "--save-path",
+    "/Volumes/SanSmall/swift-mlx-text-to-sql/models/creg-sql-qwen25-coder-3b-mlx-4bit"
+  ],
+  "fused_lock": {
+    "path": "models/creg-sql-qwen25-coder-3b-mlx-4bit/.creg-artifact.json",
+    "sha256": "0e9423cd500ba63b6b382140960747d5bdaecd760720ebde35f2cbd9de6dbd39",
+    "size": 5556
+  },
+  "git": {
+    "branch": "codex/pr1-review-fixes",
+    "commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+    "dirty": true
+  },
+  "hardware": {
+    "cpu_count": 14,
+    "machine": "arm64",
+    "model": "Mac16,7",
+    "os_version": "ProductName:\t\tmacOS\nProductVersion:\t\t15.7.7\nBuildVersion:\t\t24G720",
+    "physical_memory_bytes": 51539607552,
+    "platform": "macOS-15.7.7-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 17.0.0 (clang-1700.6.4.2)]",
+    "swift": "Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)\nTarget: arm64-apple-macosx15.0"
+  },
+  "inputs": {
+    "corpus_generator": {
+      "path": "fine-tuning/synth/generate_training.py",
+      "sha256": "416f1370045de5fffe69a557fa1486fd80f4de645a7f4311b9ae878e3ccd79c9",
+      "size": 28913
+    },
+    "model_manifest": {
+      "path": "model-manifest.json",
+      "sha256": "3c5c293da1760ea054862d35ddd2e231f458a5bfec8d1386e5fd4bb72044fb9c",
+      "size": 11805
+    },
+    "training_runner": {
+      "path": "fine-tuning/tools/train_finalists.py",
+      "sha256": "b2765239ade40bd3231f057de1aec431ac227e7a8ce9769fc4651df29303943c",
+      "size": 9560
+    },
+    "uv_lock": {
+      "path": "fine-tuning/uv.lock",
+      "sha256": "034b816d176c52f6a0ba5eb5f657f1dc1a7fbd222edd564e32e75361adb91cd3",
+      "size": 343471
+    }
+  },
+  "outputs": {
+    "adapter": "/Volumes/SanSmall/swift-mlx-text-to-sql/models/adapters/qlora-qwen25-coder-3b-seed-424242",
+    "fused": "/Volumes/SanSmall/swift-mlx-text-to-sql/models/creg-sql-qwen25-coder-3b-mlx-4bit"
+  },
+  "run_id": "qlora-qwen25-coder-3b-seed-424242",
+  "schema_version": 1,
+  "started_at": "2026-07-20T18:38:58Z",
+  "status": "complete",
+  "training_log": {
+    "path": "eval/training-runs/qlora-qwen25-coder-3b-seed-424242/training.log",
+    "sha256": "bd81f135e0699d846a4a08ca1552c74c48a6fefca6b419e1d727a3d90e59ae32",
+    "size": 15789
+  }
+}

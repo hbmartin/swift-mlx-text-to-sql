@@ -1,0 +1,309 @@
+{
+  "absolute_deltas": {
+    "ex": 0.0050000000000000044,
+    "valid_sql_rate": 0.010000000000000009
+  },
+  "analysis": "python-swift-full-gold-parity",
+  "disagreements": [
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "G-212",
+      "python": {
+        "digest": "c91485f251783299934920b0d7b029aa4c3b82a7da3844ea373db66e058fcd22",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date < '2027-01-01'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "c91485f251783299934920b0d7b029aa4c3b82a7da3844ea373db66e058fcd22",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date< '2027-01-01'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "G-213",
+      "python": {
+        "digest": "5686187604b481a05b6b599389abf3075b36135a4117f4a02b352bfffaaa5edc",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date < '2028-01-01'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "5686187604b481a05b6b599389abf3075b36135a4117f4a02b352bfffaaa5edc",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date< '2028-01-01'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "G-214",
+      "python": {
+        "digest": "f124fbffcbc2493fb1e0e312e9b5fe6aedf5e7efb6056d890cbac7e8c8266cb3",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date < '2028-07-01'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "f124fbffcbc2493fb1e0e312e9b5fe6aedf5e7efb6056d890cbac7e8c8266cb3",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date< '2028-07-01'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. The Python SQL was valid and the Swift SQL was invalid, so the generated-token difference changed executability.",
+      "explanation_status": "explained",
+      "id": "G-231",
+      "python": {
+        "digest": "37ecc6b2508f1a4ee5e13f9a0f0f51cf0a10194d6d04d4a1ac3585b26294cab5",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT SUM(l.annual_base_rent) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.leased_sqft = 0",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": null,
+        "error": "SQLite error 1: no such column: t.market - while executing `SELECT SUM(l.annual_base_rent) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.leased_sqft = 0 AND t.market = 'New York'`",
+        "ex": false,
+        "sql": "SELECT SUM(l.annual_base_rent) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.leased_sqft = 0 AND t.market = 'New York'",
+        "valid_sql": false
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "MT-60",
+      "python": {
+        "digest": "d602299454c873dfcaa9b5625d029d745dc69b3b281c51c9e7d74d580b0a525d",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date < '2027-07-01'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "d602299454c873dfcaa9b5625d029d745dc69b3b281c51c9e7d74d580b0a525d",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date< '2027-07-01'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "T1-03",
+      "python": {
+        "digest": "1fba47b51ff9f32352152bfc75c2002c77d8aa777226810f55c11911b3358a3d",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT name, year_built FROM properties WHERE year_built < 1980",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "1fba47b51ff9f32352152bfc75c2002c77d8aa777226810f55c11911b3358a3d",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT name, year_built FROM properties WHERE year_built< 1980",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "T1-07",
+      "python": {
+        "digest": "54aee46064feba4ba0e6299be3afa33dae188c007c3c5e0efabe0f2203cab98a",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date < '2027-07-01'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "54aee46064feba4ba0e6299be3afa33dae188c007c3c5e0efabe0f2203cab98a",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM leases WHERE status = 'Active' AND expiration_date >= '2026-07-01' AND expiration_date< '2027-07-01'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both outputs had the same validity and EX classification but different complete typed-result SHA-256 values.",
+      "explanation_status": "explained",
+      "id": "T1-10",
+      "python": {
+        "digest": "37ecc6b2508f1a4ee5e13f9a0f0f51cf0a10194d6d04d4a1ac3585b26294cab5",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT MAX(l.leased_sqft) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE t.name = 'John Doe' AND l.status = 'Active'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "0af2ca7dcdd5aacf2d9dafb44fb1f1bdb0d6d923773f6000914b67bd6d0c07d4",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT MAX(l.leased_sqft) FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both outputs had the same validity and EX classification but different complete typed-result SHA-256 values.",
+      "explanation_status": "explained",
+      "id": "T1-15",
+      "python": {
+        "digest": null,
+        "error": "no such column: status",
+        "ex": false,
+        "sql": "SELECT current_balance, maturity_date FROM loans WHERE maturity_date < '2028-01-01' AND status = 'Active'",
+        "valid_sql": false
+      },
+      "swift": {
+        "digest": null,
+        "error": "SQLite error 1: no such column: status - while executing `SELECT current_balance, maturity_date FROM loans WHERE maturity_date< '2028-01-01' AND status = 'Active'`",
+        "ex": false,
+        "sql": "SELECT current_balance, maturity_date FROM loans WHERE maturity_date< '2028-01-01' AND status = 'Active'",
+        "valid_sql": false
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "T2-26",
+      "python": {
+        "digest": "f2804682215c859319728e0fef314e3ca82c881b98ce93d2c9a57b0791378dbd",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT p.name, ln.lender FROM loans ln JOIN properties p ON p.property_id = ln.property_id WHERE ln.maturity_date >= '2026-07-01' AND ln.maturity_date < '2028-07-01'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "f2804682215c859319728e0fef314e3ca82c881b98ce93d2c9a57b0791378dbd",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT p.name, ln.lender FROM loans ln JOIN properties p ON p.property_id = ln.property_id WHERE ln.maturity_date >= '2026-07-01' AND ln.maturity_date< '2028-07-01'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "T2-28",
+      "python": {
+        "digest": "a3afaf6d0936dcb3b31e8189078c3237356e9568e4bb775fb95cf255f2e555d0",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT p.name, m.occupancy_rate FROM property_financials m JOIN properties p ON p.property_id = m.property_id WHERE m.period_end >= '2026-01-01' AND m.period_end <= '2026-12-31' AND m.occupancy_rate < 0.70",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "a3afaf6d0936dcb3b31e8189078c3237356e9568e4bb775fb95cf255f2e555d0",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT p.name, m.occupancy_rate FROM property_financials m JOIN properties p ON p.property_id = m.property_id WHERE m.period_end >= '2026-01-01' AND m.period_end <= '2026-12-31' AND m.occupancy_rate< 0.70",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both SQL forms executed to the same complete typed-result SHA-256, so this is a semantically equivalent generation difference with no EX or validity impact.",
+      "explanation_status": "explained",
+      "id": "T2-32",
+      "python": {
+        "digest": "6f3531d4b259a3d550e05d790d02e07f84ca90e6fe9e0947731f92c2baaf9623",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT t.name, p.name, l.expiration_date FROM leases l JOIN properties p ON p.property_id = l.property_id JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date < '2027-07-01'",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": "6f3531d4b259a3d550e05d790d02e07f84ca90e6fe9e0947731f92c2baaf9623",
+        "error": null,
+        "ex": false,
+        "sql": "SELECT t.name, p.name, l.expiration_date FROM leases l JOIN properties p ON p.property_id = l.property_id JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status = 'Active' AND l.expiration_date >= '2026-07-01' AND l.expiration_date< '2027-07-01'",
+        "valid_sql": true
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, and typed-result fixtures isolate this to SQL generation drift between the pinned MLX Python and MLX Swift runtimes. Both outputs had the same validity and EX classification but different complete typed-result SHA-256 values.",
+      "explanation_status": "explained",
+      "id": "T2-41",
+      "python": {
+        "digest": null,
+        "error": "no such column: holdover",
+        "ex": false,
+        "sql": "SELECT name FROM properties WHERE status = 'Current' AND holdover = 1",
+        "valid_sql": false
+      },
+      "swift": {
+        "digest": null,
+        "error": "SQLite error 1: no such column: lease_type - while executing `SELECT name FROM properties WHERE status != 'Sold' AND lease_type = 'Holdover'`",
+        "ex": false,
+        "sql": "SELECT name FROM properties WHERE status != 'Sold' AND lease_type = 'Holdover'",
+        "valid_sql": false
+      }
+    },
+    {
+      "explanation": "The matched artifact, GCD mode, temperature, item seed, prompt, database, gold SQL, and canonical gold digest rule out model-input and comparator drift. The identical SQL ran on SQLite 3.53.3 in Python and SQLite 3.43.2 in Swift. The engine-version difference changed executability.",
+      "explanation_status": "explained",
+      "id": "T3-49",
+      "python": {
+        "digest": "7263956327a733eeeb0d0c93a2be41cc57608c25fb960cffd920309e0303ec57",
+        "error": null,
+        "ex": true,
+        "sql": "SELECT p.property_type, SUM(l.annual_base_rent) / (SELECT SUM(l.annual_base_rent) FROM leases l WHERE status IN ('Active', 'Holdover') GROUP BY p.property_type) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type",
+        "valid_sql": true
+      },
+      "swift": {
+        "digest": null,
+        "error": "SQLite error 1: no such column: p.property_type - while executing `SELECT p.property_type, SUM(l.annual_base_rent) / (SELECT SUM(l.annual_base_rent) FROM leases l WHERE status IN ('Active', 'Holdover') GROUP BY p.property_type) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type`",
+        "ex": false,
+        "sql": "SELECT p.property_type, SUM(l.annual_base_rent) / (SELECT SUM(l.annual_base_rent) FROM leases l WHERE status IN ('Active', 'Holdover') GROUP BY p.property_type) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE l.status IN ('Active', 'Holdover') GROUP BY p.property_type",
+        "valid_sql": false
+      }
+    }
+  ],
+  "gate": {
+    "all_disagreements_explained": true,
+    "maximum_absolute_delta": 0.02,
+    "metrics_pass": true,
+    "pass": true
+  },
+  "inputs": {
+    "explanations": {
+      "path": "eval/runs/swift-parity-provenance-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0/explanations.json",
+      "sha256": "d47603c2a66a62119c99911abab9e70d5d84109e96dd90d0e214ed2ef3a8d721"
+    },
+    "python_run": {
+      "manifest_sha256": "daddfac403716b15c017142648710008a73c6e52cb7debafde62c88686253807",
+      "path": "eval/runs/parity-python-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0"
+    },
+    "swift_output": {
+      "path": "eval/runs/swift-parity-provenance-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0/swift.json",
+      "sha256": "8ecda142985d9041a9b547475aee824f49fab3a54d25c21440b68a472bc650b6"
+    }
+  },
+  "n": 200,
+  "python": {
+    "ex": 0.655,
+    "valid_sql_rate": 0.93
+  },
+  "runtime_versions": {
+    "python_sqlite": "3.53.3",
+    "swift_sqlite": "3.43.2"
+  },
+  "schema_version": 1,
+  "swift": {
+    "ex": 0.65,
+    "valid_sql_rate": 0.92
+  }
+}

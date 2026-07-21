@@ -1,203 +1,280 @@
-# CREG v1 — A Walkthrough for Junior Engineers
+# CREG walkthrough for junior engineers
 
-A plain-language tour of what this project does, the reasoning behind every
-major decision, what the experiments showed, and the lessons that transfer
-to other projects. The formal record lives in
-[`final-report.md`](./final-report.md) and its companion docs; this is the
-whiteboard version.
+This is the whiteboard version of the project: what CREG does, why the
+architecture looks this way, what the experiments actually proved, and where
+the sharp edges remain. The formal record is `docs/final-report.md`.
 
-## The problem we're solving
+## The problem
 
-A real-estate executive wants to ask their portfolio questions like "which
-buildings are the emptiest?" They can't write SQL, and for privacy reasons
-nothing can leave their phone. So we need: natural-language question → SQL
-→ run it → show a table and a one-line summary, entirely on-device with a
-small (≤4B parameter) local model.
+A commercial-real-estate professional wants to ask questions such as “which
+properties are the emptiest?” without writing SQL or sending portfolio data
+to a remote inference service.
 
-Small models are mediocre at SQL in general. Our entire strategy comes from
-one observation: **we don't need general SQL — we have exactly one database
-with seven known tables.** Every design choice below is about exploiting
-that.
+CREG turns a natural-language question into one read-only SQLite query over a
+fixed seven-table portfolio. It executes that query locally and shows both the
+rows and a short narration. The fixed schema is the key constraint: the model
+does not need to understand every database, only this database and its
+documented business meanings.
 
-## The architecture: two models, strict lanes
+## The pipeline
 
-Each question flows through a fixed pipeline. Apple's built-in Foundation
-Model (free, ships with iOS) does the "language chores": rewriting
-follow-ups like "now just last year" into self-contained questions,
-deciding if a question is too ambiguous, and writing the friendly summary
-at the end. Our bundled model does exactly one thing: standalone question
-→ SQL. Narrow jobs are what small models are good at.
+One turn moves through:
 
-One subtlety worth internalizing: the two models **never run at the same
-time**. A single Swift `actor` (the `InferenceSerializer`) owns every model
-call. Why? Memory. If both models could be mid-inference simultaneously,
-peak RAM is the *sum* of both; serialized, it's the *max*. On a phone,
-that's the difference between working and being killed by the OS. Fun Swift
-detail: actors are *reentrant* — a naive `await` inside an actor method
-lets other calls interleave — so the serializer chains each operation onto
-the previous one's completion instead.
+```text
+question
+  → standalone rewrite
+  → ambiguity gate
+  → SQL generation
+  → read-only execution
+  → bounded repair
+  → column-aware grounding
+  → result voting
+  → narration
+```
 
-## Grammar-constrained decoding, the load-bearing trick
+Apple Foundation Models handle language-facing steps such as rewriting a
+follow-up and narration. The pinned MLX model handles SQL. An
+`InferenceSerializer` prevents these inference workloads from overlapping,
+which bounds peak memory. That serializer must do more than put methods on a
+Swift actor: actors are reentrant across `await`, so operations explicitly
+chain to the previous completion.
 
-An LLM generates one token at a time by picking from a probability
-distribution. **Grammar-constrained decoding (GCD)** means: before each
-pick, mask out (set to −∞) every token that would violate a grammar you
-supply. The model literally *cannot* produce invalid output.
+Every SQL attempt is a `Candidate Query` with a stable ID and explicit role.
+Initial generation, repairs, the deterministic anchor, and consistency
+samples cannot overwrite one another in telemetry.
 
-We generate that grammar *from our actual database*: only `SELECT` exists
-(writes are unrepresentable — a security guarantee, not just a quality
-one), only our seven real table names can appear after `FROM`, only real
-column names in qualified references. A hallucinated table like
-`rent_payments` isn't "unlikely" — it's impossible.
+## Structure is constrained twice
 
-Two places we deliberately left the grammar loose, and both taught us
-something:
+Grammar-constrained decoding masks tokens that would violate the SQL grammar.
+The grammar exposes `SELECT`, the real tables, and schema-aware column
+references. It sharply reduces structurally impossible output, but it cannot
+guarantee that a syntactically valid query answers the question.
 
-- **String literals are free-form** (you need `LIKE '%Tower%'`). So a
-  misspelled property name produces valid SQL that matches zero rows — the
-  top *silent* failure mode. That's handled downstream by the correction
-  layers.
-- **Bare identifiers are allowed** so `ORDER BY vacancy` can reference a
-  SELECT alias. This was found by *round-tripping the gold answers through
-  the grammar* — the canonical vacancy query was rejected by our own
-  grammar. Lesson: always validate your gold set against your constraints;
-  the test runs in both directions.
+SQLite is also opened read-only with an authorizer. The grammar is a
+generation constraint; the database authorizer is the enforcement boundary.
+Defense in depth matters because unconstrained repair text, future grammar
+changes, or runtime bugs must not turn into writes.
 
-And the big empirical surprise: **GCD is not free for weak models.** Our
-1.5B candidate, when constrained, got trapped generating
-`TOTAL(TOTAL(TOTAL(...` until the token limit — the mask kept removing what
-it wanted to say, and it spiraled. The PRD had warned about a "hidden cost
-of structure"; we watched it happen. Meanwhile for our final fine-tuned
-model, GCD cost exactly zero accuracy — it had internalized the grammar, so
-the constraint only ever removed tokens it wasn't going to pick anyway.
-Takeaway: treat GCD on/off as a *per-model* experiment, never a global
-assumption.
+The evaluation found that GCD is not universally helpful. On gold_v1,
+Qwen2.5-Coder-3B improved from 33.33% to 35.00% EX with GCD, while the other
+three base families lost accuracy and often paid much higher latency. After
+fine-tuning, both finalists selected GCD on. The practical lesson is to test
+constraints per artifact instead of treating them as a global quality switch.
 
-## The data: fake, but rigorously fake
+## Result equality is a domain decision
 
-We generated the portfolio database ourselves, and the crucial property
-isn't realism — it's **internal consistency**. If `occupancy_rate` doesn't
-equal leased-square-feet ÷ rentable-square-feet, then our own sanity-check
-heuristics would fire on every honest answer, and our "correct" gold
-results would be incoherent. So the generator builds *lease timelines per
-suite* first (no two leases can overlap in the same suite), then derives
-monthly financials from those leases, then derives loan coverage ratios
-from those financials. Everything downstream of everything. Twelve tests
-enforce identities like `NOI = EGI − opex` to the cent, written with the
-attitude: "if this fails, the *data* is wrong, not the test."
+Comparing SQL strings is too strict: different SQL can return the same answer.
+Converting every SQLite value to display text is too loose: numeric `1` and
+text `"1"` are not the same value.
 
-Also everything is seeded — same seed, byte-identical database. When your
-eval scores wobble, you want zero suspicion pointed at your data.
+CREG uses typed execution identity:
 
-## How we measure: gold sets and EX
+- INTEGER and REAL share a numeric domain after four-decimal, half-even
+  normalization;
+- TEXT, complete BLOB bytes, and NULL remain distinct;
+- duplicate rows count and row arity must match;
+- row order and column labels do not affect EX; and
+- a row-capped result is incomplete, never silently equal.
 
-A **gold set** is a list of (question, correct SQL) pairs. The metric is
-**execution accuracy (EX)**: run the model's SQL and the gold SQL, compare
-*result sets* (order-insensitive, floats rounded). This forgives cosmetic
-differences — `ORDER BY name` vs `ORDER BY name DESC` over the same rows
-both pass — while catching real wrongness.
+Canonical rows are sorted, deterministically JSON-encoded, and identified by
+SHA-256. Python EX, Swift EX, and runtime Result Groups use shared golden
+fixtures. This is why nine parity differences could safely be classified as
+equivalent: their generated SQL whitespace differed, but the complete typed
+digests matched.
 
-The subtle part is that many questions don't have one "correct" answer
-until you *decide* things: does "rent roll" include holdover tenants who
-stayed past lease expiry? (We said yes.) Is "vacancy" computed from leases
-or from the reported occupancy number? (Reported, latest month.) These
-conventions were written down as an ADR and baked into the prompt, the gold
-set, and the training data *identically*. That consistency is most of the
-game.
+## Voting means majority, not “most votes”
 
-## The experiments, honestly
+With three different results, each has one vote. Picking whichever dictionary
+entry appears first is not consensus; it is an accidental tie-break.
 
-Four candidate models, all 4-bit, GCD on and off, 60 questions
-(stage 1, full tables in [`model-selection.md`](./model-selection.md)):
+Every CREG vote now contains one executed temperature-zero Deterministic
+Anchor and two sampled candidates. A Result Group wins only with more than
+half of all configured candidates. Failed and truncated candidates still
+count in the denominator.
 
-| candidate | best EX |
-|---|---|
-| Qwen2.5-Coder-3B (general coding model) | **0.350** |
-| XiYanSQL-3B (*specifically fine-tuned for text-to-SQL*) | 0.317 |
-| Qwen2.5-Coder-1.5B / Qwen3-1.7B | 0.18–0.23 |
+If no group has a majority, the complete anchor is shown with a visible No
+Consensus notice. If the anchor fails or is truncated, a successful primary
+can survive only under a separate visible degraded-fallback reason. This
+contract makes uncertainty honest and replayable.
 
-The SQL-specialist losing is a great lesson: it learned *other databases'*
-conventions. Generic SQL skill ≠ knowing that in *this* schema "current
-value" lives on `properties.current_market_value`, not in the valuations
-table. The failure buckets confirmed it: models were fine at mechanical
-single-table SQL and consistently wrong about *our semantics*.
+Calibration tried sample temperatures 0.1, 0.3, and 0.7 on all 200 gold_v2
+items for five trial seeds:
 
-That's exactly the gap fine-tuning targets. **LoRA** (the technique used)
-doesn't retrain the whole model; it learns small low-rank "adjustment"
-matrices on top of frozen weights — cheap enough to run on a laptop in
-~90 minutes. We generated 1,424 training pairs from templates over real
-entities, gated each one (must execute, must be grammar-legal, must not
-appear in the gold set — never train on your exam), trained, and
-re-evaluated on a harder 200-question gold set:
+| Sample temperature | EX | Valid SQL | No Consensus | p95 latency |
+|---:|---:|---:|---:|---:|
+| 0.1 | 65.60% | 93.60% | 2 / 1,000 | 9.178 s |
+| 0.3 | 65.80% | 93.80% | 13 / 1,000 | 9.441 s |
+| **0.7** | **66.80%** | **95.40%** | 40 / 1,000 | 9.158 s |
 
-**Base model: 0.225. Fine-tuned: 0.665.** Tier-2 (the semantics-heavy
-questions) went from 0.11 to 0.70.
+Temperature 0.7 won for sample roles. Normal production generation remains
+deterministic at temperature 0.0. Separating these roles prevents a useful
+diversity temperature from making every ordinary replay nondeterministic.
 
-Now the part to absorb most carefully. Splitting that 200 into the 140
-template-generated questions and the 60 hand-written ones:
+## Grounding is about columns, not loose strings
 
-| slice | base | fine-tuned |
-|---|---|---|
-| template-family questions (140) | 0.071 | **0.786** |
-| novel hand-written phrasings (60) | 0.350 | 0.383 |
+An earlier style of correction can collect every literal and compare it with
+one global bag of known values. That can suggest a tenant for a property name
+or “correct” a date as if it were a category.
 
-The model *mastered the semantics as expressed by the templates* and
-generalized weakly beyond them. Training loss had dropped to 0.001 — that
-number alone should make you say "memorization." The fix for round two
-isn't more data, it's more *linguistic diversity* — having a big model
-paraphrase each question ten ways at dev time. Always decompose your metric
-before celebrating it; the aggregate "+44 points!" and the decomposition
-tell very different stories, and both are true.
+CREG instead resolves supported `=` and `IN` literals to one unambiguous
+column. It checks only declared entity/categorical domains and suggests only
+from the same column. Dates, free-form text, LIKE patterns, ranges, wrapped
+expressions, and ambiguous bindings receive typed skip reasons.
 
-## Defense in depth for wrong answers
+Complete successful catalogs cache by qualified column. Failed or row-capped
+loads never cache. A catalog failure does not discard a valid query result:
+the app records the table, column, and exact error, suppresses any unsupported
+correction claim, and retries on a later turn.
 
-Since GCD guarantees structure but not meaning, there's a stack of cheap
-corrections (details in [`grounding-corrections.md`](./grounding-corrections.md)):
+## Reproducibility begins before evaluation
 
-- SQLite error → feed the error back to the model and retry (≤2×).
-- Empty result + a literal that matches no known entity → fuzzy-match and
-  suggest: "did you mean 'Kingsley Tower'?"
-- Uncertainty signals → generate 3 candidates and let their *results* vote.
+A repository name is mutable, and “the model in my cache” is not provenance.
+The versioned model manifest pins:
 
-For "when is the model uncertain," the harness logs per-token entropy —
-and for the fine-tuned model, correct answers average 0.017 vs 0.066 for
-wrong ones, a clean 4× separation. That number turns "maybe use entropy
-someday" into "threshold at ~0.03." The philosophy throughout: this is
-read-only exploration — show a confident answer and make correction one
-tap, don't block the user with verification theater.
+- the repository and 40-character revision;
+- every expected file, size, SHA-256, and directory digest;
+- source format and complete conversion settings;
+- quantization and local materialization name;
+- license files and distribution requirements; and
+- training/publication provenance for derivatives.
 
-## Unglamorous things that ate real time
+The fetcher supports all artifacts, one named artifact, or the verified
+production artifact. It rejects floating revisions and keeps weights out of
+Git.
 
-Worth knowing because this is what the job actually feels like:
+Every evaluation cell writes a new immutable directory. Its manifest records
+the command, Git state, machine/runtime versions, lock hashes, every frozen
+input hash, and generation settings. Per-item JSONL holds SQL, typed rows,
+failures, entropy, seeds, and integer-microsecond timings. If a run is reused
+for another analysis, the whole compatibility contract is checked first.
 
-- A library the plan named (`MLXGuidedGeneration`) simply didn't exist —
-  an hour of checking beat a day of assuming.
-- A tokenizer leaked `<|im_end|>` into decoded text and silently zeroed a
-  model's scores — the tell was a *too-clean* 0.000, and the rule is: a
-  score of exactly zero is a bug until proven otherwise.
-- Background shells had a minimal PATH and a different working directory,
-  which broke pipelines in three different ways before standardizing on
-  absolute paths + explicit `cd`.
-- Swift Package Manager builds of MLX lack the compiled Metal shaders that
-  Xcode builds produce — the parity CLI had to be built through
-  `xcodebuild`.
+The old PR #1 output could not meet that contract because its original
+fine-tuned artifact, seed, and complete training configuration were missing.
+It is preserved under `incomplete-provenance`, which is useful history but not
+reproducible evidence.
 
-None of this is in any textbook; all of it is half the work.
+## The model experiments
 
-## Where it landed
+All four pinned bases ran gold_v1 with GCD on and off:
 
-A fully offline iPhone app — 1.7 GB with model and database bundled — that
-answers portfolio questions at 0.665 EX single-shot *before* the correction
-layers add their lift at runtime, with a Swift-vs-Python parity check
-agreeing on 59/60 items (always verify your lab harness matches production
-— ours did, but "surely it's the same" is not evidence).
+| Base family | Best EX | Best GCD |
+|---|---:|:---:|
+| Qwen2.5-Coder-3B | 35.00% | on |
+| XiYanSQL-QwenCoder-3B | 31.67% | off |
+| Qwen2.5-Coder-1.5B | 23.33% | off |
+| Qwen3-1.7B | 20.00% | off |
 
-## One-sentence takeaways
+The top two families received identical training: the same byte-reproduced
+1,424-example corpus, seed 424242, 600 iterations, batch size 4, 16 adapted
+layers, learning rate `1e-4`, and prompt masking.
 
-1. Narrow the model's job until a small model can do it.
-2. Make invalid outputs impossible rather than unlikely.
-3. Decide your semantic conventions once and encode them everywhere
-   identically.
-4. Measure with held-out data — and then decompose the metric.
-5. When a result looks either perfect or like garbage, suspect the harness
-   before the model.
+Validation loss reached its minimum at iteration 400 for both jobs and rose
+again by 600. That is an overfitting warning. The approved comparison
+specified one identical 600-iteration run, so both final checkpoints were
+fused and held-out execution chose between them. Training loss never selected
+production.
+
+On all 200 gold_v2 items:
+
+| Artifact | Selected GCD | EX | Valid SQL |
+|---|:---:|---:|---:|
+| Qwen base | off | 22.00% | 76.00% |
+| XiYan base | off | 28.50% | 88.00% |
+| Qwen fine-tune | on | 52.50% | 89.50% |
+| **XiYan fine-tune** | **on** | **65.50%** | **93.00%** |
+
+The XiYan fine-tune beat the Qwen fine-tune by 13.0 EX points with a paired
+95% interval of [+6.5, +19.5]. This is a held-out execution result, not an
+inference from loss.
+
+Temperature experiments tested 0.0, 0.1, 0.3, and 0.7 with seeds 0–4 for all
+four artifacts. A nonzero temperature needed at least a two-point mean EX
+gain and a paired interval excluding zero. None qualified, so single-shot
+production remains temperature 0.
+
+## Publication and licenses
+
+Both fine-tunes were published to public Hugging Face repositories. The
+publisher staged model cards and license files, resolved the returned commit,
+downloaded into a fresh directory, and compared every byte before updating
+the manifest.
+
+The winning XiYan lineage identifies Qwen2.5-Coder-3B. CREG conservatively
+inherits the Qwen Research License alongside XiYan's Apache text. The winner
+therefore ships `LICENSE`, `QWEN_LICENSE`, and `NOTICE` and is explicitly
+non-commercial. License metadata is part of the verified model artifact, not
+a link added later to documentation.
+
+## Python and Swift must agree
+
+Python is efficient for broad experiment matrices; Swift is the production
+runtime. The final configuration must pass both on all 200 gold_v2 items:
+
+| Harness | EX | Valid SQL |
+|---|---:|---:|
+| Python | 65.50% | 93.00% |
+| Swift | 65.00% | 92.00% |
+
+The absolute drifts—0.50 and 1.00 points—pass the two-point limits. All 14
+differing items are explained in `docs/parity-report.md`.
+
+One is especially instructive: both runtimes generated identical malformed
+correlated SQL. Python's SQLite 3.53.3 accepted it; Swift's system SQLite
+3.43.2 rejected it. Same model input and same SQL do not guarantee the same
+execution when database engines differ. Persist runtime versions.
+
+The host CLI also cannot be trusted from a plain `swift run`: SwiftPM did not
+package MLX's default Metal library. It is built through Xcode Release, which
+includes the required Metal resources. Tooling paths are part of
+reproducibility.
+
+## Release packaging
+
+The project no longer points at a static `models/SQLModel`.
+
+- A clean-cache Debug build succeeds with the exact manifest and no bundled
+  model; the runtime follows the documented first-use pinned download path.
+- A clean-cache Release build downloads or reuses the exact public snapshot,
+  verifies it, and bundles it as `SQLModel`.
+
+The final Release inspector matched the embedded and source manifest SHA-256,
+all 12 model files, the 1,747,812,702-byte tree, both licenses, and the notice.
+That closes the chain from evaluation result to bytes inside the application.
+
+## What telemetry is for
+
+`TurnTelemetry` is one immutable record shared by developer mode, history,
+and JSONL export. It includes both forms of the question, rewrite/gate
+decisions, each candidate and repair, generation/execution timing, rows and
+truncation, grounding, vote outcome, and selection reason.
+
+Persisted durations are integer microseconds; presentation converts to
+milliseconds or seconds. Candidate rows are retained to 500 in the app and
+10,000 during evaluation. Exports include portfolio questions, SQL, and full
+rows, so they must be treated as portfolio data even though the bundled demo
+database is synthetic.
+
+## What remains
+
+This work verifies the approved engineering and research chain; it does not
+make the prototype a finished financial product. The next real investigations
+are:
+
+1. physical iPhone memory, thermal, energy, and end-to-end latency testing;
+2. more linguistically diverse training data to reduce template overfitting;
+3. generation or validation that rejects SQLite-version-sensitive correlated
+   aliases; and
+4. a fresh full evidence chain for any model, prompt, schema, grammar,
+   tokenizer, database, runtime, or gold-set change.
+
+## Transferable lessons
+
+1. Define result identity before trusting accuracy or voting.
+2. Pin bytes, not repository names.
+3. Keep evaluation cells immutable and make reuse prove compatibility.
+4. Test grammar constraints and temperatures per artifact.
+5. Use training loss to diagnose training, not to select production.
+6. Treat plurality, failure, truncation, and No Consensus as different states.
+7. Persist runtime and database-engine versions.
+8. Inspect the final application bundle; a correct cache is not evidence of
+   correct packaging.
