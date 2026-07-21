@@ -1,4 +1,17 @@
-from tools.publish_finalists import model_card, repository_slug
+import json
+
+import pytest
+
+from tools.fetch_model import (
+    LOCK_FILE,
+    directory_digest,
+    directory_inventory,
+)
+from tools.publish_finalists import (
+    model_card,
+    repository_slug,
+    verify_fused_tree_for_publication,
+)
 
 
 def training_fixture() -> dict:
@@ -50,6 +63,32 @@ def test_publication_slug_uses_the_complete_base_repository():
     assert repository_slug(
         "mlx-community/Qwen2.5-Coder-3B-Instruct-4bit"
     ) == "mlx-community-qwen2-5-coder-3b-instruct-4bit"
+
+
+def test_publication_rehashes_the_fused_tree_before_binding_evidence(
+    tmp_path,
+):
+    fused = tmp_path / "fused"
+    fused.mkdir()
+    (fused / "config.json").write_text("{}\n")
+    (fused / "weights.bin").write_bytes(b"original")
+    inventory = directory_inventory(fused)
+    digest = directory_digest(inventory)
+    lock = {
+        "directory_sha256": digest,
+        "all_files": inventory,
+    }
+    (fused / LOCK_FILE).write_text(json.dumps(lock))
+
+    actual, verified_inventory = verify_fused_tree_for_publication(
+        fused, lock
+    )
+    assert actual == digest
+    assert verified_inventory == inventory
+
+    (fused / "weights.bin").write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="changed after training/evaluation"):
+        verify_fused_tree_for_publication(fused, lock)
 
 
 def test_qwen_model_card_contains_complete_hash_and_license_evidence():

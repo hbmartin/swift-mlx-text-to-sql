@@ -1,4 +1,5 @@
 import json
+import shutil
 
 import pytest
 
@@ -66,6 +67,9 @@ def test_copy_production_refuses_to_delete_unrelated_directories(tmp_path):
     source, _, _ = make_artifact_tree(tmp_path)
     destination = tmp_path / "destination"
     destination.mkdir()
+    (destination / "config.json").write_text(
+        '{"application": "not-a-model"}\n'
+    )
     (destination / "precious.txt").write_text("not a model bundle")
     with pytest.raises(ArtifactError, match="refusing to delete"):
         copy_production(
@@ -92,6 +96,39 @@ def test_copy_production_replaces_prior_bundles_and_excludes_the_lock(
     assert (destination / "config.json").is_file()
     assert (destination / "weights.bin").is_file()
     assert not (destination / LOCK_FILE).exists()
+
+
+def test_copy_production_replaces_a_legacy_bundle_with_the_exact_lock(
+    tmp_path,
+):
+    source, _, _ = make_artifact_tree(tmp_path)
+    destination = tmp_path / "SQLModel"
+    shutil.copytree(source, destination)
+
+    copy_production(
+        source,
+        destination,
+        {"license": {}},
+        local_files_only=True,
+    )
+
+    assert (destination / "weights.bin").read_bytes() == b"\x00\x01\x02"
+    assert not (destination / LOCK_FILE).exists()
+
+
+def test_copy_production_refuses_overlapping_source_and_destination(
+    tmp_path,
+):
+    source, _, _ = make_artifact_tree(tmp_path)
+    destination = source / "nested-bundle"
+
+    with pytest.raises(ArtifactError, match="must be disjoint"):
+        copy_production(
+            source,
+            destination,
+            {"license": {}},
+            local_files_only=True,
+        )
 
 
 def test_git_provenance_is_strict_and_records_a_real_commit():

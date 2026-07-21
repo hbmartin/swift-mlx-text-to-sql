@@ -1,7 +1,17 @@
+import json
 from pathlib import Path
 
+import pytest
+
+import eval.run_consistency as consistency
 from eval.run_consistency import run_is_compatible
 from eval.selection import Run
+from tools.fetch_model import (
+    ArtifactError,
+    LOCK_FILE,
+    directory_digest,
+    directory_inventory,
+)
 
 
 def compatible_run() -> Run:
@@ -117,6 +127,58 @@ def test_run_is_compatible_requires_all_frozen_input_hashes() -> None:
 
     run.manifest["inputs"]["grammar"]["sha256"] = "9" * 64
     assert not run_is_compatible(run, **arguments)
+
+
+def test_current_identity_rehashes_model_weights(monkeypatch, tmp_path) -> None:
+    model_directory = tmp_path / "models" / "winner"
+    model_directory.mkdir(parents=True)
+    (model_directory / "tokenizer.json").write_text("{}\n")
+    (model_directory / "weights.bin").write_bytes(b"original")
+    digest = directory_digest(directory_inventory(model_directory))
+    (model_directory / LOCK_FILE).write_text(
+        json.dumps({"directory_sha256": digest})
+    )
+    artifact = {
+        "key": "winner",
+        "repository": "owner/model",
+        "revision": "a" * 40,
+        "local_directory": "winner",
+        "snapshot_directory_sha256": digest,
+    }
+
+    paths = {}
+    for name in (
+        "gold",
+        "database",
+        "grammar",
+        "schema",
+        "swift-lock",
+        "uv-lock",
+    ):
+        path = tmp_path / name
+        path.write_text(name)
+        paths[name] = path
+
+    monkeypatch.setattr(consistency, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(consistency, "MODEL_MANIFEST", tmp_path / "manifest")
+    monkeypatch.setattr(consistency, "GOLD_V2", paths["gold"])
+    monkeypatch.setattr(consistency, "DATABASE", paths["database"])
+    monkeypatch.setattr(consistency, "GRAMMAR", paths["grammar"])
+    monkeypatch.setattr(consistency, "SCHEMA_PROMPT", paths["schema"])
+    monkeypatch.setattr(consistency, "SWIFT_LOCK", paths["swift-lock"])
+    monkeypatch.setattr(consistency, "UV_LOCK", paths["uv-lock"])
+    monkeypatch.setattr(
+        consistency,
+        "load_manifest",
+        lambda _: {"models": [artifact]},
+    )
+
+    identity = consistency.current_identity("winner")
+    assert identity["directory_sha256"] == digest
+
+    (model_directory / "weights.bin").write_bytes(b"tampered")
+    with pytest.raises(ArtifactError, match="does not match the manifest"):
+        consistency.current_identity("winner")
 
 
 def candidate(

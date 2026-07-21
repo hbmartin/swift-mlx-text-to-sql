@@ -41,7 +41,7 @@ from eval.run_artifacts import (
     write_json,
 )
 from eval.selection import Run, SelectionError, load_run
-from tools.fetch_model import load_manifest
+from tools.fetch_model import load_manifest, verify_artifact_tree_at_use
 
 GOLD_V2 = REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl"
 DATABASE = REPO_ROOT / "db" / "creg.sqlite"
@@ -171,7 +171,11 @@ def current_identity(model: str) -> dict[str, Any] | None:
     tokenizer = model_directory / "tokenizer.json"
     if not artifact_lock.is_file() or not tokenizer.is_file():
         return None
-    lock_payload = json.loads(artifact_lock.read_text())
+    # The lock records fetch-time state. Re-hash the bytes currently on disk
+    # before deciding that an immutable run still represents this artifact.
+    actual_directory_sha256 = verify_artifact_tree_at_use(
+        model_directory, artifact
+    )
     return {
         "repository": repository,
         "revision": revision,
@@ -189,7 +193,7 @@ def current_identity(model: str) -> dict[str, Any] | None:
             ),
         },
         "artifact_lock_sha256": sha256_file(artifact_lock),
-        "directory_sha256": lock_payload.get("directory_sha256"),
+        "directory_sha256": actual_directory_sha256,
     }
 
 
@@ -224,9 +228,10 @@ def find_compatible_run(
     temperature: float,
     seed: int,
     runs_dir: Path,
+    identity: dict[str, Any] | None = None,
 ) -> Path | None:
     """Find verified prior evidence instead of regenerating an identical cell."""
-    identity = current_identity(model)
+    identity = identity or current_identity(model)
     if identity is None:
         return None
     for directory in sorted(path for path in runs_dir.iterdir() if path.is_dir()):
@@ -252,6 +257,7 @@ def ensure_run(
     temperature: float,
     seed: int,
     runs_dir: Path,
+    identity: dict[str, Any] | None = None,
 ) -> Path:
     identifier = run_id(model, gcd, temperature, seed)
     directory = runs_dir / identifier
@@ -261,7 +267,7 @@ def ensure_run(
         # stale anchor would be voted against candidates generated from
         # different frozen inputs.
         run = load_run(directory)
-        identity = current_identity(model)
+        identity = identity or current_identity(model)
         if identity is None or not identity_matches(
             run,
             identity,
@@ -283,6 +289,7 @@ def ensure_run(
         temperature=temperature,
         seed=seed,
         runs_dir=runs_dir,
+        identity=identity,
     )
     if reusable is not None:
         print(f"Reusing compatible immutable run: {reusable}")
@@ -411,8 +418,12 @@ def vote_trial(
 def main() -> None:
     args = parse_args()
     runs_dir = args.runs_dir.resolve()
+    # Hash the multi-gigabyte model tree once for this calibration process.
+    # Any newly generated run independently re-verifies the same tree at its
+    # own time of use inside eval.run_eval.
+    identity = current_identity(args.model_key)
     anchor_path = ensure_run(
-        args.model_key, args.gcd, 0.0, 0, runs_dir
+        args.model_key, args.gcd, 0.0, 0, runs_dir, identity
     )
     anchor = load_run(anchor_path)
     anchor_items = {item["id"]: item for item in anchor.items}
@@ -427,6 +438,7 @@ def main() -> None:
                 sample_temperature,
                 seed,
                 runs_dir,
+                identity,
             )
             source_paths.append(path)
             samples[seed] = {

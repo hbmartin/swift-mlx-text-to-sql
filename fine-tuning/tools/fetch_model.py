@@ -601,6 +601,104 @@ def copy_distribution_license(
         shutil.copy2(source, target)
 
 
+def full_directory_inventory(directory: Path) -> list[dict[str, Any]]:
+    """Inventory every real file, including paths ignored in model caches."""
+    inventory = []
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise ArtifactError(
+                f"refusing to delete {directory}: existing bundle contains "
+                f"a symbolic link ({path.relative_to(directory)})"
+            )
+        if path.is_file():
+            inventory.append(
+                {
+                    "path": path.relative_to(directory).as_posix(),
+                    "size": path.stat().st_size,
+                    "sha256": sha256_file(path),
+                }
+            )
+    return inventory
+
+
+def expected_production_inventory(
+    source: Path, artifact: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The exact files produced by copy_production, excluding bookkeeping."""
+    expected = {item["path"]: item for item in directory_inventory(source)}
+    for item in distribution_files(artifact["license"]):
+        expected[item["path"]] = {
+            "path": item["path"],
+            "size": item["size"],
+            "sha256": item["sha256"],
+        }
+    if (item := notice_file(artifact["license"])) is not None:
+        expected[item["path"]] = {
+            "path": item["path"],
+            "size": item["size"],
+            "sha256": item["sha256"],
+        }
+    return sorted(expected.values(), key=lambda item: item["path"])
+
+
+def verify_replaceable_production_destination(
+    source: Path,
+    destination: Path,
+    artifact: dict[str, Any],
+) -> None:
+    """Refuse to delete anything except an exact prior materialization."""
+    if destination.is_symlink() or not destination.is_dir():
+        raise ArtifactError(
+            f"refusing to delete {destination}: it is not a real directory"
+        )
+    if not any(destination.iterdir()):
+        return
+
+    expected = expected_production_inventory(source, artifact)
+    actual = full_directory_inventory(destination)
+    actual_by_path = {item["path"]: item for item in actual}
+
+    # Bundles created before the lock was excluded may contain the exact
+    # source lock. Accept only that byte-identical legacy bookkeeping file.
+    legacy_lock = actual_by_path.pop(LOCK_FILE, None)
+    source_lock = source / LOCK_FILE
+    if legacy_lock is not None:
+        expected_legacy_lock = (
+            {
+                "path": LOCK_FILE,
+                "size": source_lock.stat().st_size,
+                "sha256": sha256_file(source_lock),
+            }
+            if source_lock.is_file()
+            else None
+        )
+        if legacy_lock != expected_legacy_lock:
+            raise ArtifactError(
+                f"refusing to delete {destination}: its artifact lock does "
+                "not match the verified source"
+            )
+
+    normalized_actual = sorted(
+        actual_by_path.values(), key=lambda item: item["path"]
+    )
+    if normalized_actual != expected:
+        expected_by_path = {item["path"]: item for item in expected}
+        actual_paths = set(actual_by_path)
+        expected_paths = set(expected_by_path)
+        mismatches = sorted(
+            path
+            for path in actual_paths & expected_paths
+            if actual_by_path[path] != expected_by_path[path]
+        )
+        raise ArtifactError(
+            f"refusing to delete {destination}: it is not an exact prior "
+            "production bundle "
+            f"(missing={sorted(expected_paths - actual_paths)}, "
+            f"extra={sorted(actual_paths - expected_paths)}, "
+            f"mismatched={mismatches})"
+        )
+
+
 def copy_production(
     source: Path,
     destination: Path,
@@ -608,20 +706,25 @@ def copy_production(
     *,
     local_files_only: bool,
 ) -> None:
-    if destination.exists():
-        # Only replace something that is clearly a prior materialization; a
-        # mistyped --destination must never delete an unrelated tree.
-        replaceable = destination.is_dir() and (
-            not any(destination.iterdir())
-            or (destination / "config.json").is_file()
+    source_resolved = source.resolve()
+    destination_resolved = destination.resolve()
+    if (
+        source_resolved == destination_resolved
+        or source_resolved in destination_resolved.parents
+        or destination_resolved in source_resolved.parents
+    ):
+        raise ArtifactError(
+            "production source and destination must be disjoint: "
+            f"{source} -> {destination}"
         )
-        if not replaceable:
-            raise ArtifactError(
-                f"refusing to delete {destination}: it is not an empty "
-                "directory or a previously materialized model bundle "
-                "(no config.json); remove it manually if replacement is "
-                "intended"
-            )
+    if destination.is_symlink():
+        raise ArtifactError(
+            f"refusing to replace symbolic-link destination: {destination}"
+        )
+    if destination.exists():
+        verify_replaceable_production_destination(
+            source, destination, artifact
+        )
         shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     # The artifact lock is fetch-time bookkeeping, not model content; the

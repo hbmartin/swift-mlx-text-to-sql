@@ -100,6 +100,28 @@ def summary(path: Path) -> dict[str, Any]:
     return result
 
 
+def verify_fused_tree_for_publication(
+    directory: Path, lock: dict[str, Any]
+) -> tuple[str, list[dict[str, Any]]]:
+    """Verify the exact local tree that will be copied for publication."""
+    if not directory.is_dir():
+        raise RuntimeError(f"fused model directory is missing: {directory}")
+    inventory = directory_inventory(directory)
+    actual = directory_digest(inventory)
+    expected = lock.get("directory_sha256")
+    if actual != expected:
+        raise RuntimeError(
+            f"fused model tree changed after training/evaluation: {directory} "
+            f"({actual} != {expected})"
+        )
+    if lock.get("all_files") != inventory:
+        raise RuntimeError(
+            f"fused model inventory no longer matches its artifact lock: "
+            f"{directory}"
+        )
+    return actual, inventory
+
+
 def model_card(
     *,
     repo_id: str,
@@ -262,7 +284,10 @@ def main() -> None:
         base = bases[training["base"]["key"]]
         fused = Path(training["outputs"]["fused"])
         lock = json.loads((fused / LOCK_FILE).read_text())
-        training_fused_tree_sha256 = lock["directory_sha256"]
+        (
+            training_fused_tree_sha256,
+            verified_fused_inventory,
+        ) = verify_fused_tree_for_publication(fused, lock)
         key = lock["key"]
         results = [
             result
@@ -324,6 +349,13 @@ def main() -> None:
             staging,
             ignore=shutil.ignore_patterns(LOCK_FILE, ".cache"),
         )
+        staged_source_sha256 = directory_digest(directory_inventory(staging))
+        if staged_source_sha256 != training_fused_tree_sha256:
+            raise RuntimeError(
+                "publication staging copy differs from the verified fused "
+                f"tree ({staged_source_sha256} != "
+                f"{training_fused_tree_sha256})"
+            )
         license_declaration = base["license"]
         declared_licenses = distribution_files(license_declaration)
         declared_notice = notice_file(license_declaration)
@@ -332,7 +364,7 @@ def main() -> None:
             license_paths.add(declared_notice["path"])
         model_inventory = [
             file
-            for file in lock["all_files"]
+            for file in verified_fused_inventory
             if file["path"] not in {"README.md", *license_paths}
         ]
         training_configuration = (
