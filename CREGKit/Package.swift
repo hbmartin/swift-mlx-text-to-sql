@@ -30,6 +30,7 @@ let package = Package(
     // application builds while preserving the pinned MLXLM loading contract.
     .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
     .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
+    .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0"),
   ],
   targets: [
     .target(
