@@ -166,6 +166,35 @@ import Testing
     #expect(CanonicalSQLValue.canonicalNumber(-0.0) == "0")
   }
 
+  @Test func canonicalNumberIsTotalOverTheDoubleRange() {
+    #expect(CanonicalSQLValue.canonicalNumber(.infinity) == "inf")
+    #expect(CanonicalSQLValue.canonicalNumber(-.infinity) == "-inf")
+    #expect(CanonicalSQLValue.canonicalNumber(.nan) == "nan")
+    #expect(
+      CanonicalSQLValue.canonicalNumber(1e24)
+        == "1" + String(repeating: "0", count: 24))
+    #expect(
+      CanonicalSQLValue.canonicalNumber(1.2345e300)
+        == "12345" + String(repeating: "0", count: 296))
+    #expect(
+      CanonicalSQLValue.canonicalNumber(-1.2345e300)
+        == "-12345" + String(repeating: "0", count: 296))
+    #expect(
+      CanonicalSQLValue.canonicalNumber(.greatestFiniteMagnitude)
+        .hasPrefix("17976931348623157"))
+    #expect(CanonicalSQLValue.canonicalNumber(5e-324) == "0")
+    #expect(CanonicalSQLValue.canonicalNumber(-1e-300) == "0")
+  }
+
+  @Test func textIdentityUsesCodePointsNotCanonicalEquivalence() {
+    // Python compares str by code points; NFC and NFD spellings of the same
+    // grapheme must stay distinct values with distinct digests.
+    let nfc = QueryResult(columns: ["v"], rows: [[.text("caf\u{E9}")]])
+    let nfd = QueryResult(columns: ["v"], rows: [[.text("cafe\u{301}")]])
+    #expect(!EXScore.matches(nfc, nfd))
+    #expect(CanonicalSQLResult(nfc).digest != CanonicalSQLResult(nfd).digest)
+  }
+
   @Test func rowOrderDoesNotMatterAndTruncationDoes() {
     let first = QueryResult(
       columns: ["n"], rows: [[.integer(1)], [.integer(2)]])
@@ -471,6 +500,64 @@ import Testing
       value += 1
       return value
     }
+  }
+
+  @Test func emptyResultsCarryNoConsensusEvidence() async throws {
+    // Two agreeing empty samples share the empty digest but must not
+    // outvote a correct non-empty deterministic anchor.
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { request in
+        SQLGeneration(
+          sql: request.candidateID.rawValue == "initial"
+            ? "SELECT good" : "SELECT empty",
+          tokensPerSecond: 42, modelName: "test")
+      },
+      db: DatabaseClient { sql in
+        sql.contains("empty")
+          ? QueryResult(columns: ["n"], rows: [])
+          : QueryResult(columns: ["n"], rows: [[.integer(7)]])
+      },
+      serializer: InferenceSerializer(),
+      configuration: Self.config(selfConsistencyN: 3, alwaysVote: true))
+    let events = await Array(pipeline.run("q", []))
+    guard
+      case .turnFinished(
+        .answered(let result, _, _, let notice), let telemetry) = events.last
+    else {
+      Issue.record("expected answered outcome")
+      return
+    }
+    #expect(result.rows == [[.integer(7)]])
+    #expect(telemetry.selectionReason == .noConsensusDeterministicAnchor)
+    guard
+      case .noConsensus(let anchorID, let candidateCount)? =
+        telemetry.voteOutcome
+    else {
+      Issue.record("expected no-consensus outcome")
+      return
+    }
+    #expect(anchorID.rawValue == "initial")
+    #expect(candidateCount == 3)
+    #expect(notice?.contains("did not reach a majority") == true)
+  }
+
+  @Test func allEmptyVoteStillDeliversTheAnchorResult() async throws {
+    // With no consensus evidence at all, the anchor's own (empty) result
+    // remains the deliverable outcome through the visible no-consensus path.
+    let pipeline = Self.makePipeline(
+      executeResults: { _ in QueryResult(columns: ["n"], rows: []) },
+      configuration: Self.config(selfConsistencyN: 3, alwaysVote: true))
+    let events = await Array(pipeline.run("q", []))
+    guard
+      case .turnFinished(.answered(let result, _, _, _), let telemetry) =
+        events.last
+    else {
+      Issue.record("expected answered outcome")
+      return
+    }
+    #expect(result.rows.isEmpty)
+    #expect(telemetry.selectionReason == .noConsensusDeterministicAnchor)
   }
 
   @Test func repeatedFailuresGiveUpGracefully() async throws {
@@ -813,7 +900,7 @@ import Testing
       sql:
         "SELECT p.name FROM properties p JOIN tenants t ON 1=1 WHERE name = 'Acme'",
       result: QueryResult(columns: ["name"], rows: []))
-    #expect(ambiguous.findings.isEmpty)
+    #expect(ambiguous.findings == [.emptyResult])
     #expect(ambiguous.skipped == [
       .unresolvedColumn(reference: "name", literal: "Acme")
     ])
@@ -850,7 +937,9 @@ import Testing
         literal: "Active",
         matched: true)
     ])
-    #expect(report.findings.isEmpty)
+    // An unexplained empty result stays visible (and keeps its voting
+    // trigger) even when some literals could only be skipped.
+    #expect(report.findings == [.emptyResult])
     #expect(report.skipped.contains(.dateLiteral(literal: "2026-07-01")))
     #expect(report.skipped.contains(.likePattern(literal: "%40%")))
   }
@@ -866,7 +955,7 @@ import Testing
     let first = await heuristics.inspectDetailed(
       sql: sql, result: empty)
     #expect(first.degradations.count == 1)
-    #expect(first.findings.isEmpty)
+    #expect(first.findings == [.emptyResult])
     #expect(await attempts.count == 1)
 
     let second = await heuristics.inspectDetailed(
@@ -892,7 +981,7 @@ import Testing
 
     let first = await heuristics.inspectDetailed(sql: sql, result: empty)
     #expect(first.degradations.count == 1)
-    #expect(first.findings.isEmpty)
+    #expect(first.findings == [.emptyResult])
 
     let second = await heuristics.inspectDetailed(sql: sql, result: empty)
     #expect(second.degradations.isEmpty)
@@ -916,7 +1005,7 @@ import Testing
     #expect(
       first.degradations.first?.message.contains(
         "non-text or malformed row") == true)
-    #expect(first.findings.isEmpty)
+    #expect(first.findings == [.emptyResult])
 
     let second = await heuristics.inspectDetailed(sql: sql, result: empty)
     #expect(second.degradations.isEmpty)
@@ -950,6 +1039,15 @@ import Testing
       MLXSQLGenerator.extractSQL(
         "analysis first\nWITH latest AS (SELECT 1) SELECT * FROM latest; trailing")
         == "WITH latest AS (SELECT 1) SELECT * FROM latest")
+    // A semicolon inside a string literal must not truncate the statement.
+    #expect(
+      MLXSQLGenerator.extractSQL(
+        "SELECT name FROM tenants WHERE name = 'Acme; Inc'; trailing prose")
+        == "SELECT name FROM tenants WHERE name = 'Acme; Inc'")
+    #expect(
+      MLXSQLGenerator.extractSQL(
+        "SELECT name FROM tenants WHERE name = 'O''Brien; Co' LIMIT 1;")
+        == "SELECT name FROM tenants WHERE name = 'O''Brien; Co' LIMIT 1")
   }
 
   @Test func grammarResourceContainsSchema() throws {

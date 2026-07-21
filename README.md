@@ -23,7 +23,7 @@ at immutable revision `7f97a54819b9329338a5353266d6d2a1294eb341`.
 | Swift single-shot, same 200 items | 65.00% EX; 92.00% valid SQL |
 | Python/Swift absolute drift | 0.50 EX points; 1.00 valid-SQL point; pass |
 | N=3 always-vote, 1,000 item-trials | 66.80% EX; 95.40% valid SQL |
-| Unit suites | 44 Python and 38 Swift tests pass |
+| Unit suites | 62 Python and 42 Swift tests pass |
 
 Production uses grammar-constrained decoding, deterministic temperature 0.0,
 top-p 1.0, disabled top-k, and a 512-token cap. Always-vote self-consistency

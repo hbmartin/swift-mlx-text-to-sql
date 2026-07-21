@@ -335,9 +335,17 @@ extension QueryPipeline {
 
               let voteSet = Array(
                 voteCandidates.prefix(configuration.selfConsistencyN))
+              // Every empty result shares one digest regardless of the query
+              // that produced it, so empty results carry no consensus
+              // evidence: two wrong queries that each matched nothing must
+              // not outvote a correct deterministic anchor. Empty candidates
+              // still count in the denominator, and an empty anchor remains
+              // deliverable through the no-consensus path.
               var agreementByDigest: [String: Int] = [:]
               for candidate in voteSet {
-                if let digest = candidate.resultDigest {
+                if let digest = candidate.resultDigest,
+                  candidate.result?.rows.isEmpty == false
+                {
                   agreementByDigest[digest, default: 0] += 1
                 }
               }

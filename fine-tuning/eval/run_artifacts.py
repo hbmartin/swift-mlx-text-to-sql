@@ -80,8 +80,13 @@ def git_provenance() -> dict[str, Any]:
             "branch": git_value("branch", "--show-current"),
             "dirty": bool(git_value("status", "--porcelain")),
         }
-    except (OSError, subprocess.CalledProcessError):
-        return {"commit": None, "branch": None, "dirty": None}
+    except (OSError, subprocess.CalledProcessError) as error:
+        # A null commit in an immutable manifest would defeat the point of
+        # recording provenance; fail the run instead.
+        raise RunArtifactError(
+            "git provenance is required for immutable evidence; run inside "
+            "the repository with git available"
+        ) from error
 
 
 def dependency_versions() -> dict[str, str | None]:

@@ -102,7 +102,15 @@ def main() -> None:
                 or found["sha256"] != notice["sha256"]
             ):
                 mismatches.append(notice["path"])
-    extras = sorted(set(actual_by_path) - set(expected_by_path))
+    # directory_inventory skips .cache and the artifact lock because those
+    # are legitimate in a *source* model directory. A shipped bundle must
+    # not contain either, so extras detection scans every real file.
+    all_bundle_files = sorted(
+        path.relative_to(model_directory).as_posix()
+        for path in model_directory.rglob("*")
+        if path.is_file()
+    )
+    extras = sorted(set(all_bundle_files) - set(expected_by_path))
     unsupported_extras = sorted(set(extras) - allowed_extras)
     core_inventory = [
         actual_by_path[item["path"]]

@@ -71,6 +71,28 @@ def test_half_even_four_decimal_normalization():
     assert canonical_number(-0.0) == "0"
 
 
+def test_canonical_number_is_total_over_the_double_range():
+    # These previously raised (ValueError for non-finite, InvalidOperation
+    # for >= 1e24) and aborted whole evaluation runs mid-stream.
+    assert canonical_number(float("inf")) == "inf"
+    assert canonical_number(float("-inf")) == "-inf"
+    assert canonical_number(float("nan")) == "nan"
+    assert canonical_number(1e24) == "1" + "0" * 24
+    assert canonical_number(1.2345e300) == "12345" + "0" * 296
+    assert canonical_number(1.7976931348623157e308).startswith(
+        "17976931348623157"
+    )
+    assert canonical_number(5e-324) == "0"
+
+
+def test_nonfinite_reals_from_generated_sql_score_as_mismatch():
+    # SQLite yields Infinity for out-of-range literals like 9e999; a
+    # generated query must score, not crash the run.
+    result = score(DB, "SELECT 9e999", "SELECT 1")
+    assert result["ex"] is False
+    assert result["error"] is None
+
+
 def test_typed_rows_and_digest_are_stable():
     first = [(1, "a", b"\x00"), (2.0, None, b"\xff")]
     second = list(reversed(first))

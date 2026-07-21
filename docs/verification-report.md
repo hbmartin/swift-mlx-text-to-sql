@@ -16,7 +16,7 @@ cd fine-tuning
 uv run --frozen pytest
 ```
 
-Result: **44 passed** on Python 3.14.6 through the committed `uv.lock`.
+Result: **62 passed** on Python 3.14.6 through the committed `uv.lock`.
 
 Swift:
 
@@ -25,7 +25,7 @@ cd CREGKit
 swift test
 ```
 
-Result: **38 passed** in eight suites on Swift 6.2.4.
+Result: **42 passed** in eight suites on Swift 6.2.4.
 
 The combined suites verify:
 
@@ -148,6 +148,15 @@ with `status: complete`:
 The Xcode project has no static `models/SQLModel` reference. Its always-run
 phase locates `uv`, uses `uv run --frozen`, copies the manifest, and makes
 Debug cache-only versus Release verified-download behavior explicit.
+
+Two hardening changes postdate the archived report above. The inspector now
+scans every real file in the bundled `SQLModel` tree — including `.cache/`
+paths and the fetch-time artifact lock, which its inventory helper
+previously skipped — when detecting unexpected extras, and materialization
+no longer copies `.creg-artifact.json` into the bundle. The archived
+Release bundle contains that lock file, so re-inspecting it with the
+current inspector reports one unsupported extra; bundles built from this
+revision onward contain exactly the manifest tree plus license files.
 
 ## Host parity build note
 

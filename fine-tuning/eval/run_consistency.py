@@ -3,6 +3,21 @@
 Each trial executes one temperature-zero anchor and two candidates at the
 requested sample temperature. Five trial seeds are run for 0.1, 0.3, and 0.7.
 Underlying single-candidate Evaluation Runs remain immutable evidence.
+
+The vote mirrors the production pipeline exactly (schema_version 2):
+
+- Candidates group by canonical result digest; a strict majority of the
+  configured candidate count wins.
+- Empty results carry no consensus evidence — every empty result shares one
+  digest regardless of the query that produced it — but an empty anchor
+  remains deliverable through the no-consensus path.
+- Results wider than the production row cap (500) would be truncated in the
+  app, so they are never vote-eligible here even though calibration executes
+  with the 10,000-row evaluation cap.
+- With no majority, the deterministic anchor's own outcome is delivered.
+  Production never substitutes a temperature sample: a truncated anchor is
+  delivered visibly degraded (scored EX false), and an anchor execution
+  error is scored as a failure.
 """
 
 from __future__ import annotations
@@ -50,6 +65,12 @@ SWIFT_LOCK = REPO_ROOT / "CREGKit" / "Package.resolved"
 UV_LOCK = REPO_ROOT / "fine-tuning" / "uv.lock"
 DEFAULT_CONSISTENCY = REPO_ROOT / "eval" / "consistency-runs"
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
+
+CANDIDATE_COUNT = 3
+# DatabaseClient.defaultRowCap in the app. Calibration source runs execute
+# with the 10,000-row evaluation cap, so any result wider than this would
+# have been truncated in production.
+PRODUCTION_ROW_CAP = 500
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,15 +146,9 @@ def run_is_compatible(
     )
 
 
-def find_compatible_run(
-    *,
-    model: str,
-    gcd: str,
-    temperature: float,
-    seed: int,
-    runs_dir: Path,
-) -> Path | None:
-    """Find verified prior evidence instead of regenerating an identical cell."""
+def current_identity(model: str) -> dict[str, Any] | None:
+    """Hashes of every frozen input for the requested cell, or None when the
+    local artifact cannot be identified independently of a path."""
     manifest = load_manifest(MODEL_MANIFEST)
     artifact = next(
         (item for item in manifest["models"] if item["key"] == model), None
@@ -157,36 +172,75 @@ def find_compatible_run(
     if not artifact_lock.is_file() or not tokenizer.is_file():
         return None
     lock_payload = json.loads(artifact_lock.read_text())
-    input_sha256 = {
-        "database": sha256_file(DATABASE),
-        "gold": sha256_file(GOLD_V2),
-        "grammar": sha256_file(GRAMMAR),
-        "schema_prompt": sha256_file(SCHEMA_PROMPT),
-        "swift_package_lock": sha256_file(SWIFT_LOCK),
-        "uv_lock": sha256_file(UV_LOCK),
-        "tokenizer": sha256_file(tokenizer),
-        "system_prompt_sha256": sha256_bytes(
-            build_system_prompt(SCHEMA_PROMPT.read_text().strip()).encode()
-        ),
+    return {
+        "repository": repository,
+        "revision": revision,
+        "gold_sha256": sha256_file(GOLD_V2),
+        "input_sha256": {
+            "database": sha256_file(DATABASE),
+            "gold": sha256_file(GOLD_V2),
+            "grammar": sha256_file(GRAMMAR),
+            "schema_prompt": sha256_file(SCHEMA_PROMPT),
+            "swift_package_lock": sha256_file(SWIFT_LOCK),
+            "uv_lock": sha256_file(UV_LOCK),
+            "tokenizer": sha256_file(tokenizer),
+            "system_prompt_sha256": sha256_bytes(
+                build_system_prompt(SCHEMA_PROMPT.read_text().strip()).encode()
+            ),
+        },
+        "artifact_lock_sha256": sha256_file(artifact_lock),
+        "directory_sha256": lock_payload.get("directory_sha256"),
     }
 
+
+def identity_matches(
+    run: Run,
+    identity: dict[str, Any],
+    *,
+    model: str,
+    gcd: str,
+    temperature: float,
+    seed: int,
+) -> bool:
+    return run_is_compatible(
+        run,
+        model=model,
+        repository=identity["repository"],
+        revision=identity["revision"],
+        gcd=gcd,
+        temperature=temperature,
+        seed=seed,
+        gold_sha256=identity["gold_sha256"],
+        input_sha256=identity["input_sha256"],
+        artifact_lock_sha256=identity["artifact_lock_sha256"],
+        directory_sha256=identity["directory_sha256"],
+    )
+
+
+def find_compatible_run(
+    *,
+    model: str,
+    gcd: str,
+    temperature: float,
+    seed: int,
+    runs_dir: Path,
+) -> Path | None:
+    """Find verified prior evidence instead of regenerating an identical cell."""
+    identity = current_identity(model)
+    if identity is None:
+        return None
     for directory in sorted(path for path in runs_dir.iterdir() if path.is_dir()):
         try:
             run = load_run(directory)
         except (OSError, ValueError, KeyError, SelectionError):
             continue
-        if run_is_compatible(
+        if identity_matches(
             run,
+            identity,
             model=model,
-            repository=repository,
-            revision=revision,
             gcd=gcd,
             temperature=temperature,
             seed=seed,
-            gold_sha256=sha256_file(GOLD_V2),
-            input_sha256=input_sha256,
-            artifact_lock_sha256=sha256_file(artifact_lock),
-            directory_sha256=lock_payload.get("directory_sha256"),
         ):
             return directory
     return None
@@ -202,7 +256,26 @@ def ensure_run(
     identifier = run_id(model, gcd, temperature, seed)
     directory = runs_dir / identifier
     if directory.exists():
-        load_run(directory)
+        # A deterministic-ID directory is reused only after the same
+        # input-hash verification the search path performs; otherwise a
+        # stale anchor would be voted against candidates generated from
+        # different frozen inputs.
+        run = load_run(directory)
+        identity = current_identity(model)
+        if identity is None or not identity_matches(
+            run,
+            identity,
+            model=model,
+            gcd=gcd,
+            temperature=temperature,
+            seed=seed,
+        ):
+            raise SelectionError(
+                f"immutable run {directory} does not match the current frozen "
+                "inputs (database, gold set, prompts, locks, or model "
+                "artifact changed after it was created); move it aside and "
+                "regenerate instead of mixing evidence"
+            )
         return directory
     reusable = find_compatible_run(
         model=model,
@@ -240,14 +313,99 @@ def ensure_run(
     return directory
 
 
-def complete_candidate(item: dict[str, Any]) -> bool:
+def executed_within_production_cap(item: dict[str, Any]) -> bool:
     predicted = item.get("predicted")
     return (
         item.get("error") is None
         and predicted is not None
         and not predicted["is_truncated"]
         and predicted["digest"] is not None
+        and predicted["row_count"] <= PRODUCTION_ROW_CAP
     )
+
+
+def vote_eligible(item: dict[str, Any]) -> bool:
+    """A result that production could group for consensus: complete within
+    the production row cap and non-empty."""
+    return (
+        executed_within_production_cap(item)
+        and item["predicted"]["row_count"] > 0
+    )
+
+
+def vote_trial(
+    candidates: list[tuple[str, dict[str, Any]]],
+    candidate_count: int = CANDIDATE_COUNT,
+) -> dict[str, Any]:
+    """Production-faithful vote over one anchor plus N-1 samples.
+
+    Mirrors QueryPipeline.live: strict majority of the configured candidate
+    count, empty results excluded from majority formation, and — with no
+    majority — the deterministic anchor's own outcome, never a substituted
+    temperature sample.
+    """
+    groups = Counter(
+        item["predicted"]["digest"]
+        for _, item in candidates
+        if vote_eligible(item)
+    )
+    ranked = sorted(groups.items(), key=lambda pair: (-pair[1], pair[0]))
+    majority = next(
+        (
+            (digest, count)
+            for digest, count in ranked
+            if count > candidate_count // 2
+        ),
+        None,
+    )
+    anchor_role, anchor = candidates[0]
+    anchor_deliverable = executed_within_production_cap(anchor)
+    if majority is not None:
+        digest, agreement = majority
+        role, item = next(
+            candidate
+            for candidate in candidates
+            if vote_eligible(candidate[1])
+            and candidate[1]["predicted"]["digest"] == digest
+        )
+        return {
+            "outcome": "consensus",
+            "agreement": agreement,
+            "anchor_failed": not anchor_deliverable,
+            "selected_role": role,
+            "ex": bool(item["ex"]),
+            "valid_sql": item["error"] is None,
+        }
+    if anchor_deliverable:
+        return {
+            "outcome": "no-consensus",
+            "agreement": 0,
+            "anchor_failed": False,
+            "selected_role": anchor_role,
+            "ex": bool(anchor["ex"]),
+            "valid_sql": anchor["error"] is None,
+        }
+    if anchor.get("error") is None and anchor.get("predicted") is not None:
+        # Production delivers the anchor's own result truncated at the row
+        # cap: visible, valid SQL, and never an execution-accuracy match.
+        return {
+            "outcome": "anchor-failed",
+            "agreement": 0,
+            "anchor_failed": True,
+            "selected_role": anchor_role,
+            "ex": False,
+            "valid_sql": True,
+        }
+    # An anchor execution error would have entered the repair loop before
+    # voting; calibration cannot simulate repairs, so score a failure.
+    return {
+        "outcome": "anchor-failed",
+        "agreement": 0,
+        "anchor_failed": True,
+        "selected_role": None,
+        "ex": False,
+        "valid_sql": False,
+    }
 
 
 def main() -> None:
@@ -290,67 +448,19 @@ def main() -> None:
                     ("sample-1", samples[trial_seed * 2][item_id]),
                     ("sample-2", samples[trial_seed * 2 + 1][item_id]),
                 ]
-                groups = Counter(
-                    item["predicted"]["digest"]
-                    for _, item in candidates
-                    if complete_candidate(item)
-                )
-                majority = next(
-                    (
-                        (digest, count)
-                        for digest, count in sorted(groups.items())
-                        if count >= 2
-                    ),
-                    None,
-                )
-                anchor_ok = complete_candidate(candidates[0][1])
-                outcome: str
-                selected: tuple[str, dict[str, Any]] | None
-                agreement = 0
-                if majority is not None:
-                    digest, agreement = majority
-                    selected = next(
-                        candidate
-                        for candidate in candidates
-                        if complete_candidate(candidate[1])
-                        and candidate[1]["predicted"]["digest"] == digest
-                    )
-                    outcome = "consensus"
-                elif anchor_ok:
-                    selected = candidates[0]
-                    outcome = "no-consensus"
-                else:
-                    selected = next(
-                        (
-                            candidate
-                            for candidate in candidates[1:]
-                            if complete_candidate(candidate[1])
-                        ),
-                        None,
-                    )
-                    outcome = "anchor-failed"
+                vote = vote_trial(candidates)
                 records.append(
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "id": item_id,
                         "trial_seed": trial_seed,
                         "sample_temperature": sample_temperature,
-                        "outcome": outcome,
-                        "agreement": agreement,
-                        "anchor_failed": not anchor_ok,
-                        "selected_role": (
-                            selected[0] if selected is not None else None
-                        ),
-                        "ex": (
-                            bool(selected[1]["ex"])
-                            if selected is not None
-                            else False
-                        ),
-                        "valid_sql": (
-                            selected[1]["error"] is None
-                            if selected is not None
-                            else False
-                        ),
+                        "outcome": vote["outcome"],
+                        "agreement": vote["agreement"],
+                        "anchor_failed": vote["anchor_failed"],
+                        "selected_role": vote["selected_role"],
+                        "ex": vote["ex"],
+                        "valid_sql": vote["valid_sql"],
                         "latency_microseconds": sum(
                             int(item["elapsed_microseconds"])
                             for _, item in candidates
@@ -389,11 +499,12 @@ def main() -> None:
         count = len(records)
         outcomes = Counter(record["outcome"] for record in records)
         summary = {
-            "schema_version": 1,
+            "schema_version": 2,
             "model_key": args.model_key,
             "gcd": args.gcd,
             "always_vote": True,
-            "candidate_count": 3,
+            "candidate_count": CANDIDATE_COUNT,
+            "production_row_cap": PRODUCTION_ROW_CAP,
             "sample_temperature": sample_temperature,
             "trial_seeds": list(range(5)),
             "n_trials": count,
@@ -411,18 +522,27 @@ def main() -> None:
         }
         write_json(directory / "summary.json", summary)
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": identifier,
             "status": "complete",
             "configuration": {
                 "always_vote": True,
-                "candidate_count": 3,
+                "candidate_count": CANDIDATE_COUNT,
                 "anchor_temperature": 0.0,
                 "sample_temperature": sample_temperature,
                 "trial_seeds": list(range(5)),
                 "top_p": 1.0,
                 "top_k": 0,
                 "max_tokens": 512,
+                "production_row_cap": PRODUCTION_ROW_CAP,
+                "majority_rule": (
+                    "strict majority of candidate_count over non-empty "
+                    "complete results within production_row_cap"
+                ),
+                "anchor_failed_rule": (
+                    "deliver the deterministic anchor's own degraded "
+                    "outcome; never substitute a temperature sample"
+                ),
             },
             "sources": [
                 {

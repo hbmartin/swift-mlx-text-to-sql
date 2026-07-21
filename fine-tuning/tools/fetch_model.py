@@ -74,6 +74,45 @@ def directory_digest(inventory: list[dict[str, Any]]) -> str:
     return hashlib.sha256(canonical_json(inventory)).hexdigest()
 
 
+def declared_directory_sha256(artifact: dict[str, Any]) -> str:
+    """The manifest-declared digest of the tree a consumer actually loads."""
+    conversion = artifact.get("conversion")
+    if conversion is not None:
+        return conversion["directory_sha256"]
+    return artifact["snapshot_directory_sha256"]
+
+
+def verify_artifact_tree_at_use(
+    directory: Path, artifact: dict[str, Any]
+) -> str:
+    """Re-hash an artifact tree at time of use.
+
+    The lock file records what was true at fetch time; a consumer that is
+    about to train on or evaluate these bytes must not copy that claim
+    forward without re-verifying it.
+    """
+    lock_path = directory / LOCK_FILE
+    if not directory.is_dir() or not lock_path.is_file():
+        raise ArtifactError(
+            f"verified model is missing: {directory}; run fetch_model.py first"
+        )
+    lock = json.loads(lock_path.read_text())
+    actual = directory_digest(directory_inventory(directory))
+    declared = declared_directory_sha256(artifact)
+    if actual != declared:
+        raise ArtifactError(
+            f"{directory}: tree sha256 {actual} does not match the manifest "
+            f"declaration {declared}; re-run fetch_model.py"
+        )
+    if lock.get("directory_sha256") != actual:
+        raise ArtifactError(
+            f"{directory}: artifact lock is stale "
+            f"({lock.get('directory_sha256')} != {actual}); re-run "
+            "fetch_model.py"
+        )
+    return actual
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
         manifest = json.loads(path.read_text())
@@ -570,13 +609,28 @@ def copy_production(
     local_files_only: bool,
 ) -> None:
     if destination.exists():
+        # Only replace something that is clearly a prior materialization; a
+        # mistyped --destination must never delete an unrelated tree.
+        replaceable = destination.is_dir() and (
+            not any(destination.iterdir())
+            or (destination / "config.json").is_file()
+        )
+        if not replaceable:
+            raise ArtifactError(
+                f"refusing to delete {destination}: it is not an empty "
+                "directory or a previously materialized model bundle "
+                "(no config.json); remove it manually if replacement is "
+                "intended"
+            )
         shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # The artifact lock is fetch-time bookkeeping, not model content; the
+    # shipped bundle contains exactly the manifest tree plus license files.
     shutil.copytree(
         source,
         destination,
         symlinks=False,
-        ignore=shutil.ignore_patterns(".cache"),
+        ignore=shutil.ignore_patterns(".cache", LOCK_FILE),
     )
     copy_distribution_license(
         artifact,

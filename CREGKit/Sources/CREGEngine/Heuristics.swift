@@ -225,10 +225,11 @@ public actor ResultHeuristics {
       report.skipped.append(Self.classifyUnresolvedLiteral(
         literal: literal, range: range, sql: sql))
     }
-    if report.findings.isEmpty,
-      report.skipped.isEmpty,
-      report.degradations.isEmpty
-    {
+    // Every empty result without a blamed literal is reported, including
+    // when some literals were skipped or a catalog degraded: the user notice
+    // and the voting trigger must not silently disappear just because a
+    // LIKE pattern or date literal could not be entity-checked.
+    if report.findings.isEmpty {
       report.findings.append(.emptyResult)
     }
     return report

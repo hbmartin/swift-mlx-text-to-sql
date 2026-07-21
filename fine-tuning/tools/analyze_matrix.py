@@ -418,6 +418,26 @@ def parity(
                     "explanation": explanation,
                 }
             )
+    # Explanations are structurally validated: they may cover only actual
+    # disagreements, and identical SQL diverging on the same SQLite engine
+    # is comparator or runtime drift that no explanation can excuse.
+    disagreement_ids = {item["id"] for item in disagreements}
+    stale_explanations = sorted(set(explanations) - disagreement_ids)
+    if stale_explanations:
+        raise SelectionError(
+            "explanations cover items that are not disagreements "
+            f"(stale or wrong file): {stale_explanations}"
+        )
+    for item in disagreements:
+        if (
+            item["python"]["sql"] == item["swift"]["sql"]
+            and python_sqlite == swift_sqlite
+        ):
+            raise SelectionError(
+                f"{item['id']}: identical SQL on the same SQLite version "
+                "produced different parity data; fix runtime/comparator "
+                "drift instead of explaining it"
+            )
     python_ex = sum(item["ex"] for item in python_run.items) / len(
         python_run.items
     )
@@ -471,6 +491,13 @@ def parity(
             "maximum_absolute_delta": 0.02,
             "metrics_pass": metrics_pass,
             "all_disagreements_explained": all_disagreements_explained,
+            "explanation_rule": (
+                "every disagreement carries an explanation, explanations "
+                "map only to actual disagreements, and identical-SQL "
+                "divergence is refused unless the recorded SQLite engines "
+                "differ; explanation prose is human-reviewed evidence, not "
+                "machine-verified"
+            ),
             "pass": metrics_pass and all_disagreements_explained,
         },
         "disagreements": disagreements,

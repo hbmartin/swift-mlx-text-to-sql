@@ -304,9 +304,23 @@ actor MLXSQLGenerator {
     {
       value = String(value[range])
     }
-    return value.split(separator: ";", maxSplits: 1).first
-      .map(String.init)?
+    return truncateAtStatementEnd(value)
       .trimmingCharacters(in: .whitespacesAndNewlines)
-      ?? ""
+  }
+
+  /// Cuts at the first semicolon outside a single-quoted SQL string, so a
+  /// literal like 'A; B' cannot truncate an otherwise correct statement.
+  /// Mirrors the Python evaluator byte-for-byte.
+  static func truncateAtStatementEnd(_ sql: String) -> String {
+    var insideString = false
+    for index in sql.indices {
+      let character = sql[index]
+      if character == "'" {
+        insideString.toggle()
+      } else if character == ";", !insideString {
+        return String(sql[..<index])
+      }
+    }
+    return sql
   }
 }

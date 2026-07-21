@@ -49,7 +49,11 @@ from eval.run_artifacts import (
     sha256_file,
     write_json,
 )
-from tools.fetch_model import ArtifactError, load_manifest
+from tools.fetch_model import (
+    ArtifactError,
+    load_manifest,
+    verify_artifact_tree_at_use,
+)
 
 DB = REPO_ROOT / "db" / "creg.sqlite"
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
@@ -127,6 +131,19 @@ def strip_special_tokens(text: str) -> str:
     return re.sub(r"<\|[a-zA-Z0-9_]+\|>", "", text)
 
 
+def truncate_at_statement_end(sql: str) -> str:
+    """Cut at the first semicolon outside a single-quoted SQL string, so a
+    literal like 'A; B' cannot truncate an otherwise correct statement.
+    Mirrors the Swift engine byte-for-byte."""
+    inside_string = False
+    for index, character in enumerate(sql):
+        if character == "'":
+            inside_string = not inside_string
+        elif character == ";" and not inside_string:
+            return sql[:index]
+    return sql
+
+
 def extract_sql(text: str) -> str:
     text = text.strip()
     fence = re.search(r"```(?:sql)?\s*(.*?)```", text, re.S | re.I)
@@ -135,7 +152,7 @@ def extract_sql(text: str) -> str:
     match = re.search(r"(SELECT|WITH)\b.*", text, re.S | re.I)
     if match:
         text = match.group(0)
-    return text.split(";")[0].strip()
+    return truncate_at_statement_end(text).strip()
 
 
 def taxonomy(
@@ -223,6 +240,11 @@ def main() -> None:
             f"verified model is missing: run `uv run python tools/fetch_model.py "
             f"--model {args.model_key}` first"
         )
+    # Re-hash the tree this run actually loads; the recorded model digest is
+    # a fresh measurement, never a claim copied forward from the lock file.
+    verified_directory_sha256 = verify_artifact_tree_at_use(
+        model_path, artifact
+    )
 
     gold_path = args.gold.resolve()
     items = [
@@ -256,12 +278,10 @@ def main() -> None:
             "key": args.model_key,
             "repository": artifact.get("repository") or "local-derived",
             "revision": artifact.get("revision")
-            or f"sha256:{artifact_lock_payload['directory_sha256']}",
+            or f"sha256:{verified_directory_sha256}",
             "path": str(model_path),
             "artifact_lock": input_hash(artifact_lock),
-            "directory_sha256": artifact_lock_payload.get(
-                "directory_sha256"
-            ),
+            "directory_sha256": verified_directory_sha256,
             "bundle_size_bytes": sum(
                 file["size"]
                 for file in (
@@ -452,8 +472,9 @@ def main() -> None:
         "schema_version": 1,
         "run_id": run_id,
         "model_key": args.model_key,
-        "model_repository": artifact["repository"],
-        "model_revision": artifact["revision"],
+        "model_repository": artifact.get("repository") or "local-derived",
+        "model_revision": artifact.get("revision")
+        or f"sha256:{verified_directory_sha256}",
         "bundle_size_bytes": run_manifest["model"]["bundle_size_bytes"],
         "gcd": args.gcd,
         "temperature": args.temperature,

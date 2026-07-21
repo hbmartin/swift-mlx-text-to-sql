@@ -25,6 +25,7 @@ from eval.run_artifacts import (
     sha256_file,
     write_json,
 )
+from eval.selection import load_run
 from tools.fetch_model import (
     LOCK_FILE,
     directory_digest,
@@ -84,15 +85,18 @@ def repository_slug(repository: str) -> str:
 
 
 def summary(path: Path) -> dict[str, Any]:
-    manifest = json.loads((path / "manifest.json").read_text())
-    if manifest.get("status") != "complete":
-        raise RuntimeError(f"evaluation run is not complete: {path}")
-    result = json.loads((path / "summary.json").read_text())
+    # load_run verifies completeness plus the recorded summary/items hashes,
+    # so a post-run edit to summary.json can never reach the model card.
+    run = load_run(path)
+    result = dict(run.summary)
     result["_evidence"] = {
-        "run_id": manifest["run_id"],
+        "run_id": run.manifest["run_id"],
         "manifest_sha256": sha256_file(path / "manifest.json"),
         "summary_sha256": sha256_file(path / "summary.json"),
     }
+    result["_model_directory_sha256"] = run.manifest["model"].get(
+        "directory_sha256"
+    )
     return result
 
 
@@ -267,6 +271,16 @@ def main() -> None:
         ]
         if not results:
             raise RuntimeError(f"no evaluation results supplied for {key}")
+        for result in results:
+            # A model_key string match is not identity: the run must have
+            # scored the exact tree being published.
+            recorded = result.get("_model_directory_sha256")
+            if recorded != training_fused_tree_sha256:
+                raise RuntimeError(
+                    f"evaluation run {result['_evidence']['run_id']} scored "
+                    f"model tree {recorded}, not the tree being published "
+                    f"({training_fused_tree_sha256})"
+                )
         repo_id = (
             "hbmartin/creg-sql-"
             f"{repository_slug(base['repository'])}-mlx-4bit"
@@ -436,6 +450,21 @@ def main() -> None:
                 f"{mismatches}"
             )
         fresh_inventory = directory_inventory(fresh)
+        # Verification is two-way: every staged file must round-trip, and
+        # the public snapshot must not contain files that were never staged
+        # (the Hub's own .gitattributes is the only expected addition).
+        staged_paths = {file["path"] for file in inventory}
+        unexpected = sorted(
+            file["path"]
+            for file in fresh_inventory
+            if file["path"] not in staged_paths
+            and file["path"] != ".gitattributes"
+        )
+        if unexpected:
+            raise RuntimeError(
+                f"fresh download of {repo_id} contains files that were "
+                f"never staged: {unexpected}"
+            )
         # Only after the independent fresh download verifies do we replace
         # the local fused materialization with the exact public snapshot.
         # This keeps a network or integrity failure from corrupting a

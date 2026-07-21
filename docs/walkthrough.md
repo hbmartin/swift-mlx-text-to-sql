@@ -92,6 +92,12 @@ Anchor and two sampled candidates. A Result Group wins only with more than
 half of all configured candidates. Failed and truncated candidates still
 count in the denominator.
 
+Empty results get no vote either. Every empty result hashes to the same
+Result Group no matter which query produced it, so two wrong queries that
+each matched nothing would look like an agreeing majority against a correct
+anchor. Empty candidates stay in the denominator, and an empty anchor can
+still be delivered through the No Consensus path.
+
 If no group has a majority, the complete anchor is shown with a visible No
 Consensus notice. If the anchor fails or is truncated, a successful primary
 can survive only under a separate visible degraded-fallback reason. This

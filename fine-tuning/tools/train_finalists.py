@@ -29,6 +29,7 @@ from tools.fetch_model import (
     directory_digest,
     directory_inventory,
     load_manifest,
+    verify_artifact_tree_at_use,
 )
 
 # `artifact_path` lives in the evaluator to avoid a circular tool import.
@@ -115,6 +116,10 @@ def train(
         raise RuntimeError(
             f"{artifact['key']}: verified base is missing; fetch it first"
         )
+    # Re-hash the base tree now: the recorded base digest must describe the
+    # weights this training run actually reads, not what the lock file
+    # claimed at fetch time.
+    verified_base_sha256 = verify_artifact_tree_at_use(base, artifact)
     run_id = f"qlora-{artifact['key']}-seed-424242"
     run_directory = create_run_directory(runs_dir, run_id)
     adapter = models_dir / "adapters" / run_id
@@ -214,13 +219,12 @@ def train(
     )
 
     inventory = directory_inventory(fused)
-    base_lock = json.loads((base / LOCK_FILE).read_text())
     training_provenance = {
         "run_id": run_id,
         "seed": 424242,
         "base_repository": artifact["repository"],
         "base_revision": artifact["revision"],
-        "base_directory_sha256": base_lock["directory_sha256"],
+        "base_directory_sha256": verified_base_sha256,
         "configuration": input_hash(TRAINING_CONFIG),
         "corpus_manifest": input_hash(CORPUS_MANIFEST),
         "code_commit": manifest["git"]["commit"],
