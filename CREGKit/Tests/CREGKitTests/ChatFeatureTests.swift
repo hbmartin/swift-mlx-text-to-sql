@@ -7,6 +7,23 @@ import Testing
 
 private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")]])
 
+private final class CallCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+
+  func increment() {
+    lock.lock()
+    value += 1
+    lock.unlock()
+  }
+
+  var count: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return value
+  }
+}
+
 @MainActor
 @Suite struct ChatFeatureTests {
   static func scriptedPipeline() -> QueryPipeline {
@@ -53,6 +70,7 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
 
     await store.send(.binding(.set(\.composerText, "Which property leads?")))
     await store.send(.sendTapped)
+    #expect(store.state.composerText.isEmpty)
     await store.finish()
     await store.skipReceivedActions()
 
@@ -71,6 +89,47 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
     #expect(assistant?.traceSteps.allSatisfy { !$0.contains("SELECT") } == true)
     #expect(assistant?.devInfo?.originalQuestion == "Which property leads?")
     #expect(assistant?.devInfo?.standaloneQuestion == "Which property leads?")
+  }
+
+  @Test func duplicateSendWhileProcessingStartsOnlyOneTurn() async {
+    let pipelineCalls = CallCounter()
+    let store = TestStore(initialState: ChatFeature.State()) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = QueryPipeline { _, _ in
+        pipelineCalls.increment()
+        return AsyncStream { _ in }
+      }
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.binding(.set(\.composerText, "Which property leads?")))
+    await store.send(.sendTapped)
+    await store.send(.sendTapped)
+    await Task.yield()
+
+    #expect(store.state.composerText.isEmpty)
+    #expect(store.state.isProcessing)
+    #expect(store.state.messages.count == 1)
+    #expect(pipelineCalls.count == 1)
+    await store.skipInFlightEffects()
+  }
+
+  @Test func emptySendIsIgnored() async {
+    var initialState = ChatFeature.State()
+    initialState.composerText = "  \n  "
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    }
+
+    await store.send(.sendTapped)
+
+    #expect(store.state.composerText == "  \n  ")
+    #expect(store.state.messages.isEmpty)
+    #expect(!store.state.isProcessing)
   }
 
   @Test func conversationTurnsPairQuestionsWithAnswers() {

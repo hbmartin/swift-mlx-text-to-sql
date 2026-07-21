@@ -4,6 +4,8 @@ import SwiftUI
 
 public struct ChatView: View {
   @Bindable var store: StoreOf<ChatFeature>
+  @FocusState private var composerIsFocused: Bool
+  @State private var isSubmissionPending = false
 
   public init(store: StoreOf<ChatFeature>) {
     self.store = store
@@ -78,20 +80,53 @@ public struct ChatView: View {
       TextField("Ask about your portfolio…", text: $store.composerText, axis: .vertical)
         .textFieldStyle(.roundedBorder)
         .lineLimit(1...4)
-        .onSubmit { store.send(.sendTapped) }
+        .focused($composerIsFocused)
+        .onSubmit { requestSend() }
+        .onChange(of: composerIsFocused) {
+          guard !composerIsFocused, isSubmissionPending else { return }
+          Task { @MainActor in
+            // Let SwiftUI commit the first-responder change before the reducer
+            // clears the bound text and invalidates the keyboard's candidates.
+            await Task.yield()
+            guard !composerIsFocused else { return }
+            completePendingSend()
+          }
+        }
       Button {
-        store.send(.sendTapped)
+        requestSend()
       } label: {
         Image(systemName: "arrow.up.circle.fill")
           .font(.title2)
       }
       .disabled(
-        store.isProcessing
+        isSubmissionPending
+          || store.isProcessing
           || store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .padding(.horizontal)
     .padding(.vertical, 8)
     .background(.bar)
+  }
+
+  private func requestSend() {
+    guard
+      !isSubmissionPending,
+      !store.isProcessing,
+      !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return }
+
+    isSubmissionPending = true
+    if composerIsFocused {
+      composerIsFocused = false
+    } else {
+      completePendingSend()
+    }
+  }
+
+  private func completePendingSend() {
+    guard isSubmissionPending else { return }
+    isSubmissionPending = false
+    store.send(.sendTapped)
   }
 }
 
