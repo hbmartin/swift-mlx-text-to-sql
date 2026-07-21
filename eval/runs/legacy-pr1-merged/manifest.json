@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "run_id": "legacy-pr1-merged",
+  "status": "incomplete-provenance",
+  "source_git_commit": "1496d9061b5e7c3dc2332c368a0c795dbc549b98",
+  "merge_commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+  "recorded_at": "2026-07-20",
+  "claims_must_not_be_used_for_current_selection": true,
+  "known_missing": [
+    "The original fine-tuned adapter and fused model artifact",
+    "The training seed",
+    "A complete training configuration with formerly implicit mlx-lm defaults",
+    "Immutable upstream model revisions and complete artifact hashes",
+    "Per-run hardware, dependency, prompt, schema, grammar, database, and gold-set hashes"
+  ],
+  "notes": [
+    "Files in this directory are preserved as historical evidence from merged PR #1.",
+    "New evaluation tooling writes immutable manifest-backed runs under eval/runs/ and never overwrites this directory."
+  ]
+}

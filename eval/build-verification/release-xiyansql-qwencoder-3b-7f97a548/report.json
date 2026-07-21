@@ -1,0 +1,58 @@
+{
+  "app": "/Volumes/SanSmall/creg-build-verification-20260721/release-derived/Build/Products/Release-iphoneos/CREG.app",
+  "configuration": "Release",
+  "inputs": {
+    "bundled_manifest_sha256": "be2bc2ff256577e72173bd1bf52422c4a38650c0b91101c3c971e9b53f3d7b73",
+    "source_manifest_sha256": "be2bc2ff256577e72173bd1bf52422c4a38650c0b91101c3c971e9b53f3d7b73"
+  },
+  "model": {
+    "allowed_extra_distribution_files": [],
+    "bundle_bytes": 1747812702,
+    "expected_directory_sha256": "a3befce92b39afe29c0c0b01c534bd81731f151940470697d5f2038c89efd8c6",
+    "key": "ft-xiyansql-qwencoder-3b",
+    "repository": "hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit",
+    "revision": "7f97a54819b9329338a5353266d6d2a1294eb341",
+    "verified_directory_sha256": "a3befce92b39afe29c0c0b01c534bd81731f151940470697d5f2038c89efd8c6",
+    "verified_file_count": 12
+  },
+  "production": {
+    "evidence": {
+      "consistency_calibration": {
+        "path": "eval/analyses/consistency-926c85c7ebc25eae/analysis.json",
+        "sha256": "ea86dbe3beb81395a0f9b5aa7fa5ec58b2ac594099c558c51dfcd90c07ba1e5f"
+      },
+      "full_gold_parity": {
+        "path": "eval/analyses/parity-cda177e757fbb0b6/analysis.json",
+        "sha256": "62d835e7b1ec91f9ff2e8be41b469339864217bcb5dc0bb8d7f53c8702ad6bbf"
+      },
+      "production_selection": {
+        "path": "eval/analyses/production-cddac7c992c20eae/analysis.json",
+        "sha256": "de1df2f6d75d6a7107e62ee2c9d2e65f6f9ee086329bfe80546159eb72f5411e"
+      },
+      "publications": [
+        {
+          "path": "eval/publications/publish-qlora-qwen25-coder-3b-seed-424242/publication.json",
+          "sha256": "2a983c6251af85755facc3f5ee2af6b760c405e818570f9a3b2403307703b369"
+        },
+        {
+          "path": "eval/publications/publish-qlora-xiyansql-qwencoder-3b-seed-424242/publication.json",
+          "sha256": "420bcfe1788704e053e0dc979076192e7dc1c1face016da8a56a51303600b2d2"
+        }
+      ]
+    },
+    "gcd": "on",
+    "max_tokens": 512,
+    "model_key": "ft-xiyansql-qwencoder-3b",
+    "temperature": 0.0,
+    "top_k": 0,
+    "top_p": 1.0,
+    "voting": {
+      "always_vote": true,
+      "candidate_count": 3,
+      "sample_temperature": 0.7
+    }
+  },
+  "run_id": "release-xiyansql-qwencoder-3b-7f97a548",
+  "schema_version": 1,
+  "status": "complete"
+}

@@ -1,0 +1,120 @@
+{
+  "analysis": "n3-always-vote-calibration",
+  "configurations": [
+    {
+      "always_vote": true,
+      "anchor_failures": 70,
+      "candidate_count": 3,
+      "consensus": 931,
+      "ex": 0.656,
+      "gcd": "on",
+      "mean_latency_microseconds": 6613589,
+      "model_key": "ft-xiyansql-qwencoder-3b",
+      "n_trials": 1000,
+      "no_consensus": 2,
+      "p95_latency_microseconds": 9178487,
+      "sample_temperature": 0.1,
+      "schema_version": 1,
+      "trial_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "valid_sql_rate": 0.936
+    },
+    {
+      "always_vote": true,
+      "anchor_failures": 70,
+      "candidate_count": 3,
+      "consensus": 920,
+      "ex": 0.658,
+      "gcd": "on",
+      "mean_latency_microseconds": 6626335,
+      "model_key": "ft-xiyansql-qwencoder-3b",
+      "n_trials": 1000,
+      "no_consensus": 13,
+      "p95_latency_microseconds": 9440781,
+      "sample_temperature": 0.3,
+      "schema_version": 1,
+      "trial_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "valid_sql_rate": 0.938
+    },
+    {
+      "always_vote": true,
+      "anchor_failures": 70,
+      "candidate_count": 3,
+      "consensus": 893,
+      "ex": 0.668,
+      "gcd": "on",
+      "mean_latency_microseconds": 6643263,
+      "model_key": "ft-xiyansql-qwencoder-3b",
+      "n_trials": 1000,
+      "no_consensus": 40,
+      "p95_latency_microseconds": 9158091,
+      "sample_temperature": 0.7,
+      "schema_version": 1,
+      "trial_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "valid_sql_rate": 0.954
+    }
+  ],
+  "inputs": [
+    {
+      "manifest_sha256": "2fe3b3004d97da9f990a7acb0aca8ac9d953954fcf2d302dc7289b7105c033a8",
+      "path": "eval/consistency-runs/n3-ft-xiyansql-qwencoder-3b-gcd-on-sample-t-0_1"
+    },
+    {
+      "manifest_sha256": "4fef96c0c00c097a269e076ae270efe63f754a2a8d138952fb5511c08d6e795f",
+      "path": "eval/consistency-runs/n3-ft-xiyansql-qwencoder-3b-gcd-on-sample-t-0_3"
+    },
+    {
+      "manifest_sha256": "87f460d072355591de949f35a94e8b8444e1cf70c3d3e1378fe12e9b3aca7741",
+      "path": "eval/consistency-runs/n3-ft-xiyansql-qwencoder-3b-gcd-on-sample-t-0_7"
+    }
+  ],
+  "schema_version": 1,
+  "selected": {
+    "always_vote": true,
+    "anchor_failures": 70,
+    "candidate_count": 3,
+    "consensus": 893,
+    "ex": 0.668,
+    "gcd": "on",
+    "mean_latency_microseconds": 6643263,
+    "model_key": "ft-xiyansql-qwencoder-3b",
+    "n_trials": 1000,
+    "no_consensus": 40,
+    "p95_latency_microseconds": 9158091,
+    "sample_temperature": 0.7,
+    "schema_version": 1,
+    "trial_seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "valid_sql_rate": 0.954
+  },
+  "selection_rule": [
+    "execution accuracy",
+    "valid SQL",
+    "fewer anchor failures",
+    "more consensus outcomes",
+    "p95 latency",
+    "lower sample temperature"
+  ]
+}

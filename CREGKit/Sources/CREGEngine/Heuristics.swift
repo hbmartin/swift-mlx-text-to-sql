@@ -1,23 +1,31 @@
 import Foundation
 
-/// A deterministic finding from the result-shape + value-grounding heuristics
-/// (correction layer A). Always on; catches the #1 silent-failure mode —
-/// a valid query that quietly matched nothing.
+public struct GroundingColumn: Sendable, Equatable, Hashable, Codable,
+  CustomStringConvertible
+{
+  public var table: String
+  public var column: String
+
+  public init(table: String, column: String) {
+    self.table = table
+    self.column = column
+  }
+
+  public var description: String { "\(table).\(column)" }
+}
+
 public enum HeuristicFinding: Sendable, Equatable, Codable {
-  /// The result was empty and a string literal in the SQL matches no known
-  /// entity value; `suggestion` is the closest real value if one is close.
-  case literalNotFound(literal: String, suggestion: String?)
-  /// The result was empty with no literal to blame.
+  case literalNotFound(
+    column: GroundingColumn, literal: String, suggestion: String?)
   case emptyResult
-  /// A single-row result whose cells are all NULL (degenerate aggregate).
   case nullScalar
 
   public var userNotice: String {
     switch self {
-    case .literalNotFound(let literal, let suggestion?):
-      "Nothing matched “\(literal)” — did you mean “\(suggestion)”?"
-    case .literalNotFound(let literal, nil):
-      "Nothing in the portfolio matched “\(literal)”."
+    case .literalNotFound(let column, let literal, let suggestion?):
+      "Nothing in \(column) matched “\(literal)” — did you mean “\(suggestion)”?"
+    case .literalNotFound(let column, let literal, nil):
+      "Nothing in \(column) matched “\(literal)”."
     case .emptyResult:
       "No rows matched — a filter may be too narrow."
     case .nullScalar:
@@ -26,48 +34,204 @@ public enum HeuristicFinding: Sendable, Equatable, Codable {
   }
 }
 
-/// Result-shape and value-grounding checks over an executed query.
-///
-/// The entity catalog (names, markets, lenders…) is loaded once from the
-/// read-only portfolio DB and cached; fuzzy matching is plain edit distance.
-public actor ResultHeuristics {
-  private let db: DatabaseClient
-  private var catalog: [String]?
+public struct GroundingCheck: Sendable, Equatable, Codable {
+  public var column: GroundingColumn
+  public var literal: String
+  public var matched: Bool
+}
 
-  /// Columns whose values user questions typically reference by name.
-  static let catalogColumns: [(table: String, column: String)] = [
-    ("properties", "name"), ("tenants", "name"), ("funds", "name"),
-    ("properties", "market"), ("properties", "submarket"),
-    ("properties", "city"), ("loans", "lender"), ("valuations", "appraiser"),
+public enum GroundingSkipReason: Sendable, Equatable, Codable {
+  case unresolvedColumn(reference: String, literal: String)
+  case ineligibleColumn(column: GroundingColumn, literal: String)
+  case dateLiteral(literal: String)
+  case likePattern(literal: String)
+  case rangePredicate(literal: String)
+  case unresolvedExpression(literal: String)
+}
+
+public struct GroundingDegradation: Sendable, Equatable, Codable {
+  public var column: GroundingColumn
+  public var message: String
+}
+
+public struct GroundingReport: Sendable, Equatable, Codable {
+  public var findings: [HeuristicFinding]
+  public var checks: [GroundingCheck]
+  public var skipped: [GroundingSkipReason]
+  public var degradations: [GroundingDegradation]
+
+  public init(
+    findings: [HeuristicFinding] = [],
+    checks: [GroundingCheck] = [],
+    skipped: [GroundingSkipReason] = [],
+    degradations: [GroundingDegradation] = []
+  ) {
+    self.findings = findings
+    self.checks = checks
+    self.skipped = skipped
+    self.degradations = degradations
+  }
+}
+
+/// Conservative empty-result grounding. Only string literals bound to a
+/// single declared entity/categorical column are eligible for correction.
+public actor ResultHeuristics {
+  private struct Predicate {
+    var reference: String?
+    var column: String
+    var literals: [String]
+    var literalRanges: [NSRange]
+  }
+
+  private let db: DatabaseClient
+  private var catalogs: [GroundingColumn: [String]] = [:]
+
+  static let eligibleColumns: Set<GroundingColumn> = [
+    GroundingColumn(table: "funds", column: "name"),
+    GroundingColumn(table: "funds", column: "strategy"),
+    GroundingColumn(table: "funds", column: "status"),
+    GroundingColumn(table: "properties", column: "name"),
+    GroundingColumn(table: "properties", column: "city"),
+    GroundingColumn(table: "properties", column: "state"),
+    GroundingColumn(table: "properties", column: "market"),
+    GroundingColumn(table: "properties", column: "submarket"),
+    GroundingColumn(table: "properties", column: "property_type"),
+    GroundingColumn(table: "properties", column: "building_class"),
+    GroundingColumn(table: "properties", column: "status"),
+    GroundingColumn(table: "tenants", column: "name"),
+    GroundingColumn(table: "tenants", column: "industry"),
+    GroundingColumn(table: "tenants", column: "credit_rating"),
+    GroundingColumn(table: "tenants", column: "headquarters_city"),
+    GroundingColumn(table: "tenants", column: "headquarters_state"),
+    GroundingColumn(table: "leases", column: "lease_type"),
+    GroundingColumn(table: "leases", column: "status"),
+    GroundingColumn(table: "property_financials", column: "period_type"),
+    GroundingColumn(table: "loans", column: "lender"),
+    GroundingColumn(table: "loans", column: "rate_type"),
+    GroundingColumn(table: "valuations", column: "method"),
+    GroundingColumn(table: "valuations", column: "appraiser"),
+  ]
+
+  private static let reservedAliases: Set<String> = [
+    "where", "join", "left", "right", "inner", "outer", "cross", "on",
+    "group", "order", "having", "limit", "union",
+  ]
+
+  private static let tableColumns: [String: Set<String>] = [
+    "funds": [
+      "fund_id", "name", "vintage_year", "strategy", "committed_capital",
+      "target_irr", "inception_date", "status",
+    ],
+    "properties": [
+      "property_id", "fund_id", "name", "address", "city", "state",
+      "market", "submarket", "property_type", "building_class",
+      "rentable_sqft", "year_built", "year_renovated", "num_floors",
+      "acquisition_date", "acquisition_price", "current_market_value",
+      "ownership_pct", "status", "disposition_date",
+    ],
+    "tenants": [
+      "tenant_id", "name", "industry", "credit_rating",
+      "is_national_tenant", "headquarters_city", "headquarters_state",
+    ],
+    "leases": [
+      "lease_id", "property_id", "tenant_id", "suite", "floor",
+      "leased_sqft", "lease_type", "base_rent_psf", "annual_base_rent",
+      "escalation_pct", "commencement_date", "expiration_date",
+      "term_months", "security_deposit", "has_renewal_option",
+      "free_rent_months", "ti_allowance_psf", "status",
+    ],
+    "property_financials": [
+      "financial_id", "property_id", "period_end", "period_type",
+      "gross_potential_rent", "vacancy_loss", "effective_gross_income",
+      "operating_expenses", "net_operating_income", "capex",
+      "debt_service", "occupancy_rate",
+    ],
+    "loans": [
+      "loan_id", "property_id", "lender", "original_balance",
+      "current_balance", "interest_rate", "rate_type", "origination_date",
+      "maturity_date", "amortization_months", "io_period_months", "ltv",
+      "dscr", "is_recourse",
+    ],
+    "valuations": [
+      "valuation_id", "property_id", "valuation_date", "method",
+      "market_value", "cap_rate", "appraiser",
+    ],
   ]
 
   public init(db: DatabaseClient) {
     self.db = db
   }
 
+  /// Compatibility entry point for callers that only need user-facing
+  /// findings. Pipeline telemetry uses ``inspectDetailed(sql:result:)``.
   public func inspect(sql: String, result: QueryResult) async -> [HeuristicFinding] {
-    if result.rows.count == 1, result.rows[0].allSatisfy({ $0 == .null }) {
-      return [.nullScalar]
-    }
-    guard result.rows.isEmpty else { return [] }
-
-    let values = await loadCatalog()
-    let lowered = Set(values.map { $0.lowercased() })
-    for literal in Self.stringLiterals(in: sql) {
-      if lowered.contains(literal.lowercased()) { continue }
-      let suggestion = Self.closestMatch(to: literal, in: values)
-      return [.literalNotFound(literal: literal, suggestion: suggestion)]
-    }
-    return [.emptyResult]
+    await inspectDetailed(sql: sql, result: result).findings
   }
 
-  /// Quoted literals worth entity-checking: not dates, not enum-ish shorties.
-  static func stringLiterals(in sql: String) -> [String] {
-    let matches = sql.matches(of: #/'([^']*)'/#)
-    return matches.map { String($0.1) }.filter { literal in
-      literal.count >= 3
-        && literal.wholeMatch(of: #/[\d\-%\.]+/#) == nil  // dates, numbers, LIKE scraps
+  public func inspectDetailed(sql: String, result: QueryResult) async -> GroundingReport {
+    if result.rows.count == 1, result.rows[0].allSatisfy({ $0 == .null }) {
+      return GroundingReport(findings: [.nullScalar])
     }
+    guard result.rows.isEmpty else { return GroundingReport() }
+
+    let sources = Self.querySources(in: sql)
+    let predicates = Self.predicates(in: sql)
+    var report = GroundingReport()
+    var consumedLiteralRanges: [NSRange] = []
+
+    for predicate in predicates {
+      consumedLiteralRanges.append(contentsOf: predicate.literalRanges)
+      for literal in predicate.literals {
+        if Self.isISODate(literal) {
+          report.skipped.append(.dateLiteral(literal: literal))
+          continue
+        }
+        guard
+          let column = Self.resolve(
+            reference: predicate.reference,
+            column: predicate.column,
+            sources: sources)
+        else {
+          let reference = predicate.reference.map { "\($0)." } ?? ""
+          report.skipped.append(.unresolvedColumn(
+            reference: reference + predicate.column, literal: literal))
+          continue
+        }
+        guard Self.eligibleColumns.contains(column) else {
+          report.skipped.append(.ineligibleColumn(column: column, literal: literal))
+          continue
+        }
+        do {
+          let values = try await loadCatalog(for: column)
+          let matches = values.contains { $0.caseInsensitiveCompare(literal) == .orderedSame }
+          report.checks.append(GroundingCheck(
+            column: column, literal: literal, matched: matches))
+          if !matches {
+            report.findings.append(.literalNotFound(
+              column: column,
+              literal: literal,
+              suggestion: Self.closestMatch(to: literal, in: values)))
+          }
+        } catch {
+          report.degradations.append(GroundingDegradation(
+            column: column, message: error.localizedDescription))
+        }
+      }
+    }
+
+    for (literal, range) in Self.allStringLiterals(in: sql)
+    where !consumedLiteralRanges.contains(where: { NSIntersectionRange($0, range).length > 0 })
+    {
+      report.skipped.append(Self.classifyUnresolvedLiteral(
+        literal: literal, range: range, sql: sql))
+    }
+    if report.findings.isEmpty,
+      report.skipped.isEmpty,
+      report.degradations.isEmpty
+    {
+      report.findings.append(.emptyResult)
+    }
+    return report
   }
 
   static func closestMatch(to literal: String, in values: [String]) -> String? {
@@ -75,7 +239,6 @@ public actor ResultHeuristics {
     var best: (value: String, distance: Int)?
     for value in values {
       let candidate = value.lowercased()
-      // cheap prefix/containment wins before edit distance
       if candidate.hasPrefix(target) || candidate.contains(target) {
         return value
       }
@@ -85,37 +248,207 @@ public actor ResultHeuristics {
       }
     }
     guard let best else { return nil }
-    // accept only near misses: allow ~1 edit per 4 characters
     return best.distance <= max(2, literal.count / 4) ? best.value : nil
   }
 
   static func editDistance(_ a: String, _ b: String) -> Int {
-    let a = Array(a), b = Array(b)
-    var row = Array(0...b.count)
-    for i in 1...max(a.count, 1) where !a.isEmpty {
-      var previous = row[0]
-      row[0] = i
-      for j in 1...b.count {
-        let insertOrDelete = min(row[j], row[j - 1]) + 1
-        let substitute = previous + (a[i - 1] == b[j - 1] ? 0 : 1)
-        previous = row[j]
-        row[j] = min(insertOrDelete, substitute)
+    let left = Array(a)
+    let right = Array(b)
+    if left.isEmpty { return right.count }
+    if right.isEmpty { return left.count }
+
+    var row = Array(0...right.count)
+    for leftIndex in 1...left.count {
+      var diagonal = row[0]
+      row[0] = leftIndex
+      for rightIndex in 1...right.count {
+        let above = row[rightIndex]
+        let insertOrDelete = min(above, row[rightIndex - 1]) + 1
+        let substitute =
+          diagonal + (left[leftIndex - 1] == right[rightIndex - 1] ? 0 : 1)
+        diagonal = above
+        row[rightIndex] = min(insertOrDelete, substitute)
       }
     }
-    return row[b.count]
+    return row[right.count]
   }
 
-  private func loadCatalog() async -> [String] {
-    if let catalog { return catalog }
-    var values: [String] = []
-    for (table, column) in Self.catalogColumns {
-      let sql = "SELECT DISTINCT \(column) FROM \(table) WHERE \(column) IS NOT NULL"
-      guard let result = try? await db.execute(sql) else { continue }
-      values.append(contentsOf: result.rows.compactMap {
-        if case .text(let s) = $0.first { s } else { nil }
-      })
+  private func loadCatalog(for column: GroundingColumn) async throws -> [String] {
+    if let cached = catalogs[column] { return cached }
+    // Identifiers come exclusively from the static eligible-column set.
+    let sql = """
+      SELECT DISTINCT \(column.column)
+      FROM \(column.table)
+      WHERE \(column.column) IS NOT NULL
+      ORDER BY \(column.column)
+      """
+    let result = try await db.execute(sql)
+    guard !result.isTruncated else {
+      throw GroundingCatalogError.truncated(column)
     }
-    catalog = values
+    var values: [String] = []
+    for row in result.rows {
+      guard row.count == 1, case .text(let value) = row[0] else {
+        throw GroundingCatalogError.invalidRow(column)
+      }
+      values.append(value)
+    }
+    // Only successful, complete loads enter the cache. An error is retried on
+    // the next turn rather than poisoning every future grounding check.
+    catalogs[column] = values
     return values
+  }
+
+  private static func querySources(
+    in sql: String
+  ) -> (aliases: [String: String], tables: Set<String>) {
+    let pattern =
+      #"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?"#
+    let regex = try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    let string = sql as NSString
+    var aliases: [String: String] = [:]
+    var tables: Set<String> = []
+    for match in regex.matches(in: sql, range: NSRange(location: 0, length: string.length)) {
+      let table = string.substring(with: match.range(at: 1)).lowercased()
+      tables.insert(table)
+      aliases[table] = table
+      if match.range(at: 2).location != NSNotFound {
+        let alias = string.substring(with: match.range(at: 2)).lowercased()
+        if !reservedAliases.contains(alias) {
+          aliases[alias] = table
+        }
+      }
+    }
+    return (aliases, tables)
+  }
+
+  private static func resolve(
+    reference: String?,
+    column: String,
+    sources: (aliases: [String: String], tables: Set<String>)
+  ) -> GroundingColumn? {
+    let column = column.lowercased()
+    if let reference {
+      guard let table = sources.aliases[reference.lowercased()] else { return nil }
+      guard tableColumns[table]?.contains(column) == true else { return nil }
+      return GroundingColumn(table: table, column: column)
+    }
+    let matches = sources.tables.map {
+      GroundingColumn(table: $0, column: column)
+    }.filter {
+      tableColumns[$0.table]?.contains($0.column) == true
+    }
+    return matches.count == 1 ? matches[0] : nil
+  }
+
+  private static func predicates(in sql: String) -> [Predicate] {
+    equalityPredicates(in: sql) + inPredicates(in: sql)
+  }
+
+  private static func equalityPredicates(in sql: String) -> [Predicate] {
+    let pattern =
+      #"\b(?:(\w+)\s*\.\s*)?(\w+)\s*=\s*'((?:''|[^'])*)'"#
+    let regex = try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    let string = sql as NSString
+    return regex.matches(
+      in: sql, range: NSRange(location: 0, length: string.length)
+    ).map { match in
+      let reference =
+        match.range(at: 1).location == NSNotFound
+        ? nil : string.substring(with: match.range(at: 1))
+      return Predicate(
+        reference: reference,
+        column: string.substring(with: match.range(at: 2)),
+        literals: [unescape(string.substring(with: match.range(at: 3)))],
+        literalRanges: [match.range(at: 3)])
+    }
+  }
+
+  private static func inPredicates(in sql: String) -> [Predicate] {
+    let pattern =
+      #"\b(?:(\w+)\s*\.\s*)?(\w+)\s+IN\s*\(((?:\s*'(?:''|[^'])*'\s*,?)+)\)"#
+    let regex = try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    let literalRegex = try! NSRegularExpression(pattern: #"'((?:''|[^'])*)'"#)
+    let string = sql as NSString
+    return regex.matches(
+      in: sql, range: NSRange(location: 0, length: string.length)
+    ).map { match in
+      let reference =
+        match.range(at: 1).location == NSNotFound
+        ? nil : string.substring(with: match.range(at: 1))
+      let contentRange = match.range(at: 3)
+      let literalMatches = literalRegex.matches(in: sql, range: contentRange)
+      return Predicate(
+        reference: reference,
+        column: string.substring(with: match.range(at: 2)),
+        literals: literalMatches.map {
+          unescape(string.substring(with: $0.range(at: 1)))
+        },
+        literalRanges: literalMatches.map { $0.range(at: 1) })
+    }
+  }
+
+  private static func allStringLiterals(in sql: String) -> [(String, NSRange)] {
+    let regex = try! NSRegularExpression(pattern: #"'((?:''|[^'])*)'"#)
+    let string = sql as NSString
+    return regex.matches(
+      in: sql, range: NSRange(location: 0, length: string.length)
+    ).map {
+      (unescape(string.substring(with: $0.range(at: 1))), $0.range(at: 1))
+    }
+  }
+
+  private static func unescape(_ literal: String) -> String {
+    literal.replacingOccurrences(of: "''", with: "'")
+  }
+
+  private static func isISODate(_ literal: String) -> Bool {
+    literal.range(
+      of: #"^\d{4}-\d{2}-\d{2}$"#,
+      options: .regularExpression) != nil
+  }
+
+  private static func classifyUnresolvedLiteral(
+    literal: String,
+    range: NSRange,
+    sql: String
+  ) -> GroundingSkipReason {
+    if isISODate(literal) {
+      return .dateLiteral(literal: literal)
+    }
+    let string = sql as NSString
+    let prefixStart = max(0, range.location - 64)
+    let prefix = string.substring(
+      with: NSRange(
+        location: prefixStart,
+        length: range.location - prefixStart)
+    ).uppercased()
+    if prefix.range(
+      of: #"\bLIKE\s*'\s*$"#,
+      options: .regularExpression) != nil
+    {
+      return .likePattern(literal: literal)
+    }
+    if prefix.range(
+      of: #"(?:>=|<=|<>|!=|>|<|BETWEEN)\s*'\s*$"#,
+      options: .regularExpression) != nil
+    {
+      return .rangePredicate(literal: literal)
+    }
+    return .unresolvedExpression(literal: literal)
+  }
+}
+
+public enum GroundingCatalogError: LocalizedError, Equatable {
+  case truncated(GroundingColumn)
+  case invalidRow(GroundingColumn)
+
+  public var errorDescription: String? {
+    switch self {
+    case .truncated(let column):
+      "value-domain load for \(column) exceeded the row cap"
+    case .invalidRow(let column):
+      "value-domain load for \(column) returned a non-text or malformed row"
+    }
   }
 }

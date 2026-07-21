@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "integer_real_equivalence",
+      "left": [[{"type": "integer", "value": "1"}]],
+      "right": [[{"type": "real", "value": "1.0"}]],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"1\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"1\"}]]",
+      "left_digest": "01d2121b54c122228c98fd30150d9dc447b4f3dcb5db1afd5725b1c75a7059ea",
+      "right_digest": "01d2121b54c122228c98fd30150d9dc447b4f3dcb5db1afd5725b1c75a7059ea"
+    },
+    {
+      "name": "half_even_boundary",
+      "left": [[{"type": "real", "value": "2.34565"}]],
+      "right": [[{"type": "real", "value": "2.3456501"}]],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"2.3456\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"2.3457\"}]]",
+      "left_digest": "39c47125da7a6b053a3c7ecb874b47bbd39d33d5552e6184f3b2c300d00ec3ef",
+      "right_digest": "82dcd2ee0991d8db885fb45200228de3e0990f37614fbff912eeae57fbdab518"
+    },
+    {
+      "name": "text_numeric_separation",
+      "left": [[{"type": "integer", "value": "1"}]],
+      "right": [[{"type": "text", "value": "1"}]],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"1\"}]]",
+      "right_encoding": "[[{\"type\":\"text\",\"value\":\"1\"}]]",
+      "left_digest": "01d2121b54c122228c98fd30150d9dc447b4f3dcb5db1afd5725b1c75a7059ea",
+      "right_digest": "5d26a038e25c7936e993420c75ae4baeb1757e98cc6b8a4013920593c356baef"
+    },
+    {
+      "name": "full_blob_identity",
+      "left": [[{"type": "blob", "value": "AP8="}]],
+      "right": [[{"type": "blob", "value": "/wA="}]],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"blob\",\"value\":\"AP8=\"}]]",
+      "right_encoding": "[[{\"type\":\"blob\",\"value\":\"/wA=\"}]]",
+      "left_digest": "c56bcb0d9fb39af488b88df3187e8a37f565b1fe0f7e2a1b2820e6dd04fb0229",
+      "right_digest": "f05e3b32df8207ac9fa1a8ca30612dc73ce46fc1359ecca49308cbda44437f0f"
+    },
+    {
+      "name": "null_duplicates_and_row_order",
+      "left": [
+        [{"type": "null", "value": ""}],
+        [{"type": "null", "value": ""}],
+        [{"type": "real", "value": "1.00015"}],
+        [{"type": "text", "value": "x"}]
+      ],
+      "right": [
+        [{"type": "text", "value": "x"}],
+        [{"type": "real", "value": "1.00015"}],
+        [{"type": "null", "value": ""}],
+        [{"type": "null", "value": ""}]
+      ],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"number\",\"value\":\"1.0002\"}],[{\"type\":\"text\",\"value\":\"x\"}]]",
+      "right_encoding": "[[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"number\",\"value\":\"1.0002\"}],[{\"type\":\"text\",\"value\":\"x\"}]]",
+      "left_digest": "48d3b94b3f9583d246f1efb3514a62c4cd7a169523340fbab7e68dc82dc1b020",
+      "right_digest": "48d3b94b3f9583d246f1efb3514a62c4cd7a169523340fbab7e68dc82dc1b020"
+    }
+  ]
+}

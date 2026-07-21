@@ -9,23 +9,40 @@ import Foundation
 public enum PipelineEvent: Sendable, Equatable, Codable {
   case turnStarted(question: String)
   case rewriteStarted
-  case rewriteFinished(standaloneQuestion: String, usedFM: Bool)
+  /// Emitted for every turn, including first turns where no rewrite is needed.
+  case questionResolved(
+    standaloneQuestion: String,
+    rewriteApplied: Bool,
+    usedFM: Bool,
+    elapsedMicroseconds: Int64)
   case gateStarted
-  case gateFinished(GateDecision)
-  case generationStarted(modelName: String)
-  case generationFinished(sql: String, tokensPerSecond: Double)
-  case executionStarted(sql: String)
-  case executionFinished(rowCount: Int, elapsedMilliseconds: Double)
-  case executionFailed(message: String, attempt: Int)
+  case gateFinished(
+    decision: GateDecision,
+    usedFM: Bool,
+    elapsedMicroseconds: Int64)
+  case generationStarted(request: SQLGenerationRequest)
+  case generationFinished(
+    candidateID: CandidateID,
+    generation: SQLGeneration)
+  case executionStarted(candidateID: CandidateID, sql: String)
+  case executionFinished(candidateID: CandidateID, result: QueryResult)
+  case executionFailed(
+    candidateID: CandidateID,
+    message: String,
+    attempt: Int)
   case repairStarted(attempt: Int)
-  /// A correction-layer-A finding on the executed result.
-  case heuristicFlagged(HeuristicFinding)
+  case groundingFinished(report: GroundingReport, elapsedMicroseconds: Int64)
   /// Uncertainty-gated self-consistency voting (layers C+D) kicked in.
   case selfConsistencyStarted(candidateCount: Int, trigger: String)
-  case selfConsistencyFinished(chosenSQL: String, agreement: Int, candidates: [ConsistencyCandidate])
+  case selfConsistencyFinished(VoteOutcome)
   case narrationStarted
-  case narrationFinished(narration: String, usedFM: Bool)
-  case turnFinished(TurnOutcome)
+  case narrationFinished(
+    narration: String,
+    usedFM: Bool,
+    elapsedMicroseconds: Int64)
+  /// The immutable telemetry snapshot is stored with the final event, in chat
+  /// history, and in JSONL so all three surfaces render the same record.
+  case turnFinished(outcome: TurnOutcome, telemetry: TurnTelemetry)
 }
 
 extension PipelineEvent {

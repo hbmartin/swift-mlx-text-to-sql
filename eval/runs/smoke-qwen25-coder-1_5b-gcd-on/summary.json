@@ -1,0 +1,25 @@
+{
+  "bundle_size_bytes": 880172100,
+  "ex": 0.0,
+  "ex_by_tier": {
+    "1": 0.0
+  },
+  "failure_buckets": {
+    "execution-error": 1
+  },
+  "gcd": "on",
+  "gold": "gold_v1.jsonl",
+  "mean_entropy_correct": 0.0,
+  "mean_entropy_wrong": 0.3283307258110969,
+  "mean_microseconds": 5727212,
+  "model_key": "qwen25-coder-1_5b",
+  "model_repository": "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit",
+  "model_revision": "b3252a2f97102b1fb1571fec2c9b27219a8536be",
+  "n": 1,
+  "p95_microseconds": 5727212,
+  "run_id": "smoke-qwen25-coder-1_5b-gcd-on",
+  "schema_version": 1,
+  "seed": 0,
+  "temperature": 0.0,
+  "valid_sql_rate": 0.0
+}

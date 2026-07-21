@@ -1,0 +1,25 @@
+{
+  "bundle_size_bytes": 984015687,
+  "ex": 0.0,
+  "ex_by_tier": {
+    "1": 0.0
+  },
+  "failure_buckets": {
+    "wrong-projection": 1
+  },
+  "gcd": "off",
+  "gold": "gold_v1.jsonl",
+  "mean_entropy_correct": 0.0,
+  "mean_entropy_wrong": 0.09000294358325228,
+  "mean_microseconds": 1657422,
+  "model_key": "qwen3-1_7b",
+  "model_repository": "mlx-community/Qwen3-1.7B-4bit",
+  "model_revision": "3b1b1768f8f8cf8351c712464f906e86c2b8269e",
+  "n": 1,
+  "p95_microseconds": 1657422,
+  "run_id": "smoke-qwen3-1_7b-gcd-off",
+  "schema_version": 1,
+  "seed": 0,
+  "temperature": 0.0,
+  "valid_sql_rate": 1.0
+}

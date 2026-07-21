@@ -1,0 +1,25 @@
+{
+  "bundle_size_bytes": 1747786195,
+  "ex": 0.0,
+  "ex_by_tier": {
+    "1": 0.0
+  },
+  "failure_buckets": {
+    "wrong-projection": 1
+  },
+  "gcd": "off",
+  "gold": "gold_v1.jsonl",
+  "mean_entropy_correct": 0.0,
+  "mean_entropy_wrong": 0.14808824831914433,
+  "mean_microseconds": 2293091,
+  "model_key": "xiyansql-qwencoder-3b",
+  "model_repository": "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
+  "model_revision": "0d35ce19d4e4d78d82d19b18b3e0f1c7a86eb535",
+  "n": 1,
+  "p95_microseconds": 2293091,
+  "run_id": "smoke-xiyansql-qwencoder-3b-gcd-off",
+  "schema_version": 1,
+  "seed": 0,
+  "temperature": 0.0,
+  "valid_sql_rate": 1.0
+}

@@ -1,0 +1,107 @@
+{
+  "analysis": "gold-v1-base-screen",
+  "inputs": [
+    {
+      "manifest_sha256": "7213290df0a4eae26a838b4b95e7482bd06c0d47ae0e43f6f8975d95d564090e",
+      "path": "eval/runs/matrix-screen-gold-v1-qwen25-coder-1_5b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "7e91d3a2d4cd157fcf07c557bdd2d48b6609e1cb7046b0a6197ab3f316f11cdc",
+      "path": "eval/runs/matrix-screen-gold-v1-qwen25-coder-1_5b-gcd-on-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "1fd006efbfeddc34ea5333c31562226d29e797bcb5f39030693e35ea122207ea",
+      "path": "eval/runs/matrix-screen-gold-v1-qwen25-coder-3b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "e41f523539492ff73b11f15309bae320b0b989b88be906fc464a44451c7a66a9",
+      "path": "eval/runs/matrix-screen-gold-v1-qwen25-coder-3b-gcd-on-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "3da4c44faa7c1e41b5ad1297fdefef1f5c104b9d03086cd035a1d4534617d78e",
+      "path": "eval/runs/matrix-screen-gold-v1-qwen3-1_7b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "cb57a426f6a00aec9dc04eb5fb62efa07b5423af4d96e7a0099d4d85469a8abd",
+      "path": "eval/runs/matrix-screen-gold-v1-qwen3-1_7b-gcd-on-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "d2bd1070c014ed9767da00e060628a9dc10feab231357b087f668f1880ad4acf",
+      "path": "eval/runs/matrix-screen-gold-v1-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "8fc8547ee010452c7e7f314e2cf4f662c81dd522e3a1bff8a2f12f9a4a3ad362",
+      "path": "eval/runs/matrix-screen-gold-v1-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0"
+    }
+  ],
+  "ranked_best_gcd_by_family": [
+    {
+      "bundle_size_bytes": 1747851791,
+      "ex": 0.35,
+      "gcd": "on",
+      "model_key": "qwen25-coder-3b",
+      "n_items": 60,
+      "p95_microseconds": 14802604,
+      "seeds": [
+        0
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.85,
+      "worst_tier_ex": 0.16666666666666666
+    },
+    {
+      "bundle_size_bytes": 1747786195,
+      "ex": 0.31666666666666665,
+      "gcd": "off",
+      "model_key": "xiyansql-qwencoder-3b",
+      "n_items": 60,
+      "p95_microseconds": 2343552,
+      "seeds": [
+        0
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.8833333333333333,
+      "worst_tier_ex": 0.0
+    },
+    {
+      "bundle_size_bytes": 880172100,
+      "ex": 0.23333333333333334,
+      "gcd": "off",
+      "model_key": "qwen25-coder-1_5b",
+      "n_items": 60,
+      "p95_microseconds": 1367126,
+      "seeds": [
+        0
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.7,
+      "worst_tier_ex": 0.0
+    },
+    {
+      "bundle_size_bytes": 984015687,
+      "ex": 0.2,
+      "gcd": "off",
+      "model_key": "qwen3-1_7b",
+      "n_items": 60,
+      "p95_microseconds": 1751771,
+      "seeds": [
+        0
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.7333333333333333,
+      "worst_tier_ex": 0.0
+    }
+  ],
+  "schema_version": 1,
+  "selected_model_keys": [
+    "qwen25-coder-3b",
+    "xiyansql-qwencoder-3b"
+  ],
+  "selection_rule": [
+    "execution accuracy",
+    "valid SQL",
+    "worst-tier execution accuracy",
+    "p95 latency",
+    "bundle size"
+  ]
+}

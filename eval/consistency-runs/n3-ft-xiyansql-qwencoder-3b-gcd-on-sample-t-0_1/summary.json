@@ -1,0 +1,23 @@
+{
+  "always_vote": true,
+  "anchor_failures": 70,
+  "candidate_count": 3,
+  "consensus": 931,
+  "ex": 0.656,
+  "gcd": "on",
+  "mean_latency_microseconds": 6613589,
+  "model_key": "ft-xiyansql-qwencoder-3b",
+  "n_trials": 1000,
+  "no_consensus": 2,
+  "p95_latency_microseconds": 9178487,
+  "sample_temperature": 0.1,
+  "schema_version": 1,
+  "trial_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "valid_sql_rate": 0.936
+}

@@ -21,6 +21,7 @@ this dataset (see docs/data-synthesis.md).
 Usage:  uv run python -m synth.generate_training
 """
 
+import argparse
 import json
 import random
 import sqlite3
@@ -373,7 +374,20 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
     return out
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=OUT_DIR,
+        help="output directory (default: committed synth/out corpus)",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+    out_dir = args.out_dir.resolve()
     rng = random.Random(SEED)
     conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     entities = load_entities(conn)
@@ -423,10 +437,10 @@ def main() -> None:
         for item in kept
     ]
     n_valid = max(1, int(len(records) * VALID_FRACTION))
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / "valid.jsonl").write_text(
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "valid.jsonl").write_text(
         "\n".join(json.dumps(r) for r in records[:n_valid]) + "\n")
-    (OUT_DIR / "train.jsonl").write_text(
+    (out_dir / "train.jsonl").write_text(
         "\n".join(json.dumps(r) for r in records[n_valid:]) + "\n")
 
     families: dict[str, int] = {}
@@ -436,9 +450,9 @@ def main() -> None:
         tiers[item["tier"]] = tiers.get(item["tier"], 0) + 1
     stats["families"] = dict(sorted(families.items()))
     stats["tiers"] = {str(k): v for k, v in sorted(tiers.items())}
-    (OUT_DIR / "gate_stats.json").write_text(json.dumps(stats, indent=2))
+    (out_dir / "gate_stats.json").write_text(json.dumps(stats, indent=2))
     print(json.dumps({k: v for k, v in stats.items() if k != "families"}, indent=2))
-    print(f"train={len(records) - n_valid} valid={n_valid} -> {OUT_DIR}")
+    print(f"train={len(records) - n_valid} valid={n_valid} -> {out_dir}")
 
 
 if __name__ == "__main__":

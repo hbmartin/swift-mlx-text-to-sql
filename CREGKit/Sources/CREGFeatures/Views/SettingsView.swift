@@ -25,7 +25,9 @@ struct SettingsView: View {
             }
           }
         } footer: {
-          Text("Structured JSONL event logs for offline accuracy analysis.")
+          Text(
+            "Structured JSONL for offline accuracy analysis. Exports include questions, generated SQL, errors, and full result rows; treat them as portfolio data."
+          )
         }
       }
       .navigationTitle("Settings")

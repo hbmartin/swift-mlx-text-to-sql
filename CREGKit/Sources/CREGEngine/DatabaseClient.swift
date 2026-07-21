@@ -63,11 +63,17 @@ extension DatabaseClient {
           columns: columns,
           rows: rows,
           isTruncated: isTruncated,
-          elapsedMilliseconds: Double(elapsed.components.attoseconds) / 1e15
-            + Double(elapsed.components.seconds) * 1000
+          elapsedMicroseconds: elapsed.microseconds
         )
       }
     }
+  }
+}
+
+public extension Duration {
+  var microseconds: Int64 {
+    let components = self.components
+    return components.seconds * 1_000_000 + components.attoseconds / 1_000_000_000_000
   }
 }
 

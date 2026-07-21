@@ -1,238 +1,293 @@
 # CREG
 
-A fully offline iOS app that lets a non-technical commercial-real-estate (CRE)
-professional explore a portfolio database by asking questions in plain
-language. A chat interface takes a natural-language question, an on-device
-model converts it to SQL under grammar-constrained decoding, the query runs
-against a bundled read-only SQLite database, and the result is shown as a
-table with a plain-English summary. Everything — model, data, and inference —
-lives on the device.
+CREG is an iOS text-to-SQL research prototype for a fixed, synthetic
+commercial-real-estate portfolio. It rewrites and gates a question on device,
+generates SQL with a pinned 4-bit MLX model, executes against a bundled
+read-only SQLite database, and returns a table plus a concise narration.
 
-The product spec is [`CREG — Product Requirements Document.md`](./CREG%20—%20Product%20Requirements%20Document.md).
-Domain vocabulary is in [`CONTEXT.md`](./CONTEXT.md). Decisions that would
-surprise a future reader are recorded in [`docs/adr/`](./docs/adr/).
+The product requirements are in
+[`CREG — Product Requirements Document.md`](./CREG%20—%20Product%20Requirements%20Document.md),
+the domain language is in [`CONTEXT.md`](./CONTEXT.md), and decisions are in
+[`docs/adr/`](./docs/adr/).
 
-## Status
+## Verified status
 
-| Milestone | Scope | State |
-| --- | --- | --- |
-| M0 | Repo hygiene: glossary, ADRs, .gitignore | ✅ done |
-| M1 | Schema freeze + seeded database generator + invariant tests | ✅ done |
-| M2 | Walking-skeleton app: full pipeline shape + grammar-constrained decoding | ✅ done |
-| M3 | Gold set stage 1 (60 triples) + Python eval harness | ✅ done |
-| M4 | Correction layers A–D + developer mode | ✅ done |
-| M5 | Gold set → 200, sweep, Swift parity CLI, model selection | ✅ done |
-| M6 | Fine-tune loop closed: synthetic data → QLoRA → eval → **bundled** | ✅ done |
+The production artifact is the public
+[XiYanSQL-QwenCoder-3B CREG fine-tune](https://huggingface.co/hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit/tree/7f97a54819b9329338a5353266d6d2a1294eb341)
+at immutable revision `7f97a54819b9329338a5353266d6d2a1294eb341`.
+`model-manifest.json` marks this exact snapshot and configuration `verified`.
 
-**v1 is complete.** The fine-tuned model (Qwen2.5-Coder-3B + in-domain
-QLoRA) scored **EX 0.665** on the 200-item gold set vs 0.225 for the best
-off-the-shelf configuration and ships in the app bundle as `SQLModel` —
-the app is fully offline. The whole record: [`docs/final-report.md`](./docs/final-report.md)
-(selection: [`docs/model-selection.md`](./docs/model-selection.md), evals:
-[`docs/eval.md`](./docs/eval.md), data: [`docs/data-synthesis.md`](./docs/data-synthesis.md),
-corrections: [`docs/grounding-corrections.md`](./docs/grounding-corrections.md)).
-On-device smoke run remains a manual step (requires a signing team + an
-Apple Intelligence iPhone). Note: `models/` is gitignored — regenerate the
-bundled model via the commands in the final report (or `fetch_model.py` +
-`mlx_lm lora`/`fuse`) before building the app.
+| Check | Verified result |
+|---|---|
+| Python single-shot, 200 gold_v2 items | 65.50% EX; 93.00% valid SQL |
+| Swift single-shot, same 200 items | 65.00% EX; 92.00% valid SQL |
+| Python/Swift absolute drift | 0.50 EX points; 1.00 valid-SQL point; pass |
+| N=3 always-vote, 1,000 item-trials | 66.80% EX; 95.40% valid SQL |
+| Unit suites | 44 Python and 38 Swift tests pass |
+
+Production uses grammar-constrained decoding, deterministic temperature 0.0,
+top-p 1.0, disabled top-k, and a 512-token cap. Always-vote self-consistency
+uses one executed deterministic anchor and two temperature-0.7 samples. A
+Result Group needs a strict majority; No Consensus visibly falls back to the
+complete anchor.
+
+The merged PR #1 outputs remain under
+[`eval/runs/legacy-pr1-merged`](./eval/runs/legacy-pr1-merged) and are marked
+`incomplete-provenance`. The original fine-tuned artifact, seed, and complete
+training configuration were unavailable, so those historical scores are not
+current evidence.
+
+Detailed reports:
+
+- [final report](./docs/final-report.md)
+- [evaluation and statistical method](./docs/eval.md)
+- [training and publication](./docs/training-report.md)
+- [self-consistency calibration](./docs/self-consistency-report.md)
+- [full Python/Swift parity](./docs/parity-report.md)
+- [implementation and release verification](./docs/verification-report.md)
+- [license and distribution](./docs/license-report.md)
 
 ## Architecture
 
-Each user turn flows through a strictly sequential pipeline (PRD §7). Two
-models are involved — Apple's on-device Foundation Model (FM) for
-conversational glue and the bundled MLX SQL specialist for constrained
-generation — and they never run concurrently:
+Each turn is sequential so Apple Foundation Models and MLX inference never
+overlap:
 
-```
-user message
-  → FM: follow-up rewrite (decontextualize into a standalone question)
-  → FM: ambiguity gate (dial parked at "always pass through" in v1)
-  → MLX: SQL generation under grammar-constrained decoding (XGrammar EBNF)
-  → execute on read-only SQLite (+ deny-all-but-SELECT authorizer)
-  → on SQLite error: self-repair, ≤2 retries with the error string
-  → FM: one-line plain-English narration
-  → render: table + narration + collapsible "how I answered" trace
-```
-
-A single `InferenceSerializer` actor owns every model call (FM and MLX alike),
-so active-inference peak memory is max(FM, bundled), not the sum. One
-structured event stream (`PipelineEvent`) drives both the user-visible
-thinking trace and the JSONL session logs consumed by the eval harness —
-one stream, two consumers, built as data rather than display strings.
-
-### Code layout
-
-```
-CREG.xcodeproj            Xcode project (single app target, iOS 26)
-CREG/                     App shell: entry point + assets (no logic)
-CREGKit/                  Local SPM package
-  Sources/CREGEngine/     Inference + pipeline engine — no UI, no TCA
-    Models.swift            Core types (QueryResult, GateDecision, TurnOutcome…)
-    PipelineEvent.swift     The structured event stream + JSONL encoding
-    InferenceSerializer.swift  FIFO non-overlap guarantee for all model calls
-    FMClient.swift          FoundationModels rewrite/gate/narrate + fallback
-    SQLGenClient.swift      MLX model (resident between turns) + MLXStructured GCD
-    DatabaseClient.swift    GRDB read-only + sqlite3 authorizer second defense
-    QueryPipeline.swift     The sequential turn pipeline
-    Resources/              sql_grammar.ebnf + schema_prompt.txt (generated)
-  Sources/CREGFeatures/   TCA reducer + SwiftUI chat surface
-    ChatFeature.swift       Reducer, dependency wiring, live dependency graph
-    ChatMessage.swift       Transcript model + event→trace-line mapping
-    HistoryClient.swift     history.sqlite persistence + JSONL export
-    Views/                  Chat, result table, trace, settings, root
-  Tests/CREGKitTests/     11 tests: authorizer, serializer, pipeline, feature, grammar
-db/
-  schema.sql              FROZEN seven-table DDL (input to grammar + training)
-  creg.sqlite             Generated portfolio database (committed, regenerable)
-fine-tuning/              uv Python project (never bare python/pip)
-  tools/generate_db.py    Seeded deterministic data generator
-  tools/generate_grammar.py  schema+data → EBNF grammar + schema prompt
-  tools/fetch_model.py    Download model weights into models/ (gitignored)
-  eval/ex.py              Execution-accuracy scoring core (M3)
-  tests/                  12 data-invariant tests + 6 EX tests
-docs/adr/                 0001 schema semantics, 0002 MLX-over-CoreML, 0003 hybrid harness
+```text
+question
+  → standalone-question rewrite
+  → ambiguity gate
+  → identified SQL Candidate Query
+  → read-only SQLite execution
+  → bounded identified repairs
+  → column-aware grounding checks
+  → strict-majority voting with a temperature-0 anchor
+  → narration and rendering
 ```
 
-`CREGEngine` deliberately has no TCA dependency: the M5 Swift parity CLI links
-it to re-score model finalists on the exact production inference stack
-(see ADR 0003).
+Every candidate retains its ID, role, model/revision, GCD mode, temperature,
+seed, SQL, token metrics, integer-microsecond timings, complete typed result
+rows, truncation, errors, Result Group SHA-256, and selection state.
+`TurnTelemetry` is the immutable record rendered by developer mode and
+persisted in chat history and JSONL.
 
-## The data
+Python EX, Swift EX, and voting share one result identity:
 
-Seven tables, frozen 2026-07-19 (`db/schema.sql`, ADR 0001): `funds`,
-`properties`, `tenants`, `leases`, `property_financials`, `loans`,
-`valuations`. Shape choices that matter when reading or writing queries:
+- INTEGER and REAL share a numeric domain after four-decimal, half-even
+  normalization;
+- TEXT, full BLOB bytes, and NULL remain distinct;
+- duplicate rows and row arity matter, while row order and labels do not; and
+- truncated rows are explicitly incomplete and cannot join a Result Group.
 
-- **No units table.** Suite, floor, and leased sqft live on `leases`.
-- **Vacancy is canonical as a financials snapshot**: `1 − occupancy_rate`
-  from the property's latest Month row — never derived by summing leases.
-  The lease-derived figure is only a correction-layer cross-check.
-- **`property_financials` contains Month rows only** (the `period_type`
-  column allows Quarter/Year but v1 data never uses them), so unfiltered
-  aggregates cannot silently double-count.
-- **`properties.current_market_value` is THE current value**; `valuations`
-  is appraisal history.
-- Terminated leases store their actual early-exit date in `expiration_date`;
-  Holdover leases have a past `expiration_date` but still occupy their suite.
+Grounding is column-aware. Only unambiguously resolved entity/categorical
+columns in supported `=` and `IN` predicates are checked. Failed or partial
+catalog loads are never cached; the valid query result remains available,
+the exact degradation is recorded, unsupported notices are suppressed, and
+a later turn retries.
 
-`tools/generate_db.py` (seed 20260719, AS_OF 2026-07-01, 36-month window)
-generates ~2,500 internally consistent rows: 4 funds, 50 properties
-(46 Owned, 2 Sold, 1 Under Contract, 1 In Development), 150 tenants,
-446 leases across all five statuses, 1,724 monthly financial rows, 46 loans,
-130 valuations. Accounting identities hold exactly (NOI = EGI − opex,
-EGI = GPR − vacancy loss, occupancy = occupied/rentable sqft, per-suite lease
-chains never overlap) and `tests/test_invariants.py` enforces them — if one
-fails, the data is wrong, not the test.
+## Repository layout
 
-## Grammar-constrained decoding
+```text
+CREG.xcodeproj/                 iOS application
+CREG/                           app entry point and assets
+CREGKit/
+  Sources/CREGEngine/           generation, execution, grounding, voting
+  Sources/CREGFeatures/         chat, history, telemetry UI
+  Sources/creg-eval-cli/        production-stack full-gold parity CLI
+  Tests/CREGKitTests/           runtime and persistence tests
+db/                             frozen schema and synthetic SQLite portfolio
+eval/gold/                      held-out gold_v1 and gold_v2
+eval/runs/                      immutable evaluation artifacts
+eval/analyses/                  content-addressed selection/calibration/parity
+eval/training-runs/             immutable QLoRA provenance
+eval/publications/              public-snapshot verification records
+fine-tuning/
+  config/                       complete QLoRA and conversion configuration
+  eval/                         typed EX, run writer, matrix, statistics
+  synth/                        deterministic corpus generation
+  tools/                        acquisition, training, publication, inspection
+model-manifest.json             pinned candidates and production configuration
+```
 
-At each decoding step the grammar engine masks tokens that would break the
-grammar, so output is valid by construction. The grammar
-(`sql_grammar.ebnf`, generated from the live database) guarantees:
+## Prerequisites
 
-- **SELECT-only** — write statements are unrepresentable.
-- **Real table names only** in FROM (CTE names are restricted to
-  `cte`/`cte0`–`cte9`, so a hallucinated table cannot appear as a source).
-- **Real column names only** in qualified references (`p.column`).
-- No PRAGMA, no ATTACH, no statement chaining.
+- macOS 15 or newer for host tests.
+- Xcode 26.3 and Swift 6.2.4.
+- An iOS 26 Apple Intelligence-capable device for the complete app flow.
+- [`uv`](https://docs.astral.sh/uv/) on Xcode's `PATH`, or installed at
+  `~/.local/bin/uv`.
+- Network access and several gigabytes of free disk for a clean Release build.
+- Hugging Face authentication only for publication or access-controlled
+  acquisition; credentials must never be committed.
 
-Deliberate openings: free-text string literals are allowed (needed for LIKE
-patterns; wrong literals are the fuzzy-match heuristic's job, M4), and bare
-lowercase identifiers are allowed as expressions so SELECT aliases can be
-referenced in ORDER BY/GROUP BY — a misused identifier there becomes a
-SQLite error handled by self-repair. Defense in depth behind the grammar:
-a read-only connection plus a `sqlite3_set_authorizer` callback that denies
-everything but SELECT/READ/FUNCTION/transaction control (tested).
+Python commands use the committed `uv.lock`. Do not substitute bare `python`
+or an independently resolved environment.
 
-**GCD engine spike outcome** (PRD §9 open question): `MLXGuidedGeneration`
-does not exist. The engine is
-[petrukha-ivan/mlx-swift-structured](https://github.com/petrukha-ivan/mlx-swift-structured)
-(XGrammar compiled into Swift, integrated with MLXLMCommon's token loop via
-`GrammarMaskedLogitProcessor` — which also exposes the per-token logits the
-M4 entropy gating needs). The grammar is additionally validated in Python
-with `xgrammar` against canonical CRE queries (accepted) and hostile inputs
-(rejected).
+The project pins mlx-swift exactly to 0.31.4 and mlx-swift-lm exactly to
+3.31.4.
 
-## Running it
+## Acquire model artifacts
 
-Prerequisites: Xcode 26+, an Apple Intelligence-capable iPhone (iPhone 15 Pro
-or later) on iOS 26, [`uv`](https://docs.astral.sh/uv/). MLX does not run in
-the iOS simulator and FoundationModels needs an Apple Intelligence device, so
-the dev loop is on-device.
-
-**App:** open `CREG.xcodeproj`, set your signing team (bundle id is a
-placeholder `dev.haroldmartin.CREG`), build to the device. On first launch
-the SQL model (`mlx-community/Qwen2.5-Coder-3B-Instruct-4bit`, the skeleton
-placeholder — the harness re-decides later) downloads from Hugging Face
-(~1.7 GB, one-time, needs network). For a fully offline build:
-`uv run python tools/fetch_model.py`, then add the downloaded folder to the
-CREG target as a folder reference named `SQLModel` — the app prefers it over
-the network path. If the FM is unavailable on device, the pipeline degrades
-gracefully: no rewrite/gate, templated narration.
-
-Smoke test on device: "Which properties have the highest vacancy?",
-"What's my rent roll by property type?", "Which leases expire in the next
-12 months?", one follow-up ("now just Office"), one ambiguous question. Check
-the trace under each answer, toggle Developer mode in Settings to see the
-SQL, and export session logs (JSONL) from Settings.
-
-**Tests and tooling:**
+The manifest pins four upstream sources, explicit XiYan bfloat16-to-MLX
+4-bit/group-64/affine conversion, both public fine-tunes, every expected
+file, size, SHA-256, directory digest, and license payload. Floating revisions
+are rejected. Weights stay outside Git in the Hugging Face cache and ignored
+`models/` materialization.
 
 ```sh
-# Swift: engine + feature tests (macOS host)
-cd CREGKit && swift test
+cd fine-tuning
 
-# Python: data invariants + EX scorer
-cd fine-tuning && uv run pytest
+# Every declared source and derived artifact
+uv run --frozen python tools/fetch_model.py --all
+uv run --frozen python tools/fetch_model.py --all --verify-only
 
-# Regenerate database / grammar (schema is frozen — see ADR 0001 before touching)
-cd fine-tuning && uv run python tools/generate_db.py && uv run python tools/generate_grammar.py
+# One artifact
+uv run --frozen python tools/fetch_model.py \
+  --model ft-xiyansql-qwencoder-3b
 
-# Headless app build (plugin/macro validation must be skipped for mlx-swift)
-xcodebuild -project CREG.xcodeproj -scheme CREG -destination 'generic/platform=iOS' \
-  -skipPackagePluginValidation -skipMacroValidation CODE_SIGNING_ALLOWED=NO build
+# Exact verified production snapshot
+uv run --frozen python tools/fetch_model.py --production
 ```
 
-## Next steps
+## Build behavior
 
-**M3 — Gold set stage 1 + Python harness.** Draft ~60
-(question → gold SQL → gold result) triples covering all seven tables and
-all difficulty tiers (single-table filters → joins → windowed/nested), plus
-fuzzy-entity, ambiguous, and multi-turn cases. Pipeline per plan decision 12:
-Claude drafts → every query machine-executed against `creg.sqlite` → Claude
-Opus judges alignment → **the user signs off on 100% of triples**. Stored as
-JSONL in `eval/gold/`, strictly held out from training. Harness in
-`fine-tuning/eval/`: generation via `mlx_lm` (with optional xgrammar
-constraint for GCD-on/off ablation), EX scoring (`ex.py`, already landed),
-valid-SQL rate, latency, failure-taxonomy buckets (wrong join / aggregation /
-filter / literal / empty-when-expected / timeout), leaderboard emission.
-First sweep over the PRD Appendix A candidates.
+The Xcode build phase runs the manifest fetcher through the frozen `uv`
+environment and copies the exact manifest into the app.
 
-**M4 — Correction layers + developer mode.** (A) result-shape +
-value-grounding heuristics: 0-rows-when-expected, scalar-vs-list shape,
-fuzzy-match unmatched literals against actual column values ("nothing matched
-'Tower A' — did you mean 'Tower One'?"); (B) narration-as-confirmation is
-already in place; (C) self-consistency voting: 3–5 samples, execute all,
-cluster by result-set equivalence; (D) uncertainty gating: token entropy from
-the logit processor triggers C only when the model is unsure. Developer mode
-grows to show the rewrite, gate decision, candidate SQLs + votes, execution
-metadata, and per-stage latency/tok-s.
+- Debug bundles `SQLModel` only when the pinned snapshot is already in the
+  configured local cache. With no cache, the build succeeds without weights
+  and the runtime downloads that pinned revision on first use.
+- Release downloads or reuses cache, verifies the complete snapshot, and
+  bundles it as `SQLModel`. Network, selection, or integrity failure stops the
+  build with an actionable error.
 
-**M5 — Selection.** Gold set → ~200. Full factorial sweep per PRD §12
-(model × quantization × base-vs-tuned × GCD on/off × schema serialization ×
-self-consistency N). Build `creg-eval-cli` (SPM executable linking
-`CREGEngine`) and re-score the top 2–3 configs on the exact production stack
-before declaring a winner (ADR 0003).
+```sh
+xcodebuild -project CREG.xcodeproj -scheme CREG \
+  -configuration Debug -destination 'generic/platform=iOS' \
+  -skipPackagePluginValidation -skipMacroValidation \
+  CODE_SIGNING_ALLOWED=NO build
 
-**M6 — Close the fine-tune loop.** Synthetic data per PRD §13
-(schema-grounded templating seeded with real values, pattern transfer from
-Spider/BIRD/etc., conversational augmentation, paraphrase, Claude-as-judge
-quality gate with logged scores) → LoRA/QLoRA via `mlx-lm` → fuse → 4-bit
-quantize → eval on gold → bundle only if it beats the best off-the-shelf
-model. Read the failure taxonomy, document next-iteration priorities.
-That closes v1.
+xcodebuild -project CREG.xcodeproj -scheme CREG \
+  -configuration Release -destination 'generic/platform=iOS' \
+  -skipPackagePluginValidation -skipMacroValidation \
+  CODE_SIGNING_ALLOWED=NO build
+```
 
-Deliberately open until the harness decides: the EX "good enough" threshold,
-self-consistency N and the entropy threshold, ambiguity-gate default
-sensitivity, and MLX resident-vs-unload behavior under memory pressure
-(measure on device).
+Inspect a Release bundle byte-for-byte:
+
+```sh
+cd fine-tuning
+uv run --frozen python -m tools.inspect_release_bundle \
+  --app /path/to/Build/Products/Release-iphoneos/CREG.app \
+  --run-id release-bundle-inspection
+```
+
+The inspector rejects a different manifest, missing/extra/mismatched model
+file, or missing license/notice.
+
+## Tests
+
+```sh
+cd fine-tuning
+uv run --frozen pytest
+
+cd ../CREGKit
+swift test
+```
+
+Coverage includes typed EX and shared golden fixtures, half-even rounding,
+full BLOB identity, duplicates, truncation, immutable runs and seed replay,
+manifest integrity, strict-majority/no-consensus/degraded-anchor behavior,
+repairs and candidate attribution, first-turn telemetry, old-history decoding,
+microsecond timing, alias-aware grounding, retryable catalogs, empty-string
+edit distance, and read-only database enforcement.
+
+## Reproduce training and evaluation
+
+Every evaluation command creates a new non-overwriting directory with
+`manifest.json`, `items.jsonl`, and `summary.json`.
+
+```sh
+cd fine-tuning
+
+# Four bases × gold_v1 × GCD on/off
+uv run --frozen python -m eval.run_matrix screen
+
+# Selected bases × all gold_v2 × GCD on/off
+uv run --frozen python -m eval.run_matrix gcd \
+  --artifact qwen25-coder-3b:on \
+  --artifact qwen25-coder-3b:off \
+  --artifact xiyansql-qwencoder-3b:on \
+  --artifact xiyansql-qwencoder-3b:off
+
+# Byte-reproduce the corpus, train both selected families, and fuse 4-bit
+uv run --frozen python -m tools.train_finalists \
+  --model-key qwen25-coder-3b \
+  --model-key xiyansql-qwencoder-3b
+
+# Four eligible artifacts × four temperatures × seeds 0–4
+uv run --frozen python -m eval.run_matrix temperature \
+  --artifact qwen25-coder-3b:off \
+  --artifact xiyansql-qwencoder-3b:off \
+  --artifact ft-qwen25-coder-3b:on \
+  --artifact ft-xiyansql-qwencoder-3b:on
+```
+
+Temperature selection requires a mean EX improvement of at least two absolute
+points and a paired item-clustered bootstrap 95% interval excluding zero.
+Production uses the same two-point/bootstrap tie rule, then valid SQL,
+worst-tier EX, p95 latency, and bundle size.
+
+Publication is explicit and records the returned Hub commit plus a forced
+fresh-download inventory verification:
+
+```sh
+uv run --frozen python -m tools.publish_finalists \
+  --training-run ../eval/training-runs/<first> \
+  --training-run ../eval/training-runs/<second> \
+  --result-run ../eval/runs/<first-result> \
+  --result-run ../eval/runs/<second-result>
+```
+
+## Full Swift parity
+
+Build the host CLI through Xcode Release so the MLX Metal library is present;
+direct `swift run` is not a valid parity invocation.
+
+```sh
+xcodebuild -scheme creg-eval-cli -configuration Release \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/creg-parity-derived \
+  -skipPackagePluginValidation -skipMacroValidation build
+
+/tmp/creg-parity-derived/Build/Products/Release/creg-eval-cli \
+  --model models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit \
+  --model-key ft-xiyansql-qwencoder-3b \
+  --repository hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit \
+  --revision 7f97a54819b9329338a5353266d6d2a1294eb341 \
+  --db db/creg.sqlite --gold eval/gold/gold_v2.jsonl \
+  --gcd on --temperature 0.0 --seed 0 \
+  --out eval/runs/<new-parity-run>/swift.json
+```
+
+Then run `tools.analyze_matrix parity` with an immutable matching Python run
+and persist explanations for every item difference. Both absolute metric
+deltas must be at most two points.
+
+## Licenses, privacy, and limitations
+
+The selected XiYan derivative carries both its Apache-2.0 text and the
+conservatively inherited Qwen Research License, plus attribution, modification
+notice, “Built/Improved using Qwen,” and a non-commercial-use warning. CREG is
+therefore a **non-commercial research prototype**. See
+[`docs/license-report.md`](./docs/license-report.md); it is an engineering
+record, not legal advice.
+
+The database is synthetic, but telemetry exports contain portfolio questions,
+generated SQL, errors, seeds, and complete result rows up to the applicable
+cap (500 app, 10,000 evaluation). Treat exports as portfolio data.
+
+CREG supports one frozen schema and read-only exploration. It is not suitable
+for arbitrary databases, write queries, production financial decisions, or
+unreviewed model/runtime upgrades. Genuine remaining work includes physical
+iOS-device memory/thermal/latency validation, broader novel-language coverage
+to reduce template overfitting, and eliminating SQLite-version-sensitive SQL.

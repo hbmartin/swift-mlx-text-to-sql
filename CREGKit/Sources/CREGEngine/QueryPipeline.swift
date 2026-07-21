@@ -1,32 +1,44 @@
 import Foundation
 
-/// The strictly sequential per-turn pipeline (PRD §7):
-/// rewrite → gate → constrained generation → execute (with self-repair)
-/// → heuristics → uncertainty-gated self-consistency → narrate.
-/// Emits the structured event stream consumed by the UI trace and the JSONL log.
+/// The strictly sequential per-turn pipeline:
+/// rewrite → gate → generation/repair → grounding → voting → narration.
+///
+/// Candidate identity is preserved from generation through execution and the
+/// final immutable telemetry record. Foundation Models and MLX work continue
+/// to share one ``InferenceSerializer`` so the two inference stacks never
+/// overlap.
 public struct QueryPipeline: Sendable {
   public struct Configuration: Sendable, Equatable {
-    /// The ambiguity-gate dial; 0 = always pass through (v1 default).
+    public var model: ModelReference
+    public var gcd: GCDMode
+    public var productionTemperature: Double
+    public var maxTokens: Int
     public var gateSensitivity: Double
-    /// Maximum self-repair attempts after a SQLite error (correction layer 2).
     public var maxRepairAttempts: Int
-    /// Total candidates (including the greedy one) when self-consistency
-    /// voting triggers (correction layer C). 1 disables voting.
     public var selfConsistencyN: Int
-    /// Sampling temperature for the extra self-consistency candidates.
     public var sampleTemperature: Double
-    /// When false (default), voting only triggers on uncertainty signals
-    /// (layer D): a heuristic finding or a repaired execution. When true,
-    /// every turn votes.
     public var alwaysVote: Bool
 
     public init(
-      gateSensitivity: Double = 0,
-      maxRepairAttempts: Int = 2,
-      selfConsistencyN: Int = 3,
-      sampleTemperature: Double = 0.7,
-      alwaysVote: Bool = false
+      model: ModelReference,
+      gcd: GCDMode,
+      productionTemperature: Double,
+      maxTokens: Int,
+      gateSensitivity: Double,
+      maxRepairAttempts: Int,
+      selfConsistencyN: Int,
+      sampleTemperature: Double,
+      alwaysVote: Bool
     ) {
+      precondition((0...1).contains(productionTemperature))
+      precondition((0...1).contains(sampleTemperature))
+      precondition(maxTokens > 0)
+      precondition(maxRepairAttempts >= 0)
+      precondition(selfConsistencyN >= 1)
+      self.model = model
+      self.gcd = gcd
+      self.productionTemperature = productionTemperature
+      self.maxTokens = maxTokens
       self.gateSensitivity = gateSensitivity
       self.maxRepairAttempts = maxRepairAttempts
       self.selfConsistencyN = selfConsistencyN
@@ -35,9 +47,14 @@ public struct QueryPipeline: Sendable {
     }
   }
 
-  public var run: @Sendable (_ question: String, _ history: [ConversationTurn]) -> AsyncStream<PipelineEvent>
+  public var run:
+    @Sendable (_ question: String, _ history: [ConversationTurn])
+      -> AsyncStream<PipelineEvent>
 
-  public init(run: @escaping @Sendable (String, [ConversationTurn]) -> AsyncStream<PipelineEvent>) {
+  public init(
+    run: @escaping @Sendable (String, [ConversationTurn])
+      -> AsyncStream<PipelineEvent>
+  ) {
     self.run = run
   }
 }
@@ -48,157 +65,396 @@ extension QueryPipeline {
     sqlGen: SQLGenClient,
     db: DatabaseClient,
     serializer: InferenceSerializer,
-    configuration: Configuration = Configuration()
+    configuration: Configuration,
+    randomSeed: @escaping @Sendable () -> UInt64 = {
+      UInt64.random(in: UInt64.min...UInt64.max)
+    }
   ) -> QueryPipeline {
     let heuristics = ResultHeuristics(db: db)
     return QueryPipeline { question, history in
       AsyncStream { continuation in
         let task = Task {
+          let turnStarted = ContinuousClock.now
+          var telemetry = TurnTelemetry(originalQuestion: question)
           defer { continuation.finish() }
           continuation.yield(.turnStarted(question: question))
 
           let fmAvailable = fm.availability() == .available
           let activeFM = fmAvailable ? fm : .fallback()
 
+          func finish(_ outcome: TurnOutcome) {
+            telemetry.stageTimings.totalMicroseconds =
+              turnStarted.duration(to: .now).microseconds
+            continuation.yield(.turnFinished(
+              outcome: outcome, telemetry: telemetry))
+          }
+
+          func request(
+            id: String,
+            role: CandidateRole,
+            repair: RepairContext?,
+            temperature: Double
+          ) -> SQLGenerationRequest {
+            SQLGenerationRequest(
+              candidateID: CandidateID(rawValue: id),
+              role: role,
+              model: configuration.model,
+              question: telemetry.standaloneQuestion,
+              repair: repair,
+              gcd: configuration.gcd,
+              temperature: temperature,
+              seed: temperature == 0 ? nil : randomSeed(),
+              maxTokens: configuration.maxTokens)
+          }
+
+          func generateAndExecute(
+            _ request: SQLGenerationRequest,
+            attempt: Int
+          ) async -> CandidateTelemetry {
+            var candidate = CandidateTelemetry(request: request)
+            continuation.yield(.generationStarted(request: request))
+            let generationStarted = ContinuousClock.now
+            do {
+              let generation = try await serializer.run {
+                try await sqlGen.generate(request)
+              }
+              candidate.sql = generation.sql
+              candidate.tokensPerSecond = generation.tokensPerSecond
+              candidate.tokenCount = generation.tokenCount
+              candidate.generationMicroseconds =
+                generation.elapsedMicroseconds
+              continuation.yield(.generationFinished(
+                candidateID: request.candidateID,
+                generation: generation))
+              continuation.yield(.executionStarted(
+                candidateID: request.candidateID,
+                sql: generation.sql))
+              let executionStarted = ContinuousClock.now
+              do {
+                let result = try await db.execute(generation.sql)
+                candidate.executionMicroseconds =
+                  result.elapsedMicroseconds
+                candidate.result = result
+                if !result.isTruncated {
+                  candidate.resultDigest =
+                    CanonicalSQLResult(result).digest
+                }
+                continuation.yield(.executionFinished(
+                  candidateID: request.candidateID,
+                  result: result))
+              } catch {
+                candidate.executionMicroseconds =
+                  executionStarted.duration(to: .now).microseconds
+                candidate.error = String(describing: error)
+                continuation.yield(.executionFailed(
+                  candidateID: request.candidateID,
+                  message: candidate.error!,
+                  attempt: attempt))
+              }
+            } catch {
+              candidate.generationMicroseconds =
+                generationStarted.duration(to: .now).microseconds
+              candidate.error = "generation: \(error)"
+              continuation.yield(.executionFailed(
+                candidateID: request.candidateID,
+                message: candidate.error!,
+                attempt: attempt))
+            }
+            return candidate
+          }
+
+          func inspectGrounding(
+            sql: String,
+            result: QueryResult
+          ) async -> GroundingReport {
+            let started = ContinuousClock.now
+            let report = await heuristics.inspectDetailed(
+              sql: sql, result: result)
+            let elapsed = started.duration(to: .now).microseconds
+            telemetry.stageTimings.groundingMicroseconds =
+              (telemetry.stageTimings.groundingMicroseconds ?? 0) + elapsed
+            continuation.yield(.groundingFinished(
+              report: report, elapsedMicroseconds: elapsed))
+            return report
+          }
+
           do {
-            // 1. Follow-up rewrite (decontextualization)
+            // 1. Follow-up rewrite. First turns still emit an explicit
+            // standalone-question record with a zero-duration no-op.
+            let rewriteStarted = ContinuousClock.now
             let standalone: String
             if history.isEmpty {
               standalone = question
             } else {
               continuation.yield(.rewriteStarted)
-              standalone = try await serializer.run { try await activeFM.rewrite(question, history) }
-              continuation.yield(.rewriteFinished(standaloneQuestion: standalone, usedFM: fmAvailable))
+              standalone = try await serializer.run {
+                try await activeFM.rewrite(question, history)
+              }
             }
+            let rewriteElapsed =
+              rewriteStarted.duration(to: .now).microseconds
+            telemetry.standaloneQuestion = standalone
+            telemetry.rewriteApplied = !history.isEmpty
+            telemetry.rewriteUsedFM = !history.isEmpty && fmAvailable
+            telemetry.stageTimings.rewriteMicroseconds = rewriteElapsed
+            continuation.yield(.questionResolved(
+              standaloneQuestion: standalone,
+              rewriteApplied: !history.isEmpty,
+              usedFM: telemetry.rewriteUsedFM,
+              elapsedMicroseconds: rewriteElapsed))
 
-            // 2. Ambiguity gate
+            // 2. Ambiguity gate.
             continuation.yield(.gateStarted)
+            let gateStarted = ContinuousClock.now
             let decision = try await serializer.run {
-              try await activeFM.gate(standalone, configuration.gateSensitivity)
+              try await activeFM.gate(
+                standalone, configuration.gateSensitivity)
             }
-            continuation.yield(.gateFinished(decision))
+            let gateElapsed =
+              gateStarted.duration(to: .now).microseconds
+            telemetry.gateDecision = decision
+            telemetry.gateUsedFM = fmAvailable
+            telemetry.stageTimings.gateMicroseconds = gateElapsed
+            continuation.yield(.gateFinished(
+              decision: decision,
+              usedFM: fmAvailable,
+              elapsedMicroseconds: gateElapsed))
             if case .clarify(let clarifyingQuestion) = decision {
-              continuation.yield(.turnFinished(.needsClarification(question: clarifyingQuestion)))
+              finish(.needsClarification(question: clarifyingQuestion))
               return
             }
 
-            // 3-6. Constrained generation → execution, with self-repair
-            @Sendable func generateAndExecute(
-              repair: RepairContext?, temperature: Double
-            ) async throws -> (sql: String, result: Result<QueryResult, Error>) {
-              continuation.yield(.generationStarted(modelName: ""))
-              let generation = try await serializer.run {
-                try await sqlGen.generate(standalone, repair, temperature)
-              }
-              continuation.yield(.generationFinished(
-                sql: generation.sql, tokensPerSecond: generation.tokensPerSecond))
-              continuation.yield(.executionStarted(sql: generation.sql))
-              do {
-                let result = try await db.execute(generation.sql)
-                continuation.yield(.executionFinished(
-                  rowCount: result.rowCount, elapsedMilliseconds: result.elapsedMilliseconds))
-                return (generation.sql, .success(result))
-              } catch {
-                return (generation.sql, .failure(error))
-              }
-            }
-
-            var repair: RepairContext? = nil
+            // 3–6. Production generation and bounded repair.
+            var repair: RepairContext?
             var attempt = 0
-            var chosenSQL = ""
-            var chosenResult: QueryResult? = nil
-            while chosenResult == nil {
+            var primary: CandidateTelemetry?
+            while primary == nil {
+              let role: CandidateRole =
+                attempt == 0 ? .initial : .repair(attempt: attempt)
               if attempt > 0 {
                 continuation.yield(.repairStarted(attempt: attempt))
               }
-              let (sql, outcome) = try await generateAndExecute(repair: repair, temperature: 0.1)
-              switch outcome {
-              case .success(let result):
-                chosenSQL = sql
-                chosenResult = result
-              case .failure(let error):
-                let message = "\(error)"
-                continuation.yield(.executionFailed(message: message, attempt: attempt))
-                attempt += 1
-                if attempt > configuration.maxRepairAttempts {
-                  continuation.yield(.turnFinished(.failed(
-                    message: "I couldn't answer that one — try rephrasing the question.")))
-                  return
-                }
-                repair = RepairContext(failedSQL: sql, errorMessage: message)
+              let id = attempt == 0 ? "initial" : "repair-\(attempt)"
+              let candidate = await generateAndExecute(
+                request(
+                  id: id,
+                  role: role,
+                  repair: repair,
+                  temperature: configuration.productionTemperature),
+                attempt: attempt)
+              telemetry.candidates.append(candidate)
+              if candidate.result != nil {
+                primary = candidate
+                break
               }
+              attempt += 1
+              telemetry.repairAttempts = attempt
+              guard
+                attempt <= configuration.maxRepairAttempts,
+                let sql = candidate.sql,
+                let error = candidate.error
+              else {
+                finish(.failed(
+                  message:
+                    "I couldn't answer that one — try rephrasing the question."))
+                return
+              }
+              repair = RepairContext(
+                failedSQL: sql, errorMessage: error)
             }
-            var result = chosenResult!
 
-            // 7a. Correction layer A: result-shape + value-grounding heuristics
-            var findings = await heuristics.inspect(sql: chosenSQL, result: result)
-            for finding in findings {
-              continuation.yield(.heuristicFlagged(finding))
+            guard
+              let successfulPrimary = primary,
+              let primaryResult = successfulPrimary.result,
+              let primarySQL = successfulPrimary.sql
+            else {
+              finish(.failed(
+                message:
+                  "I couldn't answer that one — try rephrasing the question."))
+              return
             }
 
-            // 7b. Layers C+D: self-consistency voting, uncertainty-gated
+            var chosenCandidate = successfulPrimary
+            var chosenResult = primaryResult
+            var chosenSQL = primarySQL
+            var grounding = await inspectGrounding(
+              sql: primarySQL, result: primaryResult)
+
+            // 7. Strict-majority result voting. The configured candidate
+            // count is the denominator even when a candidate fails.
             let trigger: String? =
               configuration.alwaysVote ? "always"
               : attempt > 0 ? "repair"
-              : !findings.isEmpty ? "heuristic"
+              : !grounding.findings.isEmpty ? "grounding"
               : nil
+            var voteNotice: String?
             if let trigger, configuration.selfConsistencyN > 1 {
+              let votingStarted = ContinuousClock.now
+              telemetry.voteTrigger = trigger
               continuation.yield(.selfConsistencyStarted(
-                candidateCount: configuration.selfConsistencyN, trigger: trigger))
-              var candidates: [(sql: String, result: QueryResult?, error: String?)] = [
-                (chosenSQL, result, nil)
-              ]
-              for _ in 1..<configuration.selfConsistencyN {
-                let (sql, outcome) = try await generateAndExecute(
-                  repair: nil, temperature: configuration.sampleTemperature)
-                switch outcome {
-                case .success(let sampled): candidates.append((sql, sampled, nil))
-                case .failure(let error): candidates.append((sql, nil, "\(error)"))
+                candidateCount: configuration.selfConsistencyN,
+                trigger: trigger))
+
+              // The calibrated vote portfolio is always exactly one
+              // deterministic anchor plus N-1 candidates generated at the
+              // calibrated sample temperature. A nonzero-temperature primary
+              // remains in telemetry and is available only for the explicit
+              // degraded fallback; it is not substituted for a calibrated
+              // consistency sample.
+              var voteCandidates: [CandidateTelemetry]
+              let anchor: CandidateTelemetry
+              if successfulPrimary.temperature == 0 {
+                anchor = successfulPrimary
+                voteCandidates = [successfulPrimary]
+              } else {
+                let generatedAnchor = await generateAndExecute(
+                  request(
+                    id: "deterministic-anchor",
+                    role: .deterministicAnchor,
+                    repair: nil,
+                    temperature: 0),
+                  attempt: 0)
+                telemetry.candidates.append(generatedAnchor)
+                anchor = generatedAnchor
+                voteCandidates = [generatedAnchor]
+              }
+
+              var sampleIndex = 1
+              while voteCandidates.count < configuration.selfConsistencyN {
+                let sample = await generateAndExecute(
+                  request(
+                    id: "consistency-\(sampleIndex)",
+                    role: .consistencySample(index: sampleIndex),
+                    repair: nil,
+                    temperature: configuration.sampleTemperature),
+                  attempt: 0)
+                telemetry.candidates.append(sample)
+                voteCandidates.append(sample)
+                sampleIndex += 1
+              }
+
+              let voteSet = Array(
+                voteCandidates.prefix(configuration.selfConsistencyN))
+              var agreementByDigest: [String: Int] = [:]
+              for candidate in voteSet {
+                if let digest = candidate.resultDigest {
+                  agreementByDigest[digest, default: 0] += 1
                 }
               }
-              var tally: [Int: Int] = [:]
-              for candidate in candidates {
-                if let signature = candidate.result.map(Self.resultSignature) {
-                  tally[signature, default: 0] += 1
+              let majority =
+                agreementByDigest
+                .filter {
+                  $0.value > configuration.selfConsistencyN / 2
                 }
-              }
-              if let (winningSignature, agreement) = tally.max(by: {
-                $0.value < $1.value || ($0.value == $1.value && $0.key < $1.key)
-              }),
-                let winner = candidates.first(where: {
-                  $0.result.map(Self.resultSignature) == winningSignature
-                }), let winnerResult = winner.result
+                .sorted { lhs, rhs in
+                  if lhs.value != rhs.value {
+                    return lhs.value > rhs.value
+                  }
+                  return lhs.key < rhs.key
+                }
+                .first
+
+              if let (digest, agreement) = majority,
+                let winner = voteSet.first(where: {
+                  $0.resultDigest == digest
+                }),
+                let winnerResult = winner.result,
+                let winnerSQL = winner.sql
               {
-                let summaries = candidates.map { candidate in
-                  ConsistencyCandidate(
-                    sql: candidate.sql,
-                    rowCount: candidate.result?.rowCount,
-                    error: candidate.error,
-                    agreedWithWinner: candidate.result.map(Self.resultSignature) == winningSignature)
-                }
-                continuation.yield(.selfConsistencyFinished(
-                  chosenSQL: winner.sql, agreement: agreement, candidates: summaries))
-                if Self.resultSignature(result) != winningSignature {
-                  chosenSQL = winner.sql
-                  result = winnerResult
-                  findings = await heuristics.inspect(sql: chosenSQL, result: result)
-                }
+                chosenCandidate = winner
+                chosenResult = winnerResult
+                chosenSQL = winnerSQL
+                let outcome = VoteOutcome.consensus(
+                  resultDigest: digest,
+                  agreement: agreement,
+                  candidateCount: configuration.selfConsistencyN)
+                telemetry.voteOutcome = outcome
+                telemetry.selectionReason = .majorityVote
+                continuation.yield(.selfConsistencyFinished(outcome))
+              } else if anchor.resultDigest != nil,
+                let anchorResult = anchor.result,
+                let anchorSQL = anchor.sql
+              {
+                chosenCandidate = anchor
+                chosenResult = anchorResult
+                chosenSQL = anchorSQL
+                let outcome = VoteOutcome.noConsensus(
+                  anchorCandidateID: anchor.id,
+                  candidateCount: configuration.selfConsistencyN)
+                telemetry.voteOutcome = outcome
+                telemetry.selectionReason =
+                  .noConsensusDeterministicAnchor
+                voteNotice =
+                  "The candidates did not reach a majority, so I used the deterministic result."
+                continuation.yield(.selfConsistencyFinished(outcome))
+              } else {
+                let message =
+                  anchor.error
+                  ?? (anchor.result?.isTruncated == true
+                    ? "The deterministic anchor result was truncated at the row cap."
+                    : "The deterministic anchor did not return a complete result.")
+                let outcome = VoteOutcome.anchorFailed(
+                  fallbackCandidateID: successfulPrimary.id,
+                  message: message)
+                telemetry.voteOutcome = outcome
+                telemetry.selectionReason = .noConsensusAnchorFailed
+                voteNotice =
+                  "The deterministic cross-check failed, so I used the successful primary result."
+                continuation.yield(.selfConsistencyFinished(outcome))
+              }
+              telemetry.stageTimings.votingMicroseconds =
+                votingStarted.duration(to: .now).microseconds
+
+              if chosenCandidate.id != successfulPrimary.id {
+                grounding = await inspectGrounding(
+                  sql: chosenSQL, result: chosenResult)
               }
             }
 
-            // 8. Narration
-            continuation.yield(.narrationStarted)
-            let finalResult = result
-            let narration = try await serializer.run {
-              try await activeFM.narrate(standalone, finalResult)
+            if telemetry.selectionReason == nil {
+              telemetry.selectionReason =
+                attempt == 0 ? .initialSuccess : .repairSuccess
             }
-            continuation.yield(.narrationFinished(narration: narration, usedFM: fmAvailable))
-            continuation.yield(.turnFinished(.answered(
-              result: result, narration: narration, sql: chosenSQL,
-              notice: findings.first?.userNotice)))
+            telemetry.selectedCandidateID = chosenCandidate.id
+            if let selectedIndex = telemetry.candidates.firstIndex(
+              where: { $0.id == chosenCandidate.id })
+            {
+              telemetry.candidates[selectedIndex].selected = true
+            }
+            telemetry.grounding = grounding
+
+            // 8. Narration.
+            continuation.yield(.narrationStarted)
+            let narrationStarted = ContinuousClock.now
+            let narrationResult = chosenResult
+            let narration = try await serializer.run {
+              try await activeFM.narrate(standalone, narrationResult)
+            }
+            let narrationElapsed =
+              narrationStarted.duration(to: .now).microseconds
+            telemetry.narrationUsedFM = fmAvailable
+            telemetry.stageTimings.narrationMicroseconds =
+              narrationElapsed
+            continuation.yield(.narrationFinished(
+              narration: narration,
+              usedFM: fmAvailable,
+              elapsedMicroseconds: narrationElapsed))
+
+            let notices =
+              grounding.findings.first.map(\.userNotice).map { [$0] }
+              ?? []
+            let notice = (notices + [voteNotice].compactMap { $0 })
+              .joined(separator: " ")
+            finish(.answered(
+              result: chosenResult,
+              narration: narration,
+              sql: chosenSQL,
+              notice: notice.isEmpty ? nil : notice))
           } catch {
-            continuation.yield(.turnFinished(.failed(
-              message: "Something went wrong while answering — please try again.")))
+            telemetry.terminalError = String(describing: error)
+            finish(.failed(
+              message:
+                "Something went wrong while answering — please try again."))
           }
         }
         continuation.onTermination = { _ in task.cancel() }
@@ -206,18 +462,25 @@ extension QueryPipeline {
     }
   }
 
-  /// Order-insensitive result identity for vote clustering; reals are rounded
-  /// to 4 decimals to match the harness's EX comparison.
-  static func resultSignature(_ result: QueryResult) -> Int {
-    var hasher = Hasher()
-    hasher.combine(result.columns.count)
-    let rows = result.rows.map { row in
-      row.map { value -> String in
-        if case .real(let v) = value { return String((v * 10_000).rounded() / 10_000) }
-        return value.displayString
-      }.joined(separator: "\u{1}")
-    }.sorted()
-    hasher.combine(rows)
-    return hasher.finalize()
+  /// Used when the production section of the model manifest is absent or
+  /// invalid. The app remains loadable but cannot silently invent a model or
+  /// generation configuration.
+  public static func unavailable(message: String) -> QueryPipeline {
+    QueryPipeline { question, _ in
+      AsyncStream { continuation in
+        var telemetry = TurnTelemetry(originalQuestion: question)
+        telemetry.terminalError = message
+        continuation.yield(.turnStarted(question: question))
+        continuation.yield(.questionResolved(
+          standaloneQuestion: question,
+          rewriteApplied: false,
+          usedFM: false,
+          elapsedMicroseconds: 0))
+        continuation.yield(.turnFinished(
+          outcome: .failed(message: message),
+          telemetry: telemetry))
+        continuation.finish()
+      }
+    }
   }
 }

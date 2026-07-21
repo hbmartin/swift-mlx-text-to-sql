@@ -1,0 +1,59 @@
+{
+  "analysis": "gold-v2-gcd-selection",
+  "inputs": [
+    {
+      "manifest_sha256": "4f3575bb09f79eb0a1bb4989e8cbfd69df8aab11b0885c34ad606b61d63bd4fc",
+      "path": "eval/runs/matrix-base-gold-v2-qwen25-coder-3b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "385c39f281c2e49782ca8d74be96496d507b6df3c753d5db8a882f3205fb9d6e",
+      "path": "eval/runs/matrix-base-gold-v2-qwen25-coder-3b-gcd-on-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "1af286b80a6baf1bbbcbbdd0b7326451ad0800a14d5c54a0b2408496c3bb1c87",
+      "path": "eval/runs/matrix-base-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-0"
+    },
+    {
+      "manifest_sha256": "83ca96ce1a8e0f9af6ceb402417fa9d14be1d8cde4d42e5cbf5e6260c7f2038b",
+      "path": "eval/runs/matrix-base-gold-v2-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0"
+    }
+  ],
+  "schema_version": 1,
+  "selected": [
+    {
+      "bundle_size_bytes": 1747851791,
+      "ex": 0.22,
+      "gcd": "off",
+      "model_key": "qwen25-coder-3b",
+      "n_items": 200,
+      "p95_microseconds": 2782191,
+      "seeds": [
+        0
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.76,
+      "worst_tier_ex": 0.1111111111111111
+    },
+    {
+      "bundle_size_bytes": 1747786195,
+      "ex": 0.285,
+      "gcd": "off",
+      "model_key": "xiyansql-qwencoder-3b",
+      "n_items": 200,
+      "p95_microseconds": 1696892,
+      "seeds": [
+        0
+      ],
+      "temperature": 0.0,
+      "valid_sql_rate": 0.88,
+      "worst_tier_ex": 0.0
+    }
+  ],
+  "selection_rule": [
+    "execution accuracy",
+    "valid SQL",
+    "worst-tier execution accuracy",
+    "p95 latency",
+    "bundle size"
+  ]
+}

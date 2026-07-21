@@ -1,0 +1,192 @@
+{
+  "command": "/Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/.venv/bin/python3 /Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/eval/run_eval.py --model-key ft-xiyansql-qwencoder-3b --gold /Volumes/SanSmall/swift-mlx-text-to-sql/eval/gold/gold_v2.jsonl --gcd on --temperature 0.3 --seed 4 --run-id matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_3-s-4 --runs-dir /Volumes/SanSmall/swift-mlx-text-to-sql/eval/runs",
+  "completed_at": "2026-07-21T05:21:18Z",
+  "configuration": {
+    "gcd": "on",
+    "item_seed_formula": "run_seed * 1000000 + zero_based_item_index",
+    "max_tokens": 512,
+    "run_seed": 4,
+    "temperature": 0.3,
+    "timing_unit": "microseconds",
+    "top_k": 0,
+    "top_p": 1.0
+  },
+  "dependencies": {
+    "mlx": "0.32.0",
+    "mlx-lm": "0.31.3",
+    "numpy": "2.5.1",
+    "transformers": "5.14.1",
+    "xgrammar": "0.2.3"
+  },
+  "git": {
+    "branch": "codex/pr1-review-fixes",
+    "commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+    "dirty": true
+  },
+  "hardware": {
+    "cpu_count": 14,
+    "machine": "arm64",
+    "model": "Mac16,7",
+    "os_version": "ProductName:\t\tmacOS\nProductVersion:\t\t15.7.7\nBuildVersion:\t\t24G720",
+    "physical_memory_bytes": 51539607552,
+    "platform": "macOS-15.7.7-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 17.0.0 (clang-1700.6.4.2)]",
+    "swift": "Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)\nTarget: arm64-apple-macosx15.0"
+  },
+  "inputs": {
+    "database": {
+      "path": "db/creg.sqlite",
+      "sha256": "7e2a7ce7cc40e2d3b449c8e8e24e6ae91867de08028c3aea7635abf33f754b38",
+      "size": 401408
+    },
+    "gold": {
+      "path": "eval/gold/gold_v2.jsonl",
+      "sha256": "2bde4dedc23bc7938d0250f2e2d5e22502903c8caad6c0951e1bbca9d0d77036",
+      "size": 64877
+    },
+    "grammar": {
+      "path": "CREGKit/Sources/CREGEngine/Resources/sql_grammar.ebnf",
+      "sha256": "53b5506c65bea25f6cfc93f3868aeb14e613da50e2ef15ec3b7aa418f1d77e60",
+      "size": 5001
+    },
+    "model_manifest": {
+      "path": "model-manifest.json",
+      "sha256": "f80f3b775d090cb738526a535d023e92bcd74157dfe6a1c69d042912e86d1a8c",
+      "size": 29960
+    },
+    "schema_prompt": {
+      "path": "CREGKit/Sources/CREGEngine/Resources/schema_prompt.txt",
+      "sha256": "94736a402704e8db98f446a8d8c961780d3ff2d424920a0da8975fc36e0b1101",
+      "size": 2432
+    },
+    "swift_package_lock": {
+      "path": "CREGKit/Package.resolved",
+      "sha256": "162fc1560b1563392721b698e58a3fb04aadb7087731f04af42ed0a22d16267d",
+      "size": 8697
+    },
+    "system_prompt_sha256": "28f89133847e9383cb8a0426ba612735bb1fd278ad5246df578b8e799a9571b3",
+    "tokenizer": {
+      "path": "models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit/tokenizer.json",
+      "sha256": "3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8",
+      "size": 11421892
+    },
+    "uv_lock": {
+      "path": "fine-tuning/uv.lock",
+      "sha256": "034b816d176c52f6a0ba5eb5f657f1dc1a7fbd222edd564e32e75361adb91cd3",
+      "size": 343471
+    }
+  },
+  "item_count": 200,
+  "model": {
+    "artifact_lock": {
+      "path": "models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit/.creg-artifact.json",
+      "sha256": "0c097ecf33e7aa823d222a17ca9632541c95ffb22cdeacba9264b3b3facf8bbd",
+      "size": 7142
+    },
+    "bundle_size_bytes": 1747812702,
+    "directory_sha256": "a3befce92b39afe29c0c0b01c534bd81731f151940470697d5f2038c89efd8c6",
+    "key": "ft-xiyansql-qwencoder-3b",
+    "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/models/creg-sql-xiyansql-qwencoder-3b-mlx-4bit",
+    "repository": "hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit",
+    "revision": "7f97a54819b9329338a5353266d6d2a1294eb341",
+    "training_provenance": {
+      "adapter_files": [
+        {
+          "path": "0000100_adapters.safetensors",
+          "sha256": "95507abb2888db13e16e797cde16e8fa74ac2c432fe5399ee9e1cb42509779ca",
+          "size": 26631752
+        },
+        {
+          "path": "0000200_adapters.safetensors",
+          "sha256": "2432f1baada25b73ad60aa1df8c6191ff6ee1ef33b2fe03d38945e29a0be3290",
+          "size": 26631752
+        },
+        {
+          "path": "0000300_adapters.safetensors",
+          "sha256": "6ea1d86f9e9271c06dc8005d427060d4b62cfe980699bcae0a3f8da1f5e0c9c1",
+          "size": 26631752
+        },
+        {
+          "path": "0000400_adapters.safetensors",
+          "sha256": "ed12fbd4de7e41bf6553505ff1a1c6af1dd11091d438e57c133772b60b58ade2",
+          "size": 26631752
+        },
+        {
+          "path": "0000500_adapters.safetensors",
+          "sha256": "127935f9ea4af203f3b5cc4954a9c9f47d3dc3dd4c86f7909106e615dcf27920",
+          "size": 26631752
+        },
+        {
+          "path": "0000600_adapters.safetensors",
+          "sha256": "c2049b552ffc87a4aa35030c2568b4b3e3ae556f9e9569cd3df3e53e86551f8c",
+          "size": 26631752
+        },
+        {
+          "path": "adapter_config.json",
+          "sha256": "caca4be4f1d43033d0a4a78f902eeddae0b12d9cbc698a2eed8eb11247d3476b",
+          "size": 1261
+        },
+        {
+          "path": "adapters.safetensors",
+          "sha256": "c2049b552ffc87a4aa35030c2568b4b3e3ae556f9e9569cd3df3e53e86551f8c",
+          "size": 26631752
+        }
+      ],
+      "base_directory_sha256": "a527bbfcb01aeb07017483f3204f6c32df1654dfd70f019b1f624ede002afe23",
+      "base_repository": "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
+      "base_revision": "0d35ce19d4e4d78d82d19b18b3e0f1c7a86eb535",
+      "code_commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+      "code_dirty": true,
+      "code_inputs": {
+        "corpus_generator": {
+          "path": "fine-tuning/synth/generate_training.py",
+          "sha256": "416f1370045de5fffe69a557fa1486fd80f4de645a7f4311b9ae878e3ccd79c9",
+          "size": 28913
+        },
+        "model_manifest": {
+          "path": "model-manifest.json",
+          "sha256": "3c5c293da1760ea054862d35ddd2e231f458a5bfec8d1386e5fd4bb72044fb9c",
+          "size": 11805
+        },
+        "training_runner": {
+          "path": "fine-tuning/tools/train_finalists.py",
+          "sha256": "b2765239ade40bd3231f057de1aec431ac227e7a8ce9769fc4651df29303943c",
+          "size": 9560
+        },
+        "uv_lock": {
+          "path": "fine-tuning/uv.lock",
+          "sha256": "034b816d176c52f6a0ba5eb5f657f1dc1a7fbd222edd564e32e75361adb91cd3",
+          "size": 343471
+        }
+      },
+      "configuration": {
+        "path": "fine-tuning/config/qlora.yaml",
+        "sha256": "63a139bb79e5ad77d0241b9b76d0c2892a3459019bcfad04367d8d932800b545",
+        "size": 914
+      },
+      "corpus_manifest": {
+        "path": "fine-tuning/config/corpus-manifest.json",
+        "sha256": "4e3d25923a8426ba3c09349d240a1c77aca79daf5c69631694d28dfe4374cabe",
+        "size": 561
+      },
+      "run_id": "qlora-xiyansql-qwencoder-3b-seed-424242",
+      "seed": 424242,
+      "training_log_sha256": "ac63718348727ecd2ad62fdba27b5c9475f17e823f1e4c4991873511074f8fe5"
+    }
+  },
+  "outputs": {
+    "items": {
+      "path": "items.jsonl",
+      "sha256": "1bf447fc43c6bfc37208025bb155d777ec353c1c6a88fff28df3ab71f5cacf6c"
+    },
+    "summary": {
+      "path": "summary.json",
+      "sha256": "1488a82c59ad0ae55daa46b1d3af50b874ad0dff224cada049cfc5b559f5bee6"
+    }
+  },
+  "run_id": "matrix-temperature-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_3-s-4",
+  "schema_version": 1,
+  "started_at": "2026-07-21T05:13:57Z",
+  "status": "complete"
+}

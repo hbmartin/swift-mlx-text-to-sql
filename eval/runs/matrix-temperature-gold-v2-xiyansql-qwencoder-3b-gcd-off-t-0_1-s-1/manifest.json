@@ -1,0 +1,109 @@
+{
+  "command": "/Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/.venv/bin/python3 /Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/eval/run_eval.py --model-key xiyansql-qwencoder-3b --gold ../eval/gold/gold_v2.jsonl --gcd off --temperature 0.1 --seed 1 --run-id matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_1-s-1 --runs-dir ../eval/runs",
+  "completed_at": "2026-07-21T00:03:13Z",
+  "configuration": {
+    "gcd": "off",
+    "item_seed_formula": "run_seed * 1000000 + zero_based_item_index",
+    "max_tokens": 512,
+    "run_seed": 1,
+    "temperature": 0.1,
+    "timing_unit": "microseconds",
+    "top_k": 0,
+    "top_p": 1.0
+  },
+  "dependencies": {
+    "mlx": "0.32.0",
+    "mlx-lm": "0.31.3",
+    "numpy": "2.5.1",
+    "transformers": "5.14.1",
+    "xgrammar": "0.2.3"
+  },
+  "git": {
+    "branch": "codex/pr1-review-fixes",
+    "commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+    "dirty": true
+  },
+  "hardware": {
+    "cpu_count": 14,
+    "machine": "arm64",
+    "model": "Mac16,7",
+    "os_version": "ProductName:\t\tmacOS\nProductVersion:\t\t15.7.7\nBuildVersion:\t\t24G720",
+    "physical_memory_bytes": 51539607552,
+    "platform": "macOS-15.7.7-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 17.0.0 (clang-1700.6.4.2)]",
+    "swift": "Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)\nTarget: arm64-apple-macosx15.0"
+  },
+  "inputs": {
+    "database": {
+      "path": "db/creg.sqlite",
+      "sha256": "7e2a7ce7cc40e2d3b449c8e8e24e6ae91867de08028c3aea7635abf33f754b38",
+      "size": 401408
+    },
+    "gold": {
+      "path": "eval/gold/gold_v2.jsonl",
+      "sha256": "2bde4dedc23bc7938d0250f2e2d5e22502903c8caad6c0951e1bbca9d0d77036",
+      "size": 64877
+    },
+    "grammar": {
+      "path": "CREGKit/Sources/CREGEngine/Resources/sql_grammar.ebnf",
+      "sha256": "53b5506c65bea25f6cfc93f3868aeb14e613da50e2ef15ec3b7aa418f1d77e60",
+      "size": 5001
+    },
+    "model_manifest": {
+      "path": "model-manifest.json",
+      "sha256": "f80f3b775d090cb738526a535d023e92bcd74157dfe6a1c69d042912e86d1a8c",
+      "size": 29960
+    },
+    "schema_prompt": {
+      "path": "CREGKit/Sources/CREGEngine/Resources/schema_prompt.txt",
+      "sha256": "94736a402704e8db98f446a8d8c961780d3ff2d424920a0da8975fc36e0b1101",
+      "size": 2432
+    },
+    "swift_package_lock": {
+      "path": "CREGKit/Package.resolved",
+      "sha256": "162fc1560b1563392721b698e58a3fb04aadb7087731f04af42ed0a22d16267d",
+      "size": 8697
+    },
+    "system_prompt_sha256": "28f89133847e9383cb8a0426ba612735bb1fd278ad5246df578b8e799a9571b3",
+    "tokenizer": {
+      "path": "models/XiYanSQL-QwenCoder-3B-2502-4bit/tokenizer.json",
+      "sha256": "3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8",
+      "size": 11421892
+    },
+    "uv_lock": {
+      "path": "fine-tuning/uv.lock",
+      "sha256": "034b816d176c52f6a0ba5eb5f657f1dc1a7fbd222edd564e32e75361adb91cd3",
+      "size": 343471
+    }
+  },
+  "item_count": 200,
+  "model": {
+    "artifact_lock": {
+      "path": "models/XiYanSQL-QwenCoder-3B-2502-4bit/.creg-artifact.json",
+      "sha256": "bd63188dff6275bf549d1a4acf940039fb20fb0077040432823dc208497e550a",
+      "size": 4622
+    },
+    "bundle_size_bytes": 1747786195,
+    "directory_sha256": "a527bbfcb01aeb07017483f3204f6c32df1654dfd70f019b1f624ede002afe23",
+    "key": "xiyansql-qwencoder-3b",
+    "path": "/Volumes/SanSmall/swift-mlx-text-to-sql/models/XiYanSQL-QwenCoder-3B-2502-4bit",
+    "repository": "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
+    "revision": "0d35ce19d4e4d78d82d19b18b3e0f1c7a86eb535",
+    "training_provenance": null
+  },
+  "outputs": {
+    "items": {
+      "path": "items.jsonl",
+      "sha256": "fd58026cc607a51db727ce1c0b95482e659914805d8dcfb7178f5a99887ef078"
+    },
+    "summary": {
+      "path": "summary.json",
+      "sha256": "cea57f1e5b28ce36997076df4b56a2048b6d40bf6809921b7443571117c6c113"
+    }
+  },
+  "run_id": "matrix-temperature-gold-v2-xiyansql-qwencoder-3b-gcd-off-t-0_1-s-1",
+  "schema_version": 1,
+  "started_at": "2026-07-20T23:58:36Z",
+  "status": "complete"
+}

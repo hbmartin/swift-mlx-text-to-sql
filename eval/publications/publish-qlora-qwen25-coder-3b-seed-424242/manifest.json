@@ -1,0 +1,59 @@
+{
+  "command": "/Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/.venv/bin/python3 /Volumes/SanSmall/swift-mlx-text-to-sql/fine-tuning/tools/publish_finalists.py --training-run ../eval/training-runs/qlora-qwen25-coder-3b-seed-424242 --training-run ../eval/training-runs/qlora-xiyansql-qwencoder-3b-seed-424242 --result-run ../eval/runs/matrix-fine-tune-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-0 --result-run ../eval/runs/matrix-fine-tune-gold-v2-ft-qwen25-coder-3b-gcd-off-t-0_0-s-0 --result-run ../eval/runs/matrix-fine-tune-gold-v2-ft-xiyansql-qwencoder-3b-gcd-on-t-0_0-s-0 --result-run ../eval/runs/matrix-fine-tune-gold-v2-ft-xiyansql-qwencoder-3b-gcd-off-t-0_0-s-0",
+  "evaluation_runs": [
+    {
+      "manifest_sha256": "d4fc59848b564687150548b3fb18c41e1264d7a3288f5a20c2b9e781a4de3b93",
+      "run_id": "matrix-fine-tune-gold-v2-ft-qwen25-coder-3b-gcd-on-t-0_0-s-0",
+      "summary_sha256": "0b36868b348f7f22aac919f726cd562eaa1ad292277f04c92d0c5de0fb879ec6"
+    },
+    {
+      "manifest_sha256": "81c926f40d9c922cdcd5f73a9ceee3928ab76d610512e76ca0ffc12c2a4ac645",
+      "run_id": "matrix-fine-tune-gold-v2-ft-qwen25-coder-3b-gcd-off-t-0_0-s-0",
+      "summary_sha256": "37c09bfc5e42df537c82268c7a7614e7488313ed525a9781b1a6e63f62790f87"
+    }
+  ],
+  "fresh_download_verified": true,
+  "git": {
+    "branch": "codex/pr1-review-fixes",
+    "commit": "a35f6c06ad031e91512ba3977c3430d241b59493",
+    "dirty": true
+  },
+  "hardware": {
+    "cpu_count": 14,
+    "machine": "arm64",
+    "model": "Mac16,7",
+    "os_version": "ProductName:\t\tmacOS\nProductVersion:\t\t15.7.7\nBuildVersion:\t\t24G720",
+    "physical_memory_bytes": 51539607552,
+    "platform": "macOS-15.7.7-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 17.0.0 (clang-1700.6.4.2)]",
+    "swift": "Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)\nTarget: arm64-apple-macosx15.0"
+  },
+  "inputs": {
+    "model_manifest": {
+      "path": "model-manifest.json",
+      "sha256": "7920109ec79e2eee7e0699b0851335a12d839554306c313f65a2022ab5954891",
+      "size": 28606
+    },
+    "publisher": {
+      "path": "fine-tuning/tools/publish_finalists.py",
+      "sha256": "fe7af11e136e80a85a5efafafa776dfaf9bbd7f976071cd122ba41d9de78a6e3",
+      "size": 18550
+    }
+  },
+  "outputs": {
+    "publication": {
+      "path": "publication.json",
+      "sha256": "2a983c6251af85755facc3f5ee2af6b760c405e818570f9a3b2403307703b369"
+    }
+  },
+  "repository": "hbmartin/creg-sql-mlx-community-qwen2-5-coder-3b-instruct-4bit-mlx-4bit",
+  "revision": "430d38301eedb6c61e48c25c7d38a2b227bf56c6",
+  "run_id": "publish-qlora-qwen25-coder-3b-seed-424242",
+  "schema_version": 1,
+  "status": "complete",
+  "training_run": {
+    "manifest_sha256": "92ba87aa0f003af3a7e44bfeb7b72499a60c31fa5046997187be05cbee938435",
+    "path": "eval/training-runs/qlora-qwen25-coder-3b-seed-424242"
+  }
+}
