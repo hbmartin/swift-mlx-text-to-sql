@@ -115,6 +115,29 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         .contains("production_manifest_incompatible") == true)
   }
 
+  @Test func manifestDomainErrorsMapToStableActionablePresentations() {
+    let cases: [(ModelManifestError, String)] = [
+      (.missing, "production_manifest_missing"),
+      (.productionSelectionPending, "production_selection_pending"),
+      (.unknownProductionModel("missing-model"), "production_model_unknown"),
+      (
+        .invalidProductionConfiguration("quantization is invalid"),
+        "production_configuration_invalid"
+      ),
+    ]
+
+    for (error, code) in cases {
+      let failure = FailurePresentation.productionConfiguration(error)
+      #expect(failure.code == code)
+      #expect(failure.title == "SQL model unavailable")
+      #expect(failure.message.contains("build"))
+      #expect(failure.message.contains("Install") || failure.message.contains("install"))
+      #expect(!failure.message.contains("missing-model"))
+      #expect(!failure.message.contains("quantization"))
+      #expect(failure.technicalDetails(developerMode: false) == nil)
+    }
+  }
+
   @Test func productionBootstrapLogsOneFailureWithPrivateDetails() {
     let recorder = DiagnosticEventRecorder()
     let result = ProductionModelBootstrap.load(
@@ -271,8 +294,9 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     let recorder = DiagnosticEventRecorder()
     let fm = FMClient(
       availability: { .available },
-      rewrite: { _, _ in
-        throw DiagnosticsTestError.failed("rewrite service failed")
+      rewrite: { question, _ in
+        throw DiagnosticsTestError.failed(
+          "rewrite service failed for \(question)")
       },
       gate: { _, _ in .proceed },
       narrate: { _, _ in "unused" })
@@ -295,6 +319,7 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(recorder.events.first?.context["stage"] == "rewrite")
     #expect(!recorder.events.first!.summary.contains(question))
     #expect(!recorder.events.first!.context.values.contains(question))
+    #expect(recorder.events.first?.details?.contains(question) == false)
   }
 
   @Test func recoveredCandidateFailureDoesNotEmitTerminalLog() async throws {
@@ -327,6 +352,70 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     }
     #expect(attempts.value == 1)
     #expect(recorder.events.isEmpty)
+  }
+
+  @Test func recoveredCandidateFailureDoesNotMaskNarrationFailure() async throws {
+    let recorder = DiagnosticEventRecorder()
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in
+        throw DiagnosticsTestError.failed("narration service failed")
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: SQLGenClient { request in
+        SQLGeneration(
+          sql: request.repair == nil ? "SELECT broken" : "SELECT fixed",
+          tokensPerSecond: 1,
+          modelName: "test")
+      },
+      db: DatabaseClient { sql in
+        if sql.contains("broken") {
+          throw DiagnosticsTestError.failed("repairable SQL")
+        }
+        return QueryResult(columns: ["n"], rows: [[.integer(1)]])
+      },
+      serializer: InferenceSerializer(),
+      configuration: configuration(maxRepairAttempts: 1)
+    ).reportingTerminalFailures(to: recorder.client)
+
+    _ = await Array(pipeline.run("question", []))
+
+    #expect(recorder.events.map(\.code) == ["pipeline_foundation_model_failed"])
+    #expect(recorder.events.first?.context["stage"] == "narration")
+    #expect(recorder.events.first?.details?.contains("narration service failed") == true)
+  }
+
+  @Test func unexpectedTerminalFailureUsesStableFallback() async throws {
+    let recorder = DiagnosticEventRecorder()
+    let source = QueryPipeline { question, _ in
+      AsyncStream { continuation in
+        var telemetry = TurnTelemetry(originalQuestion: question)
+        telemetry.terminalError = "unexpected low-level failure"
+        continuation.yield(.turnStarted(question: question))
+        continuation.yield(.turnFinished(
+          outcome: .failed(message: "unexpected low-level failure"),
+          telemetry: telemetry))
+        continuation.finish()
+      }
+    }
+
+    let terminal = try #require(terminalEvent(
+      await Array(source.reportingTerminalFailures(to: recorder.client)
+        .run("question", []))))
+    guard case .failed(let message) = terminal.0 else {
+      Issue.record("expected failed outcome")
+      return
+    }
+
+    #expect(message.contains("couldn’t finish"))
+    #expect(!message.contains("low-level"))
+    #expect(recorder.events.map(\.code) == ["pipeline_unexpected_failure"])
+    #expect(
+      terminal.1.terminalError
+        == "[pipeline_unexpected_failure] unexpected low-level failure")
   }
 
   @Test func cancelledPipelineDoesNotEmitTerminalLog() async {

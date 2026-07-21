@@ -55,7 +55,7 @@ public enum ModelManifestLoader {
     var key: String
     var repository: String?
     var revision: String?
-    var quantization: Quantization
+    var quantization: Quantization?
   }
 
   private struct Production: Decodable {
@@ -116,6 +116,12 @@ public enum ModelManifestLoader {
       throw ModelManifestError.invalidProductionConfiguration(
         "the model revision must be a full 40-character commit")
     }
+    guard let quantization = model.quantization,
+      quantization.bits > 0
+    else {
+      throw ModelManifestError.invalidProductionConfiguration(
+        "the selected production model must declare positive quantization bits")
+    }
     guard (0...1).contains(production.temperature),
       (0...1).contains(production.voting.sampleTemperature),
       production.topP == 1,
@@ -131,7 +137,7 @@ public enum ModelManifestLoader {
         key: model.key,
         repository: repository,
         revision: revision,
-        quantization: "\(model.quantization.bits)-bit"),
+        quantization: "\(quantization.bits)-bit"),
       gcd: production.gcd,
       temperature: production.temperature,
       topP: production.topP,

@@ -42,6 +42,14 @@ public struct ChatView: View {
           }
         }
       }
+      if let failure = store.presentedFailure {
+        FailureBanner(
+          failure: failure,
+          developerMode: store.developerMode,
+          dismiss: { store.send(.dismissFailure) })
+          .padding(.horizontal)
+          .padding(.vertical, 8)
+      }
       composer
     }
     .navigationTitle("CREG")
@@ -161,10 +169,10 @@ struct MessageCell: View {
       case .text(let body), .clarification(let body):
         assistantBubble(body)
       case .failure(let body):
-        Label(body, systemImage: "exclamationmark.triangle")
-          .padding(.horizontal, 14)
-          .padding(.vertical, 9)
-          .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
+        FailureMessageView(
+          message: body,
+          diagnostic: message.devInfo?.terminalError,
+          developerMode: developerMode)
       case .answer(let result, let narration, let sql, let notice):
         assistantBubble(narration)
         if let notice {

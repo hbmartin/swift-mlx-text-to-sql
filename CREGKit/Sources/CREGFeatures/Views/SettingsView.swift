@@ -7,10 +7,21 @@ struct SettingsView: View {
   var body: some View {
     NavigationStack {
       Form {
+        if let failure = store.presentedFailure {
+          Section {
+            FailureBanner(
+              failure: failure,
+              developerMode: store.developerMode,
+              dismiss: { store.send(.dismissFailure) })
+          }
+        }
+
         Section {
           Toggle("Developer mode", isOn: $store.developerMode)
         } footer: {
-          Text("Shows the generated SQL and per-stage internals under each answer.")
+          Text(
+            "Shows generated SQL, per-stage internals, and expandable technical error details. Normal mode keeps those details private."
+          )
         }
 
         Section {

@@ -18,6 +18,7 @@ public struct ChatFeature: Sendable {
     public var conversationID: UUID?
     /// Set after a successful export, consumed by the share sheet.
     public var exportURL: URL?
+    public var presentedFailure: FailurePresentation?
 
     public init() {}
   }
@@ -30,12 +31,15 @@ public struct ChatFeature: Sendable {
     case pipelineEvent(PipelineEvent)
     case exportTapped
     case exportReady(URL)
+    case operationFailed(FailurePresentation)
+    case dismissFailure
   }
 
   @Dependency(\.queryPipeline) var pipeline
   @Dependency(\.historyClient) var history
   @Dependency(\.uuid) var uuid
   @Dependency(\.date.now) var now
+  @Dependency(\.diagnostics) var diagnostics
 
   public init() {}
 
@@ -51,7 +55,10 @@ public struct ChatFeature: Sendable {
         return .run { send in
           let (id, messages) = try await history.loadCurrentConversation()
           await send(.historyLoaded(conversationID: id, messages: messages))
-        } catch: { _, _ in }
+        } catch: { error, send in
+          await send(.operationFailed(.history(
+            operation: .load, error: error)))
+        }
 
       case .historyLoaded(let conversationID, let messages):
         state.conversationID = conversationID
@@ -72,9 +79,14 @@ public struct ChatFeature: Sendable {
 
         let turns = Self.conversationTurns(from: state.messages)
         return .merge(
-          .run { _ in
+          .run { send in
             if let conversationID {
-              try? await history.appendMessage(conversationID, userMessage)
+              do {
+                try await history.appendMessage(conversationID, userMessage)
+              } catch {
+                await send(.operationFailed(.history(
+                  operation: .messageSave, error: error)))
+              }
             }
           },
           .run { send in
@@ -112,20 +124,51 @@ public struct ChatFeature: Sendable {
 
         guard let conversationID = state.conversationID else { return .none }
         let lines = state.currentEventLines
-        return .run { _ in
-          try await history.appendMessage(conversationID, assistantMessage)
-          try await history.appendEvents(conversationID, assistantMessage.id, lines)
-        } catch: { _, _ in }
+        return .merge(
+          .run { send in
+            do {
+              try await history.appendMessage(conversationID, assistantMessage)
+            } catch {
+              await send(.operationFailed(.history(
+                operation: .messageSave, error: error)))
+            }
+          },
+          .run { send in
+            do {
+              try await history.appendEvents(
+                conversationID, assistantMessage.id, lines)
+            } catch {
+              await send(.operationFailed(.history(
+                operation: .eventSave, error: error)))
+            }
+          })
 
       case .exportTapped:
         guard let conversationID = state.conversationID else { return .none }
         return .run { send in
           let url = try await history.exportJSONL(conversationID)
           await send(.exportReady(url))
-        } catch: { _, _ in }
+        } catch: { error, send in
+          await send(.operationFailed(.history(
+            operation: .export, error: error)))
+        }
 
       case .exportReady(let url):
         state.exportURL = url
+        return .none
+
+      case .operationFailed(let failure):
+        state.presentedFailure = failure
+        diagnostics.record(DiagnosticEvent(
+          level: .error,
+          category: .history,
+          code: failure.code,
+          summary: failure.title,
+          details: failure.diagnostic))
+        return .none
+
+      case .dismissFailure:
+        state.presentedFailure = nil
         return .none
       }
     }
@@ -184,28 +227,36 @@ extension DependencyValues {
 /// "never overlap" guarantee.
 private enum LiveDependencies {
   static let serializer = InferenceSerializer()
+  static let diagnostics = DiagnosticsClient.live
 
   static let pipeline: QueryPipeline = {
     let production: ProductionGenerationConfiguration
-    do {
-      production = try ModelManifestLoader.production()
-    } catch {
+    let productionResult = ProductionModelBootstrap.load(
+      diagnostics: diagnostics
+    ) {
+      try ModelManifestLoader.production()
+    }
+    switch productionResult {
+    case .success(let configuration):
+      production = configuration
+    case .failure(let failure):
       return .unavailable(
-        message:
-          "The production model is not configured: \(error.localizedDescription)")
+        userMessage: failure.message,
+        diagnosticCode: failure.code,
+        diagnostic: failure.diagnostic)
     }
 
     let db: DatabaseClient
-    if let url = Bundle.main.url(forResource: "creg", withExtension: "sqlite"),
-      let client = try? DatabaseClient.live(url: url)
-    {
-      db = client
-    } else {
-      db = DatabaseClient { _ in
-        throw NSError(
-          domain: "CREG", code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "creg.sqlite is missing from the app bundle"])
+    if let url = Bundle.main.url(forResource: "creg", withExtension: "sqlite") {
+      do {
+        db = try DatabaseClient.live(url: url)
+      } catch {
+        db = .unavailableBundledPortfolioDatabase(
+          diagnostic: DiagnosticDetails.describe(error))
       }
+    } else {
+      db = .unavailableBundledPortfolioDatabase(
+        diagnostic: "The bundled portfolio database resource is missing.")
     }
     return QueryPipeline.live(
       fm: .live(),
@@ -216,13 +267,39 @@ private enum LiveDependencies {
         production: production,
         gateSensitivity: 0,
         maxRepairAttempts: 2)
-    )
+    ).reportingTerminalFailures(to: diagnostics)
   }()
 
   static let history: HistoryClient = {
     let url = URL.applicationSupportDirectory
       .appendingPathComponent("CREG", isDirectory: true)
       .appendingPathComponent("history.sqlite")
-    return (try? HistoryClient.live(databaseURL: url)) ?? .noop()
+    do {
+      return try HistoryClient.live(databaseURL: url)
+    } catch {
+      return .unavailable(
+        diagnostic: DiagnosticDetails.describe(error))
+    }
   }()
+}
+
+private struct BundledPortfolioDatabaseUnavailable:
+  CustomStringConvertible, LocalizedError, Sendable
+{
+  var diagnostic: String
+
+  var description: String { errorDescription ?? diagnostic }
+  var errorDescription: String? {
+    "[portfolio_database_unavailable] \(diagnostic)"
+  }
+}
+
+private extension DatabaseClient {
+  static func unavailableBundledPortfolioDatabase(
+    diagnostic: String
+  ) -> DatabaseClient {
+    DatabaseClient { _ in
+      throw BundledPortfolioDatabaseUnavailable(diagnostic: diagnostic)
+    }
+  }
 }
