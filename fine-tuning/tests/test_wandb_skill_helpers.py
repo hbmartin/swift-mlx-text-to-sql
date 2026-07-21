@@ -11,7 +11,8 @@ HELPER = (
 
 def load_helpers():
     spec = importlib.util.spec_from_file_location("weave_helpers_impl", HELPER)
-    assert spec and spec.loader
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -42,3 +43,15 @@ def test_zero_success_evaluation_has_no_rounded_infinity():
             "tokens_per_success": None,
         }
     ]
+
+
+def test_call_row_prefers_top_level_status_counts():
+    helpers = load_helpers()
+    call = SimpleNamespace(
+        summary={
+            "weave": {"status_counts": {"success": 99, "error": 0}},
+            "status_counts": {"success": 3, "error": 1},
+        }
+    )
+
+    assert helpers._call_row(call)["status_counts"] == {"success": 3, "error": 1}

@@ -6,11 +6,13 @@ import pytest
 
 from eval.run_artifacts import sha256_file
 from eval.selection import Run, SelectionError
-from tools import analyze_binding_regressions
+from tools import analyze_binding_regressions, finalize_production
 from tools.finalize_production import (
-    validate_campaign_winner,
     validate_binding_analysis,
+    validate_campaign_winner,
+    validate_consistency_analysis,
     validate_final_evaluation,
+    validate_parity_analysis,
     validate_publication_arguments,
 )
 
@@ -196,6 +198,51 @@ def test_production_finalization_locks_gold_v2_to_gold_v1_winner():
     analysis["result"]["ex"] = 0.6679
     with pytest.raises(SelectionError, match="66.8% EX"):
         validate_final_evaluation(analysis, winner)
+
+
+def test_production_finalization_validates_consistency_calibration():
+    selected = {"model_key": "winner", "gcd": "on", "temperature": 0}
+    voting = {
+        "model_key": "winner",
+        "gcd": "on",
+        "candidate_count": 3,
+        "bounded_policy": True,
+        "always_vote": False,
+        "sample_temperature": 0.7,
+        "trial_seeds": [0, 1, 2, 3, 4],
+        "n_trials": 1_000,
+    }
+    analysis = {
+        "analysis": "bounded-three-generation-calibration",
+        "schema_version": 3,
+        "policy_version": "bounded-three-generation-v1",
+        "release_gate_passed": True,
+        "selected": voting,
+    }
+
+    assert validate_consistency_analysis(analysis, selected) == voting
+    analysis["selected"]["candidate_count"] = 2
+    with pytest.raises(SelectionError, match="does not match"):
+        validate_consistency_analysis(analysis, selected)
+
+
+def test_production_finalization_validates_full_gold_parity(monkeypatch, tmp_path):
+    selected = {"model_key": "winner", "gcd": "on", "temperature": 0}
+    python_run = make_run(tmp_path / "python-run", 0, fixture_rows(), "fixture")
+    python_run.summary.update({"n": 200})
+    monkeypatch.setattr(finalize_production, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(finalize_production, "load_run", lambda _: python_run)
+    analysis = {
+        "analysis": "python-swift-full-gold-parity",
+        "n": 200,
+        "gate": {"pass": True},
+        "inputs": {"python_run": {"path": "python-run"}},
+    }
+
+    validate_parity_analysis(analysis, selected)
+    python_run.summary["model_key"] = "stale"
+    with pytest.raises(SelectionError, match="does not match"):
+        validate_parity_analysis(analysis, selected)
 
 
 @pytest.mark.parametrize("count", [1, 3])

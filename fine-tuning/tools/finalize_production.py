@@ -17,13 +17,16 @@ from typing import Any
 from eval.campaign import (
     CAMPAIGN_SELECTION_ANALYSIS,
     CAMPAIGN_SELECTION_SCHEMA_VERSION,
+    CONFIRMATION_SEEDS,
+    LOCKED_PRODUCTION_GCD,
+    LOCKED_PRODUCTION_TEMPERATURE,
+    MINIMUM_PRODUCTION_EX,
 )
 from eval.run_artifacts import REPO_ROOT, sha256_file, write_json
 from eval.selection import SelectionError, load_run
 from tools.fetch_model import load_manifest
 
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
-MINIMUM_PRODUCTION_EX = 0.668
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,14 +97,14 @@ def validate_campaign_winner(campaign: dict[str, Any]) -> dict[str, Any]:
         campaign.get("schema_version") != CAMPAIGN_SELECTION_SCHEMA_VERSION
         or campaign.get("analysis") != CAMPAIGN_SELECTION_ANALYSIS
         or campaign.get("selection_dataset") != "gold_v1.jsonl"
-        or campaign.get("confirmation_seeds") != [424240, 424241, 424242]
+        or campaign.get("confirmation_seeds") != list(CONFIRMATION_SEEDS)
     ):
         raise SelectionError("invalid gold-v1 campaign winner")
     winner = campaign.get("winner", {})
     if (
         not winner.get("artifact_model_key")
-        or winner.get("gcd") != "on"
-        or float(winner.get("temperature", -1)) != 0
+        or winner.get("gcd") != LOCKED_PRODUCTION_GCD
+        or float(winner.get("temperature", -1)) != LOCKED_PRODUCTION_TEMPERATURE
     ):
         raise SelectionError("campaign winner lacks a locked artifact identity")
     return winner
@@ -139,26 +142,9 @@ def validate_final_evaluation(
     return selected
 
 
-def main() -> None:
-    args = parse_args()
-    publication_paths = validate_publication_arguments(args.publication)
-
-    campaign_path = args.campaign_winner.resolve()
-    final_evaluation_path = args.final_evaluation_analysis.resolve()
-    binding_path = args.binding_analysis.resolve()
-    consistency_path = args.consistency_analysis.resolve()
-    parity_path = args.parity_analysis.resolve()
-    campaign = read_json(campaign_path)
-    final_evaluation = read_json(final_evaluation_path)
-    binding = read_json(binding_path)
-    consistency = read_json(consistency_path)
-    parity = read_json(parity_path)
-
-    winner = validate_campaign_winner(campaign)
-    selected = validate_final_evaluation(final_evaluation, winner)
-
-    validate_binding_analysis(binding, selected)
-
+def validate_consistency_analysis(
+    consistency: dict[str, Any], selected: dict[str, Any]
+) -> dict[str, Any]:
     if (
         consistency.get("analysis") != "bounded-three-generation-calibration"
         or consistency.get("schema_version") != 3
@@ -180,7 +166,10 @@ def main() -> None:
         raise SelectionError(
             "consistency calibration does not match the production winner"
         )
+    return voting
 
+
+def validate_parity_analysis(parity: dict[str, Any], selected: dict[str, Any]) -> None:
     gate = parity.get("gate", {})
     if (
         parity.get("analysis") != "python-swift-full-gold-parity"
@@ -191,8 +180,7 @@ def main() -> None:
     python_run_path = Path(parity["inputs"]["python_run"]["path"])
     if not python_run_path.is_absolute():
         python_run_path = REPO_ROOT / python_run_path
-    python_run = load_run(python_run_path)
-    python_summary = python_run.summary
+    python_summary = load_run(python_run_path).summary
     if (
         python_summary.get("model_key") != selected.get("model_key")
         or python_summary.get("gcd") != selected.get("gcd")
@@ -203,6 +191,29 @@ def main() -> None:
         raise SelectionError(
             "parity Python run does not match the selected production configuration"
         )
+
+
+def main() -> None:
+    args = parse_args()
+    publication_paths = validate_publication_arguments(args.publication)
+
+    campaign_path = args.campaign_winner.resolve()
+    final_evaluation_path = args.final_evaluation_analysis.resolve()
+    binding_path = args.binding_analysis.resolve()
+    consistency_path = args.consistency_analysis.resolve()
+    parity_path = args.parity_analysis.resolve()
+    campaign = read_json(campaign_path)
+    final_evaluation = read_json(final_evaluation_path)
+    binding = read_json(binding_path)
+    consistency = read_json(consistency_path)
+    parity = read_json(parity_path)
+
+    winner = validate_campaign_winner(campaign)
+    selected = validate_final_evaluation(final_evaluation, winner)
+
+    validate_binding_analysis(binding, selected)
+    voting = validate_consistency_analysis(consistency, selected)
+    validate_parity_analysis(parity, selected)
 
     manifest = load_manifest(MODEL_MANIFEST)
     existing_production = manifest.get("production")

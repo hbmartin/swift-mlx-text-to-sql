@@ -537,6 +537,7 @@ def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
         "model-reference",
         "evidence",
     }
+    assert receipt["artifacts"]
     assert all(
         item["version"] == "v0" and item["digest"] for item in receipt["artifacts"]
     )

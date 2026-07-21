@@ -68,6 +68,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -76,10 +77,18 @@ jobs:
 
       - name: Verify workflow action pins
         working-directory: fine-tuning
-        run: uv run --no-project python -m tools.check_ci_contracts
+        run: uv run --frozen python -m tools.check_ci_contracts
 
       - name: Prevent string-based diagnostic classification
-        run: uvx --from semgrep==1.170.0 semgrep scan --error --config .semgrep.yml
+        run: >-
+          uvx --from semgrep==1.170.0 semgrep scan --error
+          --config .semgrep.yml --include 'CREGKit/Sources/**/*.swift'
+
+      - name: Test diagnostic classification rule
+        run: |
+          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
+            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
+                semgrep-tests/typed-diagnostic-classification.swift
 
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD

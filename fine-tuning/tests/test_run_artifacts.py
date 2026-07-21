@@ -4,6 +4,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
+from eval import run_artifacts
 from eval.run_artifacts import (
     RunArtifactError,
     create_run_directory,
@@ -11,7 +12,6 @@ from eval.run_artifacts import (
     default_run_id,
     percentile,
 )
-import eval.run_artifacts as run_artifacts
 
 
 def test_run_directory_is_immutable(tmp_path):

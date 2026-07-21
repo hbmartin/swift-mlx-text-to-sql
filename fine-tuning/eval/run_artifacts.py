@@ -25,6 +25,11 @@ class RunArtifactError(RuntimeError):
     pass
 
 
+class DirtyWorktreeError(RunArtifactError):
+    def __init__(self) -> None:
+        super().__init__("immutable experiment evidence requires a clean Git worktree")
+
+
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -92,9 +97,7 @@ def git_provenance() -> dict[str, Any]:
 def clean_git_provenance() -> dict[str, Any]:
     provenance = git_provenance()
     if provenance["dirty"]:
-        raise RunArtifactError(
-            "immutable experiment evidence requires a clean Git worktree"
-        )
+        raise DirtyWorktreeError
     return provenance
 
 

@@ -125,7 +125,7 @@ uv run --frozen python -m tools.analyze_binding_regressions \
   --run ../eval/runs/<seed-4>
 ```
 
-`tools.finalize_production` requires that binding analysis alongside the
+`tools.finalize_production` requires binding analysis alongside the
 content-addressed gold-v1 campaign winner, its locked-winner gold-v2 release
 gate, schema-v3 bounded-policy calibration, full parity, and one or more
 fresh-verified publication records. It is the only supported transition to a

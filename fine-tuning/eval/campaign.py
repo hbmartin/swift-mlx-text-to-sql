@@ -18,6 +18,9 @@ CAMPAIGN_SELECTION_ANALYSIS = "reliability-v2-campaign-selection"
 
 
 CONFIRMATION_SEEDS = (424240, 424241, 424242)
+LOCKED_PRODUCTION_GCD = "on"
+LOCKED_PRODUCTION_TEMPERATURE = 0.0
+MINIMUM_PRODUCTION_EX = 0.668
 
 
 class CampaignSelectionError(RuntimeError):
@@ -137,8 +140,8 @@ def aggregate_recipe(manifests: list[dict[str, Any]]) -> dict[str, Any]:
         "recipe": recipe_identity(manifests[0]),
         "model_key": manifests[0]["experiment"]["model_key"],
         "artifact_model_key": f"ft-{next(item['run_id'] for item in manifests if item['experiment']['seed'] == 424242)}",
-        "gcd": "on",
-        "temperature": 0.0,
+        "gcd": LOCKED_PRODUCTION_GCD,
+        "temperature": LOCKED_PRODUCTION_TEMPERATURE,
         "configuration_sha256": manifests[0]["experiment"]["configuration_sha256"],
         "item_clustered_ex": mean(mean(values) for values in by_item.values()),
         "valid_sql_rate": mean(valid),

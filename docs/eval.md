@@ -62,9 +62,9 @@ by at least two absolute points and the paired 95% interval excludes zero.
 Eligible temperature ties resolve by valid SQL, p95 latency, then lower
 temperature.
 
-Historical across-artifact matrix analyses treat an absolute EX difference
-below two points or an interval
-containing zero enters the tie pool. The pool resolves by valid SQL,
+Historical across-artifact matrix analyses place a comparison in the tie pool
+when its absolute EX difference is below two points or its interval contains
+zero. The pool resolves by valid SQL,
 worst-tier EX, p95 latency, then bundle size.
 
 ## Phase 1: four-family gold_v1 screen

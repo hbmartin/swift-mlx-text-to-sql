@@ -54,6 +54,21 @@ UV_LOCK = REPO_ROOT / "fine-tuning" / "uv.lock"
 Runner = Callable[..., subprocess.CompletedProcess[Any]]
 
 
+class CorpusMismatchError(RuntimeError):
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"regenerated corpus differs byte-for-byte: {path}")
+
+
+class LayerResolutionError(RuntimeError):
+    def __init__(self, config_path: Path) -> None:
+        super().__init__(f"cannot resolve all trainable layers from {config_path}")
+
+
+class MissingVerifiedBaseError(RuntimeError):
+    def __init__(self, model_key: str) -> None:
+        super().__init__(f"{model_key}: verified base is missing; fetch it first")
+
+
 def local_artifact_path(artifact: dict[str, Any], models_dir: Path) -> Path:
     conversion = artifact.get("conversion")
     directory = (
@@ -118,7 +133,7 @@ def verify_regenerated_corpus(
             or regenerated_hash != file["sha256"]
             or committed.read_bytes() != regenerated.read_bytes()
         ):
-            raise RuntimeError(f"regenerated corpus differs byte-for-byte: {committed}")
+            raise CorpusMismatchError(committed)
         comparisons.append(
             {
                 "committed": input_hash(committed),
@@ -137,9 +152,7 @@ def resolve_num_layers(config: ExperimentConfig, base: Path) -> int:
         value = model_config.get(key)
         if isinstance(value, int) and value > 0:
             return value
-    raise RuntimeError(
-        f"cannot resolve all trainable layers from {base / 'config.json'}"
-    )
+    raise LayerResolutionError(base / "config.json")
 
 
 def write_effective_configuration(
@@ -448,9 +461,7 @@ def run_experiment(
     models_dir = models_dir.resolve()
     base = local_artifact_path(artifact, models_dir)
     if not (base / LOCK_FILE).is_file():
-        raise RuntimeError(
-            f"{config.model_key}: verified base is missing; fetch it first"
-        )
+        raise MissingVerifiedBaseError(config.model_key)
     base_sha256 = verify_artifact_tree_at_use(base, artifact)
 
     # Repository provenance is a precondition. Check it before reserving the

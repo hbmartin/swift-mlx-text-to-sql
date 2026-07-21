@@ -22,7 +22,9 @@ def test_qlora_configuration_makes_every_mlx_lm_option_explicit():
 
 
 def test_sweeps_launch_the_experiment_runner_as_a_python_module():
-    for path in sorted((ROOT / "fine-tuning/config/sweeps").glob("*.yaml")):
+    sweeps = sorted((ROOT / "fine-tuning/config/sweeps").glob("*.yaml"))
+    assert sweeps
+    for path in sweeps:
         sweep = yaml.safe_load(path.read_text())
         assert sweep["program"] == "tools.run_experiment"
         assert sweep["command"][:4] == [

@@ -21,6 +21,10 @@ from typing import Any
 from eval.campaign import (
     CAMPAIGN_SELECTION_ANALYSIS,
     CAMPAIGN_SELECTION_SCHEMA_VERSION,
+    CONFIRMATION_SEEDS,
+    LOCKED_PRODUCTION_GCD,
+    LOCKED_PRODUCTION_TEMPERATURE,
+    MINIMUM_PRODUCTION_EX,
 )
 from eval.run_artifacts import REPO_ROOT, create_run_directory, sha256_file, write_json
 from eval.selection import (
@@ -222,7 +226,7 @@ def final_evaluation(
         campaign_winner.get("schema_version") != CAMPAIGN_SELECTION_SCHEMA_VERSION
         or campaign_winner.get("analysis") != CAMPAIGN_SELECTION_ANALYSIS
         or campaign_winner.get("selection_dataset") != "gold_v1.jsonl"
-        or campaign_winner.get("confirmation_seeds") != [424240, 424241, 424242]
+        or campaign_winner.get("confirmation_seeds") != list(CONFIRMATION_SEEDS)
     ):
         raise SelectionError("invalid or non-gold-v1 campaign winner")
     winner = campaign_winner.get("winner", {})
@@ -233,8 +237,8 @@ def final_evaluation(
     )
     if (
         not expected_identity[0]
-        or expected_identity[1] != "on"
-        or expected_identity[2] != 0
+        or expected_identity[1] != LOCKED_PRODUCTION_GCD
+        or expected_identity[2] != LOCKED_PRODUCTION_TEMPERATURE
     ):
         raise SelectionError("campaign winner lacks the locked artifact identity")
 
@@ -267,8 +271,8 @@ def final_evaluation(
             "artifact_model_key": winner["artifact_model_key"],
             "recipe": winner["recipe"],
         },
-        "release_floor": {"ex": 0.668},
-        "pass": metrics["ex"] >= 0.668,
+        "release_floor": {"ex": MINIMUM_PRODUCTION_EX},
+        "pass": metrics["ex"] >= MINIMUM_PRODUCTION_EX,
         "result": metrics,
         "inputs": {
             "campaign_winner": (
