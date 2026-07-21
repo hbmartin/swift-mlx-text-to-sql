@@ -114,14 +114,108 @@ public enum FMAvailability: Sendable, Equatable {
   case unavailable(reason: String)
 }
 
+public enum SQLValidationDisposition: String, Sendable, Equatable, Codable {
+  case repairable
+  case terminal
+}
+
+public struct SQLValidationIssue: Sendable, Equatable, Codable {
+  public enum Kind: String, Sendable, Equatable, Codable {
+    case syntax
+    case binding
+    case authorization
+    case nonQuerySecurityViolation
+    case databaseUnavailable
+    case databaseCorrupt
+    case interrupted
+    case unknown
+  }
+
+  public var kind: Kind
+  public var disposition: SQLValidationDisposition
+  public var message: String
+
+  public init(
+    kind: Kind,
+    disposition: SQLValidationDisposition,
+    message: String
+  ) {
+    self.kind = kind
+    self.disposition = disposition
+    self.message = message
+  }
+}
+
+public struct SQLValidationReport: Sendable, Equatable, Codable {
+  public var issue: SQLValidationIssue?
+  public var elapsedMicroseconds: Int64
+
+  public init(
+    issue: SQLValidationIssue? = nil,
+    elapsedMicroseconds: Int64 = 0
+  ) {
+    self.issue = issue
+    self.elapsedMicroseconds = elapsedMicroseconds
+  }
+
+  public var isValid: Bool { issue == nil }
+}
+
+public struct RepairGuidance: Sendable, Equatable, Codable {
+  public var issue: SQLValidationIssue
+  public var declaredSources: [String]
+  public var possibleColumnOwners: [String]
+  public var failedFingerprints: [String]
+
+  public init(
+    issue: SQLValidationIssue,
+    declaredSources: [String] = [],
+    possibleColumnOwners: [String] = [],
+    failedFingerprints: [String] = []
+  ) {
+    self.issue = issue
+    self.declaredSources = declaredSources
+    self.possibleColumnOwners = possibleColumnOwners
+    self.failedFingerprints = failedFingerprints
+  }
+}
+
+public struct PipelineDeadlines: Sendable, Equatable, Codable {
+  public var generationSeconds: Double
+  public var wholeTurnSeconds: Double
+
+  public init(generationSeconds: Double = 30, wholeTurnSeconds: Double = 90) {
+    precondition(generationSeconds > 0)
+    precondition(wholeTurnSeconds > 0)
+    self.generationSeconds = generationSeconds
+    self.wholeTurnSeconds = wholeTurnSeconds
+  }
+}
+
+public enum AnswerConfidence: String, Sendable, Equatable, Codable {
+  case confirmed
+  case unconfirmed
+}
+
+public enum NoConsensusReason: String, Sendable, Equatable, Codable {
+  case conflictingResults
+  case insufficientNonEmptyEvidence
+}
+
 /// Context passed back to the SQL model when repairing a failed query.
 public struct RepairContext: Sendable, Equatable, Codable {
   public var failedSQL: String
   public var errorMessage: String
+  public var guidance: RepairGuidance?
 
-  public init(failedSQL: String, errorMessage: String) {
+  public init(
+    failedSQL: String,
+    errorMessage: String,
+    guidance: RepairGuidance? = nil
+  ) {
     self.failedSQL = failedSQL
     self.errorMessage = errorMessage
+    self.guidance = guidance
   }
 }
 
@@ -249,6 +343,10 @@ public struct CandidateTelemetry: Sendable, Equatable, Codable, Identifiable {
   public var result: QueryResult?
   public var error: String?
   public var resultDigest: String?
+  public var sqlFingerprint: String?
+  public var validationReport: SQLValidationReport?
+  public var duplicateOf: CandidateID?
+  public var duplicateSuppressed: Bool?
   public var selected: Bool
 
   public init(request: SQLGenerationRequest) {
@@ -267,7 +365,10 @@ public struct CandidateTelemetry: Sendable, Equatable, Codable, Identifiable {
 
 public enum VoteOutcome: Sendable, Equatable, Codable {
   case consensus(resultDigest: String, agreement: Int, candidateCount: Int)
-  case noConsensus(anchorCandidateID: CandidateID, candidateCount: Int)
+  case noConsensus(
+    anchorCandidateID: CandidateID,
+    candidateCount: Int,
+    reason: NoConsensusReason?)
   case anchorFailed(fallbackCandidateID: CandidateID, message: String)
 }
 
@@ -280,8 +381,10 @@ public enum CandidateSelectionReason: String, Sendable, Equatable, Codable {
 }
 
 public struct StageTimings: Sendable, Equatable, Codable {
+  public var preparationMicroseconds: Int64?
   public var rewriteMicroseconds: Int64?
   public var gateMicroseconds: Int64?
+  public var validationMicroseconds: Int64?
   public var groundingMicroseconds: Int64?
   public var votingMicroseconds: Int64?
   public var narrationMicroseconds: Int64?
@@ -293,7 +396,7 @@ public struct StageTimings: Sendable, Equatable, Codable {
 }
 
 public struct TurnTelemetry: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 1
+  public static let currentSchemaVersion = 2
 
   public var schemaVersion: Int
   public var originalQuestion: String
@@ -310,6 +413,10 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
   public var voteOutcome: VoteOutcome?
   public var selectedCandidateID: CandidateID?
   public var selectionReason: CandidateSelectionReason?
+  public var confidence: AnswerConfidence?
+  public var noConsensusReason: NoConsensusReason?
+  public var generatedCount: Int
+  public var timeoutStage: String?
   public var grounding: GroundingReport?
   public var terminalError: String?
 
@@ -324,6 +431,7 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     self.stageTimings = StageTimings()
     self.candidates = []
     self.repairAttempts = 0
+    self.generatedCount = 0
   }
 
   enum CodingKeys: String, CodingKey {
@@ -342,6 +450,10 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case voteOutcome
     case selectedCandidateID
     case selectionReason
+    case confidence
+    case noConsensusReason
+    case generatedCount
+    case timeoutStage
     case grounding
     case terminalError
   }
@@ -402,6 +514,19 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     selectionReason =
       try values.decodeIfPresent(
         CandidateSelectionReason.self, forKey: .selectionReason)
+    confidence =
+      try values.decodeIfPresent(AnswerConfidence.self, forKey: .confidence)
+    noConsensusReason =
+      try values.decodeIfPresent(NoConsensusReason.self, forKey: .noConsensusReason)
+    if case .noConsensus(_, _, let legacyReason) = voteOutcome {
+      confidence = confidence ?? .unconfirmed
+      noConsensusReason = noConsensusReason ?? legacyReason ?? .conflictingResults
+    }
+    generatedCount =
+      try values.decodeIfPresent(Int.self, forKey: .generatedCount)
+      ?? candidates.count
+    timeoutStage =
+      try values.decodeIfPresent(String.self, forKey: .timeoutStage)
     grounding =
       try values.decodeIfPresent(GroundingReport.self, forKey: .grounding)
     terminalError =

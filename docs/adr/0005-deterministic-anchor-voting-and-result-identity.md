@@ -21,7 +21,14 @@ Python and Swift use one conceptual canonical result representation:
 
 - INTEGER and REAL share a numeric domain after four-decimal, half-even
   normalization;
+- the numeric canonical form is total over every double: any finite value
+  renders as a plain quantized decimal (including magnitudes past 1e24),
+  negative zero is `0`, and non-finite REALs — which SQLite can produce,
+  for example from `SELECT 9e999` — render as `nan`, `inf`, and `-inf`;
 - TEXT never equals a display-identical number;
+- TEXT identity, hashing, and ordering are Unicode code-point based, so NFC
+  and NFD spellings of one grapheme are distinct values, exactly as Python
+  compares `str`;
 - BLOB identity is the complete byte sequence;
 - NULL is its own domain;
 - duplicate rows and row arity are significant;
@@ -39,6 +46,12 @@ candidate is retained in telemetry but does not replace one of those
 calibrated candidates. A Result Group wins only when it contains more than
 half of all configured Candidate Queries; failed and truncated candidates
 still count in the denominator. There is no plurality winner.
+
+Empty results carry no consensus evidence. Every empty result shares one
+digest regardless of the query that produced it, so two wrong queries that
+each matched nothing would otherwise outvote a correct anchor. Empty
+candidates count in the denominator but never form or join a majority; an
+empty anchor remains deliverable through the No Consensus path.
 
 If no group has a strict majority, the executed, complete anchor is selected
 and the answer carries a visible No Consensus notice. If the anchor fails or

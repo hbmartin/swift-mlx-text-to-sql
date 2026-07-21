@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "embedded-nul",
+      "sql": "SELECT char(97, 0, 98)",
+      "expected": "a\u0000b"
+    },
+    {
+      "name": "invalid-utf8-replacement",
+      "sql": "SELECT CAST(x'61ff62' AS TEXT)",
+      "expected": "a\ufffdb"
+    }
+  ]
+}

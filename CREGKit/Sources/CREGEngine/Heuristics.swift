@@ -1,5 +1,15 @@
 import Foundation
 
+private struct SchemaCatalogDocument: Decodable {
+  var schemaVersion: Int
+  var tables: [String: [String]]
+
+  enum CodingKeys: String, CodingKey {
+    case schemaVersion = "schema_version"
+    case tables
+  }
+}
+
 public struct GroundingColumn: Sendable, Equatable, Hashable, Codable,
   CustomStringConvertible
 {
@@ -117,49 +127,49 @@ public actor ResultHeuristics {
     "group", "order", "having", "limit", "union",
   ]
 
-  private static let tableColumns: [String: Set<String>] = [
-    "funds": [
-      "fund_id", "name", "vintage_year", "strategy", "committed_capital",
-      "target_irr", "inception_date", "status",
-    ],
-    "properties": [
-      "property_id", "fund_id", "name", "address", "city", "state",
-      "market", "submarket", "property_type", "building_class",
-      "rentable_sqft", "year_built", "year_renovated", "num_floors",
-      "acquisition_date", "acquisition_price", "current_market_value",
-      "ownership_pct", "status", "disposition_date",
-    ],
-    "tenants": [
-      "tenant_id", "name", "industry", "credit_rating",
-      "is_national_tenant", "headquarters_city", "headquarters_state",
-    ],
-    "leases": [
-      "lease_id", "property_id", "tenant_id", "suite", "floor",
-      "leased_sqft", "lease_type", "base_rent_psf", "annual_base_rent",
-      "escalation_pct", "commencement_date", "expiration_date",
-      "term_months", "security_deposit", "has_renewal_option",
-      "free_rent_months", "ti_allowance_psf", "status",
-    ],
-    "property_financials": [
-      "financial_id", "property_id", "period_end", "period_type",
-      "gross_potential_rent", "vacancy_loss", "effective_gross_income",
-      "operating_expenses", "net_operating_income", "capex",
-      "debt_service", "occupancy_rate",
-    ],
-    "loans": [
-      "loan_id", "property_id", "lender", "original_balance",
-      "current_balance", "interest_rate", "rate_type", "origination_date",
-      "maturity_date", "amortization_months", "io_period_months", "ltv",
-      "dscr", "is_recourse",
-    ],
-    "valuations": [
-      "valuation_id", "property_id", "valuation_date", "method",
-      "market_value", "cap_rate", "appraiser",
-    ],
-  ]
+  private static let tableColumns: [String: Set<String>] = {
+    guard let url = Bundle.module.url(
+      forResource: "schema_catalog", withExtension: "json"),
+      let data = try? Data(contentsOf: url),
+      let catalog = try? JSONDecoder().decode(
+        SchemaCatalogDocument.self, from: data),
+      catalog.schemaVersion == 1
+    else {
+      preconditionFailure("schema_catalog.json is missing or incompatible")
+    }
+    return catalog.tables.mapValues(Set.init)
+  }()
 
   public init(db: DatabaseClient) {
     self.db = db
+  }
+
+  static func repairGuidance(
+    issue: SQLValidationIssue,
+    sql: String,
+    failedFingerprints: [String]
+  ) -> RepairGuidance {
+    let sources = querySources(in: sql).tables.sorted()
+    let expression = try? NSRegularExpression(
+      pattern: #"(?i)(?:no such|ambiguous) column:\s*(?:\w+\.)?([A-Za-z_][A-Za-z0-9_]*)"#)
+    let range = NSRange(issue.message.startIndex..., in: issue.message)
+    let column: String? = expression
+      .flatMap { $0.firstMatch(in: issue.message, range: range) }
+      .flatMap { match in
+        Range(match.range(at: 1), in: issue.message)
+          .map { String(issue.message[$0]).lowercased() }
+      }
+    let owners = column.map { column in
+      tableColumns
+        .filter { $0.value.contains(column) }
+        .map(\.key)
+        .sorted()
+    } ?? []
+    return RepairGuidance(
+      issue: issue,
+      declaredSources: sources,
+      possibleColumnOwners: owners,
+      failedFingerprints: failedFingerprints)
   }
 
   /// Compatibility entry point for callers that only need user-facing
@@ -225,10 +235,11 @@ public actor ResultHeuristics {
       report.skipped.append(Self.classifyUnresolvedLiteral(
         literal: literal, range: range, sql: sql))
     }
-    if report.findings.isEmpty,
-      report.skipped.isEmpty,
-      report.degradations.isEmpty
-    {
+    // Every empty result without a blamed literal is reported, including
+    // when some literals were skipped or a catalog degraded: the user notice
+    // and the voting trigger must not silently disappear just because a
+    // LIKE pattern or date literal could not be entity-checked.
+    if report.findings.isEmpty {
       report.findings.append(.emptyResult)
     }
     return report

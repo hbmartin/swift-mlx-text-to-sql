@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "generated": "SELECT \";\" AS \"semi;colon\"; trailing",
+      "expected": "SELECT \";\" AS \"semi;colon\""
+    },
+    {
+      "generated": "SELECT `semi;colon` FROM [table;name]; trailing",
+      "expected": "SELECT `semi;colon` FROM [table;name]"
+    },
+    {
+      "generated": "SELECT 1 -- apostrophe ' and ;\n; trailing",
+      "expected": "SELECT 1 -- apostrophe ' and ;"
+    },
+    {
+      "generated": "SELECT /* apostrophe ' and ; */ 1; trailing",
+      "expected": "SELECT /* apostrophe ' and ; */ 1"
+    },
+    {
+      "generated": "SELECT ';\u0301' AS value; trailing",
+      "expected": "SELECT ';\u0301' AS value"
+    },
+    {
+      "generated": "SELECT 1\u037e still_sql; trailing",
+      "expected": "SELECT 1\u037e still_sql"
+    }
+  ]
+}

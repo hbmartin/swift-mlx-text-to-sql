@@ -1,9 +1,9 @@
 """Write production configuration only after every blocking evidence gate.
 
 This is the sole supported transition from `selection_pending` to `verified`.
-It validates the four-artifact selection, N=3 calibration, both public
-fine-tune snapshots, and full-gold Python/Swift parity before editing the
-versioned model manifest.
+It validates selection, permanent binding regressions, bounded three-generation
+calibration, both public fine-tune snapshots, and full-gold Python/Swift parity
+before editing the versioned model manifest.
 """
 
 from __future__ import annotations
@@ -18,11 +18,13 @@ from eval.selection import SelectionError, load_run
 from tools.fetch_model import load_manifest
 
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
+MINIMUM_PRODUCTION_EX = 0.668
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--production-analysis", type=Path, required=True)
+    parser.add_argument("--binding-analysis", type=Path, required=True)
     parser.add_argument("--consistency-analysis", type=Path, required=True)
     parser.add_argument("--parity-analysis", type=Path, required=True)
     parser.add_argument(
@@ -30,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         action="append",
         required=True,
-        help="fresh-verified publication.json (exactly two)",
+        help="fresh-verified publication.json (one or more)",
     )
     return parser.parse_args()
 
@@ -53,34 +55,74 @@ def evidence(path: Path) -> dict[str, str]:
     return {"path": display, "sha256": sha256_file(resolved)}
 
 
+def validate_binding_analysis(
+    binding: dict[str, Any], selected: dict[str, Any]
+) -> None:
+    if (
+        binding.get("analysis") != "binding-regression-gate"
+        or binding.get("schema_version") != 1
+        or binding.get("pass") is not True
+        or binding.get("seeds") != [0, 1, 2, 3, 4]
+        or binding.get("item_count") != 15
+        or binding.get("checks") != 75
+        or binding.get("model_key") != selected.get("model_key")
+        or binding.get("gcd") != selected.get("gcd")
+        or float(binding.get("temperature", -1))
+        != float(selected.get("temperature", -2))
+    ):
+        raise SelectionError(
+            "binding regression gate does not match the production winner"
+        )
+
+
+def validate_production_analysis(production: dict[str, Any]) -> dict[str, Any]:
+    if production.get("analysis") != "production-artifact-selection":
+        raise SelectionError("invalid production-selection analysis")
+    selected = production.get("selected", {})
+    if selected.get("seeds") != [0, 1, 2, 3, 4]:
+        raise SelectionError("production selection is not based on five seeds")
+    if selected.get("n_items") != 200:
+        raise SelectionError("production selection is not full gold_v2")
+    if float(selected.get("ex", -1)) < MINIMUM_PRODUCTION_EX:
+        raise SelectionError(
+            "production selection does not meet the 66.8% EX release floor"
+        )
+    return selected
+
+
 def main() -> None:
     args = parse_args()
     if len(args.publication) != 2:
         raise SystemExit("--publication must be supplied exactly twice")
 
     production_path = args.production_analysis.resolve()
+    binding_path = args.binding_analysis.resolve()
     consistency_path = args.consistency_analysis.resolve()
     parity_path = args.parity_analysis.resolve()
     production = read_json(production_path)
+    binding = read_json(binding_path)
     consistency = read_json(consistency_path)
     parity = read_json(parity_path)
 
-    if production.get("analysis") != "production-artifact-selection":
-        raise SelectionError("invalid production-selection analysis")
-    selected = production["selected"]
-    if selected.get("seeds") != [0, 1, 2, 3, 4]:
-        raise SelectionError("production selection is not based on five seeds")
-    if selected.get("n_items") != 200:
-        raise SelectionError("production selection is not full gold_v2")
+    selected = validate_production_analysis(production)
 
-    if consistency.get("analysis") != "n3-always-vote-calibration":
+    validate_binding_analysis(binding, selected)
+
+    if (
+        consistency.get("analysis") != "bounded-three-generation-calibration"
+        or consistency.get("schema_version") != 3
+        or consistency.get("policy_version") != "bounded-three-generation-v1"
+        or consistency.get("release_gate_passed") is not True
+    ):
         raise SelectionError("invalid consistency analysis")
     voting = consistency["selected"]
     if (
         voting.get("model_key") != selected.get("model_key")
         or voting.get("gcd") != selected.get("gcd")
         or voting.get("candidate_count") != 3
-        or voting.get("always_vote") is not True
+        or voting.get("bounded_policy") is not True
+        or voting.get("always_vote") is not False
+        or float(voting.get("sample_temperature", -1)) != 0.7
         or voting.get("trial_seeds") != [0, 1, 2, 3, 4]
         or voting.get("n_trials") != 1_000
     ):
@@ -113,11 +155,15 @@ def main() -> None:
         )
 
     manifest = load_manifest(MODEL_MANIFEST)
+    existing_production = manifest.get("production")
+    if manifest.get("production_status") not in {"selection_pending", "verified"}:
+        raise SelectionError("model manifest has an unsupported production state")
     if (
-        manifest.get("production") is not None
-        or manifest.get("production_status") != "selection_pending"
+        existing_production is not None
+        and existing_production.get("policy_version")
+        == "bounded-three-generation-v1"
     ):
-        raise SelectionError("model manifest is not awaiting production selection")
+        raise SelectionError("bounded-policy production is already finalized")
     models = {model["key"]: model for model in manifest["models"]}
     model = models.get(selected["model_key"])
     if model is None:
@@ -133,19 +179,28 @@ def main() -> None:
     publication_identities = {
         (item["repository"], item["revision"]) for item in publications
     }
-    derived = [item for item in models.values() if item.get("derived")]
-    if (
-        len(derived) != 2
-        or any(
-            item.get("publication_status") != "public-verified"
-            or (item.get("repository"), item.get("revision"))
-            not in publication_identities
-            for item in derived
-        )
-    ):
+    if len(publication_identities) != len(publications):
+        raise SelectionError("publication records must name distinct revisions")
+    derived = [
+        item
+        for item in models.values()
+        if item.get("derived")
+        and item.get("publication_status") == "public-verified"
+        and (item.get("repository"), item.get("revision"))
+        in publication_identities
+    ]
+    if len(derived) != len(publication_identities) or model not in derived:
         raise SelectionError(
-            "manifest does not contain exactly two fresh-verified public fine-tunes"
+            "manifest does not contain every supplied fresh-verified public fine-tune"
         )
+    for item in derived:
+        if item.get("experiment_authority") != "wandb":
+            continue
+        receipt = item.get("training_provenance", {}).get("wandb", {})
+        if receipt.get("status") != "complete":
+            raise SelectionError(
+                f"{item['key']} is missing complete W&B experiment evidence"
+            )
 
     manifest["production"] = {
         "model_key": selected["model_key"],
@@ -154,13 +209,15 @@ def main() -> None:
         "top_p": 1.0,
         "top_k": 0,
         "max_tokens": 512,
+        "policy_version": "bounded-three-generation-v1",
         "voting": {
             "candidate_count": 3,
             "sample_temperature": voting["sample_temperature"],
-            "always_vote": True,
+            "always_vote": False,
         },
         "evidence": {
             "production_selection": evidence(production_path),
+            "binding_regressions": evidence(binding_path),
             "consistency_calibration": evidence(consistency_path),
             "full_gold_parity": evidence(parity_path),
             "publications": [

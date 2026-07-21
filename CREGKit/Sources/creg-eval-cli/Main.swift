@@ -131,15 +131,18 @@ struct EvalCLI {
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = command
     process.standardOutput = output
-    process.standardError = Pipe()
+    // These provenance probes intentionally ignore stderr. Sending it to the
+    // null device avoids a second bounded pipe that could block the child.
+    process.standardError = FileHandle.nullDevice
     do {
       try process.run()
+      // Drain the pipe before waiting so output larger than the pipe
+      // buffer cannot deadlock the child.
+      let data = output.fileHandleForReading.readDataToEndOfFile()
       process.waitUntilExit()
       guard process.terminationStatus == 0 else { return nil }
-      return String(
-        decoding: output.fileHandleForReading.readDataToEndOfFile(),
-        as: UTF8.self
-      ).trimmingCharacters(in: .whitespacesAndNewlines)
+      return String(decoding: data, as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     } catch {
       return nil
     }
@@ -260,30 +263,40 @@ struct EvalCLI {
           validSQL: false,
           ex: false,
           totalMicroseconds: 0)
+        var generatedSQL: String?
         do {
           let generation = try await sqlGen.generate(request)
           row.generation = generation
           row.predictedSQL = generation.sql
-          let gold = try await db.execute(item.sql)
-          row.goldResult = gold
-          if !gold.isTruncated {
-            row.goldDigest = CanonicalSQLResult(gold).digest
-          }
-          do {
-            let predicted = try await db.execute(generation.sql)
-            valid += 1
-            row.validSQL = true
-            row.predictedResult = predicted
-            if !predicted.isTruncated {
-              row.predictedDigest =
-                CanonicalSQLResult(predicted).digest
-            }
-            row.ex = EXScore.matches(predicted, gold)
-          } catch {
-            row.error = String(describing: error)
-          }
+          generatedSQL = generation.sql
         } catch {
           row.error = "generation: \(error)"
+        }
+        if let generatedSQL {
+          do {
+            let gold = try await db.execute(item.sql)
+            row.goldResult = gold
+            if !gold.isTruncated {
+              row.goldDigest = CanonicalSQLResult(gold).digest
+            }
+            do {
+              let predicted = try await db.execute(generatedSQL)
+              valid += 1
+              row.validSQL = true
+              row.predictedResult = predicted
+              if !predicted.isTruncated {
+                row.predictedDigest =
+                  CanonicalSQLResult(predicted).digest
+              }
+              row.ex = EXScore.matches(predicted, gold)
+            } catch {
+              row.error = String(describing: error)
+            }
+          } catch {
+            // A failing gold query is a harness defect, not a prediction
+            // failure; label it so it is never read as generation drift.
+            row.error = "gold: \(error)"
+          }
         }
         if row.ex { correct += 1 }
         row.totalMicroseconds =

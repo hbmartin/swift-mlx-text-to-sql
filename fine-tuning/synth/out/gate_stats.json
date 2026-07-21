@@ -1,18 +1,18 @@
 {
-  "raw": 1441,
-  "gold_dup": 3,
+  "raw": 1555,
+  "gold_dup": 4,
   "batch_dup": 0,
   "exec_error": 0,
   "degenerate": 14,
   "not_in_grammar": 0,
-  "kept": 1424,
+  "kept": 1537,
   "families": {
     "avg_dscr": 1,
     "avg_lease_size_type": 1,
     "best_in_group": 3,
     "by_year": 2,
     "case_occupancy": 3,
-    "expiry_count": 6,
+    "expiry_count": 5,
     "expiry_list": 6,
     "expiry_sqft": 6,
     "float_share": 1,
@@ -51,12 +51,15 @@
     "prop_rentroll": 47,
     "prop_sqft": 48,
     "prop_tenants": 47,
+    "prop_trailing_noi": 98,
     "prop_type_q": 48,
     "prop_vacancy": 47,
     "prop_value": 47,
     "rank_group_rent": 3,
     "recourse": 1,
     "rent_threshold": 5,
+    "repair_fund_current_value": 4,
+    "repair_latest_vacancy": 12,
     "share_by_group": 3,
     "size_threshold": 3,
     "tenant_expiry": 104,
@@ -74,8 +77,9 @@
     "yoy_noi": 6
   },
   "tiers": {
-    "1": 357,
+    "1": 356,
     "2": 1003,
-    "3": 64
-  }
+    "3": 178
+  },
+  "repair_examples": 16
 }

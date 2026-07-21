@@ -1,0 +1,10 @@
+Question: {{QUESTION}}
+
+Your previous attempt failed. Fix it.
+Previous SQL: {{FAILED_SQL}}
+SQLite error: {{SQLITE_ERROR}}
+Issue type: {{ISSUE_TYPE}}
+Issue disposition: {{ISSUE_DISPOSITION}}
+Declared sources: {{DECLARED_SOURCES}}
+Possible column owners: {{POSSIBLE_COLUMN_OWNERS}}
+Prior failed fingerprints: {{FAILED_FINGERPRINTS}}

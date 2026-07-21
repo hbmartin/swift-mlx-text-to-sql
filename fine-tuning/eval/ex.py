@@ -3,6 +3,11 @@
 EX is order-insensitive multiset equality over result rows. Values remain in
 separate SQLite type domains except that INTEGER and REAL intentionally share
 one numeric domain after four-decimal, half-even normalization.
+
+The numeric canonical form is a total function over every double, byte-shared
+with the Swift engine: finite values quantize half-even to four decimals and
+render as plain decimals with trailing zeros stripped, negative zero is "0",
+and non-finite values render as "nan", "inf", and "-inf".
 """
 
 from __future__ import annotations
@@ -14,14 +19,22 @@ import math
 import sqlite3
 import time
 from collections import Counter
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_EVEN
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any
 
+# Evaluation/parity deliberately retain more rows than the offline app's
+# production cap (`DatabaseClient.defaultRowCap`, 500). Policy calibration
+# must reject results that exceed the production cap before voting.
 ROW_CAP = 10_000
 FLOAT_DECIMALS = 4
 FLOAT_QUANTUM = Decimal("0.0001")
+# The default 28-digit context raises InvalidOperation when quantizing floats
+# at or above 1e24. The full double range needs at most 309 integer digits
+# plus four decimals.
+FLOAT_CONTEXT_PRECISION = 400
 
 CanonicalValue = tuple[str, str]
 CanonicalRow = tuple[CanonicalValue, ...]
@@ -54,9 +67,15 @@ def canonical_number(value: int | float) -> str:
     if isinstance(value, bool):
         value = int(value)
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("SQLite EX does not support non-finite REAL values")
-        decimal = Decimal(str(value)).quantize(FLOAT_QUANTUM, rounding=ROUND_HALF_EVEN)
+        if math.isnan(value):
+            return "nan"
+        if math.isinf(value):
+            return "-inf" if value < 0 else "inf"
+        with localcontext() as context:
+            context.prec = FLOAT_CONTEXT_PRECISION
+            decimal = Decimal(str(value)).quantize(
+                FLOAT_QUANTUM, rounding=ROUND_HALF_EVEN
+            )
     else:
         decimal = Decimal(value)
     if decimal == 0:
@@ -125,6 +144,9 @@ def execute_with_metadata(
 ) -> QueryExecution:
     """Execute read-only and fetch one extra row to detect truncation."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    # Match the Swift runtime's raw sqlite3 TEXT decoding contract: preserve
+    # embedded NUL bytes and replace malformed UTF-8 with U+FFFD.
+    conn.text_factory = lambda raw: raw.decode("utf-8", errors="replace")
     try:
         started_ns = time.perf_counter_ns()
         try:

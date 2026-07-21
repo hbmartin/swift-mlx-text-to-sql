@@ -4,6 +4,7 @@ import SwiftUI
 
 public struct ChatView: View {
   @Bindable var store: StoreOf<ChatFeature>
+  @FocusState private var composerIsFocused: Bool
 
   public init(store: StoreOf<ChatFeature>) {
     self.store = store
@@ -40,6 +41,15 @@ public struct ChatView: View {
           }
         }
       }
+      if let failure = store.presentedFailure {
+        FailureBanner(
+          failure: failure,
+          developerMode: store.developerMode,
+          dismiss: { store.send(.dismissFailure) })
+          .padding(.horizontal)
+          .padding(.vertical, 8)
+      }
+      readinessBanner
       composer
     }
     .navigationTitle("CREG")
@@ -78,20 +88,83 @@ public struct ChatView: View {
       TextField("Ask about your portfolio…", text: $store.composerText, axis: .vertical)
         .textFieldStyle(.roundedBorder)
         .lineLimit(1...4)
-        .onSubmit { store.send(.sendTapped) }
+        .disabled(store.modelReadiness != .ready)
+        .focused($composerIsFocused)
+        .onSubmit { requestSend() }
+        .onChange(of: composerIsFocused) {
+          if composerIsFocused, store.isSubmissionPending {
+            store.send(.submissionRefocused)
+            return
+          }
+          guard !composerIsFocused, store.isSubmissionPending else { return }
+          Task { @MainActor in
+            // Let SwiftUI commit the first-responder change before the reducer
+            // clears the bound text and invalidates the keyboard's candidates.
+            await Task.yield()
+            guard !composerIsFocused else {
+              store.send(.submissionRefocused)
+              return
+            }
+            store.send(.submissionFocusSettled)
+          }
+        }
       Button {
-        store.send(.sendTapped)
+        requestSend()
       } label: {
         Image(systemName: "arrow.up.circle.fill")
           .font(.title2)
       }
       .disabled(
-        store.isProcessing
+        store.isSubmissionPending
+          || store.isProcessing
+          || store.modelReadiness != .ready
           || store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .padding(.horizontal)
     .padding(.vertical, 8)
     .background(.bar)
+  }
+
+  @ViewBuilder
+  private var readinessBanner: some View {
+    switch store.modelReadiness {
+    case .ready:
+      EmptyView()
+    case .preparing:
+      HStack(spacing: 8) {
+        ProgressView()
+        Text("Preparing the SQL model…")
+          .font(.callout)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal)
+      .padding(.vertical, 8)
+    case .failed(let message):
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+          .font(.callout)
+          .foregroundStyle(.orange)
+        Spacer()
+        Button("Retry") { store.send(.retryPreparation) }
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 8)
+    }
+  }
+
+  private func requestSend() {
+    guard
+      !store.isSubmissionPending,
+      !store.isProcessing,
+      !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return }
+
+    store.send(.submissionRequested)
+    if composerIsFocused {
+      composerIsFocused = false
+    } else {
+      store.send(.submissionFocusSettled)
+    }
   }
 }
 
@@ -126,12 +199,24 @@ struct MessageCell: View {
       case .text(let body), .clarification(let body):
         assistantBubble(body)
       case .failure(let body):
-        Label(body, systemImage: "exclamationmark.triangle")
-          .padding(.horizontal, 14)
-          .padding(.vertical, 9)
-          .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
+        FailureMessageView(
+          message: body,
+          diagnostic: message.devInfo?.terminalError,
+          developerMode: developerMode)
       case .answer(let result, let narration, let sql, let notice):
         assistantBubble(narration)
+        if message.devInfo?.confidence == .unconfirmed {
+          Label(
+            unconfirmedMessage,
+            systemImage: "exclamationmark.triangle.fill")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.orange)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+              .orange.opacity(0.12),
+              in: RoundedRectangle(cornerRadius: 10))
+        }
         if let notice {
           Label(notice, systemImage: "lightbulb")
             .font(.caption)
@@ -154,6 +239,15 @@ struct MessageCell: View {
       .padding(.horizontal, 14)
       .padding(.vertical, 9)
       .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
+  }
+
+  private var unconfirmedMessage: String {
+    switch message.devInfo?.noConsensusReason {
+    case .insufficientNonEmptyEvidence:
+      "The corrected query ran, but there wasn’t enough matching non-empty evidence to confirm it."
+    case .conflictingResults, .none:
+      "The corrected query ran, but another valid candidate did not independently confirm it."
+    }
   }
 
   private var text: String {

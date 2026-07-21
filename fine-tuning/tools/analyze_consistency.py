@@ -1,8 +1,4 @@
-"""Select the N=3 always-vote sample temperature from immutable calibrations.
-
-Exactly one complete calibration for each sample temperature (0.1, 0.3, and
-0.7) is required. The analysis never silently accepts a partial run.
-"""
+"""Verify one immutable schema-v3 bounded-policy calibration."""
 
 from __future__ import annotations
 
@@ -15,6 +11,8 @@ from eval.run_artifacts import REPO_ROOT, create_run_directory, sha256_file, wri
 from eval.selection import SelectionError, analysis_id, load_run
 
 DEFAULT_ANALYSES = REPO_ROOT / "eval" / "analyses"
+POLICY_SCHEMA_VERSION = 3
+POLICY_VERSION = "bounded-three-generation-v1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,6 +26,17 @@ def load_calibration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     path = path.resolve()
     manifest = json.loads((path / "manifest.json").read_text())
     summary = json.loads((path / "summary.json").read_text())
+    if (
+        manifest.get("schema_version") != POLICY_SCHEMA_VERSION
+        or summary.get("schema_version") != POLICY_SCHEMA_VERSION
+        or manifest.get("policy_version") != POLICY_VERSION
+        or summary.get("policy_version") != POLICY_VERSION
+    ):
+        raise SelectionError(
+            f"{path}: policy calibration requires schema_version "
+            f"{POLICY_SCHEMA_VERSION} and policy_version {POLICY_VERSION}; "
+            "v1/v2 evidence is historical and cannot satisfy this gate"
+        )
     if manifest.get("status") != "complete":
         raise SelectionError(f"consistency calibration is not complete: {path}")
     for name in ("items", "summary"):
@@ -38,60 +47,47 @@ def load_calibration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         ):
             raise SelectionError(f"{path}: {name} output hash mismatch")
     if (
-        summary.get("always_vote") is not True
+        summary.get("bounded_policy") is not True
+        or summary.get("always_vote") is not False
         or summary.get("candidate_count") != 3
+        or summary.get("sample_temperature") != 0.7
         or summary.get("trial_seeds") != [0, 1, 2, 3, 4]
         or summary.get("n_trials") != 1_000
     ):
         raise SelectionError(
-            f"{path}: expected N=3 always-vote over 200 items × five seeds"
+            f"{path}: expected the bounded three-generation 0.7 policy "
+            "over 200 items × five seeds"
+        )
+    if not isinstance(manifest.get("hardware"), dict) or not manifest["hardware"]:
+        raise SelectionError(
+            f"{path}: schema-v3 latency evidence requires frozen same-hardware provenance"
         )
     return manifest, summary
 
 
 def analyze(run_paths: list[Path]) -> dict[str, Any]:
-    if len(run_paths) != 3:
-        raise SelectionError("consistency analysis requires exactly three runs")
+    if len(run_paths) != 1:
+        raise SelectionError("policy analysis requires exactly one schema-v3 run")
     loaded = [load_calibration(path) for path in run_paths]
     summaries = [summary for _, summary in loaded]
     identities = {(item["model_key"], item["gcd"]) for item in summaries}
     if len(identities) != 1:
         raise SelectionError("calibrations must use one artifact and one GCD mode")
-    if {float(item["sample_temperature"]) for item in summaries} != {
-        0.1,
-        0.3,
-        0.7,
-    }:
-        raise SelectionError(
-            "calibrations must cover sample temperatures 0.1, 0.3, and 0.7"
-        )
-
-    ranked = sorted(
-        summaries,
-        key=lambda item: (
-            -float(item["ex"]),
-            -float(item["valid_sql_rate"]),
-            int(item["anchor_failures"]),
-            -int(item["consensus"]),
-            int(item["p95_latency_microseconds"]),
-            float(item["sample_temperature"]),
-        ),
-    )
-    selected = ranked[0]
+    selected = summaries[0]
     return {
-        "schema_version": 1,
-        "analysis": "n3-always-vote-calibration",
-        "selection_rule": [
-            "execution accuracy",
-            "valid SQL",
-            "fewer anchor failures",
-            "more consensus outcomes",
-            "p95 latency",
-            "lower sample temperature",
-        ],
-        "configurations": sorted(
-            summaries, key=lambda item: float(item["sample_temperature"])
+        "schema_version": POLICY_SCHEMA_VERSION,
+        "policy_version": POLICY_VERSION,
+        "analysis": "bounded-three-generation-calibration",
+        "hardware": loaded[0][0]["hardware"],
+        "release_gates": {
+            "valid_sql_rate_at_least": 0.99,
+            "p95_latency_microseconds_at_most": 10_990_000,
+        },
+        "release_gate_passed": (
+            float(selected["valid_sql_rate"]) >= 0.99
+            and int(selected["p95_latency_microseconds"]) <= 10_990_000
         ),
+        "configurations": summaries,
         "selected": selected,
         "inputs": [
             {

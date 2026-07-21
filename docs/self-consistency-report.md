@@ -24,6 +24,26 @@ fallback.
 All 200 gold_v2 items were evaluated for trial seeds 0–4, producing 1,000
 item-trials and 3,000 Candidate Queries per sample temperature.
 
+## Policy revision after this calibration
+
+The referenced analysis was produced by the schema_version 1 calibration
+harness. The harness has since been revised (schema_version 2) to mirror
+production exactly:
+
+- empty results no longer carry consensus evidence (production and the
+  harness both exclude them from majority formation);
+- vote eligibility now applies the production 500-row cap rather than the
+  10,000-row evaluation cap; and
+- an anchor failure now delivers the anchor's own degraded outcome, as the
+  app does, instead of substituting the first complete temperature sample.
+
+The table below therefore reports the pre-revision policy and slightly
+overstates what production delivers in the degraded branches (at most the
+70 anchor-failure trials out of 1,000). The numbers stand as the immutable
+evidence behind the temperature selection and must be refreshed by a
+schema_version 2 calibration run before they are quoted as
+production-faithful expectations.
+
 ## Results
 
 | Sample temperature | EX | Valid SQL | Consensus | No Consensus | Anchor failures | Mean latency | p95 latency |

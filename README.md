@@ -10,26 +10,31 @@ The product requirements are in
 the domain language is in [`CONTEXT.md`](./CONTEXT.md), and decisions are in
 [`docs/adr/`](./docs/adr/).
 
-## Verified status
+## Reliability-v2 status
 
-The production artifact is the public
+The checked-in manifest still records the historical production artifact, the public
 [XiYanSQL-QwenCoder-3B CREG fine-tune](https://huggingface.co/hbmartin/creg-sql-xgenerationlab-xiyansql-qwencoder-3b-2502-mlx-4bit/tree/7f97a54819b9329338a5353266d6d2a1294eb341)
 at immutable revision `7f97a54819b9329338a5353266d6d2a1294eb341`.
-`model-manifest.json` marks this exact snapshot and configuration `verified`.
+Its evidence predates the bounded three-generation policy and is retained only
+as immutable historical evidence. A Release build now refuses that manifest
+until fresh reliability-v2 training, schema-v3 calibration, parity,
+publication, bundle, device, and complete W&B receipts pass finalization.
 
-| Check | Verified result |
+| Historical check | Result |
 |---|---|
 | Python single-shot, 200 gold_v2 items | 65.50% EX; 93.00% valid SQL |
 | Swift single-shot, same 200 items | 65.00% EX; 92.00% valid SQL |
 | Python/Swift absolute drift | 0.50 EX points; 1.00 valid-SQL point; pass |
 | N=3 always-vote, 1,000 item-trials | 66.80% EX; 95.40% valid SQL |
-| Unit suites | 44 Python and 38 Swift tests pass |
+| Pre-remediation unit suites | 66 Python and 30 Swift tests passed |
 
-Production uses grammar-constrained decoding, deterministic temperature 0.0,
-top-p 1.0, disabled top-k, and a 512-token cap. Always-vote self-consistency
-uses one executed deterministic anchor and two temperature-0.7 samples. A
-Result Group needs a strict majority; No Consensus visibly falls back to the
-complete anchor.
+The reliability-v2 runtime validates every generated statement with SQLite
+before execution and caps SQL generation at three calls. A valid initial
+candidate receives two independently seeded temperature-0.7 cross-checks; a
+repairable invalid candidate receives one deterministic and one sampled
+repair. Two matching non-empty result digests confirm an answer. Otherwise a
+valid deterministic repair, sampled repair, or initial anchor is shown as
+unconfirmed; no generated SQL is rewritten in code.
 
 The merged PR #1 outputs remain under
 [`eval/runs/legacy-pr1-merged`](./eval/runs/legacy-pr1-merged) and are marked
@@ -56,11 +61,12 @@ overlap:
 question
   → standalone-question rewrite
   → ambiguity gate
-  → identified SQL Candidate Query
-  → read-only SQLite execution
-  → bounded identified repairs
+  → identified SQL candidate generation
+  → read-only SQLite prepare/validation
+  → execute valid candidates only
+  → bounded repair or cross-check generation
+  → non-empty result consensus and confidence
   → column-aware grounding checks
-  → strict-majority voting with a temperature-0 anchor
   → narration and rendering
 ```
 
@@ -156,9 +162,10 @@ environment and copies the exact manifest into the app.
 - Debug bundles `SQLModel` only when the pinned snapshot is already in the
   configured local cache. With no cache, the build succeeds without weights
   and the runtime downloads that pinned revision on first use.
-- Release downloads or reuses cache, verifies the complete snapshot, and
-  bundles it as `SQLModel`. Network, selection, or integrity failure stops the
-  build with an actionable error.
+- Release requires a newly finalized bounded-policy selection, downloads or
+  reuses cache, transactionally verifies the complete snapshot, and bundles
+  it as `SQLModel` with `production-model-receipt.json`. Historical policy,
+  network, selection, receipt, or integrity failure stops the build.
 
 ```sh
 xcodebuild -project CREG.xcodeproj -scheme CREG \
@@ -181,8 +188,8 @@ uv run --frozen python -m tools.inspect_release_bundle \
   --run-id release-bundle-inspection
 ```
 
-The inspector rejects a different manifest, missing/extra/mismatched model
-file, or missing license/notice.
+The inspector rejects a different manifest or receipt, symlinks and special
+entries, missing/extra/mismatched model files, or missing license/notice.
 
 ## Tests
 
@@ -196,8 +203,8 @@ swift test
 
 Coverage includes typed EX and shared golden fixtures, half-even rounding,
 full BLOB identity, duplicates, truncation, immutable runs and seed replay,
-manifest integrity, strict-majority/no-consensus/degraded-anchor behavior,
-repairs and candidate attribution, first-turn telemetry, old-history decoding,
+manifest integrity, bounded three-generation consensus and fallback behavior,
+validation, repairs and candidate attribution, telemetry migration,
 microsecond timing, alias-aware grounding, retryable catalogs, empty-string
 edit distance, and read-only database enforcement.
 
@@ -219,23 +226,28 @@ uv run --frozen python -m eval.run_matrix gcd \
   --artifact xiyansql-qwencoder-3b:on \
   --artifact xiyansql-qwencoder-3b:off
 
-# Byte-reproduce the corpus, train both selected families, and fuse 4-bit
-uv run --frozen python -m tools.train_finalists \
+# Byte-reproduce the corpus, run the authenticated smoke, then create the two
+# independent reliability-v2 18-run screening sweeps. (`direnv allow` loads
+# WANDB_ENTITY and WANDB_PROJECT from a local, Git-ignored .envrc; keep the API
+# key outside the repository.)
+export WANDB_API_KEY=...
+uv run --frozen python -m tools.run_experiment \
   --model-key qwen25-coder-3b \
-  --model-key xiyansql-qwencoder-3b
-
-# Four eligible artifacts × four temperatures × seeds 0–4
-uv run --frozen python -m eval.run_matrix temperature \
-  --artifact qwen25-coder-3b:off \
-  --artifact xiyansql-qwencoder-3b:off \
-  --artifact ft-qwen25-coder-3b:on \
-  --artifact ft-xiyansql-qwencoder-3b:on
+  --campaign-id creg-sql-reliability-v2-smoke --iterations 100
+uv run --frozen wandb sweep --entity "$WANDB_ENTITY" \
+  --project "${WANDB_PROJECT:-creg-sql}" \
+  config/sweeps/qwen25-coder-3b.yaml
+uv run --frozen wandb sweep --entity "$WANDB_ENTITY" \
+  --project "${WANDB_PROJECT:-creg-sql}" \
+  config/sweeps/xiyansql-qwencoder-3b.yaml
 ```
 
-Temperature selection requires a mean EX improvement of at least two absolute
-points and a paired item-clustered bootstrap 95% interval excluding zero.
-Production uses the same two-point/bootstrap tie rule, then valid SQL,
-worst-tier EX, p95 latency, and bundle size.
+After 36 screening runs, promote the top two recipes per family over seeds
+424240/424241/424242, reusing each screening seed-424242 result. This creates
+eight new confirmation runs (44 training runs total). Winner selection uses
+gold-v1 item-clustered EX, valid SQL, worst-tier EX, p95 latency, and trainable
+parameter count. See `fine-tuning/README.md` for the exact promotion, final
+evidence, binding-regression, and production-finalization commands.
 
 Publication is explicit and records the returned Hub commit plus a forced
 fresh-download inventory verification:

@@ -1,19 +1,29 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generator_seed": 424242,
-  "gold_holdout": "eval/gold/gold_v2.jsonl",
+  "gold_holdouts": [
+    "eval/gold/gold_v1.jsonl",
+    "eval/gold/gold_v2.jsonl"
+  ],
+  "prompt_contract": {
+    "prompt_version": "reliability-v2",
+    "policy_version": "bounded-three-generation-v1",
+    "system_template_sha256": "3a660970002d91f9e859a9c446794533b86878b28b627296b70d3e9d823578e1",
+    "repair_template_sha256": "832eab01e1d849982165ac040f3c2b3b919d7155e332419ee4175223c65a0249",
+    "schema_catalog_sha256": "05d5d159313f87f0b7d030091aca416f7e66b5274dd0d5ee8c3124d81afcece4"
+  },
   "files": [
     {
       "path": "fine-tuning/synth/out/train.jsonl",
-      "sha256": "3a9ad4806692cdc89e8e68c77e29c5e1eedaefac5745c3a87bd4e4fb1758021e"
+      "sha256": "03ba8ca9d44b2558e8a03ad4d65a86358dcc948151c6d3eda7bbe1df5dbedced"
     },
     {
       "path": "fine-tuning/synth/out/valid.jsonl",
-      "sha256": "b0e72fde78f50e80bc5bdd4664eb7e87695db8a52e042067cfb32ddfc0fcec33"
+      "sha256": "4ae6b86970426a929d55bcc36e95b2a651adde962e05daebb29fbaa5233ee4dd"
     },
     {
       "path": "fine-tuning/synth/out/gate_stats.json",
-      "sha256": "d63b2ae38ec22276dc7706c34d9f12b5f301909e50f01c3c7412043abd22f442"
+      "sha256": "e59171e5f2283180912fc05a5aeee1d00833d56704e0b51dbb301dad918538c1"
     }
   ]
 }

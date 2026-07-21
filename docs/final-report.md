@@ -35,10 +35,10 @@ non-commercial warning.
 | Public finalist verification | Both snapshots fresh-downloaded and exact | `eval/publications/` |
 | Temperature standardization | Temperature 0 retained for all four artifacts | four `temperature-*` analyses |
 | Production selection | XiYan fine-tune, 65.50% EX / 93.00% valid SQL | `production-cddac7c992c20eae` |
-| N=3 calibration | Sample T=0.7, 66.80% EX / 95.40% valid SQL | `consistency-926c85c7ebc25eae` |
+| N=3 calibration | Sample T=0.7, 66.80% EX / 95.40% valid SQL (schema_version 1 policy; see `docs/self-consistency-report.md`) | `consistency-926c85c7ebc25eae` |
 | Full Swift parity | 0.50 EX-point and 1.00 valid-SQL-point drift | `parity-cda177e757fbb0b6` |
-| Python tests | 44 passed | `uv run --frozen pytest` |
-| Swift tests | 38 passed | `swift test` |
+| Python tests | 62 passed | `uv run --frozen pytest` |
+| Swift tests | 42 passed | `swift test` |
 | No-cache Debug | Manifest only; runtime-download path | `debug-no-cache-20260721` |
 | Clean-cache Release | Exact 12-file, 1.747 GB model bundled | `release-xiyansql-qwencoder-3b-7f97a548` |
 

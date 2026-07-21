@@ -24,6 +24,7 @@ FIXTURES = (
     / "Resources"
     / "canonical_result_fixtures.json"
 )
+SQLITE_TEXT_FIXTURES = FIXTURES.with_name("sqlite_text_fixtures.json")
 
 
 def fixture_rows(rows: list[list[dict[str, str]]]) -> list[tuple[object, ...]]:
@@ -71,6 +72,28 @@ def test_half_even_four_decimal_normalization():
     assert canonical_number(-0.0) == "0"
 
 
+def test_canonical_number_is_total_over_the_double_range():
+    # These previously raised (ValueError for non-finite, InvalidOperation
+    # for >= 1e24) and aborted whole evaluation runs mid-stream.
+    assert canonical_number(float("inf")) == "inf"
+    assert canonical_number(float("-inf")) == "-inf"
+    assert canonical_number(float("nan")) == "nan"
+    assert canonical_number(1e24) == "1" + "0" * 24
+    assert canonical_number(1.2345e300) == "12345" + "0" * 296
+    assert canonical_number(1.7976931348623157e308) == (
+        "179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    )
+    assert canonical_number(5e-324) == "0"
+
+
+def test_nonfinite_reals_from_generated_sql_score_as_mismatch():
+    # SQLite yields Infinity for out-of-range literals like 9e999; a
+    # generated query must score, not crash the run.
+    result = score(DB, "SELECT 9e999", "SELECT 1")
+    assert result["ex"] is False
+    assert result["error"] is None
+
+
 def test_typed_rows_and_digest_are_stable():
     first = [(1, "a", b"\x00"), (2.0, None, b"\xff")]
     second = list(reversed(first))
@@ -107,6 +130,13 @@ def test_shared_canonical_fixtures():
 def test_execute_normalizes_floats():
     rows = execute(DB, "SELECT 1.00004, 'x'")
     assert rows == [(1.0, "x")]
+
+
+def test_execute_preserves_nul_and_replaces_invalid_utf8():
+    document = json.loads(SQLITE_TEXT_FIXTURES.read_text())
+    assert document["schema_version"] == 1
+    for case in document["cases"]:
+        assert execute(DB, case["sql"]) == [(case["expected"],)]
 
 
 def test_execute_detects_truncation():

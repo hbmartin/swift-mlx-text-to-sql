@@ -3,8 +3,22 @@
   "cases": [
     {
       "name": "integer_real_equivalence",
-      "left": [[{"type": "integer", "value": "1"}]],
-      "right": [[{"type": "real", "value": "1.0"}]],
+      "left": [
+        [
+          {
+            "type": "integer",
+            "value": "1"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "real",
+            "value": "1.0"
+          }
+        ]
+      ],
       "matches": true,
       "left_encoding": "[[{\"type\":\"number\",\"value\":\"1\"}]]",
       "right_encoding": "[[{\"type\":\"number\",\"value\":\"1\"}]]",
@@ -13,8 +27,22 @@
     },
     {
       "name": "half_even_boundary",
-      "left": [[{"type": "real", "value": "2.34565"}]],
-      "right": [[{"type": "real", "value": "2.3456501"}]],
+      "left": [
+        [
+          {
+            "type": "real",
+            "value": "2.34565"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "real",
+            "value": "2.3456501"
+          }
+        ]
+      ],
       "matches": false,
       "left_encoding": "[[{\"type\":\"number\",\"value\":\"2.3456\"}]]",
       "right_encoding": "[[{\"type\":\"number\",\"value\":\"2.3457\"}]]",
@@ -23,8 +51,22 @@
     },
     {
       "name": "text_numeric_separation",
-      "left": [[{"type": "integer", "value": "1"}]],
-      "right": [[{"type": "text", "value": "1"}]],
+      "left": [
+        [
+          {
+            "type": "integer",
+            "value": "1"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "text",
+            "value": "1"
+          }
+        ]
+      ],
       "matches": false,
       "left_encoding": "[[{\"type\":\"number\",\"value\":\"1\"}]]",
       "right_encoding": "[[{\"type\":\"text\",\"value\":\"1\"}]]",
@@ -33,8 +75,22 @@
     },
     {
       "name": "full_blob_identity",
-      "left": [[{"type": "blob", "value": "AP8="}]],
-      "right": [[{"type": "blob", "value": "/wA="}]],
+      "left": [
+        [
+          {
+            "type": "blob",
+            "value": "AP8="
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "blob",
+            "value": "/wA="
+          }
+        ]
+      ],
       "matches": false,
       "left_encoding": "[[{\"type\":\"blob\",\"value\":\"AP8=\"}]]",
       "right_encoding": "[[{\"type\":\"blob\",\"value\":\"/wA=\"}]]",
@@ -44,22 +100,4120 @@
     {
       "name": "null_duplicates_and_row_order",
       "left": [
-        [{"type": "null", "value": ""}],
-        [{"type": "null", "value": ""}],
-        [{"type": "real", "value": "1.00015"}],
-        [{"type": "text", "value": "x"}]
+        [
+          {
+            "type": "null",
+            "value": ""
+          }
+        ],
+        [
+          {
+            "type": "null",
+            "value": ""
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.00015"
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "value": "x"
+          }
+        ]
       ],
       "right": [
-        [{"type": "text", "value": "x"}],
-        [{"type": "real", "value": "1.00015"}],
-        [{"type": "null", "value": ""}],
-        [{"type": "null", "value": ""}]
+        [
+          {
+            "type": "text",
+            "value": "x"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.00015"
+          }
+        ],
+        [
+          {
+            "type": "null",
+            "value": ""
+          }
+        ],
+        [
+          {
+            "type": "null",
+            "value": ""
+          }
+        ]
       ],
       "matches": true,
       "left_encoding": "[[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"number\",\"value\":\"1.0002\"}],[{\"type\":\"text\",\"value\":\"x\"}]]",
       "right_encoding": "[[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"null\",\"value\":\"\"}],[{\"type\":\"number\",\"value\":\"1.0002\"}],[{\"type\":\"text\",\"value\":\"x\"}]]",
       "left_digest": "48d3b94b3f9583d246f1efb3514a62c4cd7a169523340fbab7e68dc82dc1b020",
       "right_digest": "48d3b94b3f9583d246f1efb3514a62c4cd7a169523340fbab7e68dc82dc1b020"
+    },
+    {
+      "name": "empty_result",
+      "left": [],
+      "right": [],
+      "matches": true,
+      "left_encoding": "[]",
+      "right_encoding": "[]",
+      "left_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "right_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "name": "negative_zero_is_integer_zero",
+      "left": [
+        [
+          {
+            "type": "real",
+            "value": "-0.0"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "integer",
+            "value": "0"
+          }
+        ]
+      ],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"0\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"0\"}]]",
+      "left_digest": "a973c44b71d33ad79b30aeea9084d3e8d07e86fa294c6e8d4b50400292c81afe",
+      "right_digest": "a973c44b71d33ad79b30aeea9084d3e8d07e86fa294c6e8d4b50400292c81afe"
+    },
+    {
+      "name": "nonfinite_reals_are_distinct_values",
+      "left": [
+        [
+          {
+            "type": "real",
+            "value": "inf"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "real",
+            "value": "-inf"
+          }
+        ]
+      ],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"inf\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"-inf\"}]]",
+      "left_digest": "7cf1e0241cf2fa7d5454dffbaf7f508b16a329241fd2a19d7dfb0526e107f5b5",
+      "right_digest": "2f5b15f656ca1b725946db763c516c7a3d1efbf771fdc81e7814afedd9cce92d"
+    },
+    {
+      "name": "former_decimal_context_crash_boundary",
+      "left": [
+        [
+          {
+            "type": "real",
+            "value": "1e+24"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "real",
+            "value": "1.2345e+24"
+          }
+        ]
+      ],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"1000000000000000000000000\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"1234500000000000000000000\"}]]",
+      "left_digest": "67e784f566832e727cdd7eef24c2cc680f90cbd78d51aa91ae8e5efcfb7bebca",
+      "right_digest": "0a45d37a5eb57ae32dd4e699623932796fd96cdaf9a936918120422a843db8bf"
+    },
+    {
+      "name": "huge_magnitude_plain_expansion",
+      "left": [
+        [
+          {
+            "type": "real",
+            "value": "1e+300"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "real",
+            "value": "1.2345e+300"
+          }
+        ]
+      ],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"1234500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}]]",
+      "left_digest": "ff8675f1407f8671587aa076a4e7d0f1f8f11280b311c4d74fe38ae1d588eade",
+      "right_digest": "3ef14eda82fe2dccdcaa8e92f129985bc54fcbb3dedcc1b3f53de9eae72887fa"
+    },
+    {
+      "name": "subnormal_rounds_to_zero",
+      "left": [
+        [
+          {
+            "type": "real",
+            "value": "5e-324"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "integer",
+            "value": "0"
+          }
+        ]
+      ],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"0\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"0\"}]]",
+      "left_digest": "a973c44b71d33ad79b30aeea9084d3e8d07e86fa294c6e8d4b50400292c81afe",
+      "right_digest": "a973c44b71d33ad79b30aeea9084d3e8d07e86fa294c6e8d4b50400292c81afe"
+    },
+    {
+      "name": "large_integer_precision_is_preserved",
+      "left": [
+        [
+          {
+            "type": "integer",
+            "value": "9223372036854775807"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "real",
+            "value": "9.223372036854776e+18"
+          }
+        ]
+      ],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"9223372036854775807\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"9223372036854776000\"}]]",
+      "left_digest": "5f619eb21c0ae08094b94a1342c6d10ffbeac5932d3fef08cca8064e273269eb",
+      "right_digest": "905607a3c8cee42c2edfb039e594be497830104965a46ea8e9dc9e6cb0e758c0"
+    },
+    {
+      "name": "unicode_normalization_forms_are_distinct",
+      "left": [
+        [
+          {
+            "type": "text",
+            "value": "caf\u00e9"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "text",
+            "value": "cafe\u0301"
+          }
+        ]
+      ],
+      "matches": false,
+      "left_encoding": "[[{\"type\":\"text\",\"value\":\"caf\u00e9\"}]]",
+      "right_encoding": "[[{\"type\":\"text\",\"value\":\"cafe\u0301\"}]]",
+      "left_digest": "0fd27cead194b8e3741e0c45483a5c2f55f4b5bfeba19a25ef31a4f8fbb72a62",
+      "right_digest": "d0db8e85d75379f677b4cabe7284c6e2a4455263a39d64df05249380cb316561"
+    },
+    {
+      "name": "code_point_row_ordering",
+      "left": [
+        [
+          {
+            "type": "text",
+            "value": "caf\u00e9"
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "value": "cafe\u0301"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "text",
+            "value": "cafe\u0301"
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "value": "caf\u00e9"
+          }
+        ]
+      ],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"text\",\"value\":\"cafe\u0301\"}],[{\"type\":\"text\",\"value\":\"caf\u00e9\"}]]",
+      "right_encoding": "[[{\"type\":\"text\",\"value\":\"cafe\u0301\"}],[{\"type\":\"text\",\"value\":\"caf\u00e9\"}]]",
+      "left_digest": "c93468c3403e2564bedf7c4e27e7de4cb760d24a769384bbaafbae02de2138ab",
+      "right_digest": "c93468c3403e2564bedf7c4e27e7de4cb760d24a769384bbaafbae02de2138ab"
+    },
+    {
+      "name": "json_control_character_escaping",
+      "left": [
+        [
+          {
+            "type": "text",
+            "value": "line1\nline2\t\"q\"\\ \u0001 a/b"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "text",
+            "value": "line1\nline2\t\"q\"\\ \u0001 a/b"
+          }
+        ]
+      ],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"text\",\"value\":\"line1\\nline2\\t\\\"q\\\"\\\\ \\u0001 a/b\"}]]",
+      "right_encoding": "[[{\"type\":\"text\",\"value\":\"line1\\nline2\\t\\\"q\\\"\\\\ \\u0001 a/b\"}]]",
+      "left_digest": "58d851ff8a3493193f3119b570363ce927405ee3a7f09d3ccc1e1e831c049be0",
+      "right_digest": "58d851ff8a3493193f3119b570363ce927405ee3a7f09d3ccc1e1e831c049be0"
+    },
+    {
+      "name": "multi_column_row_ordering",
+      "left": [
+        [
+          {
+            "type": "integer",
+            "value": "1"
+          },
+          {
+            "type": "text",
+            "value": "b"
+          }
+        ],
+        [
+          {
+            "type": "integer",
+            "value": "1"
+          },
+          {
+            "type": "text",
+            "value": "a"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "integer",
+            "value": "1"
+          },
+          {
+            "type": "text",
+            "value": "a"
+          }
+        ],
+        [
+          {
+            "type": "integer",
+            "value": "1"
+          },
+          {
+            "type": "text",
+            "value": "b"
+          }
+        ]
+      ],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"1\"},{\"type\":\"text\",\"value\":\"a\"}],[{\"type\":\"number\",\"value\":\"1\"},{\"type\":\"text\",\"value\":\"b\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"1\"},{\"type\":\"text\",\"value\":\"a\"}],[{\"type\":\"number\",\"value\":\"1\"},{\"type\":\"text\",\"value\":\"b\"}]]",
+      "left_digest": "eaf81374e7d9b356957e292ea97901dc2ff6e06ef4c52876b80975442c4a3472",
+      "right_digest": "eaf81374e7d9b356957e292ea97901dc2ff6e06ef4c52876b80975442c4a3472"
+    },
+    {
+      "name": "randomized_double_battery",
+      "left": [
+        [
+          {
+            "type": "real",
+            "value": "-3.488199169214282e+281"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.654741809234456e+83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.1613488924127177e-279"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.167571734051624e-251"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.542590841010388e-59"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.264627524713785e-137"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6080891467433595e-242"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.349480498434722e+161"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.346211027214732e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.2870171363153146e-254"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.257215718412777e-60"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.058446698246491e+281"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.5224209519338028e+204"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.115604706044869e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.3806509769713192e-303"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.320992954075878e-64"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.395474604964538e-83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.727195251157512e+239"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.106103369066697e-252"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.854135228569996e-185"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.676233829931202e+263"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.7239684928909954e+218"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.806997391798624e-132"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.454854836965961e+158"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.452319714175331e-283"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.6720018784632156e+233"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.3099478759036887e+82"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.5722441122227365e-18"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.370952127351653e-108"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.276236477713093e-296"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.51137931909434e-19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.1518662538385576e-58"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.1755643822130413e-59"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.24968067059095e-86"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.792284499560972e+209"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.254541370639299e-175"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.932775855860845e-30"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.2749085295856377e+137"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.918724852748045e-255"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.5117282226175237e-287"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.200259446210698e-140"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "251.04037492371933"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.486906301117304e+97"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.6369634996597935e+231"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.762560527920973e-36"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.608622076730327e+109"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.47110424452987e+298"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.754483592724295e-136"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.6379311422329146e+133"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.725259182017987e-272"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.731137928990011e+219"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "237777363.08801776"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.5616379208469966e-56"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4390847641245163e-279"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.174949953570266e-214"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.199665608221476e+101"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.938414602045447e-214"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.678076333564903e-111"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.333308885086697e+58"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.033737414362004e-109"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.78794645398362e-20"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.821542091117898e+256"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.367489419002124e-47"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.709120432050754e-277"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.2465757716050127e-155"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1462242261177724e+83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.4915287223399106e-56"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6396350292586065e+251"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.528835470668766e-305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.9885647530536913e+134"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.926576892437136e-281"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.325300791169603e+170"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.095239630576798e+130"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.667947875211197e+129"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.161778506548982e-68"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.9477779468057986e+158"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.1137185351183734e-288"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.3951019406152385e-95"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.279286407495083e+241"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.970818446755897e+193"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2299131890257893e-274"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.388078144435208e-299"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6235049119716409e-87"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.797978957450289e+121"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.124904467732605e-308"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.4943550934086143e-285"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.338924943671085e+115"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.503884039313291e-159"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.8077503204920686e-182"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.5046326327931495e-89"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7972264653826767e-225"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.6494413383937534e-19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.673367508048639e-26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.2343921520696042e-174"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.572635096600908e-214"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.2096553829189356e+260"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.368910587186832e+82"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.651948120084621e+212"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4316360599813226e-141"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.104667975974305e-137"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.7771003498108116e+48"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.4387193632364356e+282"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.6111093006451583e-10"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.965392008660159e-285"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.796513339058828e-251"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.7607156313354154e-195"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0552047020840953e-242"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.495610690154789e-296"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.546543661832028e+144"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.900646074699443e+305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.21246104778096e-267"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.508227329412516e-138"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.223068190564299e-55"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.523886886523545e-270"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.954575888095429e+250"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.170059207306869e+302"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5288554385698092e+162"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.299179027729176e+90"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.251045094021528e+40"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.399768426155772e-267"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.8015273666056609e+109"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.71361129784092e-102"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.623826916312229e-100"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.8326753728138797e+171"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6622008.548748772"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.4152045816317844e+20"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.4393402503614255e-198"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4745766121369878e+197"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5647614142437719e-55"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.168576541361762e+46"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.566619184681514e-97"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.711959589953182e-66"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.3562216901078508e+60"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.4775609380124133e-49"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-230038949.70778412"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.4856840056648275e-197"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.4951141163833645e+47"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.874971368258649e+260"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.5292162832425015e+195"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.073196467713879e-186"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.876445374372986e+135"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.162085572587254e+81"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.0586788992322347e+96"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.99781355651235e+59"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.510604634549514e-94"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1115822418535503e-270"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1071660229114068.1"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.793787998869808e-225"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4386257683291506e+265"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.681625648250875e-14"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.3361923867273455e-209"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "690008.3236131012"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.442206057821553e+43"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.028979982310387e-288"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.402844367832333e-234"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.1935732082630877e+154"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "87.67370927653714"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.517275550497196e-46"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2881961781244537e+296"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.706185211549148e+44"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.697780105332825e+172"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4522458257814384e+275"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.40518236683271e-18"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.1191036022190655e-58"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.655728742499041e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.216806444772895e+26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.445357150586579e+216"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.761983391507651e+50"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.911443218392575e-212"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.682193844215003e+278"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.958234407658796e+177"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3248365.6328214807"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.960022118184794e+280"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.03968984291804e-180"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.181271860347811e-274"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.0706117901443732e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.5161614762673143e-150"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.146602382682162e+303"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.552123264247363e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.746463048676526e-242"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.8680332262025018e+196"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.620293589804456e-288"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1500084228490141e-69"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.41769406812062e-26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.0468579749268677e+215"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.2781582689346644e+244"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.508312245337781e+102"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.5639057524834069e+125"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.095299234564639e-54"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.497841015065326e-275"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.594981034994358e+48"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.5019720371881174e+201"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.7946214970913327e-209"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.141442531771356e+138"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6178566936748303e+142"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.095541791211752e+67"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.036388128316752e+115"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.6561616032041007e+283"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.471393402171317e+243"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.835821619972606e-34"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.300342724206071e-300"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.770434637641307e-185"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2150708488144352e+290"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.163027290003413e-278"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.414941990153422e-305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.33074623938447e-133"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.2630914429525176e-290"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.515915641735881e-259"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.9308193071162704e+73"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.875036216367452e+286"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.0781390747765436e-48"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.52112741668824e-198"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.538889456831876e-206"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.985268962257706e+233"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.406852703927091e-301"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.717691867416791e-170"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.0009349609170540924"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.4528354550933554e-307"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.636323072625513e+110"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.7399213622553855e+289"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0681557423891942e+160"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0664347248937546e-287"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.3698772464189104e+305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.599493089606606e-32"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.3983820000003137e-189"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.9696300217600735e+89"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.9839824149486338e+184"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.048855851669219e-83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.148834902484451e+21"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.4715617641297356e+103"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7625496600675205e-295"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.6549347751721163e-27"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "108826130400.6319"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.7128183531680002e-276"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.2020534124221784e-122"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5011060520009794e+220"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.612766816515485e-149"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.13287812394071e-70"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.854763656258006e-97"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.7072365191202186e-207"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.9066756732743073e-241"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.004542206670483e+272"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.6961093612553806e+26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.678131756676854e+302"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.186179524340995e-72"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.0115664884614393e-217"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.05348076750165561"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.4992815036201246e+117"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "58435126451462.484"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.541635358897516e+46"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6718277420263734e+285"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.173372670100668e-153"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.4853324943222044e-298"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1720290462609019e+73"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.040344996888677e+18"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.4344930512244917e+99"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.555038984871049e+233"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.3072943054813184e+42"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7632361198225493e+147"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0676703452953278e+93"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.2950897130324615e+268"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.2367417672001535e+22"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1605762314420874e-290"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.081128348941984e-266"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.754772897809802e-108"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5204295578331272e+155"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.297715394291106e+222"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.819211758918111e-174"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0757453519806146e-265"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.9429013062871056e-19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.5147276187570004e+212"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.999240675057061e-36"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.363170441126307e+269"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.482659351661603e+284"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.169820382366284e-225"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.196428479528773e-180"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.363439558751645e-170"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.453131922062004e+282"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2878241742278887e-208"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3184462.9048508196"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.059897760036777e+187"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.993430457897561e+185"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.6422924953676125e-17"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.8674813963446e-171"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.812252391051469e-299"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.820545868724972e-91"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.247736413611346e-249"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.378752732058451e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7774753086470156e-279"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.87290303516295e+139"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.7786317760590597e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.1073235082612454e+138"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.92554277206023e+70"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.343649981661051e+90"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.586897731903964e+132"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.6156561198483362e+19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.2001698968567377e+183"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.2455937086739242e+53"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.0724566396067305e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.556654033885175e+230"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-0.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1000000000000000.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1e+16"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9007199254740992.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9007199254740994.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5e-05"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5e-05"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.30000000000000004"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1e+164"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1e+165"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1e-165"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1e-166"
+          }
+        ]
+      ],
+      "right": [
+        [
+          {
+            "type": "real",
+            "value": "1e-166"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1e-165"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1e+165"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1e+164"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.30000000000000004"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5e-05"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5e-05"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9007199254740994.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9007199254740992.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1e+16"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1000000000000000.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-0.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.0"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.556654033885175e+230"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.0724566396067305e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.2455937086739242e+53"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.2001698968567377e+183"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.6156561198483362e+19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.586897731903964e+132"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.343649981661051e+90"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.92554277206023e+70"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.1073235082612454e+138"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.7786317760590597e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.87290303516295e+139"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7774753086470156e-279"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.378752732058451e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.247736413611346e-249"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.820545868724972e-91"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.812252391051469e-299"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.8674813963446e-171"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.6422924953676125e-17"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.993430457897561e+185"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.059897760036777e+187"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3184462.9048508196"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2878241742278887e-208"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.453131922062004e+282"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.363439558751645e-170"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.196428479528773e-180"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.169820382366284e-225"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.482659351661603e+284"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.363170441126307e+269"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.999240675057061e-36"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.5147276187570004e+212"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.9429013062871056e-19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0757453519806146e-265"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.819211758918111e-174"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.297715394291106e+222"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5204295578331272e+155"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.754772897809802e-108"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.081128348941984e-266"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1605762314420874e-290"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.2367417672001535e+22"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.2950897130324615e+268"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0676703452953278e+93"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7632361198225493e+147"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.3072943054813184e+42"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.555038984871049e+233"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.4344930512244917e+99"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.040344996888677e+18"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1720290462609019e+73"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.4853324943222044e-298"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.173372670100668e-153"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6718277420263734e+285"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.541635358897516e+46"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "58435126451462.484"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.4992815036201246e+117"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.05348076750165561"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.0115664884614393e-217"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.186179524340995e-72"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.678131756676854e+302"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.6961093612553806e+26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.004542206670483e+272"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.9066756732743073e-241"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.7072365191202186e-207"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.854763656258006e-97"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.13287812394071e-70"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.612766816515485e-149"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5011060520009794e+220"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.2020534124221784e-122"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.7128183531680002e-276"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "108826130400.6319"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.6549347751721163e-27"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7625496600675205e-295"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.4715617641297356e+103"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.148834902484451e+21"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.048855851669219e-83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.9839824149486338e+184"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.9696300217600735e+89"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.3983820000003137e-189"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.599493089606606e-32"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.3698772464189104e+305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0664347248937546e-287"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0681557423891942e+160"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.7399213622553855e+289"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.636323072625513e+110"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.4528354550933554e-307"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "0.0009349609170540924"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.717691867416791e-170"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.406852703927091e-301"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.985268962257706e+233"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.538889456831876e-206"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.52112741668824e-198"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.0781390747765436e-48"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.875036216367452e+286"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.9308193071162704e+73"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.515915641735881e-259"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.2630914429525176e-290"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.33074623938447e-133"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.414941990153422e-305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.163027290003413e-278"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2150708488144352e+290"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.770434637641307e-185"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.300342724206071e-300"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.835821619972606e-34"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.471393402171317e+243"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.6561616032041007e+283"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.036388128316752e+115"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.095541791211752e+67"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6178566936748303e+142"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.141442531771356e+138"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.7946214970913327e-209"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.5019720371881174e+201"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.594981034994358e+48"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.497841015065326e-275"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.095299234564639e-54"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.5639057524834069e+125"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.508312245337781e+102"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.2781582689346644e+244"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.0468579749268677e+215"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.41769406812062e-26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1500084228490141e-69"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.620293589804456e-288"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.8680332262025018e+196"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.746463048676526e-242"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.552123264247363e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.146602382682162e+303"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.5161614762673143e-150"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.0706117901443732e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.181271860347811e-274"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.03968984291804e-180"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.960022118184794e+280"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3248365.6328214807"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.958234407658796e+177"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.682193844215003e+278"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.911443218392575e-212"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.761983391507651e+50"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.445357150586579e+216"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.216806444772895e+26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.655728742499041e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.1191036022190655e-58"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.40518236683271e-18"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4522458257814384e+275"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.697780105332825e+172"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.706185211549148e+44"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2881961781244537e+296"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.517275550497196e-46"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "87.67370927653714"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.1935732082630877e+154"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.402844367832333e-234"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.028979982310387e-288"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.442206057821553e+43"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "690008.3236131012"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.3361923867273455e-209"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.681625648250875e-14"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4386257683291506e+265"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.793787998869808e-225"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1071660229114068.1"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1115822418535503e-270"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.510604634549514e-94"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.99781355651235e+59"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.0586788992322347e+96"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.162085572587254e+81"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.876445374372986e+135"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.073196467713879e-186"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.5292162832425015e+195"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.874971368258649e+260"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.4951141163833645e+47"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.4856840056648275e-197"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-230038949.70778412"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.4775609380124133e-49"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.3562216901078508e+60"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.711959589953182e-66"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.566619184681514e-97"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.168576541361762e+46"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5647614142437719e-55"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4745766121369878e+197"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.4393402503614255e-198"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.4152045816317844e+20"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6622008.548748772"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.8326753728138797e+171"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.623826916312229e-100"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.71361129784092e-102"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.8015273666056609e+109"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.399768426155772e-267"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.251045094021528e+40"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.299179027729176e+90"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.5288554385698092e+162"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.170059207306869e+302"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.954575888095429e+250"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.523886886523545e-270"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.223068190564299e-55"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.508227329412516e-138"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.21246104778096e-267"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.900646074699443e+305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.546543661832028e+144"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.495610690154789e-296"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.0552047020840953e-242"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.7607156313354154e-195"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.796513339058828e-251"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.965392008660159e-285"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.6111093006451583e-10"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.4387193632364356e+282"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.7771003498108116e+48"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.104667975974305e-137"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4316360599813226e-141"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.651948120084621e+212"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.368910587186832e+82"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.2096553829189356e+260"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.572635096600908e-214"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.2343921520696042e-174"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.673367508048639e-26"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.6494413383937534e-19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.7972264653826767e-225"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.5046326327931495e-89"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.8077503204920686e-182"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.503884039313291e-159"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.338924943671085e+115"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.4943550934086143e-285"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.124904467732605e-308"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.797978957450289e+121"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6235049119716409e-87"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.388078144435208e-299"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.2299131890257893e-274"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.970818446755897e+193"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-7.279286407495083e+241"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.3951019406152385e-95"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.1137185351183734e-288"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.9477779468057986e+158"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.161778506548982e-68"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.667947875211197e+129"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.095239630576798e+130"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.325300791169603e+170"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.926576892437136e-281"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.9885647530536913e+134"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.528835470668766e-305"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6396350292586065e+251"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.4915287223399106e-56"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.1462242261177724e+83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.2465757716050127e-155"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.709120432050754e-277"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.367489419002124e-47"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.821542091117898e+256"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.78794645398362e-20"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.033737414362004e-109"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.333308885086697e+58"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.678076333564903e-111"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.938414602045447e-214"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.199665608221476e+101"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.174949953570266e-214"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.4390847641245163e-279"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.5616379208469966e-56"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "237777363.08801776"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.731137928990011e+219"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.725259182017987e-272"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.6379311422329146e+133"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.754483592724295e-136"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.47110424452987e+298"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-8.608622076730327e+109"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.762560527920973e-36"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.6369634996597935e+231"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.486906301117304e+97"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "251.04037492371933"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.200259446210698e-140"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.5117282226175237e-287"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.918724852748045e-255"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.2749085295856377e+137"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "4.932775855860845e-30"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-4.254541370639299e-175"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.792284499560972e+209"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.24968067059095e-86"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.1755643822130413e-59"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.1518662538385576e-58"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-2.51137931909434e-19"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.276236477713093e-296"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.370952127351653e-108"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.5722441122227365e-18"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.3099478759036887e+82"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.6720018784632156e+233"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.452319714175331e-283"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.454854836965961e+158"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.806997391798624e-132"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.7239684928909954e+218"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-9.676233829931202e+263"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.854135228569996e-185"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.106103369066697e-252"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "9.727195251157512e+239"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-6.395474604964538e-83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.320992954075878e-64"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.3806509769713192e-303"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "7.115604706044869e+71"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.5224209519338028e+204"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "3.058446698246491e+281"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "6.257215718412777e-60"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.2870171363153146e-254"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-5.346211027214732e+232"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.349480498434722e+161"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-1.6080891467433595e-242"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "1.264627524713785e-137"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "2.542590841010388e-59"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "5.167571734051624e-251"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.1613488924127177e-279"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "8.654741809234456e+83"
+          }
+        ],
+        [
+          {
+            "type": "real",
+            "value": "-3.488199169214282e+281"
+          }
+        ]
+      ],
+      "matches": true,
+      "left_encoding": "[[{\"type\":\"number\",\"value\":\"-10000000000000000\"}],[{\"type\":\"number\",\"value\":\"-10363881283167520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1067670345295327800000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-10681557423891942000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-114622422611777240000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1148834902484451000000\"}],[{\"type\":\"number\",\"value\":\"-11720290462609019000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-121507084881443520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-128819617812445370000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1297715394291106000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-13099478759036887000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-132530079116960300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-141520458163178440000\"}],[{\"type\":\"number\",\"value\":\"-151472761875700040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1522420951933802800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-156390575248340690000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-16178566936748303000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-163963502925860650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1671827742026373400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-168219384421500300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-176198339150765100000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1763236119822549300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-179228449956097200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-19839824149486338000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-20706117901443732000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-20724566396067305000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-220965538291893560000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-22367417672001535000000\"}],[{\"type\":\"number\",\"value\":\"-230038949.7078\"}],[{\"type\":\"number\",\"value\":\"-249511411638336450000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-25416353588975160000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-2594981034994358000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-2636963499659793500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-277863177605905970000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-294777794680579860000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3058678899232234700000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-30955417912117520000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3107323508261245400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3343649981661051000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-34715617641297356000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-348819916921428200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3501972037188117400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-367200187846321560000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-37399213622553855000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-4445357150586579000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-470618521154914800000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-4731137928990011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-4777100349810811600000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-499343045789756100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-499781355651235000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-5040344996888677000\"}],[{\"type\":\"number\",\"value\":\"-5307294305481318400000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-53462110272147320000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-548265935166160300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-563632307262551300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-57979789574502890000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-58750362163674520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-62510450940215280000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-63389249436710850000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-6508312245337781000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-6622008.5487\"}],[{\"type\":\"number\",\"value\":\"-72792864074950830000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-79255427720602300000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-86086220767303270000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-93787527320584510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-967623382993120200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-98729030351629500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0.0009\"}],[{\"type\":\"number\",\"value\":\"0.0535\"}],[{\"type\":\"number\",\"value\":\"0.3\"}],[{\"type\":\"number\",\"value\":\"1000000000000000\"}],[{\"type\":\"number\",\"value\":\"100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1071660229114068.1\"}],[{\"type\":\"number\",\"value\":\"108826130400.6319\"}],[{\"type\":\"number\",\"value\":\"11935732082630877000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"124559370867392420000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"127490852958563770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1356221690107850800000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1438719363236435600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"145485483696596100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"15011060520009794000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"152042955783312720000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1528855438569809200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"16156561198483362000\"}],[{\"type\":\"number\",\"value\":\"16561616032041007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"18015273666056609000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1832675372813879700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"18680332262025018000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1876445374372986000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"19600221181847940000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"196963002176007350000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"198526896225770600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"198856475305369130000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"200454220667048300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"204685797492686770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"22781582689346644000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"22950897130324615000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"237777363.088\"}],[{\"type\":\"number\",\"value\":\"24386257683291506000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"245224582578143840000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"247457661213698780000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"251.0404\"}],[{\"type\":\"number\",\"value\":\"2546543661832028000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"255665403388517500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"2958234407658796000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"305844669824649100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"31685765413617620000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3184462.9049\"}],[{\"type\":\"number\",\"value\":\"319966560822147600000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3248365.6328\"}],[{\"type\":\"number\",\"value\":\"33333088850866970000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"336987724641891040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3434493051224491700000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"34422060578215530000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"34869063011173040000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3499281503620124600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3529216283242501500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"36379311422329146000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"365572874249904100000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"369610936125538060000000000\"}],[{\"type\":\"number\",\"value\":\"39308193071162704000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"39545758880954290000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"40598977600367770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"4146602382682162000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"4200169896856737700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"436317044112630700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"43689105871868320000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"48215420911178980000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"5471393402171317000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"555503898487104900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"567813175667685400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"58435126451462.484\"}],[{\"type\":\"number\",\"value\":\"6299179027729176000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"6453131922062004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"64711042445298700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"66977801053328250000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"672396849289099540000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"690008.3236\"}],[{\"type\":\"number\",\"value\":\"690064607469944300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"69708184467558970000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"711560470604486900000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"7141442531771356000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"717005920730686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"765194812008462100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"787497136825864900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"80952396305767980000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"8162085572587254000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"834948049843472200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"865474180923445600000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"87.6737\"}],[{\"type\":\"number\",\"value\":\"9007199254740992\"}],[{\"type\":\"number\",\"value\":\"9007199254740994\"}],[{\"type\":\"number\",\"value\":\"921680644477289500000000000\"}],[{\"type\":\"number\",\"value\":\"955212326424736300000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"9586897731903964000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"9667947875211197000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"972719525115751200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}]]",
+      "right_encoding": "[[{\"type\":\"number\",\"value\":\"-10000000000000000\"}],[{\"type\":\"number\",\"value\":\"-10363881283167520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1067670345295327800000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-10681557423891942000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-114622422611777240000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1148834902484451000000\"}],[{\"type\":\"number\",\"value\":\"-11720290462609019000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-121507084881443520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-128819617812445370000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1297715394291106000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-13099478759036887000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-132530079116960300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-141520458163178440000\"}],[{\"type\":\"number\",\"value\":\"-151472761875700040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1522420951933802800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-156390575248340690000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-16178566936748303000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-163963502925860650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1671827742026373400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-168219384421500300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-176198339150765100000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-1763236119822549300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-179228449956097200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-19839824149486338000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-20706117901443732000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-20724566396067305000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-220965538291893560000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-22367417672001535000000\"}],[{\"type\":\"number\",\"value\":\"-230038949.7078\"}],[{\"type\":\"number\",\"value\":\"-249511411638336450000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-25416353588975160000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-2594981034994358000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-2636963499659793500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-277863177605905970000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-294777794680579860000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3058678899232234700000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-30955417912117520000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3107323508261245400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3343649981661051000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-34715617641297356000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-348819916921428200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-3501972037188117400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-367200187846321560000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-37399213622553855000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-4445357150586579000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-470618521154914800000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-4731137928990011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-4777100349810811600000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-499343045789756100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-499781355651235000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-5040344996888677000\"}],[{\"type\":\"number\",\"value\":\"-5307294305481318400000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-53462110272147320000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-548265935166160300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-563632307262551300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-57979789574502890000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-58750362163674520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-62510450940215280000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-63389249436710850000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-6508312245337781000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-6622008.5487\"}],[{\"type\":\"number\",\"value\":\"-72792864074950830000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-79255427720602300000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-86086220767303270000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-93787527320584510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-967623382993120200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"-98729030351629500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0\"}],[{\"type\":\"number\",\"value\":\"0.0009\"}],[{\"type\":\"number\",\"value\":\"0.0535\"}],[{\"type\":\"number\",\"value\":\"0.3\"}],[{\"type\":\"number\",\"value\":\"1000000000000000\"}],[{\"type\":\"number\",\"value\":\"100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1071660229114068.1\"}],[{\"type\":\"number\",\"value\":\"108826130400.6319\"}],[{\"type\":\"number\",\"value\":\"11935732082630877000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"124559370867392420000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"127490852958563770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1356221690107850800000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1438719363236435600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"145485483696596100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"15011060520009794000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"152042955783312720000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1528855438569809200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"16156561198483362000\"}],[{\"type\":\"number\",\"value\":\"16561616032041007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"18015273666056609000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1832675372813879700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"18680332262025018000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"1876445374372986000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"19600221181847940000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"196963002176007350000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"198526896225770600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"198856475305369130000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"200454220667048300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"204685797492686770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"22781582689346644000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"22950897130324615000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"237777363.088\"}],[{\"type\":\"number\",\"value\":\"24386257683291506000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"245224582578143840000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"247457661213698780000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"251.0404\"}],[{\"type\":\"number\",\"value\":\"2546543661832028000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"255665403388517500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"2958234407658796000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"305844669824649100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"31685765413617620000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3184462.9049\"}],[{\"type\":\"number\",\"value\":\"319966560822147600000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3248365.6328\"}],[{\"type\":\"number\",\"value\":\"33333088850866970000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"336987724641891040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3434493051224491700000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"34422060578215530000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"34869063011173040000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3499281503620124600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"3529216283242501500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"36379311422329146000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"365572874249904100000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"369610936125538060000000000\"}],[{\"type\":\"number\",\"value\":\"39308193071162704000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"39545758880954290000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"40598977600367770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"4146602382682162000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"4200169896856737700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"436317044112630700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"43689105871868320000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"48215420911178980000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"5471393402171317000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"555503898487104900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"567813175667685400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"58435126451462.484\"}],[{\"type\":\"number\",\"value\":\"6299179027729176000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"6453131922062004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"64711042445298700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"66977801053328250000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"672396849289099540000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"690008.3236\"}],[{\"type\":\"number\",\"value\":\"690064607469944300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"69708184467558970000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"711560470604486900000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"7141442531771356000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"717005920730686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"765194812008462100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"787497136825864900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"80952396305767980000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"8162085572587254000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"834948049843472200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"865474180923445600000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"87.6737\"}],[{\"type\":\"number\",\"value\":\"9007199254740992\"}],[{\"type\":\"number\",\"value\":\"9007199254740994\"}],[{\"type\":\"number\",\"value\":\"921680644477289500000000000\"}],[{\"type\":\"number\",\"value\":\"955212326424736300000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"9586897731903964000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"9667947875211197000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}],[{\"type\":\"number\",\"value\":\"972719525115751200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}]]",
+      "left_digest": "ec2f63bf20f8520f8d20e6455bfba5277a4fde238b353784f2568f09ebcc2562",
+      "right_digest": "ec2f63bf20f8520f8d20e6455bfba5277a4fde238b353784f2568f09ebcc2562"
     }
   ]
 }

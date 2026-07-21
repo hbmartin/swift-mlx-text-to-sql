@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -33,7 +35,7 @@ from eval.ex import (
     results_match,
     typed_rows,
 )
-from eval.prompt_contract import build_system_prompt
+from eval.prompt_contract import build_system_prompt, prompt_contract_receipt
 from eval.run_artifacts import (
     DEFAULT_RUNS_DIR,
     REPO_ROOT,
@@ -49,7 +51,11 @@ from eval.run_artifacts import (
     sha256_file,
     write_json,
 )
-from tools.fetch_model import ArtifactError, load_manifest
+from tools.fetch_model import (
+    ArtifactError,
+    load_manifest,
+    verify_artifact_tree_at_use,
+)
 
 DB = REPO_ROOT / "db" / "creg.sqlite"
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
@@ -127,6 +133,57 @@ def strip_special_tokens(text: str) -> str:
     return re.sub(r"<\|[a-zA-Z0-9_]+\|>", "", text)
 
 
+def truncate_at_statement_end(sql: str) -> str:
+    """Cut at the first SQL statement terminator outside quoted tokens and
+    comments. Python iterates Unicode code points; Swift mirrors this with
+    Unicode scalars so grapheme composition and canonical equivalence cannot
+    change the cut position."""
+    state = "normal"
+    index = 0
+    while index < len(sql):
+        character = sql[index]
+        following = sql[index + 1] if index + 1 < len(sql) else None
+
+        if state == "normal":
+            if character == "'":
+                state = "single"
+            elif character == '"':
+                state = "double"
+            elif character == "`":
+                state = "backtick"
+            elif character == "[":
+                state = "bracket"
+            elif character == "-" and following == "-":
+                state = "line-comment"
+                index += 1
+            elif character == "/" and following == "*":
+                state = "block-comment"
+                index += 1
+            elif character == ";":
+                return sql[:index]
+        elif state == "line-comment":
+            if character in "\r\n":
+                state = "normal"
+        elif state == "block-comment":
+            if character == "*" and following == "/":
+                state = "normal"
+                index += 1
+        else:
+            closing = {
+                "single": "'",
+                "double": '"',
+                "backtick": "`",
+                "bracket": "]",
+            }[state]
+            if character == closing:
+                if following == closing:
+                    index += 1
+                else:
+                    state = "normal"
+        index += 1
+    return sql
+
+
 def extract_sql(text: str) -> str:
     text = text.strip()
     fence = re.search(r"```(?:sql)?\s*(.*?)```", text, re.S | re.I)
@@ -135,7 +192,7 @@ def extract_sql(text: str) -> str:
     match = re.search(r"(SELECT|WITH)\b.*", text, re.S | re.I)
     if match:
         text = match.group(0)
-    return text.split(";")[0].strip()
+    return truncate_at_statement_end(text).strip()
 
 
 def taxonomy(
@@ -201,6 +258,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--max-items", type=int)
+    parser.add_argument(
+        "--prompt-overrides",
+        type=Path,
+        help=(
+            "JSONL mapping of gold item id to complete user prompt; used only "
+            "for immutable bounded-policy repair calibration"
+        ),
+    )
+    parser.add_argument(
+        "--adapter-path",
+        type=Path,
+        help="MLX-LM adapter directory applied to the verified base model",
+    )
+    parser.add_argument(
+        "--adapter-checkpoint",
+        type=Path,
+        help=(
+            "specific checkpoint weights; requires --adapter-path for its "
+            "adapter_config.json"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -208,6 +286,11 @@ def main() -> None:
     args = parse_args()
     if args.temperature < 0:
         raise SystemExit("--temperature must be non-negative")
+    if args.adapter_checkpoint is not None and args.adapter_path is None:
+        raise SystemExit("--adapter-checkpoint requires --adapter-path")
+    # Provenance is a precondition, not an output-writing step. A git-less
+    # environment must fail before reserving the deterministic run ID.
+    git = git_provenance()
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
     artifacts = {model["key"]: model for model in manifest["models"]}
@@ -223,6 +306,11 @@ def main() -> None:
             f"verified model is missing: run `uv run python tools/fetch_model.py "
             f"--model {args.model_key}` first"
         )
+    # Re-hash the tree this run actually loads; the recorded model digest is
+    # a fresh measurement, never a claim copied forward from the lock file.
+    verified_directory_sha256 = verify_artifact_tree_at_use(
+        model_path, artifact
+    )
 
     gold_path = args.gold.resolve()
     items = [
@@ -234,6 +322,28 @@ def main() -> None:
         items = items[: args.max_items]
     if not items:
         raise SystemExit("gold set is empty")
+    prompt_overrides: dict[str, str] = {}
+    prompt_overrides_path: Path | None = None
+    if args.prompt_overrides is not None:
+        prompt_overrides_path = args.prompt_overrides.absolute()
+        for line in prompt_overrides_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if (
+                set(record) != {"id", "user_content"}
+                or not isinstance(record["id"], str)
+                or not isinstance(record["user_content"], str)
+                or not record["user_content"]
+                or record["id"] in prompt_overrides
+            ):
+                raise SystemExit("invalid or duplicate --prompt-overrides record")
+            prompt_overrides[record["id"]] = record["user_content"]
+        expected_ids = {item["id"] for item in items}
+        if set(prompt_overrides) != expected_ids:
+            raise SystemExit(
+                "--prompt-overrides must contain exactly one record per gold item"
+            )
 
     run_id = args.run_id or default_run_id(
         args.model_key, gold_path, args.gcd, args.temperature, args.seed
@@ -241,7 +351,26 @@ def main() -> None:
     run_directory = create_run_directory(args.runs_dir.resolve(), run_id)
     schema = SCHEMA_PROMPT_PATH.read_text().strip()
     system_prompt = build_system_prompt(schema)
+    prompt_contract = prompt_contract_receipt(schema)
     artifact_lock_payload = json.loads(artifact_lock.read_text())
+    adapter_record = None
+    if args.adapter_path is not None:
+        adapter_path = args.adapter_path.resolve()
+        adapter_config = adapter_path / "adapter_config.json"
+        adapter_weights = (
+            args.adapter_checkpoint.resolve()
+            if args.adapter_checkpoint is not None
+            else adapter_path / "adapters.safetensors"
+        )
+        if not adapter_config.is_file() or not adapter_weights.is_file():
+            raise SystemExit(
+                "adapter evaluation requires adapter_config.json and checkpoint weights"
+            )
+        adapter_record = {
+            "directory": str(adapter_path),
+            "configuration": input_hash(adapter_config),
+            "checkpoint": input_hash(adapter_weights),
+        }
 
     run_manifest: dict[str, Any] = {
         "schema_version": 1,
@@ -249,19 +378,17 @@ def main() -> None:
         "status": "running",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "command": command_line(),
-        "git": git_provenance(),
+        "git": git,
         "hardware": hardware_provenance(),
         "dependencies": dependency_versions(),
         "model": {
             "key": args.model_key,
             "repository": artifact.get("repository") or "local-derived",
             "revision": artifact.get("revision")
-            or f"sha256:{artifact_lock_payload['directory_sha256']}",
+            or f"sha256:{verified_directory_sha256}",
             "path": str(model_path),
             "artifact_lock": input_hash(artifact_lock),
-            "directory_sha256": artifact_lock_payload.get(
-                "directory_sha256"
-            ),
+            "directory_sha256": verified_directory_sha256,
             "bundle_size_bytes": sum(
                 file["size"]
                 for file in (
@@ -282,7 +409,11 @@ def main() -> None:
             "top_k": 0,
             "max_tokens": args.max_tokens,
             "timing_unit": "microseconds",
+            "prompt_mode": (
+                "repair_override" if prompt_overrides else "question"
+            ),
         },
+        "prompt_contract": prompt_contract,
         "inputs": {
             "model_manifest": input_hash(manifest_path),
             "uv_lock": input_hash(REPO_ROOT / "fine-tuning" / "uv.lock"),
@@ -294,13 +425,66 @@ def main() -> None:
             "grammar": input_hash(GRAMMAR_PATH),
             "schema_prompt": input_hash(SCHEMA_PROMPT_PATH),
             "system_prompt_sha256": sha256_bytes(system_prompt.encode()),
+            "system_prompt_template": input_hash(
+                REPO_ROOT
+                / "CREGKit"
+                / "Sources"
+                / "CREGEngine"
+                / "Resources"
+                / "system_prompt_template.txt"
+            ),
+            "repair_prompt_template": input_hash(
+                REPO_ROOT
+                / "CREGKit"
+                / "Sources"
+                / "CREGEngine"
+                / "Resources"
+                / "repair_prompt_template.txt"
+            ),
+            "schema_catalog": input_hash(
+                REPO_ROOT
+                / "CREGKit"
+                / "Sources"
+                / "CREGEngine"
+                / "Resources"
+                / "schema_catalog.json"
+            ),
+            **(
+                {"prompt_overrides": input_hash(prompt_overrides_path)}
+                if prompt_overrides_path is not None
+                else {}
+            ),
             "tokenizer": input_hash(model_path / "tokenizer.json"),
         },
         "item_count": len(items),
     }
+    if adapter_record is not None:
+        run_manifest["adapter"] = adapter_record
     write_json(run_directory / "manifest.json", run_manifest)
 
-    model, tokenizer = load(str(model_path))
+    if adapter_record is None:
+        model, tokenizer = load(str(model_path))
+    elif args.adapter_checkpoint is None:
+        model, tokenizer = load(
+            str(model_path), adapter_path=str(args.adapter_path.resolve())
+        )
+    else:
+        # MLX-LM resolves a checkpoint by fixed filenames. A private temporary
+        # view avoids mutating the immutable adapter directory or swapping the
+        # final checkpoint in place.
+        with tempfile.TemporaryDirectory(prefix="creg-adapter-checkpoint-") as value:
+            adapter_view = Path(value)
+            shutil.copy2(
+                args.adapter_path.resolve() / "adapter_config.json",
+                adapter_view / "adapter_config.json",
+            )
+            shutil.copy2(
+                args.adapter_checkpoint.resolve(),
+                adapter_view / "adapters.safetensors",
+            )
+            model, tokenizer = load(
+                str(model_path), adapter_path=str(adapter_view)
+            )
     hf_tokenizer = getattr(tokenizer, "_tokenizer", tokenizer)
     compiled = None
     vocabulary_size = None
@@ -324,7 +508,12 @@ def main() -> None:
             question = item.get("standalone") or item["question"]
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Question: {question}"},
+                {
+                    "role": "user",
+                    "content": prompt_overrides.get(
+                        item["id"], f"Question: {question}"
+                    ),
+                },
             ]
             try:
                 prompt = hf_tokenizer.apply_chat_template(
@@ -452,9 +641,15 @@ def main() -> None:
         "schema_version": 1,
         "run_id": run_id,
         "model_key": args.model_key,
-        "model_repository": artifact["repository"],
-        "model_revision": artifact["revision"],
+        "model_repository": artifact.get("repository") or "local-derived",
+        "model_revision": artifact.get("revision")
+        or f"sha256:{verified_directory_sha256}",
         "bundle_size_bytes": run_manifest["model"]["bundle_size_bytes"],
+        "adapter_size_bytes": (
+            0
+            if adapter_record is None
+            else int(adapter_record["checkpoint"]["size"])
+        ),
         "gcd": args.gcd,
         "temperature": args.temperature,
         "seed": args.seed,

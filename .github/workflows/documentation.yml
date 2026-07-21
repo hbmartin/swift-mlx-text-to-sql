@@ -1,0 +1,93 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: documentation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build DocC
+    runs-on: macos-26
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 26.3
+        run: sudo xcode-select --switch /Applications/Xcode_26.3.app
+
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@v6
+        with:
+          path: CREGKit/.build
+          key: docc-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved') }}
+
+      - name: Stage Markdown documentation
+        run: |
+          mkdir -p CREGKit/Sources/CREGEngine/CREGEngine.docc
+          rsync -a --exclude .DS_Store docs/ CREGKit/Sources/CREGEngine/CREGEngine.docc/
+
+      - name: Generate static documentation
+        working-directory: CREGKit
+        run: |
+          swift package \
+            --allow-writing-to-directory "${RUNNER_TEMP}/docc" \
+            generate-documentation \
+            --target CREGEngine \
+            --output-path "${RUNNER_TEMP}/docc" \
+            --disable-indexing \
+            --transform-for-static-hosting \
+            --hosting-base-path "${GITHUB_REPOSITORY#*/}" \
+            --warnings-as-errors \
+            --checkout-path "${GITHUB_WORKSPACE}" \
+            --source-service github \
+            --source-service-base-url \
+              "https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}"
+
+      - name: Verify documentation artifact
+        run: |
+          test -f "${RUNNER_TEMP}/docc/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregengine/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregengine/walkthrough/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregengine/0001-schema-semantics/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregengine/querypipeline/index.html"
+          grep -Fq \
+            "baseUrl = \"/${GITHUB_REPOSITORY#*/}/\"" \
+            "${RUNNER_TEMP}/docc/index.html"
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ runner.temp }}/docc
+
+  deploy:
+    name: Deploy GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

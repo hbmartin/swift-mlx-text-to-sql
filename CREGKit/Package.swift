@@ -30,6 +30,7 @@ let package = Package(
     // application builds while preserving the pinned MLXLM loading contract.
     .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
     .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
+    .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0"),
   ],
   targets: [
     .target(
@@ -46,7 +47,12 @@ let package = Package(
       resources: [
         .copy("Resources/sql_grammar.ebnf"),
         .copy("Resources/schema_prompt.txt"),
+        .copy("Resources/schema_catalog.json"),
+        .copy("Resources/system_prompt_template.txt"),
+        .copy("Resources/repair_prompt_template.txt"),
         .copy("Resources/canonical_result_fixtures.json"),
+        .copy("Resources/sqlite_text_fixtures.json"),
+        .copy("Resources/sql_cutter_fixtures.json"),
       ]
     ),
     .target(

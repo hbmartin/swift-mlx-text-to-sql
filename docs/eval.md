@@ -248,6 +248,15 @@ in the strict-majority denominator. No Consensus selects the complete
 deterministic anchor with a visible notice; a failed or truncated anchor
 uses only the separately labeled degraded fallback.
 
+These numbers come from the schema_version 1 calibration harness. The
+harness was subsequently revised to mirror production exactly — empty
+results no longer vote, eligibility applies the production 500-row cap, and
+an anchor failure delivers the anchor's own degraded outcome instead of a
+substituted sample (see `docs/self-consistency-report.md`). The table
+remains the immutable evidence behind the historical 0.7 selection; a
+schema-version-3 bounded-policy recalibration is required before quoting it as a production-faithful
+expectation.
+
 ## Phase 7: full Python/Swift parity
 
 The selected single-shot configuration ran all 200 gold_v2 items in both

@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from eval.file_integrity import sha256_file as integrity_sha256_file
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RUNS_DIR = REPO_ROOT / "eval" / "runs"
 
@@ -28,11 +30,7 @@ def sha256_bytes(value: bytes) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return integrity_sha256_file(path)
 
 
 def slug(value: str) -> str:
@@ -80,8 +78,13 @@ def git_provenance() -> dict[str, Any]:
             "branch": git_value("branch", "--show-current"),
             "dirty": bool(git_value("status", "--porcelain")),
         }
-    except (OSError, subprocess.CalledProcessError):
-        return {"commit": None, "branch": None, "dirty": None}
+    except (OSError, subprocess.CalledProcessError) as error:
+        # A null commit in an immutable manifest would defeat the point of
+        # recording provenance; fail the run instead.
+        raise RunArtifactError(
+            "git provenance is required for immutable evidence; run inside "
+            "the repository with git available"
+        ) from error
 
 
 def dependency_versions() -> dict[str, str | None]:
@@ -132,10 +135,16 @@ def hardware_provenance() -> dict[str, Any]:
 
 
 def input_hash(path: Path) -> dict[str, Any]:
+    absolute = path.absolute()
+    try:
+        display_path = absolute.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        display_path = str(absolute)
+    digest = sha256_file(absolute)
     return {
-        "path": path.resolve().relative_to(REPO_ROOT).as_posix(),
-        "size": path.stat().st_size,
-        "sha256": sha256_file(path),
+        "path": display_path,
+        "size": absolute.lstat().st_size,
+        "sha256": digest,
     }
 
 

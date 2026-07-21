@@ -122,4 +122,25 @@ extension HistoryClient {
       exportJSONL: { _ in FileManager.default.temporaryDirectory }
     )
   }
+
+  /// Keeps startup recoverable while ensuring every attempted history
+  /// operation reaches the feature's diagnostics and presentation boundary.
+  static func unavailable(diagnostic: String) -> HistoryClient {
+    let error = HistoryUnavailableError(diagnostic: diagnostic)
+    return HistoryClient(
+      loadCurrentConversation: { throw error },
+      appendMessage: { _, _ in throw error },
+      appendEvents: { _, _, _ in throw error },
+      exportJSONL: { _ in throw error }
+    )
+  }
+}
+
+private struct HistoryUnavailableError:
+  CustomStringConvertible, LocalizedError, Sendable
+{
+  var diagnostic: String
+
+  var description: String { diagnostic }
+  var errorDescription: String? { diagnostic }
 }

@@ -1,10 +1,16 @@
-from pathlib import Path
+import pytest
 
 from eval.selection import (
     Aggregate,
+    SelectionError,
     paired_item_bootstrap,
     production_tie_key,
     temperature_is_eligible,
+)
+from tools.analyze_matrix import (
+    identical_sql_runtime_drift,
+    normalize_parity_explanations,
+    recognized_nondeterministic_sql,
 )
 
 
@@ -77,3 +83,66 @@ def test_production_tie_break_ignores_small_ex_difference():
     assert sorted(
         [higher_ex, higher_valid], key=production_tie_key
     )[0] is higher_valid
+
+
+@pytest.mark.parametrize("invalid", [None, "", "   ", 42])
+def test_parity_explanations_reject_values_that_could_hide_stale_ids(invalid):
+    with pytest.raises(
+        SelectionError,
+        match="parity explanations must contain non-empty strings",
+    ):
+        normalize_parity_explanations(
+            {"real-disagreement": "explained", "stale-id": invalid}
+        )
+
+
+def test_parity_explanations_preserve_all_raw_ids_before_normalizing():
+    explanations, raw_ids = normalize_parity_explanations(
+        {"real-disagreement": "  explained  ", "stale-id": "also valid"}
+    )
+
+    assert explanations == {
+        "real-disagreement": "explained",
+        "stale-id": "also valid",
+    }
+    assert raw_ids == {"real-disagreement", "stale-id"}
+
+
+def test_missing_predictions_are_not_identical_sql_runtime_drift():
+    missing = {"python": {"sql": None}, "swift": {"sql": None}}
+    identical = {
+        "python": {"sql": "SELECT 1"},
+        "swift": {"sql": "SELECT 1"},
+    }
+
+    assert not identical_sql_runtime_drift(missing, "3.49.1", "3.49.1")
+    assert identical_sql_runtime_drift(identical, "3.49.1", "3.49.1")
+    assert not identical_sql_runtime_drift(identical, "3.49.1", "3.50.0")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT random()",
+        "SELECT randomblob(16)",
+        "SELECT datetime('now')",
+        "SELECT strftime('%s', 'now')",
+        "SELECT CURRENT_TIMESTAMP",
+    ],
+)
+def test_parity_recognizes_only_explicit_nondeterministic_sql(sql):
+    assert recognized_nondeterministic_sql(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 'random()'",
+        "SELECT \"CURRENT_TIMESTAMP\" FROM t",
+        "SELECT 1 -- random()\n",
+        "SELECT date('2025-01-01')",
+        "SELECT deterministic_random_value FROM t",
+    ],
+)
+def test_parity_does_not_excuse_deterministic_sql(sql):
+    assert not recognized_nondeterministic_sql(sql)

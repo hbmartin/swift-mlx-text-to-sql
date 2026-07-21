@@ -71,8 +71,20 @@ extension PipelineEvent {
       "Checking the question is clear enough"
     case .gateFinished(.clarify, _, _):
       "This one needs a quick clarification"
-    case .generationStarted: "Working out how to look that up"
+    case .generationStarted(let request):
+      switch request.role {
+      case .initial:
+        "Generating the initial lookup"
+      case .repair(let attempt):
+        "Correcting attempt \(attempt) of 2"
+      case .deterministicAnchor:
+        "Generating the deterministic cross-check"
+      case .consistencySample(let index):
+        "Generating cross-check \(index) of 2"
+      }
     case .generationFinished: nil
+    case .validationStarted: "Validating the generated lookup"
+    case .validationFinished: nil
     case .executionStarted: "Running the numbers"
     case .executionFinished(_, let result):
       "Looking through the results (\(result.rowCount) row\(result.rowCount == 1 ? "" : "s"))"
@@ -82,8 +94,10 @@ extension PipelineEvent {
     case .selfConsistencyStarted: "Reading the question a few ways to be sure"
     case .selfConsistencyFinished(.consensus(_, let agreement, let candidateCount)):
       "\(agreement) of \(candidateCount) readings agreed"
+    case .selfConsistencyFinished(.noConsensus(_, _, .some(.insufficientNonEmptyEvidence))):
+      "There was not enough matching non-empty evidence"
     case .selfConsistencyFinished(.noConsensus):
-      "The readings did not reach a majority"
+      "The valid readings returned conflicting results"
     case .selfConsistencyFinished(.anchorFailed):
       "The deterministic cross-check could not run"
     case .narrationStarted: "Summarizing what I found"
