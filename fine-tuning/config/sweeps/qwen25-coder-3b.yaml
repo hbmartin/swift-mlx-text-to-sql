@@ -1,6 +1,6 @@
 name: creg-sql-reliability-v2-qwen25-coder-3b-screening
 description: Reliability-v2 18-run random screening campaign; selection uses post-training gold_v1 EX.
-program: tools/run_experiment.py
+program: tools.run_experiment
 method: random
 run_cap: 18
 metric:
@@ -9,6 +9,7 @@ metric:
 command:
   - ${env}
   - ${interpreter}
+  - -m
   - ${program}
   - --model-key=qwen25-coder-3b
   - --campaign-id=creg-sql-reliability-v2-qwen25-coder-3b-screening

@@ -72,7 +72,7 @@ sets only the two consistency samples to temperature 0.7. It records:
 - `candidate_count: 3`;
 - `always_vote: true`;
 - `sample_temperature: 0.7`; and
-- evidence linking this analysis, production selection, both publications,
+- evidence linking this analysis, the locked campaign winner and final evaluation, publications,
   and full-gold parity.
 
 Every nonzero-temperature runtime candidate receives a fresh

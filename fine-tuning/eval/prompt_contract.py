@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESOURCE_DIRECTORY = (
-    REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources"
-)
+RESOURCE_DIRECTORY = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources"
 SYSTEM_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "system_prompt_template.txt"
 REPAIR_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "repair_prompt_template.txt"
 SCHEMA_CATALOG_PATH = RESOURCE_DIRECTORY / "schema_catalog.json"
@@ -70,7 +69,8 @@ def build_repair_prompt(
         "{{POSSIBLE_COLUMN_OWNERS}}": ", ".join(possible_column_owners),
         "{{FAILED_FINGERPRINTS}}": ", ".join(failed_fingerprints),
     }
-    result = _template(REPAIR_PROMPT_TEMPLATE_PATH)
-    for placeholder, value in replacements.items():
-        result = result.replace(placeholder, value)
-    return result
+    return re.sub(
+        r"\{\{[A-Z_]+\}\}",
+        lambda match: replacements.get(match.group(0), match.group(0)),
+        _template(REPAIR_PROMPT_TEMPLATE_PATH),
+    )

@@ -8,8 +8,10 @@ from eval.run_artifacts import sha256_file
 from eval.selection import Run, SelectionError
 from tools import analyze_binding_regressions
 from tools.finalize_production import (
+    validate_campaign_winner,
     validate_binding_analysis,
-    validate_production_analysis,
+    validate_final_evaluation,
+    validate_publication_arguments,
 )
 
 
@@ -53,21 +55,15 @@ def make_run(
             "temperature": 0,
             "seed": seed,
         },
-        items=tuple(
-            {"id": row["id"], "error": None, "ex": True} for row in rows
-        ),
+        items=tuple({"id": row["id"], "error": None, "ex": True} for row in rows),
     )
 
 
-def test_binding_gate_requires_all_cases_to_pass_all_five_seeds(
-    monkeypatch, tmp_path
-):
+def test_binding_gate_requires_all_cases_to_pass_all_five_seeds(monkeypatch, tmp_path):
     regressions, rows = install_fixture(monkeypatch, tmp_path)
     fixture_hash = sha256_file(regressions)
     runs = {
-        f"run-{seed}": make_run(
-            tmp_path / f"run-{seed}", seed, rows, fixture_hash
-        )
+        f"run-{seed}": make_run(tmp_path / f"run-{seed}", seed, rows, fixture_hash)
         for seed in range(5)
     }
     monkeypatch.setattr(
@@ -76,9 +72,7 @@ def test_binding_gate_requires_all_cases_to_pass_all_five_seeds(
         lambda path: runs[path.name],
     )
 
-    result = analyze_binding_regressions.analyze(
-        [tmp_path / name for name in runs]
-    )
+    result = analyze_binding_regressions.analyze([tmp_path / name for name in runs])
 
     assert result["pass"] is True
     assert result["checks"] == 75
@@ -90,9 +84,7 @@ def test_binding_gate_rejects_a_missing_case(monkeypatch, tmp_path):
     regressions, rows = install_fixture(monkeypatch, tmp_path)
     fixture_hash = sha256_file(regressions)
     runs = {
-        f"run-{seed}": make_run(
-            tmp_path / f"run-{seed}", seed, rows[:-1], fixture_hash
-        )
+        f"run-{seed}": make_run(tmp_path / f"run-{seed}", seed, rows[:-1], fixture_hash)
         for seed in range(5)
     }
     monkeypatch.setattr(
@@ -129,9 +121,7 @@ def test_binding_gate_records_any_failed_check(monkeypatch, tmp_path):
         lambda path: by_name[path.name],
     )
 
-    result = analyze_binding_regressions.analyze(
-        [run.directory for run in runs]
-    )
+    result = analyze_binding_regressions.analyze([run.directory for run in runs])
 
     assert result["pass"] is False
     assert result["failures"] == [
@@ -165,17 +155,50 @@ def test_production_finalization_requires_matching_binding_receipt():
         validate_binding_analysis(stale, selected)
 
 
-def test_production_finalization_enforces_execution_accuracy_floor():
+def test_production_finalization_locks_gold_v2_to_gold_v1_winner():
+    campaign = {
+        "schema_version": 1,
+        "analysis": "reliability-v2-campaign-selection",
+        "selection_dataset": "gold_v1.jsonl",
+        "confirmation_seeds": [424240, 424241, 424242],
+        "winner": {
+            "artifact_model_key": "winner",
+            "recipe": "base:recipe",
+            "gcd": "on",
+            "temperature": 0,
+        },
+    }
+    winner = validate_campaign_winner(campaign)
     analysis = {
-        "analysis": "production-artifact-selection",
-        "selected": {
+        "schema_version": 1,
+        "analysis": "final-gold-v2-evaluation",
+        "selection_permitted": False,
+        "pass": True,
+        "campaign_winner": {
+            "artifact_model_key": "winner",
+            "recipe": "base:recipe",
+        },
+        "result": {
+            "model_key": "winner",
+            "gcd": "on",
+            "temperature": 0,
             "seeds": [0, 1, 2, 3, 4],
             "n_items": 200,
             "ex": 0.668,
         },
     }
 
-    assert validate_production_analysis(analysis)["ex"] == 0.668
-    analysis["selected"]["ex"] = 0.6679
+    assert validate_final_evaluation(analysis, winner)["ex"] == 0.668
+    analysis["result"]["model_key"] = "gold-v2-challenger"
+    with pytest.raises(SelectionError, match="does not match"):
+        validate_final_evaluation(analysis, winner)
+    analysis["result"]["model_key"] = "winner"
+    analysis["result"]["ex"] = 0.6679
     with pytest.raises(SelectionError, match="66.8% EX"):
-        validate_production_analysis(analysis)
+        validate_final_evaluation(analysis, winner)
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_production_finalization_accepts_one_or_more_publications(tmp_path, count):
+    paths = [tmp_path / f"publication-{index}.json" for index in range(count)]
+    assert validate_publication_arguments(paths) == paths

@@ -19,11 +19,40 @@ public struct DatabaseClient: Sendable {
   }
 }
 
+/// A typed startup failure used when the read-only portfolio database cannot
+/// be opened. Classification must never depend on parsing localized text.
+public struct PortfolioDatabaseUnavailableError:
+  Error, CustomStringConvertible, LocalizedError, Sendable
+{
+  public var diagnostic: String
+
+  public init(diagnostic: String) {
+    self.diagnostic = diagnostic
+  }
+
+  public var description: String { diagnostic }
+  public var errorDescription: String? { diagnostic }
+}
+
 extension DatabaseClient {
   /// Maximum rows returned to the UI before truncation. Python evaluation
   /// uses 10,000 (`eval.ex.ROW_CAP`); schema-v3 policy calibration excludes
   /// results above this 500-row production cap from voting and digest parity.
   public static let defaultRowCap = 500
+
+  public static func unavailableBundledPortfolioDatabase(
+    diagnostic: String
+  ) -> DatabaseClient {
+    let issue = SQLValidationIssue(
+      kind: .databaseUnavailable,
+      disposition: .terminal,
+      message: diagnostic)
+    return DatabaseClient(
+      validate: { _ in SQLValidationReport(issue: issue) },
+      execute: { _ in
+        throw PortfolioDatabaseUnavailableError(diagnostic: diagnostic)
+      })
+  }
 
   static func sqliteTextFixtureData() throws -> Data {
     guard let url = Bundle.module.url(
@@ -115,7 +144,7 @@ extension SQLValidationIssue {
         disposition: .terminal,
         message: message)
     }
-    if message.contains("[portfolio_database_unavailable]") {
+    if error is PortfolioDatabaseUnavailableError {
       return SQLValidationIssue(
         kind: .databaseUnavailable,
         disposition: .terminal,

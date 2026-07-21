@@ -85,7 +85,7 @@ The Logs tab UI reads from `logLines`, not from these files.
 import wandb
 from wandb_gql import gql
 
-api = wandb.Api()
+api = wandb.Api(timeout=120)
 
 query = gql("""
 query RunLogs($entity: String!, $project: String!, $run: String!,

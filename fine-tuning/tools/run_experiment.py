@@ -21,8 +21,8 @@ from eval.file_integrity import transactionally_replace_directory
 from eval.prompt_contract import prompt_contract_receipt
 from eval.run_artifacts import (
     REPO_ROOT,
+    clean_git_provenance,
     create_run_directory,
-    git_provenance,
     hardware_provenance,
     input_hash,
     sha256_file,
@@ -68,9 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-key", required=True)
     parser.add_argument("--seed", type=int, default=424242)
-    parser.add_argument(
-        "--fine-tune-type", choices=["lora", "dora"], default="lora"
-    )
+    parser.add_argument("--fine-tune-type", choices=["lora", "dora"], default="lora")
     parser.add_argument(
         "--trainable-layers", choices=["last-16", "all"], default="last-16"
     )
@@ -120,9 +118,7 @@ def verify_regenerated_corpus(
             or regenerated_hash != file["sha256"]
             or committed.read_bytes() != regenerated.read_bytes()
         ):
-            raise RuntimeError(
-                f"regenerated corpus differs byte-for-byte: {committed}"
-            )
+            raise RuntimeError(f"regenerated corpus differs byte-for-byte: {committed}")
         comparisons.append(
             {
                 "committed": input_hash(committed),
@@ -141,7 +137,9 @@ def resolve_num_layers(config: ExperimentConfig, base: Path) -> int:
         value = model_config.get(key)
         if isinstance(value, int) and value > 0:
             return value
-    raise RuntimeError(f"cannot resolve all trainable layers from {base / 'config.json'}")
+    raise RuntimeError(
+        f"cannot resolve all trainable layers from {base / 'config.json'}"
+    )
 
 
 def write_effective_configuration(
@@ -278,9 +276,7 @@ def materialize_adapter_artifact(
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     staged = Path(
-        tempfile.mkdtemp(
-            prefix=f".{destination.name}.staging-", dir=destination.parent
-        )
+        tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent)
     )
     try:
         for item in source_inventory:
@@ -357,9 +353,7 @@ def _fuse_selected_checkpoint(
     training_provenance = {
         "run_id": manifest["run_id"],
         "seed": manifest["experiment"]["seed"],
-        "configuration_sha256": manifest["experiment"][
-            "configuration_sha256"
-        ],
+        "configuration_sha256": manifest["experiment"]["configuration_sha256"],
         "selected_checkpoint_iteration": selected["iteration"],
         "selected_checkpoint_sha256": selected["checkpoint_sha256"],
         "base_repository": artifact["repository"],
@@ -425,13 +419,11 @@ def finalize_synchronized_manifest(manifest_path: Path) -> dict[str, Any]:
     if manifest.get("experiment", {}).get("stage") != "screening":
         if not manifest.get("fused_reference"):
             raise RuntimeError("promoted/final experiment is not fused")
-        manifest["candidate_manifest_entry"]["training_provenance"]["wandb"] = (
-            manifest["wandb"]["receipt"]
-        )
+        manifest["candidate_manifest_entry"]["training_provenance"]["wandb"] = manifest[
+            "wandb"
+        ]["receipt"]
     manifest["status"] = "complete"
-    manifest["completed_at"] = time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-    )
+    manifest["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     write_json(manifest_path, manifest)
     return manifest
 
@@ -456,21 +448,21 @@ def run_experiment(
     models_dir = models_dir.resolve()
     base = local_artifact_path(artifact, models_dir)
     if not (base / LOCK_FILE).is_file():
-        raise RuntimeError(f"{config.model_key}: verified base is missing; fetch it first")
+        raise RuntimeError(
+            f"{config.model_key}: verified base is missing; fetch it first"
+        )
     base_sha256 = verify_artifact_tree_at_use(base, artifact)
 
     # Repository provenance is a precondition. Check it before reserving the
     # immutable run directory or regenerating a corpus into that directory.
-    git = git_provenance()
+    git = clean_git_provenance()
     wb_run_id = run_id_factory()
     run_id = immutable_run_id(config, wb_run_id)
     training_runs_dir = training_runs_dir.resolve()
     run_directory = training_runs_dir / run_id
     adapter = models_dir / "adapters" / config.campaign_id / run_id
     scratch_adapter = run_directory / "mlx-adapter-scratch"
-    fused = models_dir / "fused" / (
-        f"{run_id}-iter-{config.iterations:06d}"
-    )
+    fused = models_dir / "fused" / (f"{run_id}-iter-{config.iterations:06d}")
     if run_directory.exists() or run_directory.is_symlink():
         raise RuntimeError(f"refusing to overwrite training run {run_directory}")
     if adapter.exists() or fused.exists():

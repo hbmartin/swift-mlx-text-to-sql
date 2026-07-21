@@ -18,6 +18,16 @@ from tools.run_experiment import (
 )
 
 
+def base_artifact_for(model_manifest: dict, model_key: str) -> dict:
+    artifact = next(
+        (item for item in model_manifest["models"] if item["key"] == model_key),
+        None,
+    )
+    if artifact is None:
+        raise SystemExit(f"training run references missing base model key: {model_key}")
+    return artifact
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--training-run", type=Path, required=True)
@@ -49,9 +59,7 @@ def main() -> None:
         wandb_stage = "confirmation" if args.stage == "promoted" else args.stage
         manifest["wandb"]["job_type"] = wandb_stage
         manifest["wandb"]["tags"] = [
-            tag
-            for tag in manifest["wandb"]["tags"]
-            if not tag.startswith("stage:")
+            tag for tag in manifest["wandb"]["tags"] if not tag.startswith("stage:")
         ] + [f"stage:{wandb_stage}"]
     if not manifest["outputs"].get("fused"):
         manifest["outputs"]["fused"] = str(
@@ -71,10 +79,9 @@ def main() -> None:
     manifest = json.loads(manifest_path.read_text())
     if not manifest.get("fused_reference"):
         model_manifest = load_manifest(args.model_manifest.resolve())
-        artifact = next(
-            item
-            for item in model_manifest["models"]
-            if item["key"] == manifest["experiment"]["model_key"]
+        artifact = base_artifact_for(
+            model_manifest,
+            manifest["experiment"]["model_key"],
         )
         base = local_artifact_path(artifact, args.models_dir.resolve())
         verify_artifact_tree_at_use(base, artifact)
@@ -87,9 +94,9 @@ def main() -> None:
                 "run_id": result["run_id"],
                 "stage": result["experiment"]["stage"],
                 "status": result["status"],
-                "selected_iteration": result["checkpoint_evaluation"][
-                    "selected"
-                ]["iteration"],
+                "selected_iteration": result["checkpoint_evaluation"]["selected"][
+                    "iteration"
+                ],
             },
             indent=2,
             sort_keys=True,

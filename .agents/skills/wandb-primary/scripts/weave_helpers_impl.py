@@ -196,8 +196,8 @@ def _call_row(call: Any) -> dict[str, Any]:
         "ended_at": str(ended or ""),
         "duration_s": duration,
         "status": weave.get("status") or summary.get("status") or "unknown",
-        "status_counts": weave.get("status_counts")
-        or summary.get("status_counts")
+        "status_counts": summary.get("status_counts")
+        or weave.get("status_counts")
         or {},
         "exception": str(getattr(call, "exception", "") or "")[:500] or None,
     }
@@ -496,7 +496,7 @@ def eval_health(eval_calls: list[Any]) -> list[dict[str, Any]]:
 
         weave_meta = summary.get("weave", {}) if hasattr(summary, "get") else {}
         status = weave_meta.get("status", "unknown")
-        status_counts = weave_meta.get("status_counts", {})
+        status_counts = summary.get("status_counts", {})
         success_count = status_counts.get("success", 0)
         error_count = status_counts.get("error", 0)
 
@@ -535,13 +535,16 @@ def eval_efficiency(eval_calls: list[Any]) -> list[dict[str, Any]]:
         if h["status"] in ("running", "unknown"):
             continue
         sc = h["success_count"]
-        tps = h["total_tokens"] / sc if sc > 0 else float("inf")
+        tps = h["total_tokens"] / sc if sc > 0 else None
         rows.append({
             "display_name": h["display_name"],
             "total_tokens": h["total_tokens"],
             "success_count": sc,
             "error_count": h["error_count"],
-            "tokens_per_success": round(tps),
+            "tokens_per_success": round(tps) if tps is not None else None,
         })
-    rows.sort(key=lambda r: r["tokens_per_success"])
+    rows.sort(key=lambda r: (
+        r["tokens_per_success"] is None,
+        r["tokens_per_success"] or 0,
+    ))
     return rows

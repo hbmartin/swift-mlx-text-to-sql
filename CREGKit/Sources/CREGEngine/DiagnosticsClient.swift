@@ -147,7 +147,7 @@ enum DiagnosticPrivacy {
       with: "$1=<redacted SQL>")
 
     let statementShape =
-      #"(?ix)^\s*(?:SELECT\s+(?:DISTINCT\s+)?(?:[\w\"`\[(*]|\d|'|\?)|WITH\s+(?:RECURSIVE\s+)?[\w\"`\[]+\s+AS\s*\(|INSERT\s+INTO\s+|UPDATE\s+[\w\"`\[]+\s+SET\s+|DELETE\s+FROM\s+|CREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|ALTER\s+TABLE\s+|PRAGMA\s+[\w.]+)"#
+      #"(?ix)^\s*(?:SELECT\s+(?:DISTINCT\s+)?(?:\*|[-+]?\d|NULL\b|TRUE\b|FALSE\b|'|\"|`|\[|\?|[:@$][\w]+|[\w]+\s*\(|[\w\"`\[\].]+\s*(?:,|\bAS\b|\bFROM\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bUNION\b|$))|WITH\s+(?:RECURSIVE\s+)?[\w\"`\[]+\s+AS\s*\(|INSERT\s+INTO\s+|UPDATE\s+[\w\"`\[]+\s+SET\s+|DELETE\s+FROM\s+|CREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|ALTER\s+TABLE\s+|PRAGMA\s+[\w.]+)"#
     guard let expression = try? NSRegularExpression(pattern: statementShape) else {
       return value
     }

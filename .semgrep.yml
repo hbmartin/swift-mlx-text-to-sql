@@ -1,0 +1,10 @@
+rules:
+  - id: creg-typed-diagnostic-classification
+    message: Classify pipeline failures by typed error or validation issue, not text markers.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include:
+        - /CREGKit/Sources/**/*.swift
+    pattern-regex: >-
+      \.(?:contains|hasPrefix|hasSuffix)\s*\([^\n]*portfolio_database_unavailable

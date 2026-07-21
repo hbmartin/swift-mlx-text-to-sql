@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift:
+    name: Swift tests
+    runs-on: macos-26
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 26.3
+        run: sudo xcode-select --switch /Applications/Xcode_26.3.app
+
+      - name: Test Swift packages
+        working-directory: CREGKit
+        run: swift test
+
+  python:
+    name: Python tests and corpus determinism
+    runs-on: macos-26
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.13
+
+      - name: Run Python tests
+        working-directory: fine-tuning
+        run: uv run --frozen pytest -q
+
+      - name: Regenerate corpus deterministically
+        working-directory: fine-tuning
+        run: |
+          uv run --frozen python -m synth.generate_training --out-dir "${RUNNER_TEMP}/corpus"
+          cmp synth/out/train.jsonl "${RUNNER_TEMP}/corpus/train.jsonl"
+          cmp synth/out/valid.jsonl "${RUNNER_TEMP}/corpus/valid.jsonl"
+          cmp synth/out/gate_stats.json "${RUNNER_TEMP}/corpus/gate_stats.json"
+
+  security:
+    name: Security regression guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+
+      - name: Verify workflow action pins
+        working-directory: fine-tuning
+        run: uv run --no-project python -m tools.check_ci_contracts
+
+      - name: Prevent string-based diagnostic classification
+        run: uvx --from semgrep==1.170.0 semgrep scan --error --config .semgrep.yml
+
+      - name: Check patch whitespace
+        run: git diff --check HEAD^ HEAD

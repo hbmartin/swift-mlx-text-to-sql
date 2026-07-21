@@ -178,7 +178,7 @@ children = list(client.get_calls(filter=CallsFilter(parent_ids=[call.id])))
 
 ## Evaluation call hierarchy
 
-```
+```text
 Evaluation.evaluate (root)
   +-- Evaluation.predict_and_score (one per dataset row x trials)
   |     +-- model.predict (the actual model call)
@@ -196,8 +196,8 @@ summary = eval_call.summary
 summary["weave"]["status"]                    # "success" | "error" | "descendant_error" | "running"
 
 # Descendant call counts
-summary["weave"]["status_counts"]["success"]  # int
-summary["weave"]["status_counts"]["error"]    # int
+summary["status_counts"]["success"]  # int
+summary["status_counts"]["error"]    # int
 
 # Token usage (keyed by model name)
 summary["usage"]["gpt-4o"]["total_tokens"]    # int

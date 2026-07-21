@@ -218,7 +218,7 @@ rows = list(run.scan_history(
 df = pd.DataFrame(rows)
 
 # With caching (default True — skips re-download)
-rows = list(run.scan_history(keys=["loss"], use_cache=True)))
+rows = list(run.scan_history(keys=["loss"], use_cache=True))
 ```
 
 **Behavior**: Downloads parquet history files, then reads locally. First call downloads the file; subsequent calls with use_cache=True read from local cache.

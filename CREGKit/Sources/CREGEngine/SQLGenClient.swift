@@ -250,8 +250,9 @@ actor MLXSQLGenerator {
   }
 
   static func systemPrompt(schema: String) -> String {
-    resourceText(name: "system_prompt_template")
-      .replacingOccurrences(of: "{{SCHEMA}}", with: schema)
+    renderTemplate(
+      resourceText(name: "system_prompt_template"),
+      replacements: ["{{SCHEMA}}": schema])
   }
 
   static func repairPrompt(
@@ -269,10 +270,35 @@ actor MLXSQLGenerator {
       "{{POSSIBLE_COLUMN_OWNERS}}": guidance?.possibleColumnOwners.joined(separator: ", ") ?? "",
       "{{FAILED_FINGERPRINTS}}": guidance?.failedFingerprints.joined(separator: ", ") ?? "",
     ]
-    return replacements.reduce(resourceText(name: "repair_prompt_template")) {
-      value, replacement in
-      value.replacingOccurrences(of: replacement.key, with: replacement.value)
+    return renderTemplate(
+      resourceText(name: "repair_prompt_template"),
+      replacements: replacements)
+  }
+
+  /// Replaces placeholders found in the original template exactly once.
+  /// User-controlled values that contain placeholder-shaped text are data,
+  /// not a second template pass.
+  private static func renderTemplate(
+    _ template: String,
+    replacements: [String: String]
+  ) -> String {
+    guard let expression = try? NSRegularExpression(
+      pattern: #"\{\{[A-Z_]+\}\}"#)
+    else { return template }
+    let matches = expression.matches(
+      in: template,
+      range: NSRange(template.startIndex..<template.endIndex, in: template))
+    var result = ""
+    var cursor = template.startIndex
+    for match in matches {
+      guard let range = Range(match.range, in: template) else { continue }
+      result += template[cursor..<range.lowerBound]
+      let token = String(template[range])
+      result += replacements[token] ?? token
+      cursor = range.upperBound
     }
+    result += template[cursor...]
+    return result
   }
 
   private static func resourceText(name: String) -> String {

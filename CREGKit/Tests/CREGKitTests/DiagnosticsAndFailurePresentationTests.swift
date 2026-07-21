@@ -107,6 +107,13 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     let redacted = DiagnosticPrivacy.redact(decoding)
     #expect(redacted.contains("models[3].quantization"))
     #expect(!redacted.contains("<redacted SQL>"))
+
+    let instruction = "Select a valid model before retrying."
+    #expect(DiagnosticPrivacy.redact(instruction) == instruction)
+    #expect(DiagnosticPrivacy.redact("SELECT 1") == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SELECT char(97, 0, 98)")
+        == "<redacted SQL>")
   }
 
   @Test func diagnosticRedactionTargetsStatementShapesLabelsAndIdentifiers() {
@@ -310,10 +317,8 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       sqlGen: SQLGenClient { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
-      db: DatabaseClient { _ in
-        throw DiagnosticsTestError.failed(
-          "[portfolio_database_unavailable] creg.sqlite is missing")
-      },
+      db: .unavailableBundledPortfolioDatabase(
+        diagnostic: "creg.sqlite is missing"),
       serializer: InferenceSerializer(),
       configuration: configuration()
     ).reportingTerminalFailures(to: recorder.client)
@@ -327,6 +332,25 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(message.contains("portfolio data is unavailable"))
     #expect(!message.contains("sqlite"))
     #expect(recorder.events.map(\.code) == ["pipeline_portfolio_database_unavailable"])
+  }
+
+  @Test func databaseFailureClassificationDoesNotScrapeDiagnosticText() async throws {
+    let recorder = DiagnosticEventRecorder()
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient { _ in
+        throw DiagnosticsTestError.failed(
+          "[portfolio_database_unavailable] user-controlled text")
+      },
+      serializer: InferenceSerializer(),
+      configuration: configuration()
+    ).reportingTerminalFailures(to: recorder.client)
+
+    _ = await Array(pipeline.run("question", []))
+    #expect(recorder.events.map(\.code) == ["pipeline_database_execution_failed"])
   }
 
   @Test func foundationModelTerminalFailureIncludesStageWithoutQuestion() async throws {

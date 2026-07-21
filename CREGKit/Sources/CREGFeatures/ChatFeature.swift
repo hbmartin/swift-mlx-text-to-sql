@@ -395,24 +395,3 @@ private enum LiveDependencies {
     }
   }()
 }
-
-private struct BundledPortfolioDatabaseUnavailable:
-  CustomStringConvertible, LocalizedError, Sendable
-{
-  var diagnostic: String
-
-  var description: String { errorDescription ?? diagnostic }
-  var errorDescription: String? {
-    "[portfolio_database_unavailable] \(diagnostic)"
-  }
-}
-
-private extension DatabaseClient {
-  static func unavailableBundledPortfolioDatabase(
-    diagnostic: String
-  ) -> DatabaseClient {
-    DatabaseClient { _ in
-      throw BundledPortfolioDatabaseUnavailable(diagnostic: diagnostic)
-    }
-  }
-}

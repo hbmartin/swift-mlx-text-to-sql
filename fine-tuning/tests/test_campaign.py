@@ -97,5 +97,11 @@ def test_winner_uses_clustered_development_metrics_and_canonical_seed(tmp_path):
                 )
             )
     result = select_campaign_winner(promoted)
+    assert result["analysis"] == "reliability-v2-campaign-selection"
+    assert result["selection_dataset"] == "gold_v1.jsonl"
+    assert result["confirmation_seeds"] == [424240, 424241, 424242]
     assert result["winner"]["recipe"] == "qwen25-coder-3b:recipe-a"
     assert result["winner"]["canonical_seed_run_id"].endswith("424242")
+    assert result["winner"]["artifact_model_key"].startswith("ft-")
+    assert len(result["inputs"]) == 12
+    assert all(len(item["manifest_sha256"]) == 64 for item in result["inputs"])
