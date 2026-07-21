@@ -121,6 +121,15 @@ enum DiagnosticPrivacy {
   /// history payloads, database paths, or conversation IDs. This final live-log
   /// filter guards against those values appearing inside an underlying error.
   static func redact(_ details: String) -> String {
+    let labeledMultilineStatement =
+      #"(?ix)^\s*(sql|query|statement)\s*[:=]\s*SELECT(?:\s+DISTINCT)?\s*\n[\s\S]+$"#
+    if let expression = try? NSRegularExpression(pattern: labeledMultilineStatement) {
+      let range = NSRange(details.startIndex..<details.endIndex, in: details)
+      if expression.firstMatch(in: details, range: range) != nil {
+        return expression.stringByReplacingMatches(
+          in: details, range: range, withTemplate: "$1=<redacted SQL>")
+      }
+    }
     if isStatementShapedSQL(details) {
       return "<redacted SQL>"
     }
@@ -154,7 +163,7 @@ enum DiagnosticPrivacy {
 
   private static func isStatementShapedSQL(_ value: String) -> Bool {
     let statementShape =
-      #"(?ix)^\s*(?:SELECT\s+(?:DISTINCT\s+)?(?:\*|[-+]?\d|NULL\b|TRUE\b|FALSE\b|'|\"|`|\[|\?|[:@$][\w]+|CASE\b|EXISTS\s*\(|\(\s*(?:SELECT|WITH)\b|[\w]+\s*\(|[\w\"`\[\].]+\s*(?:,|\bAS\b|\bFROM\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bUNION\b|$))|WITH\s+(?:RECURSIVE\s+)?[\w\"`\[]+\s+AS\s*\(|INSERT\s+INTO\s+|UPDATE\s+[\w\"`\[]+\s+SET\s+|DELETE\s+FROM\s+|CREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|ALTER\s+TABLE\s+|PRAGMA\s+[\w.]+)"#
+      #"(?ix)^\s*(?:SELECT\s+(?:DISTINCT\s+)?(?:\*|[-+]?\d|NULL\b|TRUE\b|FALSE\b|'|\"|`|\[|\?|[:@$][\w]+|CASE\s+WHEN\b|EXISTS\s*\(|\(\s*(?:SELECT|WITH)\b|(?:[-+~]|NOT\b)\s*(?:[\w\"`\[\].]+|\(|\?|[:@$][\w]+)|[\w]+\s*\(|[\w\"`\[\].]+\s*(?:,|\bAS\b|\bFROM\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bUNION\b|$))|WITH\s+(?:RECURSIVE\s+)?[\w\"`\[]+\s+AS\s*\(|INSERT\s+INTO\s+|UPDATE\s+[\w\"`\[]+\s+SET\s+|DELETE\s+FROM\s+|CREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|ALTER\s+TABLE\s+|PRAGMA\s+[\w.]+)"#
     guard let expression = try? NSRegularExpression(pattern: statementShape) else {
       return false
     }

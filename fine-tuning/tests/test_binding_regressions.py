@@ -201,7 +201,7 @@ def test_production_finalization_locks_gold_v2_to_gold_v1_winner(tmp_path):
         validate_final_evaluation(analysis, winner, campaign_path)
     analysis["result"]["model_key"] = "winner"
     analysis["result"]["ex"] = 0.6679
-    with pytest.raises(SelectionError, match="66.8% EX"):
+    with pytest.raises(SelectionError, match=r"66\.8% EX"):
         validate_final_evaluation(analysis, winner, campaign_path)
     analysis["result"]["ex"] = 0.668
     analysis["inputs"]["campaign_winner"]["sha256"] = "0" * 64

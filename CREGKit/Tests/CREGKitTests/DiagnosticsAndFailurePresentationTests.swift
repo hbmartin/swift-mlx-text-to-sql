@@ -134,6 +134,13 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(
       DiagnosticPrivacy.redact("SELECT\n(SELECT COUNT(*) FROM tenants)")
         == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SQL: SELECT\nCASE WHEN active THEN 1 ELSE 0 END FROM leases")
+        == "SQL=<redacted SQL>")
+    #expect(DiagnosticPrivacy.redact("SELECT -amount FROM leases") == "<redacted SQL>")
+    #expect(DiagnosticPrivacy.redact("SELECT NOT active FROM leases") == "<redacted SQL>")
+    let caseInstruction = "Select case studies before retrying."
+    #expect(DiagnosticPrivacy.redact(caseInstruction) == caseInstruction)
   }
 
   @Test func diagnosticRedactionTargetsStatementShapesLabelsAndIdentifiers() {

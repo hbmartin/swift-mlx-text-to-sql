@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 from tools import check_ci_contracts
@@ -48,8 +49,15 @@ jobs:
 
 def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
     (tmp_path / "ci.yml").write_text("jobs: {}\n")
-    (tmp_path / "security.yaml").write_text("jobs: {}\n")
+    (tmp_path / "security.yaml").write_text(
+        "jobs:\n"
+        "  test:\n"
+        "    steps:\n"
+        "      - uses: unsafe/action@main\n"
+    )
     (tmp_path / "ignored.txt").write_text("uses: unsafe/action@main\n")
     monkeypatch.setattr(check_ci_contracts, "WORKFLOWS", tmp_path)
+    monkeypatch.setattr(check_ci_contracts, "ROOT", tmp_path)
 
-    check_ci_contracts.main()
+    with pytest.raises(SystemExit, match=r"security\.yaml:.*action is not SHA-pinned"):
+        check_ci_contracts.main()
