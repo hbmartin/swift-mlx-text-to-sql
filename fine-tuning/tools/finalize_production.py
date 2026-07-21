@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         action="append",
         required=True,
-        help="fresh-verified publication.json (exactly two)",
+        help="fresh-verified publication.json (one or more)",
     )
     return parser.parse_args()
 
@@ -133,19 +133,28 @@ def main() -> None:
     publication_identities = {
         (item["repository"], item["revision"]) for item in publications
     }
-    derived = [item for item in models.values() if item.get("derived")]
-    if (
-        len(derived) != 2
-        or any(
-            item.get("publication_status") != "public-verified"
-            or (item.get("repository"), item.get("revision"))
-            not in publication_identities
-            for item in derived
-        )
-    ):
+    if len(publication_identities) != len(publications):
+        raise SelectionError("publication records must name distinct revisions")
+    derived = [
+        item
+        for item in models.values()
+        if item.get("derived")
+        and item.get("publication_status") == "public-verified"
+        and (item.get("repository"), item.get("revision"))
+        in publication_identities
+    ]
+    if len(derived) != len(publication_identities) or model not in derived:
         raise SelectionError(
-            "manifest does not contain exactly two fresh-verified public fine-tunes"
+            "manifest does not contain every supplied fresh-verified public fine-tune"
         )
+    for item in derived:
+        if item.get("experiment_authority") != "wandb":
+            continue
+        receipt = item.get("training_provenance", {}).get("wandb", {})
+        if receipt.get("status") != "complete":
+            raise SelectionError(
+                f"{item['key']} is missing complete W&B experiment evidence"
+            )
 
     manifest["production"] = {
         "model_key": selected["model_key"],

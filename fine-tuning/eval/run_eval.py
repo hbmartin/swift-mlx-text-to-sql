@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -218,6 +220,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--max-items", type=int)
+    parser.add_argument(
+        "--adapter-path",
+        type=Path,
+        help="MLX-LM adapter directory applied to the verified base model",
+    )
+    parser.add_argument(
+        "--adapter-checkpoint",
+        type=Path,
+        help=(
+            "specific checkpoint weights; requires --adapter-path for its "
+            "adapter_config.json"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -225,6 +240,8 @@ def main() -> None:
     args = parse_args()
     if args.temperature < 0:
         raise SystemExit("--temperature must be non-negative")
+    if args.adapter_checkpoint is not None and args.adapter_path is None:
+        raise SystemExit("--adapter-checkpoint requires --adapter-path")
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
     artifacts = {model["key"]: model for model in manifest["models"]}
@@ -264,6 +281,24 @@ def main() -> None:
     schema = SCHEMA_PROMPT_PATH.read_text().strip()
     system_prompt = build_system_prompt(schema)
     artifact_lock_payload = json.loads(artifact_lock.read_text())
+    adapter_record = None
+    if args.adapter_path is not None:
+        adapter_path = args.adapter_path.resolve()
+        adapter_config = adapter_path / "adapter_config.json"
+        adapter_weights = (
+            args.adapter_checkpoint.resolve()
+            if args.adapter_checkpoint is not None
+            else adapter_path / "adapters.safetensors"
+        )
+        if not adapter_config.is_file() or not adapter_weights.is_file():
+            raise SystemExit(
+                "adapter evaluation requires adapter_config.json and checkpoint weights"
+            )
+        adapter_record = {
+            "directory": str(adapter_path),
+            "configuration": input_hash(adapter_config),
+            "checkpoint": input_hash(adapter_weights),
+        }
 
     run_manifest: dict[str, Any] = {
         "schema_version": 1,
@@ -318,9 +353,33 @@ def main() -> None:
         },
         "item_count": len(items),
     }
+    if adapter_record is not None:
+        run_manifest["adapter"] = adapter_record
     write_json(run_directory / "manifest.json", run_manifest)
 
-    model, tokenizer = load(str(model_path))
+    if adapter_record is None:
+        model, tokenizer = load(str(model_path))
+    elif args.adapter_checkpoint is None:
+        model, tokenizer = load(
+            str(model_path), adapter_path=str(args.adapter_path.resolve())
+        )
+    else:
+        # MLX-LM resolves a checkpoint by fixed filenames. A private temporary
+        # view avoids mutating the immutable adapter directory or swapping the
+        # final checkpoint in place.
+        with tempfile.TemporaryDirectory(prefix="creg-adapter-checkpoint-") as value:
+            adapter_view = Path(value)
+            shutil.copy2(
+                args.adapter_path.resolve() / "adapter_config.json",
+                adapter_view / "adapter_config.json",
+            )
+            shutil.copy2(
+                args.adapter_checkpoint.resolve(),
+                adapter_view / "adapters.safetensors",
+            )
+            model, tokenizer = load(
+                str(model_path), adapter_path=str(adapter_view)
+            )
     hf_tokenizer = getattr(tokenizer, "_tokenizer", tokenizer)
     compiled = None
     vocabulary_size = None
@@ -476,6 +535,11 @@ def main() -> None:
         "model_revision": artifact.get("revision")
         or f"sha256:{verified_directory_sha256}",
         "bundle_size_bytes": run_manifest["model"]["bundle_size_bytes"],
+        "adapter_size_bytes": (
+            0
+            if adapter_record is None
+            else int(adapter_record["checkpoint"]["size"])
+        ),
         "gcd": args.gcd,
         "temperature": args.temperature,
         "seed": args.seed,

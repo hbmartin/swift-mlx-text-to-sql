@@ -18,6 +18,12 @@
       "sourceType": "github",
       "skillPath": "skills/productivity/grilling/SKILL.md",
       "computedHash": "368d3dd7251247c69f3656d93dc83c8f1577792eacac2111f1e7981db2ece49b"
+    },
+    "wandb-primary": {
+      "source": "wandb/skills",
+      "sourceType": "github",
+      "skillPath": "skills/wandb-primary/SKILL.md",
+      "computedHash": "c2c68e1de912506fc81625be9e5de5da7653a10e542c559493aebd5691cf4361"
     }
   }
 }

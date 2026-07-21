@@ -219,8 +219,12 @@ uv run --frozen python -m eval.run_matrix gcd \
   --artifact xiyansql-qwencoder-3b:on \
   --artifact xiyansql-qwencoder-3b:off
 
-# Byte-reproduce the corpus, train both selected families, and fuse 4-bit
+# Byte-reproduce the corpus, train both selected families, select checkpoints
+# on gold_v1, synchronize required W&B evidence, and fuse the selected weights
+export WANDB_API_KEY=...
+export WANDB_ENTITY=...
 uv run --frozen python -m tools.train_finalists \
+  --campaign-id finalists-manual \
   --model-key qwen25-coder-3b \
   --model-key xiyansql-qwencoder-3b
 

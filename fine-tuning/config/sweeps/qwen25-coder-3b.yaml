@@ -1,0 +1,35 @@
+name: creg-sql-qwen25-coder-3b-screening-v1
+description: 18-run random screening campaign; selection uses post-training gold_v1 EX.
+program: tools/run_experiment.py
+method: random
+run_cap: 18
+metric:
+  name: development/ex
+  goal: maximize
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --model-key=qwen25-coder-3b
+  - --campaign-id=creg-sql-qwen25-coder-3b-screening-v1
+  - --stage=screening
+  - ${args}
+parameters:
+  seed:
+    value: 424242
+  fine-tune-type:
+    values: [lora, dora]
+  trainable-layers:
+    values: [last-16, all]
+  rank:
+    values: [4, 8, 16]
+  scale-ratio:
+    values: [1.0, 2.0, 2.5]
+  dropout:
+    values: [0.0, 0.05]
+  learning-rate:
+    distribution: log_uniform_values
+    min: 0.00002
+    max: 0.0002
+  iterations:
+    value: 600

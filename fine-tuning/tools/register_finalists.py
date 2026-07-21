@@ -1,4 +1,4 @@
-"""Register two trained finalists in the versioned model manifest.
+"""Register trained finalists in the versioned model manifest.
 
 The local phase adds hash-addressed, explicitly unpublished artifacts so they
 can be evaluated without inventing a Hub revision. The published phase replaces
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from eval.run_artifacts import REPO_ROOT, sha256_file, write_json
+from eval.wandb_evidence import require_wandb_complete
 from tools.fetch_model import (
     LOCK_FILE,
     load_manifest,
@@ -32,14 +33,14 @@ def parse_args() -> argparse.Namespace:
         action="append",
         type=Path,
         required=True,
-        help="completed immutable training-run directory (exactly two)",
+        help="completed immutable training-run directory (one or more)",
     )
     parser.add_argument(
         "--publication",
         action="append",
         type=Path,
         help=(
-            "fresh-verified publication.json (exactly two for the published "
+            "fresh-verified publication.json (one per run for the published "
             "phase; forbidden for local)"
         ),
     )
@@ -50,6 +51,7 @@ def completed_training(path: Path) -> dict[str, Any]:
     manifest = json.loads((path / "manifest.json").read_text())
     if manifest.get("status") != "complete":
         raise RuntimeError(f"training run is not complete: {path}")
+    require_wandb_complete(manifest, operation="finalist registration")
     return manifest
 
 
@@ -107,6 +109,12 @@ def published_entry(
         raise RuntimeError(
             f"publication and fused lock disagree: {publication_path}"
         )
+    training_provenance = {
+        **lock["training_provenance"],
+    }
+    existing_wandb = existing.get("training_provenance", {}).get("wandb")
+    if existing_wandb:
+        training_provenance["wandb"] = existing_wandb
     entry = {
         **existing,
         "repository": publication["repository"],
@@ -114,7 +122,7 @@ def published_entry(
         "publication_status": "public-verified",
         "snapshot_directory_sha256": lock["directory_sha256"],
         "required_files": lock["all_files"],
-        "training_provenance": lock["training_provenance"],
+        "training_provenance": training_provenance,
     }
     validate_artifact_declaration(entry)
     return entry
@@ -122,8 +130,8 @@ def published_entry(
 
 def main() -> None:
     args = parse_args()
-    if len(args.training_run) != 2 or len(set(args.training_run)) != 2:
-        raise SystemExit("--training-run must be supplied exactly twice")
+    if len(set(args.training_run)) != len(args.training_run):
+        raise SystemExit("--training-run values must be distinct")
     paths = [path.resolve() for path in args.training_run]
     training_runs = [completed_training(path) for path in paths]
     manifest = load_manifest(MODEL_MANIFEST)
@@ -145,16 +153,16 @@ def main() -> None:
             )
         models.extend(entries)
     else:
-        if len(args.publication or []) != 2:
+        if len(args.publication or []) != len(training_runs):
             raise SystemExit(
-                "published registration requires exactly two --publication values"
+                "published registration requires one --publication per training run"
             )
         publication_by_training_run = {}
         for path in args.publication:
             resolved = path.resolve()
             record = json.loads(resolved.read_text())
             publication_by_training_run[record["training_run_id"]] = resolved
-        if len(publication_by_training_run) != 2:
+        if len(publication_by_training_run) != len(training_runs):
             raise RuntimeError("publication records must name distinct training runs")
         for run_path, training in zip(paths, training_runs, strict=True):
             key = training["candidate_manifest_entry"]["key"]

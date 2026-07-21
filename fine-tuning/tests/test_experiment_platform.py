@@ -1,0 +1,436 @@
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+from eval.experiment import (
+    ExperimentConfig,
+    ExperimentConfigurationError,
+    immutable_run_id,
+    select_development_checkpoint,
+)
+from eval.run_artifacts import sha256_file, write_json
+from eval.wandb_evidence import (
+    WandbEvidenceError,
+    WandbUploader,
+    require_wandb_complete,
+    required_wandb_environment,
+    synchronize_manifest,
+)
+from tools.evaluate_checkpoints import (
+    evaluate_training_checkpoints,
+)
+from tools.import_wandb_history import parse_training_log
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def experiment(**overrides):
+    values = {
+        "model_key": "qwen25-coder-3b",
+        "seed": 424242,
+        "fine_tune_type": "lora",
+        "trainable_layers": "last-16",
+        "rank": 8,
+        "scale_ratio": 2.5,
+        "dropout": 0.0,
+        "learning_rate": 1e-4,
+        "iterations": 600,
+        "campaign_id": "campaign-test",
+    }
+    values.update(overrides)
+    return ExperimentConfig(**values)
+
+
+def test_configuration_hash_and_run_id_bind_every_identity_axis():
+    first = experiment()
+    equivalent = experiment(campaign_id="another-campaign", stage="promoted")
+    changed = experiment(rank=16)
+    assert first.configuration_sha256 == equivalent.configuration_sha256
+    assert first.configuration_sha256 != changed.configuration_sha256
+    assert immutable_run_id(first, "wandb-a") != immutable_run_id(first, "wandb-b")
+    assert immutable_run_id(first, "wandb-a") != immutable_run_id(changed, "wandb-a")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rank", 32),
+        ("scale_ratio", 3.0),
+        ("dropout", 0.1),
+        ("learning_rate", 1e-6),
+        ("fine_tune_type", "full"),
+        ("trainable_layers", "last-8"),
+    ],
+)
+def test_unsupported_sweep_values_are_rejected(field, value):
+    with pytest.raises(ExperimentConfigurationError):
+        experiment(**{field: value})
+
+
+def test_checkpoint_selection_uses_declared_tie_break_order():
+    base = {
+        "ex": 0.8,
+        "valid_sql_rate": 0.9,
+        "ex_by_tier": {"1": 0.8, "2": 0.7},
+        "p95_microseconds": 100,
+    }
+    candidates = [
+        {"iteration": 200, "summary": base},
+        {"iteration": 100, "summary": base},
+        {
+            "iteration": 300,
+            "summary": {**base, "valid_sql_rate": 0.89},
+        },
+    ]
+    assert select_development_checkpoint(candidates)["iteration"] == 100
+
+
+def test_authenticated_online_environment_is_required():
+    with pytest.raises(WandbEvidenceError, match="WANDB_API_KEY, WANDB_ENTITY"):
+        required_wandb_environment({})
+    assert required_wandb_environment(
+        {"WANDB_API_KEY": "secret", "WANDB_ENTITY": "team"}
+    ) == {"entity": "team", "project": "creg-sql"}
+
+
+class RecordingUploader:
+    def __init__(self, failures=0):
+        self.failures = failures
+        self.calls = []
+
+    def upload(self, manifest, evidence_path, evidence_sha256):
+        self.calls.append((manifest, evidence_path, evidence_sha256))
+        if len(self.calls) <= self.failures:
+            raise OSError("network unavailable")
+        return {
+            "status": "complete",
+            "entity": manifest["wandb"]["entity"],
+            "project": manifest["wandb"]["project"],
+            "run_id": manifest["wandb"]["run_id"],
+            "url": "https://wandb.invalid/run",
+            "canonical_evidence_sha256": evidence_sha256,
+            "artifacts": [
+                {
+                    "name": "evidence",
+                    "version": "v0",
+                    "digest": "digest",
+                    "type": "evidence",
+                    "files": [],
+                }
+            ],
+        }
+
+
+def minimal_manifest(run_directory):
+    effective = run_directory / "effective-config.yaml"
+    effective.write_text("seed: 424242\n")
+    return {
+        "schema_version": 2,
+        "run_id": "immutable-run",
+        "status": "local_complete",
+        "experiment": experiment().manifest_payload(),
+        "git": {"commit": "a" * 40, "dirty": False},
+        "hardware": {"platform": "test"},
+        "base": {
+            "key": "qwen25-coder-3b",
+            "repository": "org/model",
+            "revision": "b" * 40,
+            "directory_sha256": "c" * 64,
+        },
+        "corpus": {"manifest": {"path": str(effective), "sha256": sha256_file(effective)}},
+        "outputs": {"adapter": None, "fused": None},
+        "wandb": {
+            "required": True,
+            "entity": "team",
+            "project": "creg-sql",
+            "run_id": "wb123",
+            "tags": [],
+        },
+    }
+
+
+def test_wandb_failure_preserves_local_evidence_and_recovers_idempotently(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, minimal_manifest(tmp_path))
+    uploader = RecordingUploader(failures=1)
+    with pytest.raises(OSError, match="network unavailable"):
+        synchronize_manifest(manifest_path, uploader=uploader)
+    failed = json.loads(manifest_path.read_text())
+    assert failed["status"] == "awaiting_wandb"
+    assert (tmp_path / "wandb-evidence.json").is_file()
+
+    receipt = synchronize_manifest(manifest_path, uploader=uploader)
+    assert receipt["status"] == "complete"
+    assert json.loads(manifest_path.read_text())["status"] == "complete"
+    synchronize_manifest(manifest_path, uploader=uploader)
+    assert len(uploader.calls) == 2
+
+
+def test_publication_gate_rejects_incomplete_shared_evidence(tmp_path):
+    manifest = minimal_manifest(tmp_path)
+    manifest["status"] = "complete"
+    with pytest.raises(WandbEvidenceError, match="requires a complete"):
+        require_wandb_complete(manifest, operation="publication")
+    manifest["wandb"]["receipt"] = {"status": "complete"}
+    require_wandb_complete(manifest, operation="publication")
+
+
+def _fake_evaluation_runner(command, **_kwargs):
+    def value(flag):
+        return command[command.index(flag) + 1]
+
+    iteration = int(Path(value("--adapter-checkpoint")).name[:7])
+    directory = Path(value("--runs-dir")) / value("--run-id")
+    directory.mkdir()
+    write_json(directory / "manifest.json", {"status": "complete"})
+    summary = {
+        "run_id": value("--run-id"),
+        "gold": "gold_v1.jsonl",
+        "n": 60,
+        "ex": 0.8,
+        "valid_sql_rate": 0.9,
+        "ex_by_tier": {"1": 0.7},
+        "p95_microseconds": 100,
+        "failure_buckets": {"wrong-filter-or-value": 12},
+        "mean_entropy_correct": 0.1,
+        "mean_entropy_wrong": 0.2,
+    }
+    write_json(directory / "summary.json", summary)
+    rows = [
+        json.dumps(
+            {
+                "id": f"item-{index}",
+                "tier": 1,
+                "tags": [],
+                "question": "question",
+                "gold_sql": "SELECT 1",
+                "predicted_sql": "SELECT 1",
+                "gold": {"rows": []},
+                "predicted": {"rows": []},
+                "ex": True,
+                "bucket": "correct",
+                "error": None,
+                "elapsed_microseconds": 100,
+                "generation_microseconds": 90,
+                "mean_entropy": 0.1,
+                "max_entropy": 0.2,
+                "iteration": iteration,
+            }
+        )
+        for index in range(60)
+    ]
+    (directory / "items.jsonl").write_text("\n".join(rows) + "\n")
+    return subprocess.CompletedProcess(command, 0)
+
+
+def test_mocked_checkpoint_evaluation_never_exposes_final_gold(tmp_path):
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}\n")
+    for iteration in (100, 200):
+        (adapter / f"{iteration:07d}_adapters.safetensors").write_bytes(
+            f"checkpoint-{iteration}".encode()
+        )
+    run = tmp_path / "run"
+    run.mkdir()
+    config = experiment(iterations=200).manifest_payload()
+    manifest_path = run / "manifest.json"
+    write_json(
+        manifest_path,
+        {
+            "run_id": "mock-training",
+            "status": "training_complete",
+            "experiment": config,
+            "outputs": {"adapter": str(adapter)},
+        },
+    )
+    result = evaluate_training_checkpoints(
+        manifest_path,
+        model_manifest=tmp_path / "models.json",
+        models_dir=tmp_path,
+        runner=_fake_evaluation_runner,
+    )
+    assert result["selected"]["iteration"] == 100
+    source = (ROOT / "fine-tuning/tools/evaluate_checkpoints.py").read_text()
+    forbidden = "gold" + "_v2"
+    assert forbidden not in source
+
+
+class FakeTable:
+    def __init__(self, columns):
+        self.columns = columns
+        self.data = []
+
+    def add_data(self, *values):
+        self.data.append(values)
+
+
+class FakeArtifact:
+    def __init__(self, name, type, metadata):
+        self.name = name
+        self.type = type
+        self.metadata = metadata
+        self.version = "v0"
+        self.digest = hashlib.sha256(name.encode()).hexdigest()
+        self.files = []
+        self.references = []
+
+    def add_file(self, path, name):
+        self.files.append((path, name))
+
+    def add_reference(self, reference):
+        self.references.append(reference)
+
+    def wait(self):
+        return self
+
+
+class FakeRun:
+    def __init__(self):
+        self.summary = {}
+        self.logs = []
+        self.artifacts = []
+        self.url = "https://wandb.invalid/fake"
+        self.exit_code = None
+
+    def log(self, values, step=None):
+        self.logs.append((values, step))
+
+    def log_artifact(self, artifact):
+        self.artifacts.append(artifact)
+        return artifact
+
+    def finish(self, exit_code):
+        self.exit_code = exit_code
+
+
+class FakeWandb:
+    Table = FakeTable
+    Artifact = FakeArtifact
+
+    def __init__(self):
+        self.run = FakeRun()
+        self.init_kwargs = None
+
+    def init(self, **kwargs):
+        self.init_kwargs = kwargs
+        return self.run
+
+
+def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
+    tmp_path,
+):
+    corpus_manifest = tmp_path / "corpus-manifest.json"
+    corpus_manifest.write_text("{}\n")
+    corpus = tmp_path / "regenerated-corpus"
+    corpus.mkdir()
+    (corpus / "train.jsonl").write_text("{}\n")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}\n")
+    checkpoint = adapter / "0000100_adapters.safetensors"
+    checkpoint.write_bytes(b"adapter")
+    evaluation = tmp_path / "evaluation"
+    evaluation.mkdir()
+    paths = {
+        name: evaluation / name
+        for name in ("comparison.json", "manifest.json", "summary.json", "items.jsonl")
+    }
+    for name, path in paths.items():
+        path.write_text("{}\n")
+    item = {
+        "id": "id-1",
+        "tier": 1,
+        "tags": ["tag"],
+        "question": "question",
+        "gold_sql": "SELECT 1",
+        "predicted_sql": "SELECT 1",
+        "gold": {"rows": [[{"type": "integer", "value": "1"}]]},
+        "predicted": {"rows": [[{"type": "integer", "value": "1"}]]},
+        "ex": True,
+        "bucket": "correct",
+        "error": None,
+        "elapsed_microseconds": 100,
+        "generation_microseconds": 90,
+        "mean_entropy": 0.1,
+        "max_entropy": 0.2,
+    }
+    paths["items.jsonl"].write_text(json.dumps(item) + "\n")
+    summary = {
+        "ex": 1.0,
+        "valid_sql_rate": 1.0,
+        "ex_by_tier": {"1": 1.0},
+        "p95_microseconds": 100,
+        "failure_buckets": {},
+        "mean_entropy_correct": 0.1,
+        "mean_entropy_wrong": 0.0,
+    }
+    selected = {
+        "iteration": 100,
+        "checkpoint_path": str(checkpoint),
+        "checkpoint_sha256": sha256_file(checkpoint),
+        "adapter_size_bytes": checkpoint.stat().st_size,
+        "manifest_path": str(paths["manifest.json"]),
+        "summary_path": str(paths["summary.json"]),
+        "items_path": str(paths["items.jsonl"]),
+        "summary": summary,
+    }
+    manifest = minimal_manifest(tmp_path)
+    manifest["outputs"]["adapter"] = str(adapter)
+    manifest["corpus"]["manifest"] = {
+        "path": str(corpus_manifest),
+        "sha256": sha256_file(corpus_manifest),
+    }
+    manifest["wandb"]["tags"] = ["family:qwen25-coder-3b"]
+    manifest["checkpoint_evaluation"] = {
+        "comparison_path": str(paths["comparison.json"]),
+        "checkpoints": [selected],
+        "selected": selected,
+    }
+    evidence = tmp_path / "wandb-evidence.json"
+    evidence.write_text("{}\n")
+    fake = FakeWandb()
+    receipt = WandbUploader(fake).upload(
+        manifest, evidence, sha256_file(evidence)
+    )
+    assert fake.init_kwargs["group"] == "campaign-test"
+    metric_names = {
+        key for values, _step in fake.run.logs for key in values if not isinstance(values[key], FakeTable)
+    }
+    assert "checkpoint/gold_v1/ex" in metric_names
+    tables = [value for values, _ in fake.run.logs for value in values.values() if isinstance(value, FakeTable)]
+    assert tables[0].data[0][0] == 100
+    assert {artifact.type for artifact in fake.run.artifacts} >= {
+        "dataset",
+        "evaluation",
+        "model",
+        "model-reference",
+        "evidence",
+    }
+    assert all(item["version"] == "v0" and item["digest"] for item in receipt["artifacts"])
+
+
+def test_sweep_files_define_two_18_run_random_campaigns():
+    sweeps = sorted((ROOT / "fine-tuning/config/sweeps").glob("*.yaml"))
+    assert len(sweeps) == 2
+    for path in sweeps:
+        config = yaml.safe_load(path.read_text())
+        assert config["method"] == "random"
+        assert config["run_cap"] == 18
+        assert config["metric"] == {"name": "development/ex", "goal": "maximize"}
+        assert config["parameters"]["seed"]["value"] == 424242
+
+
+def test_backfill_parser_reads_current_logs_without_mutating_manifests():
+    run = ROOT / "eval/training-runs/qlora-qwen25-coder-3b-seed-424242"
+    before = sha256_file(run / "manifest.json")
+    metrics = parse_training_log(run / "training.log")
+    assert metrics[0]["val_loss"] == 0.917
+    assert metrics[-1]["iteration"] == 600
+    assert metrics[-1]["trained_tokens"] == 107177
+    assert sha256_file(run / "manifest.json") == before

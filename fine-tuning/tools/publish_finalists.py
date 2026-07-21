@@ -1,4 +1,4 @@
-"""Publish exactly two completed fine-tunes and verify fresh pinned downloads.
+"""Publish completed fine-tunes and verify fresh pinned downloads.
 
 The authenticated Hugging Face CLI credential is used implicitly. Tokens are
 never accepted as arguments and never serialized.
@@ -25,6 +25,7 @@ from eval.run_artifacts import (
     sha256_file,
     write_json,
 )
+from eval.wandb_evidence import require_wandb_complete
 from eval.selection import load_run
 from tools.fetch_model import (
     LOCK_FILE,
@@ -48,7 +49,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         action="append",
         required=True,
-        help="completed immutable training-run directory (exactly two)",
+        help="completed immutable training-run directory (one or more)",
     )
     parser.add_argument(
         "--result-run",
@@ -287,8 +288,8 @@ frozen CREG schema/database/gold set and their immutable run manifests.
 
 def main() -> None:
     args = parse_args()
-    if len(args.training_run) != 2:
-        raise SystemExit("--training-run must be supplied exactly twice")
+    if len(set(args.training_run)) != len(args.training_run):
+        raise SystemExit("--training-run values must be distinct")
     model_manifest = load_manifest(MODEL_MANIFEST)
     bases = {model["key"]: model for model in model_manifest["models"]}
     result_summaries = [summary(path.resolve()) for path in args.result_run]
@@ -299,6 +300,7 @@ def main() -> None:
         training = json.loads((run_path / "manifest.json").read_text())
         if training.get("status") != "complete":
             raise RuntimeError(f"training run is not complete: {run_path}")
+        require_wandb_complete(training, operation="finalist publication")
         base = bases[training["base"]["key"]]
         fused = Path(training["outputs"]["fused"])
         lock = json.loads((fused / LOCK_FILE).read_text())
