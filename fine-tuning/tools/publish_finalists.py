@@ -122,6 +122,24 @@ def verify_fused_tree_for_publication(
     return actual, inventory
 
 
+def unexpected_fresh_paths(fresh: Path, staged_paths: set[str]) -> list[str]:
+    """Find public snapshot files absent from the staged publication tree."""
+    unexpected = []
+    local_metadata_prefix = (".cache", "huggingface", "download")
+    for path in fresh.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(fresh)
+        relative_path = relative.as_posix()
+        if relative.parts[:3] == local_metadata_prefix:
+            continue
+        if relative_path == ".gitattributes":
+            continue
+        if relative_path not in staged_paths:
+            unexpected.append(relative_path)
+    return sorted(unexpected)
+
+
 def model_card(
     *,
     repo_id: str,
@@ -481,22 +499,18 @@ def main() -> None:
                 f"fresh-download verification failed for {repo_id}: "
                 f"{mismatches}"
             )
-        fresh_inventory = directory_inventory(fresh)
         # Verification is two-way: every staged file must round-trip, and
         # the public snapshot must not contain files that were never staged
-        # (the Hub's own .gitattributes is the only expected addition).
+        # (the Hub's .gitattributes and local download metadata are the only
+        # expected additions).
         staged_paths = {file["path"] for file in inventory}
-        unexpected = sorted(
-            file["path"]
-            for file in fresh_inventory
-            if file["path"] not in staged_paths
-            and file["path"] != ".gitattributes"
-        )
+        unexpected = unexpected_fresh_paths(fresh, staged_paths)
         if unexpected:
             raise RuntimeError(
                 f"fresh download of {repo_id} contains files that were "
                 f"never staged: {unexpected}"
             )
+        fresh_inventory = directory_inventory(fresh)
         # Only after the independent fresh download verifies do we replace
         # the local fused materialization with the exact public snapshot.
         # This keeps a network or integrity failure from corrupting a

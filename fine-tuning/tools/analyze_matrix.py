@@ -278,6 +278,39 @@ def production(run_paths: list[Path]) -> dict[str, Any]:
     }
 
 
+def normalize_parity_explanations(
+    decoded: Any,
+) -> tuple[dict[str, str], set[str]]:
+    if not isinstance(decoded, dict):
+        raise SelectionError("parity explanations must be a JSON object")
+    raw_ids = {str(item_id) for item_id in decoded}
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in decoded.values()
+    ):
+        raise SelectionError(
+            "parity explanations must contain non-empty strings"
+        )
+    return (
+        {
+            str(item_id): value.strip()
+            for item_id, value in decoded.items()
+        },
+        raw_ids,
+    )
+
+
+def identical_sql_runtime_drift(
+    item: dict[str, Any], python_sqlite: str, swift_sqlite: str
+) -> bool:
+    python_sql = item["python"]["sql"]
+    return (
+        python_sql is not None
+        and python_sql == item["swift"]["sql"]
+        and python_sqlite == swift_sqlite
+    )
+
+
 def parity(
     python_run_path: Path,
     swift_output_path: Path,
@@ -338,15 +371,12 @@ def parity(
             "Swift parity provenance hashes do not match the Python run"
         )
     explanations: dict[str, str] = {}
+    raw_explanation_ids: set[str] = set()
     if explanations_path is not None:
         decoded = json.loads(explanations_path.read_text())
-        if not isinstance(decoded, dict):
-            raise SelectionError("parity explanations must be a JSON object")
-        explanations = {
-            str(item_id): value.strip()
-            for item_id, value in decoded.items()
-            if isinstance(value, str) and value.strip()
-        }
+        explanations, raw_explanation_ids = normalize_parity_explanations(
+            decoded
+        )
     python_by_id = {item["id"]: item for item in python_run.items}
     swift_by_id = {item["id"]: item for item in swift["results"]}
     if set(python_by_id) != set(swift_by_id):
@@ -422,17 +452,14 @@ def parity(
     # disagreements, and identical SQL diverging on the same SQLite engine
     # is comparator or runtime drift that no explanation can excuse.
     disagreement_ids = {item["id"] for item in disagreements}
-    stale_explanations = sorted(set(explanations) - disagreement_ids)
+    stale_explanations = sorted(raw_explanation_ids - disagreement_ids)
     if stale_explanations:
         raise SelectionError(
             "explanations cover items that are not disagreements "
             f"(stale or wrong file): {stale_explanations}"
         )
     for item in disagreements:
-        if (
-            item["python"]["sql"] == item["swift"]["sql"]
-            and python_sqlite == swift_sqlite
-        ):
+        if identical_sql_runtime_drift(item, python_sqlite, swift_sqlite):
             raise SelectionError(
                 f"{item['id']}: identical SQL on the same SQLite version "
                 "produced different parity data; fix runtime/comparator "

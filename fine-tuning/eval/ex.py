@@ -19,10 +19,11 @@ import math
 import sqlite3
 import time
 from collections import Counter
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any
 
 ROW_CAP = 10_000
 FLOAT_DECIMALS = 4

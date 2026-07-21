@@ -58,7 +58,10 @@ public enum CanonicalSQLValue: Sendable, Hashable, Codable, Comparable {
 
   public func hash(into hasher: inout Hasher) {
     hasher.combine(domainRank)
-    hasher.combine(Array(payload.utf8))
+    var payload = payload
+    payload.withUTF8 { buffer in
+      hasher.combine(bytes: UnsafeRawBufferPointer(buffer))
+    }
   }
 
   public static func < (lhs: Self, rhs: Self) -> Bool {
@@ -175,9 +178,9 @@ public struct CanonicalSQLResult: Sendable, Equatable, Hashable, Codable {
           case .text: "text"
           case .blob: "blob"
           }
-        output.append(contentsOf: Array(#"{"type":"#.utf8))
+        output.append(contentsOf: #"{"type":"#.utf8)
         Self.appendJSONString(kind, to: &output)
-        output.append(contentsOf: Array(#","value":"#.utf8))
+        output.append(contentsOf: #","value":"#.utf8)
         Self.appendJSONString(value.payload, to: &output)
         output.append(UInt8(ascii: "}"))
       }
@@ -192,21 +195,21 @@ public struct CanonicalSQLResult: Sendable, Equatable, Hashable, Codable {
     for byte in value.utf8 {
       switch byte {
       case UInt8(ascii: "\""):
-        output.append(contentsOf: Array(#"\""#.utf8))
+        output.append(contentsOf: #"\""#.utf8)
       case UInt8(ascii: "\\"):
-        output.append(contentsOf: Array(#"\\"#.utf8))
+        output.append(contentsOf: #"\\"#.utf8)
       case 0x08:
-        output.append(contentsOf: Array(#"\b"#.utf8))
+        output.append(contentsOf: #"\b"#.utf8)
       case 0x09:
-        output.append(contentsOf: Array(#"\t"#.utf8))
+        output.append(contentsOf: #"\t"#.utf8)
       case 0x0A:
-        output.append(contentsOf: Array(#"\n"#.utf8))
+        output.append(contentsOf: #"\n"#.utf8)
       case 0x0C:
-        output.append(contentsOf: Array(#"\f"#.utf8))
+        output.append(contentsOf: #"\f"#.utf8)
       case 0x0D:
-        output.append(contentsOf: Array(#"\r"#.utf8))
+        output.append(contentsOf: #"\r"#.utf8)
       case 0x00..<0x20:
-        output.append(contentsOf: Array(String(format: "\\u%04x", byte).utf8))
+        output.append(contentsOf: String(format: "\\u%04x", byte).utf8)
       default:
         output.append(byte)
       }

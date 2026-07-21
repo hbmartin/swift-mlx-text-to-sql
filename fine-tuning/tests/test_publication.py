@@ -10,6 +10,7 @@ from tools.fetch_model import (
 from tools.publish_finalists import (
     model_card,
     repository_slug,
+    unexpected_fresh_paths,
     verify_fused_tree_for_publication,
 )
 
@@ -89,6 +90,36 @@ def test_publication_rehashes_the_fused_tree_before_binding_evidence(
     (fused / "weights.bin").write_bytes(b"tampered")
     with pytest.raises(RuntimeError, match="changed after training/evaluation"):
         verify_fused_tree_for_publication(fused, lock)
+
+
+def test_fresh_publication_scan_rejects_unstaged_lock_and_cache_files(tmp_path):
+    fresh = tmp_path / "fresh"
+    (fresh / ".cache" / "huggingface" / "download").mkdir(parents=True)
+    (fresh / ".cache" / "unexpected").mkdir(parents=True)
+    (fresh / "weights.bin").write_bytes(b"weights")
+    (fresh / ".gitattributes").write_text("*.bin filter=lfs\n")
+    (fresh / ".creg-artifact.json").write_text("{}\n")
+    (fresh / ".cache" / "huggingface" / "download" / "weights.metadata").write_text(
+        "local download metadata\n"
+    )
+    (fresh / ".cache" / "unexpected" / "planted.txt").write_text("planted\n")
+
+    assert unexpected_fresh_paths(fresh, {"weights.bin"}) == [
+        ".cache/unexpected/planted.txt",
+        ".creg-artifact.json",
+    ]
+
+
+def test_fresh_publication_scan_accepts_only_staged_and_hub_local_files(tmp_path):
+    fresh = tmp_path / "fresh"
+    (fresh / ".cache" / "huggingface" / "download").mkdir(parents=True)
+    (fresh / "weights.bin").write_bytes(b"weights")
+    (fresh / ".gitattributes").write_text("*.bin filter=lfs\n")
+    (fresh / ".cache" / "huggingface" / "download" / "weights.metadata").write_text(
+        "local download metadata\n"
+    )
+
+    assert unexpected_fresh_paths(fresh, {"weights.bin"}) == []
 
 
 def test_qwen_model_card_contains_complete_hash_and_license_evidence():

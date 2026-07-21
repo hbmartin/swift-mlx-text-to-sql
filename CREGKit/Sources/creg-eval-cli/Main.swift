@@ -131,7 +131,9 @@ struct EvalCLI {
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = command
     process.standardOutput = output
-    process.standardError = Pipe()
+    // These provenance probes intentionally ignore stderr. Sending it to the
+    // null device avoids a second bounded pipe that could block the child.
+    process.standardError = FileHandle.nullDevice
     do {
       try process.run()
       // Drain the pipe before waiting so output larger than the pipe
