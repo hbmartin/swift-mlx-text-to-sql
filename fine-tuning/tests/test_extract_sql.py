@@ -1,4 +1,12 @@
+import json
+from pathlib import Path
+
 from eval.run_eval import extract_sql, strip_special_tokens
+
+FIXTURES = (
+    Path(__file__).resolve().parents[2]
+    / "CREGKit/Sources/CREGEngine/Resources/sql_cutter_fixtures.json"
+)
 
 
 def test_extract_sql_matches_swift_normalization():
@@ -21,3 +29,10 @@ def test_extract_sql_keeps_semicolons_inside_string_literals():
     assert extract_sql(
         "SELECT name FROM tenants WHERE name = 'O''Brien; Co' LIMIT 1;"
     ) == "SELECT name FROM tenants WHERE name = 'O''Brien; Co' LIMIT 1"
+
+
+def test_extract_sql_uses_a_sql_lexical_scanner():
+    document = json.loads(FIXTURES.read_text())
+    assert document["schema_version"] == 1
+    for fixture in document["cases"]:
+        assert extract_sql(fixture["generated"]) == fixture["expected"]

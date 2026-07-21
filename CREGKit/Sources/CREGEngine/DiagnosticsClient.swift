@@ -69,7 +69,9 @@ public struct DiagnosticsClient: Sendable {
       .sorted { $0.key < $1.key }
       .map { "\($0.key)=\($0.value)" }
       .joined(separator: " ")
-    let details = event.details.map(DiagnosticPrivacy.redact) ?? ""
+    // `record(_:)` is the single sanitization boundary. Re-running redaction
+    // here risks progressively destroying otherwise actionable diagnostics.
+    let details = event.details ?? ""
 
     switch event.level {
     case .info:
@@ -120,12 +122,11 @@ enum DiagnosticPrivacy {
   /// filter guards against those values appearing inside an underlying error.
   static func redact(_ details: String) -> String {
     var value = details
+      .split(separator: "\n", omittingEmptySubsequences: false)
+      .map(redactSQLLine)
+      .joined(separator: "\n")
     value = replacing(
-      #"(?i)\b(SELECT|WITH|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|PRAGMA)\b[\s\S]*"#,
-      in: value,
-      with: "<redacted SQL>")
-    value = replacing(
-      #"file://\S+|/(?:[^\s/:]+/)+[^\s:]+"#,
+      #"(?i)file://[^\s\]\[(){}<>,;]+|(?<![A-Za-z0-9._-])/(?:[^\s/\]\[(){}<>,;:]+/)*[^\s/\]\[(){}<>,;:]+"#,
       in: value,
       with: "<redacted path>")
     value = replacing(
@@ -133,6 +134,28 @@ enum DiagnosticPrivacy {
       in: value,
       with: "<redacted identifier>")
     return value
+  }
+
+  /// Redact values behind explicit SQL labels and statements that have a
+  /// recognizable shape at the beginning of a line. A bare English word such
+  /// as "with", "update", "create", or "select" is intentionally preserved.
+  private static func redactSQLLine(_ line: Substring) -> String {
+    var value = String(line)
+    value = replacing(
+      #"(?i)\b(sql|query|statement)\s*[:=]\s*.+$"#,
+      in: value,
+      with: "$1=<redacted SQL>")
+
+    let statementShape =
+      #"(?ix)^\s*(?:SELECT\s+(?:DISTINCT\s+)?(?:[\w\"`\[(*]|\d|'|\?)|WITH\s+(?:RECURSIVE\s+)?[\w\"`\[]+\s+AS\s*\(|INSERT\s+INTO\s+|UPDATE\s+[\w\"`\[]+\s+SET\s+|DELETE\s+FROM\s+|CREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+|ALTER\s+TABLE\s+|PRAGMA\s+[\w.]+)"#
+    guard let expression = try? NSRegularExpression(pattern: statementShape) else {
+      return value
+    }
+    let range = NSRange(value.startIndex..<value.endIndex, in: value)
+    guard expression.firstMatch(in: value, range: range) != nil else {
+      return value
+    }
+    return "<redacted SQL>"
   }
 
   private static func replacing(

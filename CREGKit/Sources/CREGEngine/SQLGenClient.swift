@@ -87,14 +87,40 @@ private struct HuggingFaceTokenizerLoader: MLXLMCommon.TokenizerLoader {
 
 /// The bundled SQL specialist: grammar-constrained SQL generation on MLX.
 public struct SQLGenClient: Sendable {
+  public var prepare: @Sendable () async throws -> Void
   public var generate:
     @Sendable (SQLGenerationRequest) async throws -> SQLGeneration
 
   public init(
+    prepare: @escaping @Sendable () async throws -> Void = {},
     generate: @escaping @Sendable (SQLGenerationRequest) async throws
       -> SQLGeneration
   ) {
+    self.prepare = prepare
     self.generate = generate
+  }
+}
+
+actor PreparationCoalescer<Value: Sendable> {
+  private var loaded: Value?
+  private var inFlight: Task<Value, any Error>?
+
+  func value(
+    loading: @escaping @Sendable () async throws -> Value
+  ) async throws -> Value {
+    if let loaded { return loaded }
+    if let inFlight { return try await inFlight.value }
+    let task = Task { try await loading() }
+    inFlight = task
+    do {
+      let result = try await task.value
+      loaded = result
+      inFlight = nil
+      return result
+    } catch {
+      inFlight = nil
+      throw error
+    }
   }
 }
 
@@ -102,17 +128,17 @@ extension SQLGenClient {
   public static func live(model: ModelReference) -> SQLGenClient {
     let generator = MLXSQLGenerator(
       source: .hub(repository: model.repository, revision: model.revision))
-    return SQLGenClient { request in
-      try await generator.generate(request)
-    }
+    return SQLGenClient(
+      prepare: { try await generator.prepare() },
+      generate: { request in try await generator.generate(request) })
   }
 
   /// Load from a local weights directory (used by creg-eval-cli for parity runs).
   public static func live(directory: URL) -> SQLGenClient {
     let generator = MLXSQLGenerator(source: .directory(directory))
-    return SQLGenClient { request in
-      try await generator.generate(request)
-    }
+    return SQLGenClient(
+      prepare: { try await generator.prepare() },
+      generate: { request in try await generator.generate(request) })
   }
 
   public static func grammarEBNF() throws -> String {
@@ -126,18 +152,25 @@ extension SQLGenClient {
   public static func systemPrompt(schema: String) -> String {
     MLXSQLGenerator.systemPrompt(schema: schema)
   }
+
+  static func cutterFixtureData() throws -> Data {
+    guard let url = Bundle.module.url(
+      forResource: "sql_cutter_fixtures", withExtension: "json")
+    else { throw CocoaError(.fileNoSuchFile) }
+    return try Data(contentsOf: url)
+  }
 }
 
 /// Keeps the MLX model resident between turns (PRD §7.1) and runs
 /// grammar-constrained decoding via MLXStructured (XGrammar).
 actor MLXSQLGenerator {
-  enum Source {
+  enum Source: Sendable {
     case hub(repository: String, revision: String)
     case directory(URL)
   }
 
   private let source: Source
-  private var container: ModelContainer?
+  private let containerLoader = PreparationCoalescer<ModelContainer>()
 
   private nonisolated var modelName: String {
     switch source {
@@ -150,18 +183,17 @@ actor MLXSQLGenerator {
     self.source = source
   }
 
+  func prepare() async throws {
+    _ = try await loadedContainer()
+  }
+
   func generate(_ request: SQLGenerationRequest) async throws -> SQLGeneration {
     let container = try await loadedContainer()
     let schema = try Self.schemaPrompt()
 
-    let repairSuffix = request.repair.map { repair in
-      """
-      \n\nYour previous attempt failed. Fix it.
-      Previous SQL: \(repair.failedSQL)
-      SQLite error: \(repair.errorMessage)
-      """
-    }
-    let userContent = "Question: \(request.question)" + (repairSuffix ?? "")
+    let userContent = request.repair.map {
+      Self.repairPrompt(question: request.question, context: $0)
+    } ?? "Question: \(request.question)"
     let systemContent = Self.systemPrompt(schema: schema)
 
     return try await container.perform { (context: ModelContext) in
@@ -218,45 +250,69 @@ actor MLXSQLGenerator {
   }
 
   static func systemPrompt(schema: String) -> String {
-    [
-      "You translate questions about a commercial real estate portfolio into a single SQLite SELECT statement. Only SELECT is possible. Use only these tables and columns:",
-      "",
-      schema,
-      "",
-      "Rules:",
-      "- Vacancy means 1 - occupancy_rate from each property's latest monthly property_financials row, never derived from leases.",
-      "- \"Current value\" of a property is properties.current_market_value; the valuations table is appraisal history only.",
-      "- Dates are ISO text (YYYY-MM-DD); today is 2026-07-01.",
-      "- Rates are 0-1 fractions.",
-      "Output only the SQL statement.",
-    ].joined(separator: "\n")
+    resourceText(name: "system_prompt_template")
+      .replacingOccurrences(of: "{{SCHEMA}}", with: schema)
+  }
+
+  static func repairPrompt(
+    question: String,
+    context: RepairContext
+  ) -> String {
+    let guidance = context.guidance
+    let replacements = [
+      "{{QUESTION}}": question,
+      "{{FAILED_SQL}}": context.failedSQL,
+      "{{SQLITE_ERROR}}": context.errorMessage,
+      "{{ISSUE_TYPE}}": guidance?.issue.kind.rawValue ?? "unknown",
+      "{{ISSUE_DISPOSITION}}": guidance?.issue.disposition.rawValue ?? "repairable",
+      "{{DECLARED_SOURCES}}": guidance?.declaredSources.joined(separator: ", ") ?? "",
+      "{{POSSIBLE_COLUMN_OWNERS}}": guidance?.possibleColumnOwners.joined(separator: ", ") ?? "",
+      "{{FAILED_FINGERPRINTS}}": guidance?.failedFingerprints.joined(separator: ", ") ?? "",
+    ]
+    return replacements.reduce(resourceText(name: "repair_prompt_template")) {
+      value, replacement in
+      value.replacingOccurrences(of: replacement.key, with: replacement.value)
+    }
+  }
+
+  private static func resourceText(name: String) -> String {
+    guard let url = Bundle.module.url(forResource: name, withExtension: "txt"),
+      let value = try? String(contentsOf: url, encoding: .utf8)
+    else {
+      preconditionFailure("missing prompt resource: \(name).txt")
+    }
+    return value.trimmingCharacters(in: .newlines)
   }
 
   private func loadedContainer() async throws -> ModelContainer {
-    if let container { return container }
-    MLX.Memory.cacheLimit = 20 * 1024 * 1024
-    let container: ModelContainer
-    switch source {
-    case .directory(let url):
-      container = try await loadModelContainer(
-        from: url,
-        using: HuggingFaceTokenizerLoader())
-    case .hub(let repository, let revision):
-      if let bundled = Bundle.main.url(forResource: "SQLModel", withExtension: nil) {
-        container = try await loadModelContainer(
-          from: bundled,
+    let source = self.source
+    return try await containerLoader.value {
+      MLX.Memory.cacheLimit = 20 * 1024 * 1024
+      switch source {
+      case .directory(let url):
+        return try await loadModelContainer(
+          from: url,
           using: HuggingFaceTokenizerLoader())
-      } else {
-        // Walking-skeleton convenience: resolve from the Hugging Face cache or
-        // download on first run. The shipping build bundles the model instead.
-        container = try await loadModelContainer(
+      case .hub(let repository, let revision):
+        if let bundled = Bundle.main.url(
+          forResource: "SQLModel", withExtension: nil)
+        {
+          return try await loadModelContainer(
+            from: bundled,
+            using: HuggingFaceTokenizerLoader())
+        }
+#if DEBUG
+        // Debug convenience only. Release must use the verified bundle path.
+        return try await loadModelContainer(
           from: HubArtifactDownloader(),
           using: HuggingFaceTokenizerLoader(),
-          configuration: ModelConfiguration(id: repository, revision: revision))
+          configuration: ModelConfiguration(
+            id: repository, revision: revision))
+#else
+        throw CocoaError(.fileNoSuchFile)
+#endif
       }
     }
-    self.container = container
-    return container
   }
 
   static func grammarEBNF() throws -> String {
@@ -308,18 +364,70 @@ actor MLXSQLGenerator {
       .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  /// Cuts at the first semicolon outside a single-quoted SQL string, so a
-  /// literal like 'A; B' cannot truncate an otherwise correct statement.
-  /// Mirrors the Python evaluator byte-for-byte.
+  /// Cuts at the first SQL statement terminator outside quoted tokens and
+  /// comments. Unicode-scalar iteration mirrors Python code-point iteration;
+  /// grapheme composition and canonical equivalence cannot affect the cut.
   static func truncateAtStatementEnd(_ sql: String) -> String {
-    var insideString = false
-    for index in sql.indices {
-      let character = sql[index]
-      if character == "'" {
-        insideString.toggle()
-      } else if character == ";", !insideString {
-        return String(sql[..<index])
+    enum State {
+      case normal
+      case singleQuote
+      case doubleQuote
+      case backtick
+      case bracket
+      case lineComment
+      case blockComment
+    }
+
+    let scalars = sql.unicodeScalars
+    var state = State.normal
+    var index = scalars.startIndex
+    while index < scalars.endIndex {
+      let scalar = scalars[index].value
+      let nextIndex = scalars.index(after: index)
+      let following = nextIndex < scalars.endIndex ? scalars[nextIndex].value : nil
+
+      switch state {
+      case .normal:
+        switch scalar {
+        case 0x27: state = .singleQuote
+        case 0x22: state = .doubleQuote
+        case 0x60: state = .backtick
+        case 0x5B: state = .bracket
+        case 0x2D where following == 0x2D:
+          state = .lineComment
+          index = nextIndex
+        case 0x2F where following == 0x2A:
+          state = .blockComment
+          index = nextIndex
+        case 0x3B:
+          return String(scalars[..<index])
+        default: break
+        }
+      case .lineComment:
+        if scalar == 0x0A || scalar == 0x0D { state = .normal }
+      case .blockComment:
+        if scalar == 0x2A, following == 0x2F {
+          state = .normal
+          index = nextIndex
+        }
+      case .singleQuote, .doubleQuote, .backtick, .bracket:
+        let closing: UInt32
+        switch state {
+        case .singleQuote: closing = 0x27
+        case .doubleQuote: closing = 0x22
+        case .backtick: closing = 0x60
+        case .bracket: closing = 0x5D
+        default: preconditionFailure("unreachable SQL lexical state")
+        }
+        if scalar == closing {
+          if following == closing {
+            index = nextIndex
+          } else {
+            state = .normal
+          }
+        }
       }
+      index = scalars.index(after: index)
     }
     return sql
   }

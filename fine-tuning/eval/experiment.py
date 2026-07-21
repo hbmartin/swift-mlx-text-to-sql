@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -203,12 +204,30 @@ def campaign_tags(
     corpus_sha256: str,
     git_commit: str,
     status: str,
+    prompt_version: str,
+    policy_version: str,
 ) -> list[str]:
+    stage = "confirmation" if config.stage == "promoted" else config.stage
+    try:
+        corpus_digest = bytes.fromhex(corpus_sha256)
+    except ValueError as error:
+        raise ExperimentConfigurationError(
+            "corpus_sha256 must be a hexadecimal SHA-256 digest"
+        ) from error
+    if len(corpus_digest) != 32:
+        raise ExperimentConfigurationError(
+            "corpus_sha256 must be a hexadecimal SHA-256 digest"
+        )
+    # W&B tags are limited to 64 characters. Base64url retains all 256 bits
+    # in 43 characters; the canonical local/config digest remains hex.
+    corpus_tag = base64.urlsafe_b64encode(corpus_digest).decode().rstrip("=")
     return [
         f"family:{config.model_key}",
         f"fine-tune:{config.fine_tune_type}",
-        f"corpus:{corpus_sha256}",
+        f"corpus-sha256:{corpus_tag}",
         f"git:{git_commit}",
         f"status:{status}",
-        f"stage:{config.stage}",
+        f"stage:{stage}",
+        f"prompt:{prompt_version}",
+        f"policy:{policy_version}",
     ]

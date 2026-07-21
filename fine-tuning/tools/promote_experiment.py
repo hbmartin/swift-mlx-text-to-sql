@@ -46,11 +46,13 @@ def main() -> None:
 
     if current != args.stage:
         manifest["experiment"]["stage"] = args.stage
+        wandb_stage = "confirmation" if args.stage == "promoted" else args.stage
+        manifest["wandb"]["job_type"] = wandb_stage
         manifest["wandb"]["tags"] = [
             tag
             for tag in manifest["wandb"]["tags"]
             if not tag.startswith("stage:")
-        ] + [f"stage:{args.stage}"]
+        ] + [f"stage:{wandb_stage}"]
     if not manifest["outputs"].get("fused"):
         manifest["outputs"]["fused"] = str(
             args.models_dir.resolve()

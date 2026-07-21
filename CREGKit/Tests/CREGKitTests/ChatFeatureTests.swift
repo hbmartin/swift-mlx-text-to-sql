@@ -7,6 +7,10 @@ import Testing
 
 private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")]])
 
+private enum ChatTestError: Error {
+  case preparationFailed
+}
+
 private final class CallCounter: @unchecked Sendable {
   private let lock = NSLock()
   private var value = 0
@@ -58,6 +62,7 @@ private final class CallCounter: @unchecked Sendable {
   @Test func sendProducesAnswerMessage() async {
     var initialState = ChatFeature.State()
     initialState.conversationID = UUID()
+    initialState.modelReadiness = .ready
     let store = TestStore(initialState: initialState) {
       ChatFeature()
     } withDependencies: {
@@ -93,12 +98,21 @@ private final class CallCounter: @unchecked Sendable {
 
   @Test func duplicateSendWhileProcessingStartsOnlyOneTurn() async {
     let pipelineCalls = CallCounter()
-    let store = TestStore(initialState: ChatFeature.State()) {
+    var initialState = ChatFeature.State()
+    initialState.modelReadiness = .ready
+    let store = TestStore(initialState: initialState) {
       ChatFeature()
     } withDependencies: {
       $0.queryPipeline = QueryPipeline { _, _ in
         pipelineCalls.increment()
-        return AsyncStream { _ in }
+        return AsyncStream { continuation in
+          var telemetry = TurnTelemetry(originalQuestion: "Which property leads?")
+          telemetry.terminalError = "test completion"
+          continuation.yield(.turnFinished(
+            outcome: .failed(message: "test completion"),
+            telemetry: telemetry))
+          continuation.finish()
+        }
       }
       $0.historyClient = .noop()
       $0.uuid = .incrementing
@@ -109,13 +123,96 @@ private final class CallCounter: @unchecked Sendable {
     await store.send(.binding(.set(\.composerText, "Which property leads?")))
     await store.send(.sendTapped)
     await store.send(.sendTapped)
-    await Task.yield()
+    await store.finish()
 
     #expect(store.state.composerText.isEmpty)
-    #expect(store.state.isProcessing)
-    #expect(store.state.messages.count == 1)
+    #expect(!store.state.isProcessing)
+    #expect(store.state.messages.count == 2)
     #expect(pipelineCalls.count == 1)
-    await store.skipInFlightEffects()
+  }
+
+  @Test func submissionLatchCommitsOnlyAfterFocusSettles() async {
+    var initialState = ChatFeature.State()
+    initialState.modelReadiness = .ready
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.historyClient = .noop()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.binding(.set(\.composerText, "question")))
+    await store.send(.submissionRequested)
+    #expect(store.state.isSubmissionPending)
+    #expect(!store.state.isProcessing)
+
+    await store.send(.submissionFocusSettled)
+    #expect(!store.state.isSubmissionPending)
+    #expect(store.state.isProcessing)
+    #expect(store.state.composerText.isEmpty)
+    await store.finish()
+  }
+
+  @Test func refocusCancelsPendingSubmissionWithoutWedge() async {
+    var initialState = ChatFeature.State()
+    initialState.conversationID = UUID(0)
+    initialState.composerText = "question"
+    initialState.modelReadiness = .ready
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    }
+
+    await store.send(.submissionRequested) {
+      $0.isSubmissionPending = true
+    }
+    await store.send(.submissionRefocused) {
+      $0.isSubmissionPending = false
+    }
+    await store.send(.submissionRequested) {
+      $0.isSubmissionPending = true
+    }
+    #expect(store.state.composerText == "question")
+  }
+
+  @Test func readinessFailureCanRetryAndSubmissionIsGated() async {
+    let attempts = LockIsolated(0)
+    let pipeline = QueryPipeline(
+      prepare: {
+        let attempt = attempts.withValue {
+          $0 += 1
+          return $0
+        }
+        if attempt == 1 { throw ChatTestError.preparationFailed }
+      },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var initialState = ChatFeature.State()
+    initialState.composerText = "question"
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+    }
+    store.exhaustivity = .off
+
+    #expect(store.state.modelReadiness == .preparing)
+    await store.send(.onAppear)
+    await store.receive(\.modelPreparationFailed)
+    guard case .failed = store.state.modelReadiness else {
+      Issue.record("expected failed readiness")
+      return
+    }
+    await store.send(.submissionRequested)
+    #expect(!store.state.isSubmissionPending)
+    #expect(store.state.composerText == "question")
+
+    await store.send(.retryPreparation)
+    await store.receive(\.modelPrepared)
+    await store.finish()
+    #expect(store.state.modelReadiness == .ready)
+    #expect(attempts.value == 2)
   }
 
   @Test func emptySendIsIgnored() async {
@@ -229,5 +326,22 @@ private final class CallCounter: @unchecked Sendable {
       QueryResult.self,
       from: JSONSerialization.data(withJSONObject: object))
     #expect(decoded.elapsedMicroseconds == 2_500)
+  }
+
+  @Test func legacyNoConsensusTelemetryMigratesToUnconfirmed() throws {
+    var telemetry = TurnTelemetry(originalQuestion: "q")
+    telemetry.schemaVersion = 1
+    telemetry.voteOutcome = .noConsensus(
+      anchorCandidateID: CandidateID(rawValue: "initial"),
+      candidateCount: 3,
+      reason: nil)
+    telemetry.confidence = nil
+    telemetry.noConsensusReason = nil
+
+    let decoded = try JSONDecoder().decode(
+      TurnTelemetry.self,
+      from: JSONEncoder().encode(telemetry))
+    #expect(decoded.confidence == .unconfirmed)
+    #expect(decoded.noConsensusReason == .conflictingResults)
   }
 }

@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from eval.experiment import canonical_sha256, worst_tier_ex
-from eval.run_artifacts import REPO_ROOT, sha256_file, write_json
+from eval.file_integrity import regular_files, sha256_file
+from eval.run_artifacts import REPO_ROOT, write_json
 
 
 EVIDENCE_FILE = "wandb-evidence.json"
@@ -60,26 +61,23 @@ def _repository_name(path: Path) -> str:
 
 
 def file_receipt(path: Path) -> dict[str, Any]:
-    resolved = path.resolve()
+    absolute = path.absolute()
+    digest = sha256_file(absolute)
     return {
-        "path": _repository_name(resolved),
-        "size": resolved.stat().st_size,
-        "sha256": sha256_file(resolved),
+        "path": _repository_name(absolute),
+        "size": absolute.lstat().st_size,
+        "sha256": digest,
     }
 
 
 def _tree_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
-    return sorted(
-        (
-            path
-            for path in directory.rglob("*")
-            if path.is_file()
-            and path.name != EVIDENCE_FILE
-            and "wandb" not in path.parts
+    return regular_files(
+        directory,
+        include=lambda relative: (
+            relative.name != EVIDENCE_FILE and "wandb" not in relative.parts
         ),
-        key=lambda path: path.as_posix(),
     )
 
 
@@ -127,7 +125,15 @@ def evidence_paths(run_directory: Path, manifest: dict[str, Any]) -> list[Path]:
         if path.is_file():
             candidates.append(path)
 
-    unique = {path.resolve(): path.resolve() for path in candidates}
+    for record in manifest.get("post_selection_evidence", {}).values():
+        for value in record.get("files", []):
+            path = Path(value)
+            if path.is_file():
+                candidates.append(path)
+
+    # Do not resolve here: resolving a symlink before hashing would turn an
+    # unsafe evidence path into an apparently regular target.
+    unique = {path.absolute(): path.absolute() for path in candidates}
     return sorted(unique.values(), key=_repository_name)
 
 
@@ -143,8 +149,12 @@ def canonical_evidence(
         "hardware": manifest.get("hardware"),
         "base": manifest.get("base"),
         "corpus": manifest.get("corpus"),
+        "prompt_contract": manifest.get("prompt_contract"),
         "checkpoint_evaluation": manifest.get("checkpoint_evaluation"),
         "fused_reference": manifest.get("fused_reference"),
+        "final_evaluation": manifest.get("final_evaluation"),
+        "post_selection_evidence": manifest.get("post_selection_evidence"),
+        "headline_metrics": manifest.get("headline_metrics"),
         "files": [file_receipt(path) for path in evidence_paths(run_directory, manifest)],
     }
 
@@ -175,11 +185,46 @@ def require_wandb_complete(
         )
     if wandb_record.get("required"):
         receipt = wandb_record.get("receipt", {})
-        if receipt.get("status") != "complete":
+        try:
+            validate_wandb_receipt(receipt)
+        except WandbEvidenceError as error:
             raise WandbEvidenceError(
                 f"{operation} requires a complete W&B evidence receipt for "
-                f"{manifest.get('run_id')}"
+                f"{manifest.get('run_id')}: {error}"
+            ) from error
+
+
+def validate_wandb_receipt(receipt: dict[str, Any]) -> None:
+    if receipt.get("status") != "complete":
+        raise WandbEvidenceError("W&B receipt is incomplete")
+    required = (
+        "entity",
+        "project",
+        "run_id",
+        "url",
+        "canonical_evidence_sha256",
+    )
+    missing = [name for name in required if not receipt.get(name)]
+    if missing:
+        raise WandbEvidenceError(f"W&B receipt is missing {missing}")
+    artifacts = receipt.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise WandbEvidenceError("W&B receipt has no artifact versions")
+    for artifact in artifacts:
+        absent = [
+            name
+            for name in ("name", "version", "digest", "type")
+            if not artifact.get(name)
+        ]
+        if absent:
+            raise WandbEvidenceError(
+                f"artifact receipt {artifact.get('name')} is missing {absent}"
             )
+        for file in artifact.get("files", []):
+            if not file.get("path") or not file.get("sha256"):
+                raise WandbEvidenceError(
+                    "artifact file receipt lacks repository SHA-256"
+                )
 
 
 def _artifact_record(artifact: Any, files: list[Path]) -> dict[str, Any]:
@@ -290,7 +335,12 @@ class WandbUploader:
                     for bucket, value in summary.get("failure_buckets", {}).items()
                 }
             )
-            run.log(metrics, step=iteration)
+            # MLX logs its own training/validation history first and may have
+            # advanced W&B beyond the numeric checkpoint iteration (for
+            # example, validation after iteration 100 lands at step 101).
+            # Append evaluation metrics monotonically and retain the actual
+            # checkpoint iteration as a metric instead of backdating `step`.
+            run.log(metrics)
 
             items_path = Path(checkpoint["items_path"])
             for line in items_path.read_text().splitlines():
@@ -338,9 +388,15 @@ class WandbUploader:
             id=wandb_record["run_id"],
             name=manifest["run_id"],
             group=experiment["campaign_id"],
-            job_type=experiment["stage"],
+            job_type=wandb_record.get("job_type", experiment["stage"]),
             tags=final_tags,
-            config=experiment,
+            config={
+                **experiment,
+                "prompt_contract": manifest.get("prompt_contract"),
+                "corpus_sha256": manifest.get("corpus", {})
+                .get("manifest", {})
+                .get("sha256"),
+            },
             resume="allow",
         )
         artifacts: list[dict[str, Any]] = []
@@ -490,6 +546,29 @@ class WandbUploader:
                         },
                     )
                 )
+
+            for category, record in sorted(
+                manifest.get("post_selection_evidence", {}).items()
+            ):
+                category_files = [Path(value) for value in record.get("files", [])]
+                if not category_files:
+                    continue
+                artifacts.append(
+                    self._log_artifact(
+                        run,
+                        name=f"{manifest['run_id']}-{category}",
+                        artifact_type=record.get("artifact_type", "evidence"),
+                        files=category_files,
+                        metadata={
+                            "evidence_sha256": evidence_sha256,
+                            "selection_use": "forbidden",
+                            "category": category,
+                        },
+                    )
+                )
+
+            for name, value in sorted(manifest.get("headline_metrics", {}).items()):
+                run.summary[f"final/{name}"] = value
 
             evidence_artifact = self._log_artifact(
                 run,

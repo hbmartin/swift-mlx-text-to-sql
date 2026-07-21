@@ -41,6 +41,14 @@ extension FailurePresentation {
         code = "production_manifest_missing"
         message =
           "This build is missing its SQL model manifest. Rebuild and reinstall CREG."
+      case .missingReceipt:
+        code = "production_receipt_missing"
+        message =
+          "This build is missing its verified SQL model receipt. Rebuild and reinstall CREG."
+      case .receiptMismatch:
+        code = "production_receipt_mismatch"
+        message =
+          "This build’s SQL model does not match its release receipt. Rebuild and reinstall CREG."
       case .productionSelectionPending:
         code = "production_selection_pending"
         message =
@@ -58,10 +66,14 @@ extension FailurePresentation {
       code = "production_manifest_incompatible"
       message =
         "This build contains an incompatible model configuration for the SQL model. Rebuild and reinstall CREG."
-    } else {
-      code = "production_manifest_incompatible"
+    } else if (error as NSError).domain == NSCocoaErrorDomain {
+      code = "production_manifest_unreadable"
       message =
-        "This build contains an incompatible model configuration for the SQL model. Rebuild and reinstall CREG."
+        "CREG couldn’t read a bundled SQL model file. Reinstall the app; if the problem continues, install a fresh production build."
+    } else {
+      code = "production_bootstrap_unexpected"
+      message =
+        "CREG couldn’t initialize its bundled SQL model. Restart the app; if the problem continues, contact support with Developer Mode details."
     }
 
     return FailurePresentation(

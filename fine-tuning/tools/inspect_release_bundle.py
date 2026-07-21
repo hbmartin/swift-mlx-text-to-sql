@@ -17,6 +17,7 @@ from tools.fetch_model import (
     directory_digest,
     directory_inventory,
     distribution_files,
+    full_directory_inventory,
     load_manifest,
     notice_file,
 )
@@ -49,23 +50,46 @@ def main() -> None:
     args = parse_args()
     app = args.app.resolve()
     bundled_manifest = app / "model-manifest.json"
+    bundled_receipt = app / "production-model-receipt.json"
     model_directory = app / "SQLModel"
-    if not bundled_manifest.is_file() or not model_directory.is_dir():
+    if (
+        not bundled_manifest.is_file()
+        or not bundled_receipt.is_file()
+        or not model_directory.is_dir()
+    ):
         raise SystemExit(
-            f"Release bundle is missing model-manifest.json or SQLModel: {app}"
+            "Release bundle is missing model-manifest.json, "
+            f"production-model-receipt.json, or SQLModel: {app}"
         )
     if bundled_manifest.read_bytes() != MODEL_MANIFEST.read_bytes():
         raise SystemExit("bundled model manifest is not byte-identical to source")
 
     manifest = load_manifest(bundled_manifest)
     production = manifest.get("production")
-    if production is None or manifest.get("production_status") != "verified":
-        raise SystemExit("bundled manifest has no verified production selection")
+    if (
+        production is None
+        or manifest.get("production_status") != "verified"
+        or production.get("policy_version") != "bounded-three-generation-v1"
+    ):
+        raise SystemExit(
+            "bundled manifest has no verified bounded-policy production selection"
+        )
     artifact = next(
         model
         for model in manifest["models"]
         if model["key"] == production["model_key"]
     )
+    receipt = json.loads(bundled_receipt.read_text())
+    receipt_identity = {
+        "model_key": artifact["key"],
+        "repository": artifact["repository"],
+        "revision": artifact["revision"],
+        "source_manifest_sha256": sha256_file(bundled_manifest),
+    }
+    if receipt.get("schema_version") != 1 or any(
+        receipt.get(name) != value for name, value in receipt_identity.items()
+    ):
+        raise SystemExit("production model receipt disagrees with bundled manifest")
     expected, expected_digest = expected_snapshot(artifact)
     expected_by_path = {item["path"]: item for item in expected}
     actual = directory_inventory(model_directory)
@@ -102,14 +126,12 @@ def main() -> None:
                 or found["sha256"] != notice["sha256"]
             ):
                 mismatches.append(notice["path"])
-    # directory_inventory skips .cache and the artifact lock because those
-    # are legitimate in a *source* model directory. A shipped bundle must
-    # not contain either, so extras detection scans every real file.
-    all_bundle_files = sorted(
-        path.relative_to(model_directory).as_posix()
-        for path in model_directory.rglob("*")
-        if path.is_file()
-    )
+    # A shipped bundle cannot contain source-cache bookkeeping. The fail-
+    # closed walker also rejects file/directory symlinks and special entries
+    # before this extras comparison.
+    all_bundle_files = [
+        item["path"] for item in full_directory_inventory(model_directory)
+    ]
     extras = sorted(set(all_bundle_files) - set(expected_by_path))
     unsupported_extras = sorted(set(extras) - allowed_extras)
     core_inventory = [
@@ -128,6 +150,13 @@ def main() -> None:
             f"mismatches={mismatches}, unsupported_extras={unsupported_extras}, "
             f"digest={core_digest}, expected={expected_digest}"
         )
+    complete_inventory = full_directory_inventory(model_directory)
+    if (
+        receipt.get("file_count") != len(complete_inventory)
+        or receipt.get("directory_sha256")
+        != directory_digest(complete_inventory)
+    ):
+        raise SystemExit("production model receipt disagrees with bundled SQLModel")
 
     report_directory = create_run_directory(
         args.reports_dir.resolve(), args.run_id
@@ -152,6 +181,7 @@ def main() -> None:
         "inputs": {
             "source_manifest_sha256": sha256_file(MODEL_MANIFEST),
             "bundled_manifest_sha256": sha256_file(bundled_manifest),
+            "production_receipt_sha256": sha256_file(bundled_receipt),
         },
     }
     write_json(report_directory / "report.json", report)

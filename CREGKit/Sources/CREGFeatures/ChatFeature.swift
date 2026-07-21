@@ -4,11 +4,21 @@ import Foundation
 
 @Reducer
 public struct ChatFeature: Sendable {
+  public enum ModelReadiness: Sendable, Equatable {
+    case preparing
+    case ready
+    case failed(message: String)
+  }
+
   @ObservableState
   public struct State: Equatable {
     public var messages: IdentifiedArrayOf<ChatMessage> = []
     public var composerText = ""
     public var isProcessing = false
+    /// Keyboard-candidate protection owned by the reducer so every cancel and
+    /// commit path is deterministic and testable.
+    public var isSubmissionPending = false
+    public var modelReadiness: ModelReadiness = .preparing
     /// Trace lines accumulating for the in-flight turn.
     public var currentTrace: [String] = []
     /// JSONL lines accumulating for the in-flight turn.
@@ -23,10 +33,16 @@ public struct ChatFeature: Sendable {
     public init() {}
   }
 
-  public enum Action: BindableAction, Sendable {
+  public enum Action: BindableAction, Sendable, Equatable {
     case binding(BindingAction<State>)
     case onAppear
+    case retryPreparation
+    case modelPrepared
+    case modelPreparationFailed(String)
     case historyLoaded(conversationID: UUID, messages: [ChatMessage])
+    case submissionRequested
+    case submissionFocusSettled
+    case submissionRefocused
     case sendTapped
     case pipelineEvent(PipelineEvent)
     case exportTapped
@@ -51,50 +67,66 @@ public struct ChatFeature: Sendable {
         return .none
 
       case .onAppear:
-        guard state.conversationID == nil else { return .none }
-        return .run { send in
-          let (id, messages) = try await history.loadCurrentConversation()
-          await send(.historyLoaded(conversationID: id, messages: messages))
-        } catch: { error, send in
-          await send(.operationFailed(.history(
-            operation: .load, error: error)))
-        }
+        state.modelReadiness = .preparing
+        let prepare = preparationEffect()
+        guard state.conversationID == nil else { return prepare }
+        return .merge(
+          prepare,
+          .run { send in
+            let (id, messages) = try await history.loadCurrentConversation()
+            await send(.historyLoaded(conversationID: id, messages: messages))
+          } catch: { error, send in
+            await send(.operationFailed(.history(
+              operation: .load, error: error)))
+          })
+
+      case .retryPreparation:
+        state.modelReadiness = .preparing
+        return preparationEffect()
+
+      case .modelPrepared:
+        state.modelReadiness = .ready
+        return .none
+
+      case .modelPreparationFailed(let diagnostic):
+        state.modelReadiness = .failed(
+          message: "The SQL model couldn’t be prepared. Check storage and try again.")
+        state.isSubmissionPending = false
+        diagnostics.record(DiagnosticEvent(
+          level: .error,
+          category: .configuration,
+          code: "model_preparation_failed",
+          summary: "The SQL model could not be prepared.",
+          details: diagnostic))
+        return .none
 
       case .historyLoaded(let conversationID, let messages):
         state.conversationID = conversationID
         state.messages = IdentifiedArray(uniqueElements: messages)
         return .none
 
+      case .submissionRequested:
+        guard
+          !state.isSubmissionPending,
+          !state.isProcessing,
+          state.modelReadiness == .ready,
+          !state.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return .none }
+        state.isSubmissionPending = true
+        return .none
+
+      case .submissionRefocused:
+        state.isSubmissionPending = false
+        return .none
+
+      case .submissionFocusSettled:
+        guard state.isSubmissionPending else { return .none }
+        state.isSubmissionPending = false
+        return startSubmission(state: &state)
+
       case .sendTapped:
-        let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !state.isProcessing else { return .none }
-        state.composerText = ""
-        state.isProcessing = true
-        state.currentTrace = []
-        state.currentEventLines = []
-
-        let userMessage = ChatMessage(id: uuid(), role: .user, body: .text(question), createdAt: now)
-        state.messages.append(userMessage)
-        let conversationID = state.conversationID
-
-        let turns = Self.conversationTurns(from: state.messages)
-        return .merge(
-          .run { send in
-            if let conversationID {
-              do {
-                try await history.appendMessage(conversationID, userMessage)
-              } catch {
-                await send(.operationFailed(.history(
-                  operation: .messageSave, error: error)))
-              }
-            }
-          },
-          .run { send in
-            for await event in pipeline.run(question, turns) {
-              await send(.pipelineEvent(event))
-            }
-          }
-        )
+        state.isSubmissionPending = false
+        return startSubmission(state: &state)
 
       case .pipelineEvent(let event):
         if let line = event.traceLine {
@@ -174,6 +206,51 @@ public struct ChatFeature: Sendable {
     }
   }
 
+  private func startSubmission(state: inout State) -> Effect<Action> {
+    let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard
+      !question.isEmpty,
+      !state.isProcessing,
+      state.modelReadiness == .ready
+    else { return .none }
+    state.composerText = ""
+    state.isProcessing = true
+    state.currentTrace = []
+    state.currentEventLines = []
+
+    let userMessage = ChatMessage(
+      id: uuid(), role: .user, body: .text(question), createdAt: now)
+    state.messages.append(userMessage)
+    let conversationID = state.conversationID
+    let turns = Self.conversationTurns(from: state.messages)
+    return .merge(
+      .run { send in
+        if let conversationID {
+          do {
+            try await history.appendMessage(conversationID, userMessage)
+          } catch {
+            await send(.operationFailed(.history(
+              operation: .messageSave, error: error)))
+          }
+        }
+      },
+      .run { send in
+        for await event in pipeline.run(question, turns) {
+          await send(.pipelineEvent(event))
+        }
+      }
+    )
+  }
+
+  private func preparationEffect() -> Effect<Action> {
+    .run { send in
+      try await pipeline.prepare()
+      await send(.modelPrepared)
+    } catch: { error, send in
+      await send(.modelPreparationFailed(DiagnosticDetails.describe(error)))
+    }
+  }
+
   /// Prior answered exchanges, oldest first, for the FM follow-up rewrite.
   static func conversationTurns(from messages: IdentifiedArrayOf<ChatMessage>) -> [ConversationTurn] {
     var turns: [ConversationTurn] = []
@@ -230,11 +307,34 @@ private enum LiveDependencies {
   static let diagnostics = DiagnosticsClient.live
 
   static let pipeline: QueryPipeline = {
+    let bundle = Bundle.main
+    let bundledManifest = bundle.url(
+      forResource: "model-manifest", withExtension: "json")
+    let bundledReceipt = bundle.url(
+      forResource: "production-model-receipt", withExtension: "json")
+    let bundledModelDirectory = bundle.url(
+      forResource: "SQLModel", withExtension: nil)
     let production: ProductionGenerationConfiguration
     let productionResult = ProductionModelBootstrap.load(
       diagnostics: diagnostics
     ) {
-      try ModelManifestLoader.production()
+      guard let bundledManifest else { throw ModelManifestError.missing }
+      let configuration = try ModelManifestLoader.production(url: bundledManifest)
+#if !DEBUG
+      guard let bundledReceipt, let bundledModelDirectory else {
+        throw ModelManifestError.missingReceipt
+      }
+      guard configuration.policyVersion == "bounded-three-generation-v1" else {
+        throw ModelManifestError.invalidProductionConfiguration(
+          "Release requires schema-v3 bounded-policy evidence")
+      }
+      try ProductionModelReceiptLoader.validate(
+        manifestURL: bundledManifest,
+        receiptURL: bundledReceipt,
+        modelDirectory: bundledModelDirectory,
+        production: configuration)
+#endif
+      return configuration
     }
     switch productionResult {
     case .success(let configuration):
@@ -244,6 +344,19 @@ private enum LiveDependencies {
         userMessage: failure.message,
         diagnosticCode: failure.code,
         diagnostic: failure.diagnostic)
+    }
+    let sqlGen: SQLGenClient
+    if let bundledModelDirectory {
+      sqlGen = .live(directory: bundledModelDirectory)
+    } else {
+#if DEBUG
+      sqlGen = .live(model: production.model)
+#else
+      return .unavailable(
+        userMessage: "This build is missing its verified SQL model.",
+        diagnosticCode: "production_receipt_missing",
+        diagnostic: ModelManifestError.missingReceipt.localizedDescription)
+#endif
     }
 
     let db: DatabaseClient
@@ -260,7 +373,7 @@ private enum LiveDependencies {
     }
     return QueryPipeline.live(
       fm: .live(),
-      sqlGen: .live(model: production.model),
+      sqlGen: sqlGen,
       db: db,
       serializer: serializer,
       configuration: .init(

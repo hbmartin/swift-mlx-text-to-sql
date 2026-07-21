@@ -10,6 +10,7 @@ import argparse
 import json
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +27,15 @@ from eval.run_artifacts import (
     write_json,
 )
 from eval.wandb_evidence import require_wandb_complete
+from eval.wandb_evidence import EVIDENCE_FILE
+from eval.file_integrity import transactionally_replace_directory
 from eval.selection import load_run
 from tools.fetch_model import (
     LOCK_FILE,
     directory_digest,
     directory_inventory,
     distribution_files,
+    full_directory_inventory,
     load_manifest,
     notice_file,
 )
@@ -40,6 +44,7 @@ MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
 DEFAULT_PUBLICATIONS = REPO_ROOT / "eval" / "publications"
 DEFAULT_FRESH_DOWNLOADS = REPO_ROOT / "models" / "fresh-downloads"
 DEFAULT_STAGING = REPO_ROOT / "models" / "publication-staging"
+DEFAULT_PUBLISHED_TREES = REPO_ROOT / "models" / "published"
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,6 +82,12 @@ def parse_args() -> argparse.Namespace:
             "untouched until the public snapshot passes fresh verification"
         ),
     )
+    parser.add_argument(
+        "--published-trees-dir",
+        type=Path,
+        default=DEFAULT_PUBLISHED_TREES,
+        help="distinct verified public snapshots; training-fused trees are immutable",
+    )
     return parser.parse_args()
 
 
@@ -102,7 +113,11 @@ def summary(path: Path) -> dict[str, Any]:
 
 
 def verify_fused_tree_for_publication(
-    directory: Path, lock: dict[str, Any]
+    directory: Path,
+    lock: dict[str, Any],
+    *,
+    training: dict[str, Any] | None = None,
+    evidence_path: Path | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Verify the exact local tree that will be copied for publication."""
     if not directory.is_dir():
@@ -120,22 +135,96 @@ def verify_fused_tree_for_publication(
             f"fused model inventory no longer matches its artifact lock: "
             f"{directory}"
         )
+    if training is not None:
+        fused_reference = training.get("fused_reference", {})
+        candidate = training.get("candidate_manifest_entry", {})
+        recorded_lock_sha256 = (
+            fused_reference.get("lock_sha256")
+            or training.get("fused_lock", {}).get("sha256")
+        )
+        actual_lock_sha256 = sha256_file(directory / LOCK_FILE)
+        if recorded_lock_sha256 != actual_lock_sha256:
+            raise RuntimeError(
+                "training manifest fused lock SHA-256 does not match the "
+                f"actual lock ({recorded_lock_sha256} != {actual_lock_sha256})"
+            )
+        recorded_digests = {
+            "fused_reference.directory_sha256": fused_reference.get(
+                "directory_sha256"
+            ),
+            "candidate snapshot_directory_sha256": candidate.get(
+                "snapshot_directory_sha256"
+            ),
+        }
+        for label, recorded in recorded_digests.items():
+            if recorded != actual:
+                raise RuntimeError(
+                    f"{label} does not match fused bytes ({recorded} != {actual})"
+                )
+        if candidate.get("required_files") != inventory:
+            raise RuntimeError(
+                "candidate required_files do not match the fused inventory"
+            )
+
+        receipt = training.get("wandb", {}).get("receipt", {})
+        canonical_sha256 = receipt.get("canonical_evidence_sha256")
+        if evidence_path is None or not evidence_path.is_file():
+            raise RuntimeError("local canonical W&B evidence is missing")
+        actual_evidence_sha256 = sha256_file(evidence_path)
+        if canonical_sha256 != actual_evidence_sha256:
+            raise RuntimeError(
+                "local canonical W&B evidence does not match its receipt "
+                f"({actual_evidence_sha256} != {canonical_sha256})"
+            )
+        lock_evidence_sha256 = lock.get("training_provenance", {}).get(
+            "canonical_evidence_sha256"
+        )
+        candidate_evidence_sha256 = candidate.get("training_provenance", {}).get(
+            "canonical_evidence_sha256"
+        )
+        if (
+            lock_evidence_sha256 != candidate_evidence_sha256
+            or lock_evidence_sha256 != canonical_sha256
+        ):
+            raise RuntimeError(
+                "fused lock, candidate manifest, and W&B receipt must cite "
+                "the same canonical training authorization evidence"
+            )
     return actual, inventory
 
 
-def unexpected_fresh_paths(fresh: Path, staged_paths: set[str]) -> list[str]:
+def unexpected_fresh_paths(
+    fresh: Path,
+    staged_paths: set[str],
+    revision: str | None = None,
+) -> list[str]:
     """Find public snapshot files absent from the staged publication tree."""
     unexpected = []
-    local_metadata_prefix = (".cache", "huggingface", "download")
-    for path in fresh.rglob("*"):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(fresh)
-        relative_path = relative.as_posix()
-        if relative.parts[:3] == local_metadata_prefix:
-            continue
+    for item in full_directory_inventory(fresh):
+        relative_path = item["path"]
         if relative_path == ".gitattributes":
             continue
+        if relative_path in {
+            ".cache/huggingface/.gitignore",
+            ".cache/huggingface/CACHEDIR.TAG",
+        }:
+            continue
+        download_prefix = ".cache/huggingface/download/"
+        if relative_path.startswith(download_prefix):
+            payload_path = relative_path.removeprefix(download_prefix)
+            for suffix in (".metadata", ".lock"):
+                if payload_path.endswith(suffix):
+                    payload_path = payload_path.removesuffix(suffix)
+                    break
+            else:
+                payload_path = ""
+            if payload_path in staged_paths:
+                continue
+        tree_prefix = ".cache/huggingface/trees/"
+        if relative_path.startswith(tree_prefix):
+            tree_name = relative_path.removeprefix(tree_prefix)
+            if tree_name == f"{revision}.json" and revision is not None:
+                continue
         if relative_path not in staged_paths:
             unexpected.append(relative_path)
     return sorted(unexpected)
@@ -307,7 +396,12 @@ def main() -> None:
         (
             training_fused_tree_sha256,
             verified_fused_inventory,
-        ) = verify_fused_tree_for_publication(fused, lock)
+        ) = verify_fused_tree_for_publication(
+            fused,
+            lock,
+            training=training,
+            evidence_path=run_path / EVIDENCE_FILE,
+        )
         key = lock["key"]
         results = [
             result
@@ -367,6 +461,7 @@ def main() -> None:
         shutil.copytree(
             fused,
             staging,
+            symlinks=True,
             ignore=shutil.ignore_patterns(LOCK_FILE, ".cache"),
         )
         staged_source_sha256 = directory_digest(directory_inventory(staging))
@@ -506,35 +601,59 @@ def main() -> None:
         # (the Hub's .gitattributes and local download metadata are the only
         # expected additions).
         staged_paths = {file["path"] for file in inventory}
-        unexpected = unexpected_fresh_paths(fresh, staged_paths)
+        unexpected = unexpected_fresh_paths(fresh, staged_paths, revision)
         if unexpected:
             raise RuntimeError(
                 f"fresh download of {repo_id} contains files that were "
                 f"never staged: {unexpected}"
             )
         fresh_inventory = directory_inventory(fresh)
-        # Only after the independent fresh download verifies do we replace
-        # the local fused materialization with the exact public snapshot.
-        # This keeps a network or integrity failure from corrupting a
-        # completed training output.
-        shutil.rmtree(fused)
-        shutil.copytree(
-            fresh,
-            fused,
-            ignore=shutil.ignore_patterns(".cache"),
-        )
-        local_public_inventory = directory_inventory(fused)
+        # Preserve the immutable training output. Materialize the independently
+        # verified public snapshot into a distinct same-filesystem tree.
+        published_root = args.published_trees_dir.resolve()
+        published_root.mkdir(parents=True, exist_ok=True)
+        published = published_root / training["run_id"]
+        if published.exists() or published.is_symlink():
+            raise RuntimeError(
+                f"published snapshot already exists and is immutable: {published}"
+            )
+        published_staging = Path(tempfile.mkdtemp(
+            prefix=f".{published.name}.staging-", dir=published_root
+        ))
+        try:
+            shutil.copytree(
+                fresh,
+                published_staging,
+                dirs_exist_ok=True,
+                symlinks=True,
+                ignore=shutil.ignore_patterns(".cache"),
+            )
+            local_public_inventory = directory_inventory(published_staging)
+            if local_public_inventory != fresh_inventory:
+                raise RuntimeError(
+                    f"local/public snapshot inventories differ for {repo_id}"
+                )
+            public_lock = {
+                **lock,
+                "repository": repo_id,
+                "revision": revision,
+                "verified_files": fresh_inventory,
+                "all_files": fresh_inventory,
+                "directory_sha256": directory_digest(fresh_inventory),
+                "training_directory_sha256": training_fused_tree_sha256,
+                "training_lock_sha256": sha256_file(fused / LOCK_FILE),
+            }
+            write_json(published_staging / LOCK_FILE, public_lock)
+            transactionally_replace_directory(published_staging, published)
+        finally:
+            if published_staging.exists():
+                shutil.rmtree(published_staging)
+        local_public_inventory = directory_inventory(published)
         if local_public_inventory != fresh_inventory:
             raise RuntimeError(
                 f"local/public snapshot inventories differ for {repo_id}"
             )
         shutil.rmtree(staging)
-        lock["repository"] = repo_id
-        lock["revision"] = revision
-        lock["verified_files"] = fresh_inventory
-        lock["all_files"] = fresh_inventory
-        lock["directory_sha256"] = directory_digest(fresh_inventory)
-        write_json(fused / LOCK_FILE, lock)
         publication = {
             "schema_version": 1,
             "publication_run_id": publication_directory.name,
@@ -544,25 +663,26 @@ def main() -> None:
             "public": True,
             "fresh_download_verified": True,
             "fresh_snapshot": str(fresh.relative_to(REPO_ROOT)),
+            "published_snapshot": str(published.relative_to(REPO_ROOT)),
             "model_files": fresh_inventory,
             "training_fused_tree_sha256": training_fused_tree_sha256,
             "model_tree_sha256": directory_digest(fresh_inventory),
             "evaluation_runs": [
                 result["_evidence"] for result in results
             ],
-            "model_card": input_hash(fused / "README.md"),
+            "model_card": input_hash(published / "README.md"),
             "licenses": [
-                input_hash(fused / item["path"])
+                input_hash(published / item["path"])
                 for item in declared_licenses
             ],
             "notice": (
-                input_hash(fused / declared_notice["path"])
+                input_hash(published / declared_notice["path"])
                 if declared_notice is not None
                 else None
             ),
             "license": (
-                input_hash(fused / "LICENSE")
-                if (fused / "LICENSE").is_file()
+                input_hash(published / "LICENSE")
+                if (published / "LICENSE").is_file()
                 else None
             ),
         }

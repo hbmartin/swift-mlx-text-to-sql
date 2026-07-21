@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import subprocess
@@ -9,6 +10,7 @@ import yaml
 from eval.experiment import (
     ExperimentConfig,
     ExperimentConfigurationError,
+    campaign_tags,
     immutable_run_id,
     select_development_checkpoint,
 )
@@ -19,11 +21,18 @@ from eval.wandb_evidence import (
     require_wandb_complete,
     required_wandb_environment,
     synchronize_manifest,
+    write_canonical_evidence,
 )
+from eval.file_integrity import IntegrityError
+from tools.sync_wandb import attach_post_selection_evidence
 from tools.evaluate_checkpoints import (
     evaluate_training_checkpoints,
 )
 from tools.import_wandb_history import parse_training_log
+from tools.run_experiment import (
+    _wandb_subprocess_environment,
+    materialize_adapter_artifact,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +63,84 @@ def test_configuration_hash_and_run_id_bind_every_identity_axis():
     assert first.configuration_sha256 != changed.configuration_sha256
     assert immutable_run_id(first, "wandb-a") != immutable_run_id(first, "wandb-b")
     assert immutable_run_id(first, "wandb-a") != immutable_run_id(changed, "wandb-a")
+
+
+def test_campaign_tags_preserve_full_corpus_digest_within_wandb_limit():
+    corpus_sha256 = hashlib.sha256(b"corpus").hexdigest()
+    tags = campaign_tags(
+        experiment(),
+        corpus_sha256=corpus_sha256,
+        git_commit="a" * 40,
+        status="running",
+        prompt_version="reliability-v2",
+        policy_version="bounded-three-generation-v1",
+    )
+
+    assert all(1 <= len(tag) <= 64 for tag in tags)
+    encoded = next(tag for tag in tags if tag.startswith("corpus-sha256:"))
+    encoded = encoded.removeprefix("corpus-sha256:")
+    decoded = base64.urlsafe_b64decode(encoded + "=")
+    assert decoded.hex() == corpus_sha256
+
+
+def test_training_wandb_environment_keeps_transport_out_of_adapter(tmp_path):
+    manifest = minimal_manifest(tmp_path)
+    manifest["wandb"].update(
+        {
+            "group": "campaign-test",
+            "job_type": "confirmation",
+            "tags": ["prompt:reliability-v2"],
+        }
+    )
+    manifest["experiment"]["stage"] = "promoted"
+
+    environment = _wandb_subprocess_environment(manifest, tmp_path)
+
+    assert environment["WANDB_DIR"] == str(tmp_path)
+    assert environment["WANDB_JOB_TYPE"] == "confirmation"
+    assert environment["WANDB_RUN_GROUP"] == "campaign-test"
+
+
+def test_adapter_materialization_excludes_wandb_transport_symlinks(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    payload = {
+        "adapter_config.json": b"{}\n",
+        "adapters.safetensors": b"final",
+        "0000100_adapters.safetensors": b"checkpoint",
+    }
+    for name, value in payload.items():
+        (scratch / name).write_bytes(value)
+    transport = scratch / "wandb"
+    transport.mkdir()
+    (transport / "run").mkdir()
+    (transport / "latest-run").symlink_to("run", target_is_directory=True)
+    destination = tmp_path / "adapters" / "immutable-run"
+
+    inventory = materialize_adapter_artifact(
+        scratch, destination, experiment(iterations=100)
+    )
+
+    assert {item["path"] for item in inventory} == set(payload)
+    assert not scratch.exists()
+    assert not (destination / "wandb").exists()
+
+
+def test_adapter_materialization_rejects_unexpected_payload(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    for name in (
+        "adapter_config.json",
+        "adapters.safetensors",
+        "0000100_adapters.safetensors",
+        "planted.bin",
+    ):
+        (scratch / name).write_bytes(b"payload")
+
+    with pytest.raises(RuntimeError, match="extras=.*planted.bin"):
+        materialize_adapter_artifact(
+            scratch, tmp_path / "adapter", experiment(iterations=100)
+        )
 
 
 @pytest.mark.parametrize(
@@ -176,7 +263,23 @@ def test_publication_gate_rejects_incomplete_shared_evidence(tmp_path):
     manifest["status"] = "complete"
     with pytest.raises(WandbEvidenceError, match="requires a complete"):
         require_wandb_complete(manifest, operation="publication")
-    manifest["wandb"]["receipt"] = {"status": "complete"}
+    manifest["wandb"]["receipt"] = {
+        "status": "complete",
+        "entity": "team",
+        "project": "creg-sql",
+        "run_id": "wb123",
+        "url": "https://wandb.invalid/run",
+        "canonical_evidence_sha256": "a" * 64,
+        "artifacts": [
+            {
+                "name": "evidence",
+                "version": "v0",
+                "digest": "digest",
+                "type": "evidence",
+                "files": [],
+            }
+        ],
+    }
     require_wandb_complete(manifest, operation="publication")
 
 
@@ -399,10 +502,18 @@ def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
         manifest, evidence, sha256_file(evidence)
     )
     assert fake.init_kwargs["group"] == "campaign-test"
+    assert fake.init_kwargs["job_type"] == "screening"
     metric_names = {
         key for values, _step in fake.run.logs for key in values if not isinstance(values[key], FakeTable)
     }
     assert "checkpoint/gold_v1/ex" in metric_names
+    checkpoint_metric_logs = [
+        (values, step)
+        for values, step in fake.run.logs
+        if "checkpoint/gold_v1/ex" in values
+    ]
+    assert checkpoint_metric_logs[0][1] is None
+    assert checkpoint_metric_logs[0][0]["checkpoint/iteration"] == 100
     tables = [value for values, _ in fake.run.logs for value in values.values() if isinstance(value, FakeTable)]
     assert tables[0].data[0][0] == 100
     assert {artifact.type for artifact in fake.run.artifacts} >= {
@@ -415,6 +526,75 @@ def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
     assert all(item["version"] == "v0" and item["digest"] for item in receipt["artifacts"])
 
 
+def test_wandb_evidence_rejects_symlinked_attachment(tmp_path):
+    manifest = minimal_manifest(tmp_path)
+    target = tmp_path / "target.json"
+    target.write_text("{}\n")
+    linked = tmp_path / "linked.json"
+    linked.symlink_to(target)
+    manifest["final_evaluation"] = {"files": [str(linked)]}
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    with pytest.raises(IntegrityError, match="symbolic links"):
+        write_canonical_evidence(manifest_path)
+
+
+def test_wandb_evidence_rejects_attachment_through_symlinked_directory(
+    tmp_path,
+):
+    manifest = minimal_manifest(tmp_path)
+    target = tmp_path / "target-directory"
+    target.mkdir()
+    (target / "evidence.json").write_text("{}\n")
+    linked = tmp_path / "linked-directory"
+    linked.symlink_to(target, target_is_directory=True)
+    manifest["final_evaluation"] = {
+        "files": [str(linked / "evidence.json")]
+    }
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    with pytest.raises(IntegrityError, match="path ancestors"):
+        write_canonical_evidence(manifest_path)
+
+
+def test_final_run_accepts_separate_post_selection_artifacts_and_metrics(tmp_path):
+    manifest = minimal_manifest(tmp_path)
+    manifest["experiment"]["stage"] = "final"
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+    policy = tmp_path / "policy.json"
+    parity = tmp_path / "parity.json"
+    release = tmp_path / "release.json"
+    device = tmp_path / "device.json"
+    for path in (policy, parity, release, device):
+        path.write_text("{}\n")
+    metrics = tmp_path / "headline.json"
+    metrics.write_text(json.dumps({"ex": 0.7, "release_verified": True}))
+
+    attach_post_selection_evidence(
+        manifest_path,
+        final_evaluations=[],
+        publication_path=None,
+        policy_calibrations=[policy],
+        parity_evidence=[parity],
+        release_inspections=[release],
+        device_evidence=[device],
+        headline_metrics_path=metrics,
+    )
+
+    updated = json.loads(manifest_path.read_text())
+    assert set(updated["post_selection_evidence"]) == {
+        "policy-calibration",
+        "swift-python-parity",
+        "release-bundle-inspection",
+        "physical-device-evidence",
+        "headline-metrics",
+    }
+    assert updated["headline_metrics"]["release_verified"] is True
+
+
 def test_sweep_files_define_two_18_run_random_campaigns():
     sweeps = sorted((ROOT / "fine-tuning/config/sweeps").glob("*.yaml"))
     assert len(sweeps) == 2
@@ -422,6 +602,13 @@ def test_sweep_files_define_two_18_run_random_campaigns():
         config = yaml.safe_load(path.read_text())
         assert config["method"] == "random"
         assert config["run_cap"] == 18
+        assert "reliability-v2" in config["name"]
+        campaign_argument = next(
+            value
+            for value in config["command"]
+            if isinstance(value, str) and value.startswith("--campaign-id=")
+        )
+        assert campaign_argument.removeprefix("--campaign-id=") == config["name"]
         assert config["metric"] == {"name": "development/ex", "goal": "maximize"}
         assert config["parameters"]["seed"]["value"] == 424242
 

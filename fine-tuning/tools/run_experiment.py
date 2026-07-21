@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,8 @@ from typing import Any, Callable
 import yaml
 
 from eval.experiment import ExperimentConfig, campaign_tags, immutable_run_id
+from eval.file_integrity import transactionally_replace_directory
+from eval.prompt_contract import prompt_contract_receipt
 from eval.run_artifacts import (
     REPO_ROOT,
     create_run_directory,
@@ -202,6 +205,7 @@ def trainable_parameter_count(checkpoint: Path) -> int:
 
 def _wandb_subprocess_environment(
     manifest: dict[str, Any],
+    wandb_directory: Path,
 ) -> dict[str, str]:
     environment = os.environ.copy()
     record = manifest["wandb"]
@@ -213,12 +217,89 @@ def _wandb_subprocess_environment(
             "WANDB_PROJECT": record["project"],
             "WANDB_RUN_ID": record["run_id"],
             "WANDB_RUN_GROUP": experiment["campaign_id"],
-            "WANDB_JOB_TYPE": experiment["stage"],
+            "WANDB_JOB_TYPE": record["job_type"],
             "WANDB_TAGS": ",".join(record["tags"]),
             "WANDB_RESUME": "allow",
+            # Used by W&B integrations that honor the environment. MLX-LM
+            # explicitly passes its log_dir, so its adapter_path is a scratch
+            # directory that is sanitized after the subprocess exits.
+            "WANDB_DIR": str(wandb_directory),
         }
     )
     return environment
+
+
+def materialize_adapter_artifact(
+    scratch: Path,
+    destination: Path,
+    config: ExperimentConfig,
+) -> list[dict[str, Any]]:
+    """Copy only exact MLX adapter payload files out of W&B scratch state."""
+    scratch_metadata = scratch.lstat()
+    if stat.S_ISLNK(scratch_metadata.st_mode) or not stat.S_ISDIR(
+        scratch_metadata.st_mode
+    ):
+        raise RuntimeError(f"MLX adapter scratch is not a real directory: {scratch}")
+    expected_names = {
+        "adapter_config.json",
+        "adapters.safetensors",
+        *{
+            f"{iteration:07d}_adapters.safetensors"
+            for iteration in range(
+                config.save_every, config.iterations + 1, config.save_every
+            )
+        },
+    }
+    entries = {path.name: path for path in scratch.iterdir()}
+    missing = sorted(expected_names - set(entries))
+    extras = sorted(set(entries) - expected_names - {"wandb"})
+    if missing or extras:
+        raise RuntimeError(
+            "unexpected MLX adapter scratch inventory: "
+            f"missing={missing}, extras={extras}"
+        )
+    if (wandb_directory := entries.get("wandb")) is not None:
+        metadata = wandb_directory.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(
+                f"W&B scratch transport is not a real directory: {wandb_directory}"
+            )
+
+    source_inventory = sorted(
+        (
+            {
+                "path": name,
+                "size": entries[name].lstat().st_size,
+                "sha256": sha256_file(entries[name]),
+            }
+            for name in expected_names
+        ),
+        key=lambda item: item["path"],
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}.staging-", dir=destination.parent
+        )
+    )
+    try:
+        for item in source_inventory:
+            shutil.copy2(entries[item["path"]], staged / item["path"])
+        staged_inventory = directory_inventory(staged)
+        if staged_inventory != source_inventory:
+            raise RuntimeError("staged adapter bytes differ from MLX output")
+        transactionally_replace_directory(staged, destination)
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged)
+    installed_inventory = directory_inventory(destination)
+    if installed_inventory != source_inventory:
+        raise RuntimeError("installed adapter bytes differ from verified staging")
+    # This directory contains only duplicate payload bytes and W&B's mutable
+    # local transport (including convenience symlinks), never canonical
+    # evidence. The clean destination above is the sole adapter artifact.
+    shutil.rmtree(scratch)
+    return installed_inventory
 
 
 def _fuse_selected_checkpoint(
@@ -378,24 +459,34 @@ def run_experiment(
         raise RuntimeError(f"{config.model_key}: verified base is missing; fetch it first")
     base_sha256 = verify_artifact_tree_at_use(base, artifact)
 
+    # Repository provenance is a precondition. Check it before reserving the
+    # immutable run directory or regenerating a corpus into that directory.
+    git = git_provenance()
     wb_run_id = run_id_factory()
     run_id = immutable_run_id(config, wb_run_id)
-    run_directory = create_run_directory(training_runs_dir.resolve(), run_id)
+    training_runs_dir = training_runs_dir.resolve()
+    run_directory = training_runs_dir / run_id
     adapter = models_dir / "adapters" / config.campaign_id / run_id
+    scratch_adapter = run_directory / "mlx-adapter-scratch"
     fused = models_dir / "fused" / (
         f"{run_id}-iter-{config.iterations:06d}"
     )
+    if run_directory.exists() or run_directory.is_symlink():
+        raise RuntimeError(f"refusing to overwrite training run {run_directory}")
     if adapter.exists() or fused.exists():
         raise RuntimeError(f"refusing to overwrite output for {run_id}")
+    run_directory = create_run_directory(training_runs_dir, run_id)
 
     corpus = verify_regenerated_corpus(run_directory, runner=runner)
-    git = git_provenance()
     experiment = config.manifest_payload()
+    prompt_contract = prompt_contract_receipt()
     tags = campaign_tags(
         config,
         corpus_sha256=corpus["manifest"]["sha256"],
         git_commit=git["commit"],
         status="running",
+        prompt_version=prompt_contract["prompt_version"],
+        policy_version=prompt_contract["policy_version"],
     )
     effective_config_path = run_directory / "effective-config.yaml"
     effective = write_effective_configuration(
@@ -403,7 +494,7 @@ def run_experiment(
         config=config,
         base=base,
         corpus_directory=run_directory / "regenerated-corpus",
-        adapter=adapter,
+        adapter=scratch_adapter,
         project=authority["project"],
         metadata={
             **experiment,
@@ -411,6 +502,7 @@ def run_experiment(
             "base_directory_sha256": base_sha256,
             "corpus_manifest_sha256": corpus["manifest"]["sha256"],
             "git_commit": git["commit"],
+            **prompt_contract,
         },
     )
     command = [
@@ -428,6 +520,7 @@ def run_experiment(
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "command": command,
         "experiment": experiment,
+        "prompt_contract": prompt_contract,
         "git": git,
         "hardware": hardware_provenance(),
         "base": {
@@ -462,6 +555,9 @@ def run_experiment(
             "project": authority["project"],
             "run_id": wb_run_id,
             "group": config.campaign_id,
+            "job_type": (
+                "confirmation" if config.stage == "promoted" else config.stage
+            ),
             "tags": tags,
         },
     }
@@ -469,14 +565,32 @@ def run_experiment(
     write_json(manifest_path, manifest)
     log_path = run_directory / "training.log"
     training_started = time.perf_counter()
-    with log_path.open("xb") as log:
-        completed = runner(
-            command,
-            cwd=REPO_ROOT / "fine-tuning",
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=_wandb_subprocess_environment(manifest),
+    try:
+        with log_path.open("xb") as log:
+            completed = runner(
+                command,
+                cwd=REPO_ROOT / "fine-tuning",
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=_wandb_subprocess_environment(manifest, run_directory),
+            )
+    except BaseException as error:
+        interrupted = isinstance(error, (KeyboardInterrupt, SystemExit))
+        manifest = json.loads(manifest_path.read_text())
+        manifest["durations"] = {
+            "training": time.perf_counter() - training_started,
+        }
+        if log_path.is_file():
+            manifest["training_log"] = input_hash(log_path)
+        manifest["status"] = (
+            "training_interrupted" if interrupted else "training_failed"
         )
+        manifest["training_failure"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+        write_json(manifest_path, manifest)
+        raise
     manifest = json.loads(manifest_path.read_text())
     manifest["durations"] = {
         "training": time.perf_counter() - training_started,
@@ -486,7 +600,9 @@ def run_experiment(
         manifest["status"] = "training_failed"
         write_json(manifest_path, manifest)
         raise RuntimeError(f"training failed; see {log_path}")
-    manifest["adapter_files"] = directory_inventory(adapter)
+    manifest["adapter_files"] = materialize_adapter_artifact(
+        scratch_adapter, adapter, config
+    )
     manifest["trainable_parameter_count"] = trainable_parameter_count(
         adapter / "adapters.safetensors"
     )

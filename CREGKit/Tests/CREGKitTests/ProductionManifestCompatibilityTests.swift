@@ -15,18 +15,21 @@ import Testing
     return url
   }
 
-  private var checkedInManifestURL: URL {
-    URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent("model-manifest.json")
+  private func checkedInManifestURL() throws -> URL {
+    var ancestor = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    for _ in 0..<8 {
+      let candidate = ancestor.appendingPathComponent("model-manifest.json")
+      if FileManager.default.fileExists(atPath: candidate.path) {
+        return candidate
+      }
+      ancestor.deleteLastPathComponent()
+    }
+    throw CocoaError(.fileNoSuchFile)
   }
 
   @Test func checkedInManifestLoadsVerifiedProductionConfiguration() throws {
     let production = try ModelManifestLoader.production(
-      url: checkedInManifestURL)
+      url: checkedInManifestURL())
 
     #expect(production.model.key == "ft-xiyansql-qwencoder-3b")
     #expect(

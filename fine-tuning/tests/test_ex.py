@@ -24,6 +24,7 @@ FIXTURES = (
     / "Resources"
     / "canonical_result_fixtures.json"
 )
+SQLITE_TEXT_FIXTURES = FIXTURES.with_name("sqlite_text_fixtures.json")
 
 
 def fixture_rows(rows: list[list[dict[str, str]]]) -> list[tuple[object, ...]]:
@@ -79,8 +80,8 @@ def test_canonical_number_is_total_over_the_double_range():
     assert canonical_number(float("nan")) == "nan"
     assert canonical_number(1e24) == "1" + "0" * 24
     assert canonical_number(1.2345e300) == "12345" + "0" * 296
-    assert canonical_number(1.7976931348623157e308).startswith(
-        "17976931348623157"
+    assert canonical_number(1.7976931348623157e308) == (
+        "179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
     )
     assert canonical_number(5e-324) == "0"
 
@@ -129,6 +130,13 @@ def test_shared_canonical_fixtures():
 def test_execute_normalizes_floats():
     rows = execute(DB, "SELECT 1.00004, 'x'")
     assert rows == [(1.0, "x")]
+
+
+def test_execute_preserves_nul_and_replaces_invalid_utf8():
+    document = json.loads(SQLITE_TEXT_FIXTURES.read_text())
+    assert document["schema_version"] == 1
+    for case in document["cases"]:
+        assert execute(DB, case["sql"]) == [(case["expected"],)]
 
 
 def test_execute_detects_truncation():

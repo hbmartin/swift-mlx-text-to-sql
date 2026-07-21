@@ -31,10 +31,14 @@ import xgrammar
 from xgrammar.testing import _is_grammar_accept_string as grammar_accepts
 
 from eval.ex import ExecutionError, execute
+from eval.prompt_contract import build_repair_prompt, build_system_prompt
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DB = REPO_ROOT / "db" / "creg.sqlite"
-GOLD = REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl"
+GOLD_PATHS = (
+    REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl",
+    REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl",
+)
 GRAMMAR_PATH = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "sql_grammar.ebnf"
 SCHEMA_PROMPT = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "schema_prompt.txt"
 OUT_DIR = REPO_ROOT / "fine-tuning" / "synth" / "out"
@@ -43,21 +47,6 @@ SEED = 424242
 TARGET = 3000
 VALID_FRACTION = 0.05
 OCCUPYING = "('Active', 'Holdover')"
-
-SYSTEM_PROMPT = """You translate questions about a commercial real estate portfolio into a single \
-SQLite SELECT statement. Only SELECT is possible. Use only these tables and columns:
-
-{schema}
-
-Rules:
-- Vacancy means 1 - occupancy_rate from each property's latest monthly \
-property_financials row, never derived from leases.
-- "Current value" of a property is properties.current_market_value; the \
-valuations table is appraisal history only.
-- Dates are ISO text (YYYY-MM-DD); today is 2026-07-01.
-- Rates are 0-1 fractions.
-Output only the SQL statement."""
-
 
 def normalize(question: str) -> str:
     return "".join(c for c in question.lower() if c.isalnum() or c == " ").strip()
@@ -92,6 +81,20 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
 
     def add(family, tier, question, sql):
         out.append({"family": family, "tier": tier, "question": question, "sql": sql})
+
+    def add_repair(family, tier, question, failed_sql, sql, error):
+        out.append({
+            "family": family,
+            "tier": tier,
+            "question": question,
+            "sql": sql,
+            "repair": {
+                "failed_sql": failed_sql,
+                "sqlite_error": error,
+                "issue_type": "binding",
+                "issue_disposition": "repairable",
+            },
+        })
 
     def phr(options, **kw):
         return rng.choice(options).format(**kw)
@@ -148,6 +151,31 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
                 "What was {p}'s NOI in {y}?", "Total net operating income for {p} during {y}?",
                 "How much NOI did {p} produce in {y}?",
             ], p=p, y=y), f"SELECT SUM(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.name = '{p}' AND f.period_end >= '{y}-01-01' AND f.period_end <= '{y}-12-31'")
+        for n in (3, 6):
+            add("prop_trailing_noi", 3, phr([
+                "What is {p}'s trailing {n}-month NOI through its latest snapshot?",
+                "Sum {p}'s NOI for its latest {n} reported months.",
+            ], p=p, n=n), f"SELECT SUM(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.name = '{p}' AND f.period_end IN (SELECT f2.period_end FROM property_financials f2 JOIN properties p2 ON p2.property_id = f2.property_id WHERE p2.name = '{p}' ORDER BY f2.period_end DESC LIMIT {n})")
+
+    # Repair-shaped training records use the exact shared runtime template.
+    # Their questions remain structurally compositional while the gold v1/v2
+    # text exclusion below prevents benchmark leakage.
+    for p in e["fin_props"][:12]:
+        add_repair(
+            "repair_latest_vacancy", 3,
+            f"Give the latest reported vacancy rate for {p}.",
+            f"SELECT 1 - occupancy_rate FROM properties WHERE name = '{p}'",
+            f"SELECT 1 - f.occupancy_rate FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.name = '{p}' AND f.period_end = (SELECT MAX(period_end) FROM property_financials WHERE property_id = p.property_id)",
+            "no such column: occupancy_rate",
+        )
+    for fund in e["funds"]:
+        add_repair(
+            "repair_fund_current_value", 3,
+            f"Total the current value of all held assets in {fund}.",
+            f"SELECT SUM(current_market_value) FROM funds WHERE name = '{fund}'",
+            f"SELECT SUM(p.current_market_value) FROM properties p JOIN funds f ON f.fund_id = p.fund_id WHERE f.name = '{fund}' AND p.status != 'Sold'",
+            "no such column: current_market_value",
+        )
 
     # --- monthly financial lookups ---------------------------------------
     for p in e["fin_props"]:
@@ -392,8 +420,12 @@ def main() -> None:
     conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     entities = load_entities(conn)
     grammar = xgrammar.Grammar.from_ebnf(GRAMMAR_PATH.read_text())
-    gold_questions = {normalize(json.loads(line)["question"])
-                      for line in GOLD.read_text().splitlines() if line.strip()}
+    gold_questions = {
+        normalize(json.loads(line)["question"])
+        for path in GOLD_PATHS
+        for line in path.read_text().splitlines()
+        if line.strip()
+    }
 
     candidates = build_candidates(rng, entities)
     rng.shuffle(candidates)
@@ -427,11 +459,21 @@ def main() -> None:
             break
     stats["kept"] = len(kept)
 
-    system_prompt = SYSTEM_PROMPT.format(schema=SCHEMA_PROMPT.read_text().strip())
+    system_prompt = build_system_prompt(SCHEMA_PROMPT.read_text().strip())
     records = [
         {"messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Question: {item['question']}"},
+            {"role": "user", "content": (
+                build_repair_prompt(
+                    question=item["question"],
+                    failed_sql=item["repair"]["failed_sql"],
+                    sqlite_error=item["repair"]["sqlite_error"],
+                    issue_type=item["repair"]["issue_type"],
+                    issue_disposition=item["repair"]["issue_disposition"],
+                )
+                if "repair" in item
+                else f"Question: {item['question']}"
+            )},
             {"role": "assistant", "content": item["sql"]},
         ]}
         for item in kept
@@ -450,6 +492,7 @@ def main() -> None:
         tiers[item["tier"]] = tiers.get(item["tier"], 0) + 1
     stats["families"] = dict(sorted(families.items()))
     stats["tiers"] = {str(k): v for k, v in sorted(tiers.items())}
+    stats["repair_examples"] = sum("repair" in item for item in kept)
     (out_dir / "gate_stats.json").write_text(json.dumps(stats, indent=2))
     print(json.dumps({k: v for k, v in stats.items() if k != "families"}, indent=2))
     print(f"train={len(records) - n_valid} valid={n_valid} -> {out_dir}")

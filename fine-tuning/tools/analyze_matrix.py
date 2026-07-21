@@ -311,6 +311,94 @@ def identical_sql_runtime_drift(
     )
 
 
+def recognized_nondeterministic_sql(sql: str) -> bool:
+    """Recognize the narrow SQLite constructs allowed to explain same-SQL
+    result drift. Tokens inside comments and quoted identifiers are ignored;
+    date/time functions qualify only when an actual string argument is
+    exactly ``'now'``.
+    """
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    while index < len(sql):
+        character = sql[index]
+        following = sql[index + 1] if index + 1 < len(sql) else None
+        if character.isspace():
+            index += 1
+            continue
+        if character == "-" and following == "-":
+            index += 2
+            while index < len(sql) and sql[index] not in "\r\n":
+                index += 1
+            continue
+        if character == "/" and following == "*":
+            end = sql.find("*/", index + 2)
+            index = len(sql) if end < 0 else end + 2
+            continue
+        if character in "'\"`[":
+            closing = "]" if character == "[" else character
+            kind = "string" if character == "'" else "quoted"
+            index += 1
+            value = []
+            while index < len(sql):
+                if sql[index] == closing:
+                    if index + 1 < len(sql) and sql[index + 1] == closing:
+                        value.append(closing)
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                value.append(sql[index])
+                index += 1
+            tokens.append((kind, "".join(value)))
+            continue
+        if character.isalpha() or character == "_":
+            end = index + 1
+            while end < len(sql) and (sql[end].isalnum() or sql[end] == "_"):
+                end += 1
+            tokens.append(("word", sql[index:end].lower()))
+            index = end
+            continue
+        tokens.append(("punctuation", character))
+        index += 1
+
+    for token_index, (kind, value) in enumerate(tokens):
+        if kind != "word":
+            continue
+        if value in {"current_date", "current_time", "current_timestamp"}:
+            return True
+        if (
+            value in {"random", "randomblob"}
+            and token_index + 1 < len(tokens)
+            and tokens[token_index + 1] == ("punctuation", "(")
+        ):
+            return True
+        if value not in {
+            "date",
+            "time",
+            "datetime",
+            "julianday",
+            "unixepoch",
+            "strftime",
+        }:
+            continue
+        if (
+            token_index + 1 >= len(tokens)
+            or tokens[token_index + 1] != ("punctuation", "(")
+        ):
+            continue
+        depth = 0
+        for nested_kind, nested_value in tokens[token_index + 1 :]:
+            if (nested_kind, nested_value) == ("punctuation", "("):
+                depth += 1
+            elif (nested_kind, nested_value) == ("punctuation", ")"):
+                depth -= 1
+                if depth == 0:
+                    break
+            elif nested_kind == "string" and nested_value.lower() == "now":
+                return True
+    return False
+
+
 def parity(
     python_run_path: Path,
     swift_output_path: Path,
@@ -425,6 +513,14 @@ def parity(
             or python_digest != swift_digest
         ):
             explanation = explanations.get(item_id)
+            same_engine_identical_sql = identical_sql_runtime_drift(
+                {
+                    "python": {"sql": python_item["predicted_sql"]},
+                    "swift": {"sql": swift_item["predictedSQL"]},
+                },
+                python_sqlite,
+                swift_sqlite,
+            )
             disagreements.append(
                 {
                     "id": item_id,
@@ -446,6 +542,12 @@ def parity(
                         "explained" if explanation is not None else "required"
                     ),
                     "explanation": explanation,
+                    "recognized_nondeterminism": (
+                        same_engine_identical_sql
+                        and recognized_nondeterministic_sql(
+                            python_item["predicted_sql"]
+                        )
+                    ),
                 }
             )
     # Explanations are structurally validated: they may cover only actual
@@ -459,7 +561,10 @@ def parity(
             f"(stale or wrong file): {stale_explanations}"
         )
     for item in disagreements:
-        if identical_sql_runtime_drift(item, python_sqlite, swift_sqlite):
+        if (
+            identical_sql_runtime_drift(item, python_sqlite, swift_sqlite)
+            and not item["recognized_nondeterminism"]
+        ):
             raise SelectionError(
                 f"{item['id']}: identical SQL on the same SQLite version "
                 "produced different parity data; fix runtime/comparator "
@@ -522,8 +627,10 @@ def parity(
                 "every disagreement carries an explanation, explanations "
                 "map only to actual disagreements, and identical-SQL "
                 "divergence is refused unless the recorded SQLite engines "
-                "differ; explanation prose is human-reviewed evidence, not "
-                "machine-verified"
+                "differ or a lexical scan recognizes random/randomblob, a "
+                "date/time call using 'now', or CURRENT_DATE/TIME/TIMESTAMP; "
+                "recognized nondeterminism still requires a non-empty human "
+                "explanation"
             ),
             "pass": metrics_pass and all_disagreements_explained,
         },

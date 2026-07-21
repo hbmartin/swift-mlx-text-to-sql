@@ -47,7 +47,12 @@ let package = Package(
       resources: [
         .copy("Resources/sql_grammar.ebnf"),
         .copy("Resources/schema_prompt.txt"),
+        .copy("Resources/schema_catalog.json"),
+        .copy("Resources/system_prompt_template.txt"),
+        .copy("Resources/repair_prompt_template.txt"),
         .copy("Resources/canonical_result_fixtures.json"),
+        .copy("Resources/sqlite_text_fixtures.json"),
+        .copy("Resources/sql_cutter_fixtures.json"),
       ]
     ),
     .target(

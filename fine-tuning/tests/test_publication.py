@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -99,12 +100,16 @@ def test_fresh_publication_scan_rejects_unstaged_lock_and_cache_files(tmp_path):
     (fresh / "weights.bin").write_bytes(b"weights")
     (fresh / ".gitattributes").write_text("*.bin filter=lfs\n")
     (fresh / ".creg-artifact.json").write_text("{}\n")
-    (fresh / ".cache" / "huggingface" / "download" / "weights.metadata").write_text(
+    (fresh / ".cache" / "huggingface" / "download" / "weights.bin.metadata").write_text(
         "local download metadata\n"
+    )
+    (fresh / ".cache" / "huggingface" / "download" / "planted.txt").write_text(
+        "planted inside the former exemption\n"
     )
     (fresh / ".cache" / "unexpected" / "planted.txt").write_text("planted\n")
 
     assert unexpected_fresh_paths(fresh, {"weights.bin"}) == [
+        ".cache/huggingface/download/planted.txt",
         ".cache/unexpected/planted.txt",
         ".creg-artifact.json",
     ]
@@ -115,11 +120,79 @@ def test_fresh_publication_scan_accepts_only_staged_and_hub_local_files(tmp_path
     (fresh / ".cache" / "huggingface" / "download").mkdir(parents=True)
     (fresh / "weights.bin").write_bytes(b"weights")
     (fresh / ".gitattributes").write_text("*.bin filter=lfs\n")
-    (fresh / ".cache" / "huggingface" / "download" / "weights.metadata").write_text(
+    (fresh / ".cache" / "huggingface" / "download" / "weights.bin.metadata").write_text(
         "local download metadata\n"
     )
 
     assert unexpected_fresh_paths(fresh, {"weights.bin"}) == []
+
+
+def test_fresh_publication_scan_rejects_file_and_directory_symlinks(tmp_path):
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    target_file = tmp_path / "target.bin"
+    target_file.write_bytes(b"weights")
+    (fresh / "linked.bin").symlink_to(target_file)
+    with pytest.raises(RuntimeError, match="symbolic links are not allowed"):
+        unexpected_fresh_paths(fresh, set())
+
+    (fresh / "linked.bin").unlink()
+    target_directory = tmp_path / "target-directory"
+    target_directory.mkdir()
+    (fresh / "linked-directory").symlink_to(target_directory, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="symbolic links are not allowed"):
+        unexpected_fresh_paths(fresh, set())
+
+
+def test_publication_cross_checks_immutable_training_manifest_and_wandb(tmp_path):
+    fused = tmp_path / "fused"
+    fused.mkdir()
+    (fused / "weights.bin").write_bytes(b"original")
+    inventory = directory_inventory(fused)
+    digest = directory_digest(inventory)
+    evidence = tmp_path / "wandb-evidence.json"
+    evidence.write_text('{"schema_version":1}\n')
+    evidence_sha256 = hashlib.sha256(evidence.read_bytes()).hexdigest()
+    lock = {
+        "directory_sha256": digest,
+        "all_files": inventory,
+        "training_provenance": {
+            "canonical_evidence_sha256": evidence_sha256,
+        },
+    }
+    (fused / LOCK_FILE).write_text(json.dumps(lock))
+    lock_sha256 = hashlib.sha256((fused / LOCK_FILE).read_bytes()).hexdigest()
+    training = {
+        "fused_reference": {
+            "directory_sha256": digest,
+            "lock_sha256": lock_sha256,
+        },
+        "candidate_manifest_entry": {
+            "snapshot_directory_sha256": digest,
+            "required_files": inventory,
+            "training_provenance": {
+                "canonical_evidence_sha256": evidence_sha256,
+            },
+        },
+        "wandb": {
+            "receipt": {"canonical_evidence_sha256": evidence_sha256},
+        },
+    }
+
+    verify_fused_tree_for_publication(
+        fused, lock, training=training, evidence_path=evidence
+    )
+    lock["training_provenance"]["canonical_evidence_sha256"] = "a" * 64
+    with pytest.raises(RuntimeError, match="same canonical"):
+        verify_fused_tree_for_publication(
+            fused, lock, training=training, evidence_path=evidence
+        )
+    lock["training_provenance"]["canonical_evidence_sha256"] = evidence_sha256
+    training["candidate_manifest_entry"]["snapshot_directory_sha256"] = "b" * 64
+    with pytest.raises(RuntimeError, match="candidate snapshot"):
+        verify_fused_tree_for_publication(
+            fused, lock, training=training, evidence_path=evidence
+        )
 
 
 def test_qwen_model_card_contains_complete_hash_and_license_evidence():

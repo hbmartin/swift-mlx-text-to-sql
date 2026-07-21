@@ -17,6 +17,10 @@ __pycache__/
 *.pyc
 .venv/
 
+# Local environment configuration
+.envrc
+/fine-tuning/wandb/
+
 # Model weights (fetched by script, never committed)
 /models/
 

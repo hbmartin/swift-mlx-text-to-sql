@@ -1,6 +1,6 @@
 """Generate the SQL grammar and schema prompt from the frozen database.
 
-Reads db/creg.sqlite (the authoritative schema + data) and emits two CREGKit
+Reads db/creg.sqlite (the authoritative schema + data) and emits three CREGKit
 resources:
 
   sql_grammar.ebnf   XGrammar EBNF for grammar-constrained decoding:
@@ -10,6 +10,8 @@ resources:
   schema_prompt.txt  Compact schema serialization for the model prompt,
                      with enumerated values for low-cardinality TEXT columns
                      (prompt-side value grounding).
+  schema_catalog.json Deterministic table/column ownership catalog consumed
+                      by Swift repair guidance and Python evidence tooling.
 
 Free-text string literals stay unconstrained in the grammar (needed for LIKE
 patterns and names); wrong literals are handled by the fuzzy-match correction
@@ -18,6 +20,7 @@ heuristic, not the grammar. See PRD §9 caveat.
 Usage:  uv run python tools/generate_grammar.py
 """
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -122,8 +125,11 @@ def main() -> None:
         columns[table] = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
 
     # Longest-first keeps greedy prefix alternatives from shadowing longer names.
-    all_columns = sorted({c for cols in columns.values() for c in cols}, key=len, reverse=True)
-    table_names = sorted(tables, key=len, reverse=True)
+    all_columns = sorted(
+        {c for cols in columns.values() for c in cols},
+        key=lambda name: (-len(name), name),
+    )
+    table_names = sorted(tables, key=lambda name: (-len(name), name))
 
     grammar = GRAMMAR_TEMPLATE.format(
         table_names=alternation(table_names),
@@ -151,12 +157,20 @@ def main() -> None:
             parts.append(entry)
         lines.append(f"{table}({', '.join(parts)})")
     schema_prompt = "\n".join(lines) + "\n"
+    schema_catalog = {
+        "schema_version": 1,
+        "tables": {table: columns[table] for table in sorted(columns)},
+    }
 
     RESOURCE_DIR.mkdir(parents=True, exist_ok=True)
     (RESOURCE_DIR / "sql_grammar.ebnf").write_text(grammar)
     (RESOURCE_DIR / "schema_prompt.txt").write_text(schema_prompt)
+    (RESOURCE_DIR / "schema_catalog.json").write_text(
+        json.dumps(schema_catalog, indent=2, sort_keys=True) + "\n"
+    )
     print(f"wrote {RESOURCE_DIR / 'sql_grammar.ebnf'} ({len(grammar)} chars)")
     print(f"wrote {RESOURCE_DIR / 'schema_prompt.txt'} ({len(schema_prompt)} chars)")
+    print(f"wrote {RESOURCE_DIR / 'schema_catalog.json'}")
 
 
 if __name__ == "__main__":

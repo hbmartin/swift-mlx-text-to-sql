@@ -5,7 +5,10 @@ import pytest
 
 import eval.run_consistency as consistency
 from eval.run_consistency import run_is_compatible
+from eval.run_artifacts import sha256_file
 from eval.selection import Run
+from eval.selection import SelectionError
+from tools.analyze_consistency import load_calibration
 from tools.fetch_model import (
     ArtifactError,
     LOCK_FILE,
@@ -30,6 +33,7 @@ def compatible_run() -> Run:
                     "run_seed * 1000000 + zero_based_item_index",
             },
             "inputs": {"gold": {"sha256": "b" * 64}},
+            "hardware": {"model": "test-mac"},
         },
         summary={
             "model_key": "winner",
@@ -52,6 +56,7 @@ def test_run_is_compatible_requires_exact_evaluation_identity() -> None:
         "temperature": 0.3,
         "seed": 4,
         "gold_sha256": "b" * 64,
+        "hardware": {"model": "test-mac"},
     }
     assert run_is_compatible(run, **arguments)
 
@@ -63,6 +68,7 @@ def test_run_is_compatible_requires_exact_evaluation_identity() -> None:
         ("temperature", 0.7),
         ("seed", 3),
         ("gold_sha256", "d" * 64),
+        ("hardware", {"model": "other-mac"}),
     ):
         changed = dict(arguments)
         changed[key] = incompatible
@@ -181,13 +187,155 @@ def test_current_identity_rehashes_model_weights(monkeypatch, tmp_path) -> None:
         consistency.current_identity("winner")
 
 
+def test_current_identity_normalizes_local_unpublished_artifacts(
+    monkeypatch, tmp_path
+) -> None:
+    model_directory = tmp_path / "models" / "winner"
+    model_directory.mkdir(parents=True)
+    (model_directory / "tokenizer.json").write_text("{}\n")
+    (model_directory / "weights.bin").write_bytes(b"original")
+    digest = directory_digest(directory_inventory(model_directory))
+    (model_directory / LOCK_FILE).write_text(json.dumps({"directory_sha256": digest}))
+    artifact = {
+        "key": "winner",
+        "repository": None,
+        "revision": None,
+        "local_directory": "winner",
+        "snapshot_directory_sha256": digest,
+    }
+    paths = {}
+    for name in ("gold", "database", "grammar", "schema", "swift-lock", "uv-lock"):
+        path = tmp_path / name
+        path.write_text(name)
+        paths[name] = path
+    monkeypatch.setattr(consistency, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(consistency, "MODEL_MANIFEST", tmp_path / "manifest")
+    monkeypatch.setattr(consistency, "GOLD_V2", paths["gold"])
+    monkeypatch.setattr(consistency, "DATABASE", paths["database"])
+    monkeypatch.setattr(consistency, "GRAMMAR", paths["grammar"])
+    monkeypatch.setattr(consistency, "SCHEMA_PROMPT", paths["schema"])
+    monkeypatch.setattr(consistency, "SWIFT_LOCK", paths["swift-lock"])
+    monkeypatch.setattr(consistency, "UV_LOCK", paths["uv-lock"])
+    monkeypatch.setattr(consistency, "load_manifest", lambda _: {"models": [artifact]})
+
+    identity = consistency.current_identity("winner")
+    assert identity["repository"] == "local-derived"
+    assert identity["revision"] == f"sha256:{digest}"
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_calibration_loader_rejects_historical_schema_versions(
+    tmp_path, schema_version
+) -> None:
+    directory = tmp_path / f"v{schema_version}"
+    directory.mkdir()
+    items = directory / "items.jsonl"
+    items.write_text("{}\n")
+    summary = {
+        "schema_version": schema_version,
+        "policy_version": "bounded-three-generation-v1",
+        "always_vote": True,
+        "candidate_count": 3,
+        "trial_seeds": [0, 1, 2, 3, 4],
+        "n_trials": 1000,
+    }
+    (directory / "summary.json").write_text(json.dumps(summary))
+    manifest = {
+        "schema_version": schema_version,
+        "policy_version": "bounded-three-generation-v1",
+        "status": "complete",
+        "outputs": {
+            "items": {"path": "items.jsonl", "sha256": sha256_file(items)},
+            "summary": {
+                "path": "summary.json",
+                "sha256": sha256_file(directory / "summary.json"),
+            },
+        },
+    }
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(SelectionError, match="v1/v2 evidence is historical"):
+        load_calibration(directory)
+
+
+def test_schema_v3_loader_rejects_relabelled_always_vote_evidence(tmp_path) -> None:
+    directory = tmp_path / "false-v3"
+    directory.mkdir()
+    items = directory / "items.jsonl"
+    items.write_text("{}\n")
+    summary = {
+        "schema_version": 3,
+        "policy_version": "bounded-three-generation-v1",
+        "bounded_policy": False,
+        "always_vote": True,
+        "candidate_count": 3,
+        "sample_temperature": 0.7,
+        "trial_seeds": [0, 1, 2, 3, 4],
+        "n_trials": 1000,
+    }
+    (directory / "summary.json").write_text(json.dumps(summary))
+    manifest = {
+        "schema_version": 3,
+        "policy_version": "bounded-three-generation-v1",
+        "status": "complete",
+        "outputs": {
+            "items": {"path": "items.jsonl", "sha256": sha256_file(items)},
+            "summary": {
+                "path": "summary.json",
+                "sha256": sha256_file(directory / "summary.json"),
+            },
+        },
+    }
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(SelectionError, match="bounded three-generation"):
+        load_calibration(directory)
+
+
+def test_schema_v3_loader_requires_same_hardware_provenance(tmp_path) -> None:
+    directory = tmp_path / "no-hardware"
+    directory.mkdir()
+    items = directory / "items.jsonl"
+    items.write_text("{}\n")
+    summary = {
+        "schema_version": 3,
+        "policy_version": "bounded-three-generation-v1",
+        "bounded_policy": True,
+        "always_vote": False,
+        "candidate_count": 3,
+        "sample_temperature": 0.7,
+        "trial_seeds": [0, 1, 2, 3, 4],
+        "n_trials": 1000,
+    }
+    (directory / "summary.json").write_text(json.dumps(summary))
+    manifest = {
+        "schema_version": 3,
+        "policy_version": "bounded-three-generation-v1",
+        "status": "complete",
+        "outputs": {
+            "items": {"path": "items.jsonl", "sha256": sha256_file(items)},
+            "summary": {
+                "path": "summary.json",
+                "sha256": sha256_file(directory / "summary.json"),
+            },
+        },
+    }
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(SelectionError, match="same-hardware provenance"):
+        load_calibration(directory)
+
+
 def candidate(
     digest=None,
     row_count=1,
     error=None,
     truncated=False,
     ex=False,
+    sql=None,
 ):
+    if sql is None:
+        sql = f"SELECT {digest if digest is not None else error or 'value'}"
     predicted = None
     if error is None:
         predicted = {
@@ -195,7 +343,12 @@ def candidate(
             "row_count": row_count,
             "is_truncated": truncated,
         }
-    return {"error": error, "predicted": predicted, "ex": ex}
+    return {
+        "error": error,
+        "predicted": predicted,
+        "predicted_sql": sql,
+        "ex": ex,
+    }
 
 
 def test_vote_consensus_of_two_samples_beats_the_anchor() -> None:
@@ -213,6 +366,31 @@ def test_vote_consensus_of_two_samples_beats_the_anchor() -> None:
     assert vote["selected_role"] == "sample-1"
     assert vote["ex"] is False
     assert vote["valid_sql"] is True
+    assert vote["duplicate_reuses"] == 1
+
+
+def test_policy_latency_excludes_gold_execution_and_duplicate_execution() -> None:
+    from eval.run_consistency import policy_latency_microseconds
+
+    first = candidate(digest="a", sql="SELECT 1") | {
+        "generation_microseconds": 100,
+        "gold_execution_microseconds": 20,
+        "elapsed_microseconds": 150,
+    }
+    duplicate = candidate(digest="different-eval-result", sql="SELECT 1") | {
+        "generation_microseconds": 110,
+        "gold_execution_microseconds": 30,
+        "elapsed_microseconds": 190,
+    }
+    unique = candidate(digest="b", sql="SELECT 2") | {
+        "generation_microseconds": 120,
+        "gold_execution_microseconds": 40,
+        "elapsed_microseconds": 210,
+    }
+
+    assert policy_latency_microseconds(
+        [("anchor", first), ("sample-1", duplicate), ("sample-2", unique)]
+    ) == (150 - 20) + 110 + (210 - 40)
 
 
 def test_vote_empty_results_carry_no_consensus_evidence() -> None:
@@ -259,7 +437,7 @@ def test_vote_results_beyond_production_row_cap_are_not_eligible() -> None:
     assert vote["selected_role"] == "anchor"
 
 
-def test_vote_anchor_truncation_is_delivered_degraded_not_substituted() -> None:
+def test_vote_anchor_beyond_app_cap_is_unconfirmed_and_degraded() -> None:
     from eval.run_consistency import vote_trial
 
     vote = vote_trial(
@@ -269,26 +447,26 @@ def test_vote_anchor_truncation_is_delivered_degraded_not_substituted() -> None:
             ("sample-2", candidate(digest="c", ex=True)),
         ]
     )
-    assert vote["outcome"] == "anchor-failed"
+    assert vote["outcome"] == "no-consensus"
     assert vote["selected_role"] == "anchor"
     assert vote["ex"] is False
     assert vote["valid_sql"] is True
 
 
-def test_vote_anchor_error_scores_a_failure_not_a_sample() -> None:
+def test_repair_branch_falls_back_to_the_valid_deterministic_repair() -> None:
     from eval.run_consistency import vote_trial
 
     vote = vote_trial(
         [
-            ("anchor", candidate(error="no such column: bogus")),
-            ("sample-1", candidate(digest="b", ex=True)),
-            ("sample-2", candidate(digest="c", ex=True)),
+            ("anchor", candidate(error="no such column: bogus", sql="SELECT bogus")),
+            ("deterministic-repair", candidate(digest="b", ex=True, sql="SELECT 1")),
+            ("sampled-repair", candidate(digest="c", ex=False, sql="SELECT 2")),
         ]
     )
-    assert vote["outcome"] == "anchor-failed"
-    assert vote["selected_role"] is None
-    assert vote["ex"] is False
-    assert vote["valid_sql"] is False
+    assert vote["outcome"] == "no-consensus"
+    assert vote["selected_role"] == "deterministic-repair"
+    assert vote["ex"] is True
+    assert vote["valid_sql"] is True
 
 
 def test_vote_majority_threshold_is_strict_over_candidate_count() -> None:
@@ -305,3 +483,17 @@ def test_vote_majority_threshold_is_strict_over_candidate_count() -> None:
     # candidate failed.
     assert vote["outcome"] == "no-consensus"
     assert vote["selected_role"] == "anchor"
+
+
+def test_failed_duplicate_is_suppressed_before_selection() -> None:
+    from eval.run_consistency import vote_trial
+
+    vote = vote_trial(
+        [
+            ("anchor", candidate(error="syntax", sql="SELECT bogus")),
+            ("deterministic-repair", candidate(error="syntax", sql="SELECT bogus")),
+            ("sampled-repair", candidate(digest="ok", ex=True, sql="SELECT 1")),
+        ]
+    )
+    assert vote["duplicate_count"] == 1
+    assert vote["selected_role"] == "sampled-repair"

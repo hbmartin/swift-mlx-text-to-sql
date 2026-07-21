@@ -20,58 +20,56 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
+# Xcode and the documented CLI invoke this file directly. In that mode Python
+# places `tools/`, not `fine-tuning/`, on sys.path; add the package root before
+# importing the shared integrity module.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from huggingface_hub import hf_hub_download, snapshot_download
+
+from eval.file_integrity import (
+    IntegrityError as ArtifactError,
+    canonical_json,
+    directory_digest as integrity_directory_digest,
+    directory_inventory as integrity_directory_inventory,
+    regular_files,
+    sha256_file,
+    transactionally_replace_directory,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = REPO_ROOT / "model-manifest.json"
 DEFAULT_MODELS_DIR = REPO_ROOT / "models"
 LOCK_FILE = ".creg-artifact.json"
-
-
-class ArtifactError(RuntimeError):
-    """The declared artifact could not be fetched or verified."""
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
+PRODUCTION_RECEIPT_FILE = "production-model-receipt.json"
 
 
 def artifact_files(directory: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in directory.rglob("*")
-        if path.is_file()
-        and path.name != LOCK_FILE
-        and ".cache" not in path.relative_to(directory).parts
+    return regular_files(
+        directory,
+        include=lambda relative: (
+            relative.name != LOCK_FILE and ".cache" not in relative.parts
+        ),
     )
 
 
 def directory_inventory(directory: Path) -> list[dict[str, Any]]:
-    return [
-        {
-            "path": path.relative_to(directory).as_posix(),
-            "size": path.stat().st_size,
-            "sha256": sha256_file(path),
-        }
-        for path in artifact_files(directory)
-    ]
+    return integrity_directory_inventory(
+        directory,
+        include=lambda relative: (
+            relative.name != LOCK_FILE and ".cache" not in relative.parts
+        ),
+    )
 
 
 def directory_digest(inventory: list[dict[str, Any]]) -> str:
-    return hashlib.sha256(canonical_json(inventory)).hexdigest()
+    return integrity_directory_digest(inventory)
 
 
 def declared_directory_sha256(artifact: dict[str, Any]) -> str:
@@ -365,6 +363,17 @@ def validate_production_configuration(
         raise ArtifactError("voting sample_temperature must be in [0, 1]")
     if not isinstance(voting.get("always_vote"), bool):
         raise ArtifactError("voting always_vote must be a boolean")
+    policy_version = production.get("policy_version")
+    if policy_version is not None and (
+        policy_version != "bounded-three-generation-v1"
+        or voting["candidate_count"] != 3
+        or sample_temperature != 0.7
+        or voting["always_vote"] is not False
+    ):
+        raise ArtifactError(
+            "bounded-three-generation-v1 requires three generations, "
+            "sample temperature 0.7, and always_vote=false"
+        )
 
 
 def verify_declared_files(
@@ -603,22 +612,7 @@ def copy_distribution_license(
 
 def full_directory_inventory(directory: Path) -> list[dict[str, Any]]:
     """Inventory every real file, including paths ignored in model caches."""
-    inventory = []
-    for path in sorted(directory.rglob("*")):
-        if path.is_symlink():
-            raise ArtifactError(
-                f"refusing to delete {directory}: existing bundle contains "
-                f"a symbolic link ({path.relative_to(directory)})"
-            )
-        if path.is_file():
-            inventory.append(
-                {
-                    "path": path.relative_to(directory).as_posix(),
-                    "size": path.stat().st_size,
-                    "sha256": sha256_file(path),
-                }
-            )
-    return inventory
+    return integrity_directory_inventory(directory)
 
 
 def expected_production_inventory(
@@ -705,6 +699,8 @@ def copy_production(
     artifact: dict[str, Any],
     *,
     local_files_only: bool,
+    source_manifest: Path | None = None,
+    receipt_destination: Path | None = None,
 ) -> None:
     source_resolved = source.resolve()
     destination_resolved = destination.resolve()
@@ -725,21 +721,66 @@ def copy_production(
         verify_replaceable_production_destination(
             source, destination, artifact
         )
-        shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    # The artifact lock is fetch-time bookkeeping, not model content; the
-    # shipped bundle contains exactly the manifest tree plus license files.
-    shutil.copytree(
-        source,
-        destination,
-        symlinks=False,
-        ignore=shutil.ignore_patterns(".cache", LOCK_FILE),
-    )
-    copy_distribution_license(
-        artifact,
-        destination,
-        local_files_only=local_files_only,
-    )
+    # Fail closed before copytree can follow a source link hidden by an
+    # exclusion. The same-parent staging directory makes the final rename
+    # atomic on the destination filesystem.
+    full_directory_inventory(source)
+    staging = Path(tempfile.mkdtemp(
+        prefix=f".{destination.name}.staging-",
+        dir=destination.parent,
+    ))
+    try:
+        # The artifact lock is fetch-time bookkeeping, not model content; the
+        # shipped bundle contains exactly the manifest tree plus license files.
+        shutil.copytree(
+            source,
+            staging,
+            dirs_exist_ok=True,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(".cache", LOCK_FILE),
+        )
+        copy_distribution_license(
+            artifact,
+            staging,
+            local_files_only=local_files_only,
+        )
+        actual = full_directory_inventory(staging)
+        expected = expected_production_inventory(source, artifact)
+        if actual != expected:
+            raise ArtifactError(
+                f"staged production inventory does not match expected bytes: "
+                f"{staging}"
+            )
+        transactionally_replace_directory(staging, destination)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    if source_manifest is not None:
+        receipt_destination = receipt_destination or (
+            destination.parent / PRODUCTION_RECEIPT_FILE
+        )
+        installed = full_directory_inventory(destination)
+        receipt = {
+            "schema_version": 1,
+            "model_key": artifact["key"],
+            "repository": artifact["repository"],
+            "revision": artifact["revision"],
+            "directory_sha256": directory_digest(installed),
+            "file_count": len(installed),
+            "source_manifest_sha256": sha256_file(source_manifest),
+        }
+        receipt_destination.parent.mkdir(parents=True, exist_ok=True)
+        receipt_stage = receipt_destination.with_name(
+            f".{receipt_destination.name}.staging-{uuid.uuid4().hex}"
+        )
+        try:
+            receipt_stage.write_bytes(canonical_json(receipt) + b"\n")
+            sha256_file(receipt_stage)
+            receipt_stage.replace(receipt_destination)
+        finally:
+            if receipt_stage.exists():
+                receipt_stage.unlink()
     print(f"materialized production model -> {destination}", flush=True)
 
 
@@ -783,6 +824,11 @@ def main() -> None:
                 "production model selection is pending; run the evaluation matrix "
                 "and update model-manifest.json before building Release"
             )
+        if production.get("policy_version") != "bounded-three-generation-v1":
+            raise ArtifactError(
+                "the selected production model has historical policy evidence; "
+                "schema-v3 bounded-policy calibration and finalization are required"
+            )
         artifact = next(
             model
             for model in manifest["models"]
@@ -800,6 +846,7 @@ def main() -> None:
                 args.destination.resolve(),
                 artifact,
                 local_files_only=args.local_files_only,
+                source_manifest=args.manifest.resolve(),
             )
         return
 

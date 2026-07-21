@@ -100,14 +100,22 @@ def published_entry(
             f"publication does not belong to {training['run_id']}: "
             f"{publication_path}"
         )
-    fused = Path(training["outputs"]["fused"])
-    lock = json.loads((fused / LOCK_FILE).read_text())
+    published_value = publication.get("published_snapshot")
+    if not published_value:
+        raise RuntimeError(
+            f"publication has no distinct published snapshot: {publication_path}"
+        )
+    published = REPO_ROOT / published_value
+    lock = json.loads((published / LOCK_FILE).read_text())
     if (
         lock.get("repository") != publication["repository"]
         or lock.get("revision") != publication["revision"]
+        or lock.get("directory_sha256") != publication["model_tree_sha256"]
+        or lock.get("training_directory_sha256")
+        != publication["training_fused_tree_sha256"]
     ):
         raise RuntimeError(
-            f"publication and fused lock disagree: {publication_path}"
+            f"publication and published lock disagree: {publication_path}"
         )
     training_provenance = {
         **lock["training_provenance"],
@@ -119,6 +127,7 @@ def published_entry(
         **existing,
         "repository": publication["repository"],
         "revision": publication["revision"],
+        "local_directory": published.relative_to(REPO_ROOT / "models").as_posix(),
         "publication_status": "public-verified",
         "snapshot_directory_sha256": lock["directory_sha256"],
         "required_files": lock["all_files"],

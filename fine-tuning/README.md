@@ -48,21 +48,24 @@ Local manifests, inventories, and SHA-256 identities remain canonical. A run
 is not eligible for fusion, registration, publication, or finalization while
 its manifest status is `awaiting_wandb`.
 
+A local, Git-ignored repository `.envrc` can supply the non-secret
+`WANDB_ENTITY=pathlaw` and `WANDB_PROJECT=creg-sql` values. Create it locally
+and run `direnv allow` once from the repository root. Keep `WANDB_API_KEY` in
+the user environment or a secret manager.
+
 ```sh
 export WANDB_API_KEY=...
-export WANDB_ENTITY=...
-export WANDB_PROJECT=creg-sql  # optional
 
 # Short authenticated smoke: 100 training iterations, then all gold_v1 rows.
 uv run --frozen python -m tools.run_experiment \
   --model-key qwen25-coder-3b \
-  --campaign-id creg-sql-wandb-smoke \
+  --campaign-id creg-sql-reliability-v2-smoke \
   --iterations 100
 
 # One explicit screening experiment.
 uv run --frozen python -m tools.run_experiment \
   --model-key qwen25-coder-3b \
-  --campaign-id creg-sql-qwen25-coder-3b-screening-v1 \
+  --campaign-id creg-sql-reliability-v2-qwen25-coder-3b-screening \
   --fine-tune-type dora --trainable-layers all \
   --rank 16 --scale-ratio 2.0 --dropout 0.05 \
   --learning-rate 0.00005 --iterations 600
@@ -107,3 +110,38 @@ uv run --frozen python -m tools.sync_wandb \
   --training-run ../eval/training-runs/<final-run> \
   --publication ../eval/publications/<publication>/publication.json
 ```
+
+The permanent binding set is a separate release gate. Evaluate its 15 cases
+at seeds 0–4 using the selected model/GCD/temperature, then require all 75
+checks to pass:
+
+```sh
+uv run --frozen python -m eval.run_eval \
+  --model-key <winner> --gcd <on-or-off> --temperature <temperature> \
+  --seed <0-through-4> --gold ../eval/gold/binding_regressions.jsonl
+uv run --frozen python -m tools.analyze_binding_regressions \
+  --run ../eval/runs/<seed-0> --run ../eval/runs/<seed-1> \
+  --run ../eval/runs/<seed-2> --run ../eval/runs/<seed-3> \
+  --run ../eval/runs/<seed-4>
+```
+
+`tools.finalize_production` requires that binding analysis alongside the
+production selection, schema-v3 bounded-policy calibration, full parity, and
+both fresh-verified publication records. It is the only supported transition
+to a new verified production manifest. Release model copying then writes a
+content-addressed `production-model-receipt.json`; Release startup and bundle
+inspection both require it to agree with the manifest and actual SQLModel
+bytes.
+
+```sh
+uv run --frozen python -m tools.finalize_production \
+  --production-analysis ../eval/analyses/<production>/analysis.json \
+  --binding-analysis ../eval/analyses/<binding>/analysis.json \
+  --consistency-analysis ../eval/analyses/<policy>/analysis.json \
+  --parity-analysis ../eval/analyses/<parity>/analysis.json \
+  --publication ../eval/publications/<first>/publication.json \
+  --publication ../eval/publications/<second>/publication.json
+```
+
+`gold_v2` is post-selection evidence only and must never influence sweep,
+recipe, checkpoint, or seed selection.

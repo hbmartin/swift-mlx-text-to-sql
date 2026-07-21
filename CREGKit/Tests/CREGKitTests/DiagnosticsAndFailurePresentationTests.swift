@@ -98,6 +98,32 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     return nil
   }
 
+  @Test func diagnosticRedactionPreservesOrdinaryEnglishAndDecodingContext() {
+    let ordinary =
+      "No value associated with key quantization. The operation could not be completed with error 14; update the bundle and create a new build."
+    #expect(DiagnosticPrivacy.redact(ordinary) == ordinary)
+
+    let decoding = DiagnosticDetails.describe(manifestDecodingError())
+    let redacted = DiagnosticPrivacy.redact(decoding)
+    #expect(redacted.contains("models[3].quantization"))
+    #expect(!redacted.contains("<redacted SQL>"))
+  }
+
+  @Test func diagnosticRedactionTargetsStatementShapesLabelsAndIdentifiers() {
+    let identifier = "5f70da4c-e71f-4b6a-b4e8-6e37fa393ce2"
+    let details =
+      "SQL: SELECT secret FROM leases\nSELECT name FROM properties\nfile:///private/tmp/creg.sqlite /creg.sqlite \(identifier)"
+    let redacted = DiagnosticPrivacy.redact(details)
+
+    #expect(!redacted.contains("secret"))
+    #expect(!redacted.contains("properties"))
+    #expect(!redacted.contains("/creg.sqlite"))
+    #expect(!redacted.contains(identifier))
+    #expect(redacted.contains("SQL=<redacted SQL>"))
+    #expect(redacted.contains("<redacted path>"))
+    #expect(redacted.contains("<redacted identifier>"))
+  }
+
   @Test func manifestFailureIsFriendlyButRetainsCodingPathForDevelopers() {
     let failure = FailurePresentation.productionConfiguration(
       manifestDecodingError())
@@ -136,6 +162,19 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       #expect(!failure.message.contains("quantization"))
       #expect(failure.technicalDetails(developerMode: false) == nil)
     }
+  }
+
+  @Test func unreadableAndUnexpectedBootstrapFailuresHaveDistinctCodes() {
+    let unreadable = FailurePresentation.productionConfiguration(
+      CocoaError(.fileReadNoPermission))
+    #expect(unreadable.code == "production_manifest_unreadable")
+    #expect(unreadable.message.contains("Reinstall"))
+
+    let unexpected = FailurePresentation.productionConfiguration(
+      DiagnosticsTestError.failed("MLX initialization failed"))
+    #expect(unexpected.code == "production_bootstrap_unexpected")
+    #expect(unexpected.message.contains("contact support"))
+    #expect(unexpected.message != unreadable.message)
   }
 
   @Test func productionBootstrapLogsOneFailureWithPrivateDetails() {
@@ -320,6 +359,29 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(!recorder.events.first!.summary.contains(question))
     #expect(!recorder.events.first!.context.values.contains(question))
     #expect(recorder.events.first?.details?.contains(question) == false)
+  }
+
+  @Test func oneCharacterQuestionOnlyRedactsExplicitlyLabelledContent() async {
+    let recorder = DiagnosticEventRecorder()
+    let source = QueryPipeline { question, _ in
+      AsyncStream { continuation in
+        var telemetry = TurnTelemetry(originalQuestion: question)
+        telemetry.terminalError = "failure code x remained; question=Q"
+        continuation.yield(.turnStarted(question: question))
+        continuation.yield(.turnFinished(
+          outcome: .failed(message: "failed"),
+          telemetry: telemetry))
+        continuation.finish()
+      }
+    }
+
+    _ = await Array(source.reportingTerminalFailures(to: recorder.client)
+      .run("Q", []))
+
+    let details = recorder.events.first?.details ?? ""
+    #expect(details.contains("failure code x remained"))
+    #expect(!details.contains("question=Q"))
+    #expect(details.contains("question=<redacted conversation content>"))
   }
 
   @Test func recoveredCandidateFailureDoesNotEmitTerminalLog() async throws {
@@ -511,6 +573,7 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     let recorder = DiagnosticEventRecorder()
     var initialState = ChatFeature.State()
     initialState.conversationID = UUID()
+    initialState.modelReadiness = .ready
     let store = TestStore(initialState: initialState) {
       ChatFeature()
     } withDependencies: {

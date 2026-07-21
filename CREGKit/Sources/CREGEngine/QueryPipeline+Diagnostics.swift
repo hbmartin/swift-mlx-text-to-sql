@@ -8,7 +8,9 @@ extension QueryPipeline {
     diagnosticCode: String,
     diagnostic: String
   ) -> QueryPipeline {
-    QueryPipeline { question, _ in
+    QueryPipeline(prepare: {
+      throw PipelineUnavailableError(diagnostic)
+    }) { question, _ in
       AsyncStream { continuation in
         var telemetry = TurnTelemetry(originalQuestion: question)
         telemetry.terminalError = "[\(diagnosticCode)] \(diagnostic)"
@@ -31,7 +33,7 @@ extension QueryPipeline {
   public func reportingTerminalFailures(
     to diagnostics: DiagnosticsClient
   ) -> QueryPipeline {
-    QueryPipeline { question, history in
+    QueryPipeline(prepare: self.prepare) { question, history in
       AsyncStream { continuation in
         let task = Task {
           var stage = PipelineDiagnosticStage.unexpected
@@ -77,6 +79,16 @@ extension QueryPipeline {
   }
 }
 
+private struct PipelineUnavailableError: Error, CustomStringConvertible {
+  var diagnostic: String
+
+  init(_ diagnostic: String) {
+    self.diagnostic = diagnostic
+  }
+
+  var description: String { diagnostic }
+}
+
 private enum PipelineDiagnosticPrivacy {
   static func redact(
     _ diagnostic: String,
@@ -91,11 +103,35 @@ private enum PipelineDiagnosticPrivacy {
       .filter { !$0.isEmpty }
       .sorted { $0.count > $1.count }
     for content in conversationContent {
-      value = value.replacingOccurrences(
-        of: content,
-        with: "<redacted conversation content>")
+      if value.trimmingCharacters(in: .whitespacesAndNewlines) == content {
+        value = "<redacted conversation content>"
+      } else if content.count >= 8 {
+        value = value.replacingOccurrences(
+          of: content,
+          with: "<redacted conversation content>")
+      } else {
+        value = redactShortLabelledContent(content, in: value)
+      }
     }
     return value
+  }
+
+  private static func redactShortLabelledContent(
+    _ content: String,
+    in value: String
+  ) -> String {
+    let escaped = NSRegularExpression.escapedPattern(for: content)
+    let pattern =
+      #"(?i)\b(question|prompt|input|content)\s*[:=]\s*"# + escaped
+      + #"(?=$|[\s,;])"#
+    guard let expression = try? NSRegularExpression(pattern: pattern) else {
+      return value
+    }
+    let range = NSRange(value.startIndex..<value.endIndex, in: value)
+    return expression.stringByReplacingMatches(
+      in: value,
+      range: range,
+      withTemplate: "$1=<redacted conversation content>")
   }
 }
 
@@ -115,7 +151,7 @@ private enum PipelineDiagnosticStage: String, Sendable {
       self = .gate
     case .generationStarted:
       self = .generation
-    case .executionStarted:
+    case .validationStarted, .executionStarted:
       self = .database
     case .narrationStarted:
       self = .narration
@@ -150,7 +186,11 @@ private struct PipelineTerminalFailure: Sendable {
   }
 
   init(stage: PipelineDiagnosticStage, telemetry: TurnTelemetry) {
-    let lastFailure = telemetry.candidates.last(where: { $0.error != nil })
+    let lastFailure =
+      telemetry.candidates.last(where: {
+        $0.error != nil && $0.duplicateSuppressed != true
+      })
+      ?? telemetry.candidates.last(where: { $0.error != nil })
     let candidateDiagnostic = lastFailure?.error
     let terminalDiagnostic = telemetry.terminalError
     let fallbackDiagnostic =

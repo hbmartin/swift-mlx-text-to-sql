@@ -10,6 +10,7 @@ from eval.selection import (
 from tools.analyze_matrix import (
     identical_sql_runtime_drift,
     normalize_parity_explanations,
+    recognized_nondeterministic_sql,
 )
 
 
@@ -117,3 +118,31 @@ def test_missing_predictions_are_not_identical_sql_runtime_drift():
     assert not identical_sql_runtime_drift(missing, "3.49.1", "3.49.1")
     assert identical_sql_runtime_drift(identical, "3.49.1", "3.49.1")
     assert not identical_sql_runtime_drift(identical, "3.49.1", "3.50.0")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT random()",
+        "SELECT randomblob(16)",
+        "SELECT datetime('now')",
+        "SELECT strftime('%s', 'now')",
+        "SELECT CURRENT_TIMESTAMP",
+    ],
+)
+def test_parity_recognizes_only_explicit_nondeterministic_sql(sql):
+    assert recognized_nondeterministic_sql(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 'random()'",
+        "SELECT \"CURRENT_TIMESTAMP\" FROM t",
+        "SELECT 1 -- random()\n",
+        "SELECT date('2025-01-01')",
+        "SELECT deterministic_random_value FROM t",
+    ],
+)
+def test_parity_does_not_excuse_deterministic_sql(sql):
+    assert not recognized_nondeterministic_sql(sql)

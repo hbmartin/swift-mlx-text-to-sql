@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct ProductionGenerationConfiguration:
@@ -12,10 +13,13 @@ public struct ProductionGenerationConfiguration:
   public var candidateCount: Int
   public var sampleTemperature: Double
   public var alwaysVote: Bool
+  public var policyVersion: String? = nil
 }
 
 public enum ModelManifestError: LocalizedError, Equatable {
   case missing
+  case missingReceipt
+  case receiptMismatch(String)
   case productionSelectionPending
   case unknownProductionModel(String)
   case invalidProductionConfiguration(String)
@@ -24,12 +28,74 @@ public enum ModelManifestError: LocalizedError, Equatable {
     switch self {
     case .missing:
       "model-manifest.json is missing from the app bundle"
+    case .missingReceipt:
+      "production-model-receipt.json or SQLModel is missing from the app bundle"
+    case .receiptMismatch(let message):
+      "The bundled production model receipt is invalid: \(message)"
     case .productionSelectionPending:
       "Production model selection is pending verified evaluation."
     case .unknownProductionModel(let key):
       "Production model key “\(key)” is not declared in the model manifest."
     case .invalidProductionConfiguration(let message):
       "Invalid production generation configuration: \(message)"
+    }
+  }
+}
+
+public enum ProductionModelReceiptLoader {
+  private struct Receipt: Decodable {
+    var schemaVersion: Int
+    var modelKey: String
+    var repository: String
+    var revision: String
+    var directorySHA256: String
+    var fileCount: Int
+    var sourceManifestSHA256: String
+
+    enum CodingKeys: String, CodingKey {
+      case schemaVersion = "schema_version"
+      case modelKey = "model_key"
+      case repository, revision
+      case directorySHA256 = "directory_sha256"
+      case fileCount = "file_count"
+      case sourceManifestSHA256 = "source_manifest_sha256"
+    }
+  }
+
+  public static func validate(
+    manifestURL: URL,
+    receiptURL: URL,
+    modelDirectory: URL,
+    production: ProductionGenerationConfiguration
+  ) throws {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(
+      atPath: modelDirectory.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else { throw ModelManifestError.missingReceipt }
+    let manifestData = try Data(contentsOf: manifestURL)
+    let receipt = try JSONDecoder().decode(
+      Receipt.self, from: Data(contentsOf: receiptURL))
+    let manifestDigest = SHA256.hash(data: manifestData)
+      .map { String(format: "%02x", $0) }
+      .joined()
+    guard receipt.schemaVersion == 1 else {
+      throw ModelManifestError.receiptMismatch("schema_version must be 1")
+    }
+    guard receipt.modelKey == production.model.key,
+      receipt.repository == production.model.repository,
+      receipt.revision == production.model.revision,
+      receipt.sourceManifestSHA256 == manifestDigest
+    else {
+      throw ModelManifestError.receiptMismatch(
+        "model identity or source-manifest hash disagrees")
+    }
+    guard receipt.fileCount > 0,
+      receipt.directorySHA256.count == 64,
+      receipt.directorySHA256.allSatisfy(\.isHexDigit)
+    else {
+      throw ModelManifestError.receiptMismatch(
+        "directory digest or file count is invalid")
     }
   }
 }
@@ -77,6 +143,7 @@ public enum ModelManifestLoader {
     var topP: Double
     var topK: Int
     var maxTokens: Int
+    var policyVersion: String?
     var voting: Voting
 
     enum CodingKeys: String, CodingKey {
@@ -85,6 +152,7 @@ public enum ModelManifestLoader {
       case topP = "top_p"
       case topK = "top_k"
       case maxTokens = "max_tokens"
+      case policyVersion = "policy_version"
       case voting
     }
   }
@@ -132,6 +200,16 @@ public enum ModelManifestLoader {
       throw ModelManifestError.invalidProductionConfiguration(
         "temperature/top-p/top-k/token-cap/voting values are outside the supported contract")
     }
+    if production.policyVersion != nil {
+      guard production.policyVersion == "bounded-three-generation-v1",
+        production.voting.candidateCount == 3,
+        production.voting.sampleTemperature == 0.7,
+        production.voting.alwaysVote == false
+      else {
+        throw ModelManifestError.invalidProductionConfiguration(
+          "the bounded policy version requires three generations and a 0.7 sample temperature")
+      }
+    }
     return ProductionGenerationConfiguration(
       model: ModelReference(
         key: model.key,
@@ -145,7 +223,8 @@ public enum ModelManifestLoader {
       maxTokens: production.maxTokens,
       candidateCount: production.voting.candidateCount,
       sampleTemperature: production.voting.sampleTemperature,
-      alwaysVote: production.voting.alwaysVote)
+      alwaysVote: production.voting.alwaysVote,
+      policyVersion: production.policyVersion)
   }
 
   public static func production(bundle: Bundle = .main) throws

@@ -25,6 +25,9 @@ from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
 from typing import Any
 
+# Evaluation/parity deliberately retain more rows than the offline app's
+# production cap (`DatabaseClient.defaultRowCap`, 500). Policy calibration
+# must reject results that exceed the production cap before voting.
 ROW_CAP = 10_000
 FLOAT_DECIMALS = 4
 FLOAT_QUANTUM = Decimal("0.0001")
@@ -141,6 +144,9 @@ def execute_with_metadata(
 ) -> QueryExecution:
     """Execute read-only and fetch one extra row to detect truncation."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    # Match the Swift runtime's raw sqlite3 TEXT decoding contract: preserve
+    # embedded NUL bytes and replace malformed UTF-8 with U+FFFD.
+    conn.text_factory = lambda raw: raw.decode("utf-8", errors="replace")
     try:
         started_ns = time.perf_counter_ns()
         try:

@@ -24,6 +24,10 @@ public enum PipelineEvent: Sendable, Equatable, Codable {
   case generationFinished(
     candidateID: CandidateID,
     generation: SQLGeneration)
+  case validationStarted(candidateID: CandidateID)
+  case validationFinished(
+    candidateID: CandidateID,
+    report: SQLValidationReport)
   case executionStarted(candidateID: CandidateID, sql: String)
   case executionFinished(candidateID: CandidateID, result: QueryResult)
   case executionFailed(

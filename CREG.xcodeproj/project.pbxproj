@@ -143,6 +143,7 @@
 				"$(SRCROOT)/model-manifest.json",
 				"$(SRCROOT)/fine-tuning/uv.lock",
 				"$(SRCROOT)/fine-tuning/tools/fetch_model.py",
+				"$(SRCROOT)/fine-tuning/eval/file_integrity.py",
 			);
 			name = "Materialize Verified Production Model";
 			outputFileListPaths = (
@@ -151,7 +152,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\n\nUV_BIN=\"$(command -v uv || true)\"\nif [[ -z \"$UV_BIN\" && -x \"$HOME/.local/bin/uv\" ]]; then\n  UV_BIN=\"$HOME/.local/bin/uv\"\nfi\nif [[ -z \"$UV_BIN\" ]]; then\n  echo \"error: uv is required to materialize the pinned SQL model. Install uv and rebuild.\"\n  exit 1\nfi\n\nRESOURCE_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nMODEL_DIR=\"$RESOURCE_DIR/SQLModel\"\nMODELS_CACHE=\"${CREG_MODELS_DIR:-$SRCROOT/models}\"\nmkdir -p \"$RESOURCE_DIR\"\ncp \"$SRCROOT/model-manifest.json\" \"$RESOURCE_DIR/model-manifest.json\"\ncd \"$SRCROOT/fine-tuning\"\n\nif [[ \"$CONFIGURATION\" == \"Release\" ]]; then\n  \"$UV_BIN\" run --frozen python tools/fetch_model.py \\\n    --production --models-dir \"$MODELS_CACHE\" --destination \"$MODEL_DIR\"\nelse\n  if ! \"$UV_BIN\" run --frozen python tools/fetch_model.py \\\n    --production --models-dir \"$MODELS_CACHE\" --local-files-only --destination \"$MODEL_DIR\"; then\n    rm -rf \"$MODEL_DIR\"\n    echo \"warning: No verified cached production model was bundled. Debug will download the pinned Hugging Face revision on first use after production selection.\"\n  fi\nfi\n";
+			shellScript = "set -euo pipefail\n\nUV_BIN=\"$(command -v uv || true)\"\nif [[ -z \"$UV_BIN\" && -x \"$HOME/.local/bin/uv\" ]]; then\n  UV_BIN=\"$HOME/.local/bin/uv\"\nfi\nif [[ -z \"$UV_BIN\" ]]; then\n  echo \"error: uv is required to materialize the pinned SQL model. Install uv and rebuild.\"\n  exit 1\nfi\n\nRESOURCE_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nMODEL_DIR=\"$RESOURCE_DIR/SQLModel\"\nMODELS_CACHE=\"${CREG_MODELS_DIR:-$SRCROOT/models}\"\nmkdir -p \"$RESOURCE_DIR\"\ncp \"$SRCROOT/model-manifest.json\" \"$RESOURCE_DIR/model-manifest.json\"\ncd \"$SRCROOT/fine-tuning\"\n\nif [[ \"$CONFIGURATION\" == \"Release\" ]]; then\n  \"$UV_BIN\" run --frozen python tools/fetch_model.py \\\n    --production --models-dir \"$MODELS_CACHE\" --destination \"$MODEL_DIR\"\nelse\n  if ! \"$UV_BIN\" run --frozen python tools/fetch_model.py \\\n    --production --models-dir \"$MODELS_CACHE\" --local-files-only --destination \"$MODEL_DIR\"; then\n    rm -rf \"$MODEL_DIR\"\n    rm -f \"$RESOURCE_DIR/production-model-receipt.json\"\n    echo \"warning: No verified cached production model was bundled. Debug will download the pinned Hugging Face revision on first use after production selection.\"\n  fi\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
