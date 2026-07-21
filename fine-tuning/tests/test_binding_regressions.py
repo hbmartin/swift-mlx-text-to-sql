@@ -157,7 +157,7 @@ def test_production_finalization_requires_matching_binding_receipt():
         validate_binding_analysis(stale, selected)
 
 
-def test_production_finalization_locks_gold_v2_to_gold_v1_winner():
+def test_production_finalization_locks_gold_v2_to_gold_v1_winner(tmp_path):
     campaign = {
         "schema_version": 1,
         "analysis": "reliability-v2-campaign-selection",
@@ -170,12 +170,17 @@ def test_production_finalization_locks_gold_v2_to_gold_v1_winner():
             "temperature": 0,
         },
     }
+    campaign_path = tmp_path / "campaign-winner.json"
+    campaign_path.write_text(json.dumps(campaign))
     winner = validate_campaign_winner(campaign)
     analysis = {
         "schema_version": 1,
         "analysis": "final-gold-v2-evaluation",
         "selection_permitted": False,
         "pass": True,
+        "inputs": {
+            "campaign_winner": {"sha256": sha256_file(campaign_path)},
+        },
         "campaign_winner": {
             "artifact_model_key": "winner",
             "recipe": "base:recipe",
@@ -190,14 +195,18 @@ def test_production_finalization_locks_gold_v2_to_gold_v1_winner():
         },
     }
 
-    assert validate_final_evaluation(analysis, winner)["ex"] == 0.668
+    assert validate_final_evaluation(analysis, winner, campaign_path)["ex"] == 0.668
     analysis["result"]["model_key"] = "gold-v2-challenger"
     with pytest.raises(SelectionError, match="does not match"):
-        validate_final_evaluation(analysis, winner)
+        validate_final_evaluation(analysis, winner, campaign_path)
     analysis["result"]["model_key"] = "winner"
     analysis["result"]["ex"] = 0.6679
     with pytest.raises(SelectionError, match="66.8% EX"):
-        validate_final_evaluation(analysis, winner)
+        validate_final_evaluation(analysis, winner, campaign_path)
+    analysis["result"]["ex"] = 0.668
+    analysis["inputs"]["campaign_winner"]["sha256"] = "0" * 64
+    with pytest.raises(SelectionError, match="does not match"):
+        validate_final_evaluation(analysis, winner, campaign_path)
 
 
 def test_production_finalization_validates_consistency_calibration():

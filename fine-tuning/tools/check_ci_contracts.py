@@ -47,7 +47,8 @@ def checkout_credential_failures(path: Path, workflow: object) -> list[str]:
 
 def main() -> None:
     failures: list[str] = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    workflow_paths = sorted((*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")))
+    for path in workflow_paths:
         lines = path.read_text().splitlines()
         for number, line in enumerate(lines, start=1):
             if "uses:" in line and not PINNED_ACTION.match(line):

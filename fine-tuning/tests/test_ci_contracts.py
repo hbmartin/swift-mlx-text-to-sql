@@ -44,3 +44,12 @@ jobs:
 
     assert len(result) == 1
     assert "persists credentials" in result[0]
+
+
+def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
+    (tmp_path / "ci.yml").write_text("jobs: {}\n")
+    (tmp_path / "security.yaml").write_text("jobs: {}\n")
+    (tmp_path / "ignored.txt").write_text("uses: unsafe/action@main\n")
+    monkeypatch.setattr(check_ci_contracts, "WORKFLOWS", tmp_path)
+
+    check_ci_contracts.main()

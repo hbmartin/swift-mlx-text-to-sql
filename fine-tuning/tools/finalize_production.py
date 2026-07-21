@@ -111,7 +111,7 @@ def validate_campaign_winner(campaign: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_final_evaluation(
-    evaluation: dict[str, Any], winner: dict[str, Any]
+    evaluation: dict[str, Any], winner: dict[str, Any], campaign_path: Path
 ) -> dict[str, Any]:
     if (
         evaluation.get("schema_version") != 1
@@ -122,8 +122,11 @@ def validate_final_evaluation(
         raise SelectionError("invalid locked-winner gold-v2 evaluation")
     selected = evaluation.get("result", {})
     receipt = evaluation.get("campaign_winner", {})
+    campaign_input = evaluation.get("inputs", {}).get("campaign_winner", {})
     if (
-        receipt.get("artifact_model_key") != winner.get("artifact_model_key")
+        not isinstance(campaign_input, dict)
+        or campaign_input.get("sha256") != sha256_file(campaign_path)
+        or receipt.get("artifact_model_key") != winner.get("artifact_model_key")
         or receipt.get("recipe") != winner.get("recipe")
         or selected.get("model_key") != winner.get("artifact_model_key")
         or selected.get("gcd") != winner.get("gcd")
@@ -209,7 +212,7 @@ def main() -> None:
     parity = read_json(parity_path)
 
     winner = validate_campaign_winner(campaign)
-    selected = validate_final_evaluation(final_evaluation, winner)
+    selected = validate_final_evaluation(final_evaluation, winner, campaign_path)
 
     validate_binding_analysis(binding, selected)
     voting = validate_consistency_analysis(consistency, selected)
