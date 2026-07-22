@@ -158,6 +158,25 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(redacted.contains("<redacted identifier>"))
   }
 
+  @Test func diagnosticBoundaryAlsoSanitizesPublicContextValues() {
+    let recorder = DiagnosticEventRecorder()
+    let identifier = "5f70da4c-e71f-4b6a-b4e8-6e37fa393ce2"
+    recorder.client.info(
+      category: .pipeline,
+      code: "privacy_probe",
+      summary: "Privacy probe.",
+      context: [
+        "path_probe": "/private/model/weights.safetensors",
+        "identifier_probe": identifier,
+        "sql_probe": "SELECT secret FROM leases",
+      ])
+
+    let context = recorder.events.first?.context ?? [:]
+    #expect(context["path_probe"] == "<redacted path>")
+    #expect(context["identifier_probe"] == "<redacted identifier>")
+    #expect(context["sql_probe"] == "<redacted SQL>")
+  }
+
   @Test func manifestFailureIsFriendlyButRetainsCodingPathForDevelopers() {
     let failure = FailurePresentation.productionConfiguration(
       manifestDecodingError())
@@ -549,6 +568,189 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
 
     #expect(recorder.events.isEmpty)
   }
+
+  @Test func deadlineFailureUsesStableStageCode() async {
+    let recorder = DiagnosticEventRecorder()
+    let source = QueryPipeline { question, _ in
+      AsyncStream { continuation in
+        var telemetry = TurnTelemetry(originalQuestion: question)
+        telemetry.timeoutStage = "generation"
+        telemetry.terminalError = "pipeline deadline exceeded during generation"
+        continuation.yield(.turnStarted(question: question))
+        continuation.yield(.generationStarted(request: SQLGenerationRequest(
+          candidateID: CandidateID(rawValue: "initial"),
+          role: .initial,
+          model: Self.model,
+          question: question,
+          gcd: .on,
+          temperature: 0,
+          seed: nil)))
+        continuation.yield(.turnFinished(
+          outcome: .failed(message: "timeout"),
+          telemetry: telemetry))
+        continuation.finish()
+      }
+    }
+
+    _ = await Array(source.reportingTerminalFailures(to: recorder.client)
+      .run("private question", []))
+
+    #expect(recorder.events.map(\.code) == ["pipeline_deadline_exceeded"])
+    #expect(recorder.events.first?.context["timeout_stage"] == "generation")
+    #expect(recorder.events.first?.details?.contains("private question") == false)
+  }
+
+  @Test func operationalPipelineLogsMetadataWithoutPayloads() async {
+    let recorder = DiagnosticEventRecorder()
+    let privateQuestion = "private vacancy question"
+    let privateSQL = "SELECT secret_value FROM private_table"
+    let privateNarration = "Secret portfolio narration"
+    let privateRow = "private row value"
+    let privateIdentifier = "5f70da4c-e71f-4b6a-b4e8-6e37fa393ce2"
+    let model = Self.model
+    let request = SQLGenerationRequest(
+      candidateID: CandidateID(rawValue: privateIdentifier),
+      role: .initial,
+      model: model,
+      question: privateQuestion,
+      gcd: .on,
+      temperature: 0,
+      seed: nil,
+      maxTokens: 64)
+    let result = QueryResult(
+      columns: ["secret_column"],
+      rows: [[.text(privateRow)]],
+      elapsedMicroseconds: 2_000)
+    let telemetry: TurnTelemetry = {
+      var value = TurnTelemetry(originalQuestion: privateQuestion)
+      value.generatedCount = 1
+      value.confidence = .confirmed
+      value.selectionReason = .majorityVote
+      value.stageTimings.totalMicroseconds = 9_000
+      return value
+    }()
+    let source = QueryPipeline(
+      prepare: {},
+      run: { _, _ in
+        AsyncStream { continuation in
+          continuation.yield(.turnStarted(question: privateQuestion))
+          continuation.yield(.generationStarted(request: request))
+          continuation.yield(.generationFinished(
+            candidateID: request.candidateID,
+            generation: SQLGeneration(
+              sql: privateSQL,
+              tokensPerSecond: 8,
+              modelName: "/private/model/path",
+              tokenCount: 4,
+              elapsedMicroseconds: 1_000)))
+          continuation.yield(.validationStarted(
+            candidateID: request.candidateID))
+          continuation.yield(.validationFinished(
+            candidateID: request.candidateID,
+            report: SQLValidationReport(elapsedMicroseconds: 500)))
+          continuation.yield(.executionStarted(
+            candidateID: request.candidateID,
+            sql: privateSQL))
+          continuation.yield(.executionFinished(
+            candidateID: request.candidateID,
+            result: result))
+          continuation.yield(.selfConsistencyFinished(.consensus(
+            resultDigest: "private-result-digest",
+            agreement: 2,
+            candidateCount: 3)))
+          continuation.yield(.narrationFinished(
+            narration: privateNarration,
+            usedFM: true,
+            elapsedMicroseconds: 3_000))
+          continuation.yield(.turnFinished(
+            outcome: .answered(
+              result: result,
+              narration: privateNarration,
+              sql: privateSQL,
+              notice: nil),
+            telemetry: telemetry))
+          continuation.finish()
+        }
+      })
+      .reportingOperations(to: recorder.client)
+
+    try? await source.prepare()
+    _ = await Array(source.run(privateQuestion, [
+      ConversationTurn(question: "prior private question", answerSummary: "prior private answer")
+    ]))
+
+    let events = recorder.events
+    let rendered = events.map(String.init(describing:)).joined(separator: "\n")
+    for secret in [
+      privateQuestion, privateSQL, privateNarration, privateRow,
+      privateIdentifier, "secret_column", "private-result-digest",
+      "/private/model/path", "prior private question", "prior private answer",
+    ] {
+      #expect(!rendered.contains(secret))
+    }
+    #expect(events.map(\.code).contains("pipeline_preparation_finished"))
+    #expect(events.map(\.code).contains("pipeline_generation_finished"))
+    #expect(events.map(\.code).contains("pipeline_validation_finished"))
+    #expect(events.map(\.code).contains("pipeline_execution_finished"))
+    #expect(events.map(\.code).contains("pipeline_voting_finished"))
+    #expect(events.map(\.code).contains("pipeline_turn_finished"))
+    #expect(
+      events.first(where: { $0.code == "pipeline_execution_finished" })?
+        .context["row_count"] == "1")
+  }
+
+  @Test func modelLoadLoggingHasStableSuccessAndFailureEvents() async {
+    let recorder = DiagnosticEventRecorder()
+    let success = SQLGenClient(
+      prepare: {},
+      generate: { _ in
+        SQLGeneration(sql: "", tokensPerSecond: 0, modelName: "test")
+      })
+      .reportingModelLoad(to: recorder.client, modelKey: "test-model")
+    try? await success.prepare()
+
+    let failure = SQLGenClient(
+      prepare: {
+        throw DiagnosticsTestError.failed(
+          "weights unavailable at /private/model/weights.safetensors")
+      },
+      generate: { _ in
+        SQLGeneration(sql: "", tokensPerSecond: 0, modelName: "test")
+      })
+      .reportingModelLoad(to: recorder.client, modelKey: "test-model")
+    await #expect(throws: (any Error).self) {
+      try await failure.prepare()
+    }
+
+    #expect(recorder.events.map(\.code) == [
+      "model_load_started", "model_load_finished",
+      "model_load_started", "model_load_failed",
+    ])
+    #expect(
+      recorder.events.last?.details?.contains(
+        "weights unavailable at <redacted path>") == true)
+    #expect(
+      recorder.events.last?.details?.contains(
+        "/private/model/weights.safetensors") == false)
+    #expect(recorder.events.allSatisfy { $0.context["model_key"] == "test-model" })
+  }
+
+  @Test func inferenceSerializerLogsTypedOperationAndTiming() async throws {
+    let recorder = DiagnosticEventRecorder()
+    let serializer = InferenceSerializer(diagnostics: recorder.client)
+
+    let value = try await serializer.run(operation: .gate) { 42 }
+
+    #expect(value == 42)
+    #expect(recorder.events.map(\.code) == [
+      "inference_started", "inference_finished",
+    ])
+    #expect(recorder.events.allSatisfy { $0.category == .inference })
+    #expect(recorder.events.allSatisfy { $0.context["operation"] == "gate" })
+    #expect(recorder.events.first?.context["wait_ms"] != nil)
+    #expect(recorder.events.last?.context["total_elapsed_ms"] != nil)
+    #expect(recorder.events.allSatisfy { $0.details == nil })
+  }
 }
 
 @MainActor
@@ -594,7 +796,8 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(store.state.presentedFailure?.title == "History unavailable")
     #expect(
       store.state.presentedFailure?.technicalDetails(developerMode: false) == nil)
-    #expect(recorder.events.map(\.code) == ["history_load_failed"])
+    #expect(recorder.events.map(\.code).contains("history_load_failed"))
+    #expect(recorder.events.map(\.code).contains("chat_appeared"))
   }
 
   @Test func exportFailureIsLoggedAndPresented() async {
@@ -617,7 +820,8 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
 
     #expect(store.state.presentedFailure?.code == "history_export_failed")
     #expect(store.state.presentedFailure?.title == "Export failed")
-    #expect(recorder.events.map(\.code) == ["history_export_failed"])
+    #expect(recorder.events.map(\.code).contains("history_export_started"))
+    #expect(recorder.events.map(\.code).contains("history_export_failed"))
   }
 
   @Test func messageAndEventSaveFailuresAreLogged() async {
@@ -675,5 +879,47 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     await store.send(.dismissFailure) {
       $0.presentedFailure = nil
     }
+  }
+
+  @Test func submissionLifecycleLogsNoQuestionOrIdentifiers() async {
+    let recorder = DiagnosticEventRecorder()
+    let question = "private on-device question"
+    var initialState = ChatFeature.State()
+    initialState.conversationID = UUID(0)
+    initialState.modelReadiness = .ready
+    initialState.composerText = question
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = QueryPipeline { receivedQuestion, _ in
+        AsyncStream { continuation in
+          var telemetry = TurnTelemetry(originalQuestion: receivedQuestion)
+          telemetry.generatedCount = 1
+          continuation.yield(.turnFinished(
+            outcome: .failed(message: "Try again."),
+            telemetry: telemetry))
+          continuation.finish()
+        }
+      }
+      $0.historyClient = .noop()
+      $0.diagnostics = recorder.client
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.submissionRequested)
+    await store.send(.submissionFocusSettled)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    let rendered = recorder.events.map(String.init(describing:))
+      .joined(separator: "\n")
+    #expect(!rendered.contains(question))
+    #expect(!rendered.contains(UUID(0).uuidString))
+    #expect(recorder.events.map(\.code).contains("chat_submission_pending"))
+    #expect(recorder.events.map(\.code).contains("chat_submission_focus_settled"))
+    #expect(recorder.events.map(\.code).contains("chat_submission_committed"))
+    #expect(recorder.events.map(\.code).contains("chat_turn_rendered"))
   }
 }

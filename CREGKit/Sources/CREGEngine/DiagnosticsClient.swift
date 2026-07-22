@@ -11,8 +11,11 @@ public struct DiagnosticEvent: Sendable, Equatable {
 
   public enum Category: String, Sendable, Equatable {
     case configuration
+    case model
+    case inference
     case pipeline
     case database
+    case submission
     case history
   }
 
@@ -57,7 +60,25 @@ public struct DiagnosticsClient: Sendable {
   public func record(_ event: DiagnosticEvent) {
     var event = event
     event.details = event.details.map(DiagnosticPrivacy.redact)
+    event.context = event.context.mapValues(DiagnosticPrivacy.redact)
     recordEvent(event)
+  }
+
+  /// Records a payload-free operational milestone. Callers must limit context
+  /// to typed dimensions (counts, booleans, enum values, and durations); user
+  /// questions, SQL, rows, identifiers, and paths belong in neither field.
+  public func info(
+    category: DiagnosticEvent.Category,
+    code: String,
+    summary: String,
+    context: [String: String] = [:]
+  ) {
+    record(DiagnosticEvent(
+      level: .info,
+      category: category,
+      code: code,
+      summary: summary,
+      context: context))
   }
 
   public static let noop = DiagnosticsClient { _ in }

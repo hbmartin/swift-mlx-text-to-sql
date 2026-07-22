@@ -105,7 +105,9 @@ extension QueryPipeline {
     let heuristics = ResultHeuristics(db: db)
     return QueryPipeline(
       prepare: {
-        try await serializer.run { try await sqlGen.prepare() }
+        try await serializer.run(operation: .modelPreparation) {
+          try await sqlGen.prepare()
+        }
       },
       run: { question, history in
       AsyncStream { continuation in
@@ -178,7 +180,7 @@ extension QueryPipeline {
                 seconds: min(configuration.deadlines.generationSeconds, remaining),
                 stage: "generation"
               ) {
-                try await serializer.run {
+                try await serializer.run(operation: .sqlGeneration) {
                   try await sqlGen.generate(request)
                 }
               }
@@ -357,7 +359,7 @@ extension QueryPipeline {
                 seconds: remainingTurnSeconds(),
                 stage: "rewrite"
               ) {
-                try await serializer.run {
+                try await serializer.run(operation: .rewrite) {
                   try await activeFM.rewrite(question, history)
                 }
               }
@@ -381,7 +383,7 @@ extension QueryPipeline {
               seconds: remainingTurnSeconds(),
               stage: "gate"
             ) {
-              try await serializer.run {
+              try await serializer.run(operation: .gate) {
                 try await activeFM.gate(
                   standalone, configuration.gateSensitivity)
               }
@@ -630,7 +632,7 @@ extension QueryPipeline {
               seconds: remainingTurnSeconds(),
               stage: "narration"
             ) {
-              try await serializer.run {
+              try await serializer.run(operation: .narration) {
                 try await activeFM.narrate(standalone, narrationResult)
               }
             }
