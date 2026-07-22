@@ -107,6 +107,54 @@ extension SQLGenClient {
     try MLXSQLGenerator.schemaPrompt()
   }
 
+  /// Adds payload-free model-load milestones around `prepare()`. Generation
+  /// details are emitted by the pipeline observer, which deliberately omits
+  /// question text, SQL, seeds, model paths, and generated content.
+  public func reportingModelLoad(
+    to diagnostics: DiagnosticsClient,
+    modelKey: String
+  ) -> SQLGenClient {
+    SQLGenClient(
+      prepare: {
+        let started = ContinuousClock.now
+        diagnostics.info(
+          category: .model,
+          code: "model_load_started",
+          summary: "The bundled SQL model load started.",
+          context: ["model_key": modelKey])
+        do {
+          try await self.prepare()
+          diagnostics.info(
+            category: .model,
+            code: "model_load_finished",
+            summary: "The bundled SQL model is ready.",
+            context: [
+              "model_key": modelKey,
+              "elapsed_ms": Self.milliseconds(
+                started.duration(to: .now).microseconds),
+            ])
+        } catch {
+          diagnostics.record(DiagnosticEvent(
+            level: .error,
+            category: .model,
+            code: "model_load_failed",
+            summary: "The bundled SQL model load failed.",
+            details: DiagnosticDetails.describe(error),
+            context: [
+              "model_key": modelKey,
+              "elapsed_ms": Self.milliseconds(
+                started.duration(to: .now).microseconds),
+            ]))
+          throw error
+        }
+      },
+      generate: self.generate)
+  }
+
+  private static func milliseconds(_ microseconds: Int64) -> String {
+    String(format: "%.1f", Double(microseconds) / 1_000)
+  }
+
   public static func systemPrompt(schema: String) -> String {
     MLXSQLGenerator.systemPrompt(schema: schema)
   }

@@ -67,6 +67,14 @@ public struct ChatFeature: Sendable {
         return .none
 
       case .onAppear:
+        diagnostics.info(
+          category: .submission,
+          code: "chat_appeared",
+          summary: "The chat surface appeared.",
+          context: [
+            "has_conversation": String(state.conversationID != nil),
+            "message_count": String(state.messages.count),
+          ])
         state.modelReadiness = .preparing
         let prepare = preparationEffect()
         guard state.conversationID == nil else { return prepare }
@@ -81,11 +89,19 @@ public struct ChatFeature: Sendable {
           })
 
       case .retryPreparation:
+        diagnostics.info(
+          category: .submission,
+          code: "model_preparation_retry_requested",
+          summary: "The user requested another model preparation attempt.")
         state.modelReadiness = .preparing
         return preparationEffect()
 
       case .modelPrepared:
         state.modelReadiness = .ready
+        diagnostics.info(
+          category: .submission,
+          code: "chat_model_ready",
+          summary: "Chat submission is enabled because the SQL model is ready.")
         return .none
 
       case .modelPreparationFailed(let diagnostic):
@@ -103,6 +119,11 @@ public struct ChatFeature: Sendable {
       case .historyLoaded(let conversationID, let messages):
         state.conversationID = conversationID
         state.messages = IdentifiedArray(uniqueElements: messages)
+        diagnostics.info(
+          category: .history,
+          code: "history_loaded",
+          summary: "Conversation history loaded.",
+          context: ["message_count": String(messages.count)])
         return .none
 
       case .submissionRequested:
@@ -111,21 +132,59 @@ public struct ChatFeature: Sendable {
           !state.isProcessing,
           state.modelReadiness == .ready,
           !state.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return .none }
+        else {
+          diagnostics.info(
+            category: .submission,
+            code: "chat_submission_rejected",
+            summary: "A chat submission request was not eligible to start.",
+            context: [
+              "has_content": String(
+                !state.composerText.trimmingCharacters(
+                  in: .whitespacesAndNewlines).isEmpty),
+              "is_pending": String(state.isSubmissionPending),
+              "is_processing": String(state.isProcessing),
+              "readiness": readiness(state.modelReadiness),
+            ])
+          return .none
+        }
         state.isSubmissionPending = true
+        diagnostics.info(
+          category: .submission,
+          code: "chat_submission_pending",
+          summary: "A chat submission is waiting for focus resignation.")
         return .none
 
       case .submissionRefocused:
+        let wasPending = state.isSubmissionPending
         state.isSubmissionPending = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_submission_refocus_cancelled",
+          summary: "Composer refocus cancelled a pending submission.",
+          context: ["was_pending": String(wasPending)])
         return .none
 
       case .submissionFocusSettled:
-        guard state.isSubmissionPending else { return .none }
+        guard state.isSubmissionPending else {
+          diagnostics.info(
+            category: .submission,
+            code: "chat_submission_focus_settle_ignored",
+            summary: "A focus-settled action had no pending submission.")
+          return .none
+        }
         state.isSubmissionPending = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_submission_focus_settled",
+          summary: "Focus resigned and the pending submission will commit.")
         return startSubmission(state: &state)
 
       case .sendTapped:
         state.isSubmissionPending = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_send_tapped",
+          summary: "The send action was invoked.")
         return startSubmission(state: &state)
 
       case .pipelineEvent(let event):
@@ -153,6 +212,17 @@ public struct ChatFeature: Sendable {
           devInfo: telemetry)
         state.messages.append(assistantMessage)
         state.isProcessing = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_turn_rendered",
+          summary: "The terminal pipeline outcome was rendered in chat.",
+          context: [
+            "outcome": outcomeName(outcome),
+            "confidence": telemetry.confidence?.rawValue ?? "none",
+            "generated_count": String(telemetry.generatedCount),
+            "repair_attempts": String(telemetry.repairAttempts),
+            "timeout_stage": timeoutStage(telemetry.timeoutStage),
+          ])
 
         guard let conversationID = state.conversationID else { return .none }
         let lines = state.currentEventLines
@@ -177,6 +247,10 @@ public struct ChatFeature: Sendable {
 
       case .exportTapped:
         guard let conversationID = state.conversationID else { return .none }
+        diagnostics.info(
+          category: .history,
+          code: "history_export_started",
+          summary: "Conversation export started.")
         return .run { send in
           let url = try await history.exportJSONL(conversationID)
           await send(.exportReady(url))
@@ -187,6 +261,10 @@ public struct ChatFeature: Sendable {
 
       case .exportReady(let url):
         state.exportURL = url
+        diagnostics.info(
+          category: .history,
+          code: "history_export_finished",
+          summary: "Conversation export finished.")
         return .none
 
       case .operationFailed(let failure):
@@ -200,7 +278,13 @@ public struct ChatFeature: Sendable {
         return .none
 
       case .dismissFailure:
+        let code = state.presentedFailure?.code ?? "none"
         state.presentedFailure = nil
+        diagnostics.info(
+          category: .submission,
+          code: "failure_presentation_dismissed",
+          summary: "A failure presentation was dismissed.",
+          context: ["failure_code": code])
         return .none
       }
     }
@@ -223,6 +307,14 @@ public struct ChatFeature: Sendable {
     state.messages.append(userMessage)
     let conversationID = state.conversationID
     let turns = Self.conversationTurns(from: state.messages)
+    diagnostics.info(
+      category: .submission,
+      code: "chat_submission_committed",
+      summary: "A chat submission started a pipeline turn.",
+      context: [
+        "history_turn_count": String(turns.count),
+        "message_count": String(state.messages.count),
+      ])
     return .merge(
       .run { send in
         if let conversationID {
@@ -248,6 +340,33 @@ public struct ChatFeature: Sendable {
       await send(.modelPrepared)
     } catch: { error, send in
       await send(.modelPreparationFailed(DiagnosticDetails.describe(error)))
+    }
+  }
+
+  private func readiness(_ readiness: ModelReadiness) -> String {
+    switch readiness {
+    case .preparing: "preparing"
+    case .ready: "ready"
+    case .failed: "failed"
+    }
+  }
+
+  private func outcomeName(_ outcome: TurnOutcome) -> String {
+    switch outcome {
+    case .answered: "answered"
+    case .needsClarification: "needs_clarification"
+    case .failed: "failed"
+    }
+  }
+
+  private func timeoutStage(_ stage: String?) -> String {
+    guard let stage else { return "none" }
+    return switch stage {
+    case "turn", "generation", "validation", "execution", "grounding",
+      "rewrite", "gate", "narration", "cancelled":
+      stage
+    default:
+      "unknown"
     }
   }
 
@@ -303,8 +422,8 @@ extension DependencyValues {
 /// ``InferenceSerializer`` shared by FM and MLX calls is the PRD §7.1
 /// "never overlap" guarantee.
 private enum LiveDependencies {
-  static let serializer = InferenceSerializer()
   static let diagnostics = DiagnosticsClient.live
+  static let serializer = InferenceSerializer(diagnostics: diagnostics)
 
   static let pipeline: QueryPipeline = {
     let bundle = Bundle.main
@@ -314,6 +433,15 @@ private enum LiveDependencies {
       forResource: "production-model-receipt", withExtension: "json")
     let bundledModelDirectory = bundle.url(
       forResource: "SQLModel", withExtension: nil)
+    diagnostics.info(
+      category: .configuration,
+      code: "application_bootstrap_started",
+      summary: "The on-device SQL runtime bootstrap started.",
+      context: [
+        "has_manifest": String(bundledManifest != nil),
+        "has_model_directory": String(bundledModelDirectory != nil),
+        "has_receipt": String(bundledReceipt != nil),
+      ])
     let production: ProductionGenerationConfiguration
     let productionResult = ProductionModelBootstrap.load(
       diagnostics: diagnostics
@@ -331,13 +459,19 @@ private enum LiveDependencies {
         manifestURL: bundledManifest,
         receiptURL: bundledReceipt,
         modelDirectory: bundledModelDirectory,
-        production: configuration)
+        production: configuration,
+        diagnostics: diagnostics)
       return configuration
     }
     switch productionResult {
     case .success(let configuration):
       production = configuration
     case .failure(let failure):
+      diagnostics.info(
+        category: .configuration,
+        code: "application_bootstrap_blocked",
+        summary: "The on-device SQL runtime bootstrap was blocked.",
+        context: ["failure_code": failure.code])
       return .unavailable(
         userMessage: failure.message,
         diagnosticCode: failure.code,
@@ -350,19 +484,58 @@ private enum LiveDependencies {
         diagnostic: ModelManifestError.missingReceipt.localizedDescription)
     }
     let sqlGen = SQLGenClient.live(directory: bundledModelDirectory)
+      .reportingModelLoad(
+        to: diagnostics,
+        modelKey: production.model.key)
 
     let db: DatabaseClient
+    let databaseReady: Bool
+    diagnostics.info(
+      category: .database,
+      code: "portfolio_database_open_started",
+      summary: "The bundled portfolio database open started.")
     if let url = Bundle.main.url(forResource: "creg", withExtension: "sqlite") {
       do {
         db = try DatabaseClient.live(url: url)
+        databaseReady = true
+        diagnostics.info(
+          category: .database,
+          code: "portfolio_database_open_finished",
+          summary: "The bundled portfolio database opened read-only.",
+          context: ["row_cap": String(DatabaseClient.defaultRowCap)])
       } catch {
+        databaseReady = false
+        diagnostics.record(DiagnosticEvent(
+          level: .error,
+          category: .database,
+          code: "portfolio_database_open_failed",
+          summary: "The bundled portfolio database could not be opened.",
+          details: DiagnosticDetails.describe(error)))
         db = .unavailableBundledPortfolioDatabase(
           diagnostic: DiagnosticDetails.describe(error))
       }
     } else {
+      databaseReady = false
+      diagnostics.record(DiagnosticEvent(
+        level: .error,
+        category: .database,
+        code: "portfolio_database_missing",
+        summary: "The bundled portfolio database resource is missing."))
       db = .unavailableBundledPortfolioDatabase(
         diagnostic: "The bundled portfolio database resource is missing.")
     }
+    diagnostics.info(
+      category: .configuration,
+      code: databaseReady
+        ? "application_bootstrap_finished" : "application_bootstrap_degraded",
+      summary: databaseReady
+        ? "The on-device SQL runtime bootstrap finished."
+        : "The on-device SQL runtime bootstrap finished without a usable database.",
+      context: [
+        "database_ready": String(databaseReady),
+        "model_key": production.model.key,
+        "policy_version": production.policyVersion ?? "legacy",
+      ])
     return QueryPipeline.live(
       fm: .live(),
       sqlGen: sqlGen,
@@ -372,16 +545,31 @@ private enum LiveDependencies {
         production: production,
         gateSensitivity: 0,
         maxRepairAttempts: 2)
-    ).reportingTerminalFailures(to: diagnostics)
+    ).reportingOperations(to: diagnostics)
   }()
 
   static let history: HistoryClient = {
     let url = URL.applicationSupportDirectory
       .appendingPathComponent("CREG", isDirectory: true)
       .appendingPathComponent("history.sqlite")
+    diagnostics.info(
+      category: .history,
+      code: "history_store_open_started",
+      summary: "The local conversation history store open started.")
     do {
-      return try HistoryClient.live(databaseURL: url)
+      let client = try HistoryClient.live(databaseURL: url)
+      diagnostics.info(
+        category: .history,
+        code: "history_store_open_finished",
+        summary: "The local conversation history store opened.")
+      return client
     } catch {
+      diagnostics.record(DiagnosticEvent(
+        level: .error,
+        category: .history,
+        code: "history_store_open_failed",
+        summary: "The local conversation history store could not be opened.",
+        details: DiagnosticDetails.describe(error)))
       return .unavailable(
         diagnostic: DiagnosticDetails.describe(error))
     }
