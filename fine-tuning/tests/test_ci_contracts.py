@@ -61,3 +61,21 @@ def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit, match=r"security\.yaml:.*action is not SHA-pinned"):
         check_ci_contracts.main()
+
+
+def test_every_xcode_configuration_bundles_the_verified_production_model():
+    project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
+    assert "Materialize Verified Production Model" in project
+    assert "--production --models-dir" in project
+    assert '--destination \\"$MODEL_DIR\\"' in project
+    assert "--local-files-only" not in project
+    assert "Debug will download" not in project
+    assert 'if [[ \\"$CONFIGURATION\\"' not in project
+
+    live_dependencies = (
+        check_ci_contracts.ROOT
+        / "CREGKit/Sources/CREGFeatures/ChatFeature.swift"
+    ).read_text()
+    assert "ProductionModelReceiptLoader.validate" in live_dependencies
+    assert "SQLGenClient.live(directory: bundledModelDirectory)" in live_dependencies
+    assert "SQLGenClient.live(model:" not in live_dependencies

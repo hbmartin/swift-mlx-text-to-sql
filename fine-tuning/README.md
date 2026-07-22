@@ -152,7 +152,9 @@ fresh-verified publication records. It is the only supported transition to a
 new verified production manifest. Release model copying then writes a
 content-addressed `production-model-receipt.json`; Release startup and bundle
 inspection both require it to agree with the manifest and actual SQLModel
-bytes.
+bytes. Debug uses the identical fail-closed build path: every app build embeds
+the latest manifest-selected verified production revision and no runtime Hub
+fallback is permitted.
 
 ```sh
 uv run --frozen python -m tools.finalize_production \

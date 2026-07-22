@@ -124,6 +124,11 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
         for message in repair_messages
     )
     assert any("Possible column owners: properties" in message for message in repair_messages)
+    assert any(
+        "SELECT name FROM properties WHERE status != 'Sold' "
+        "ORDER BY 1 - f.occupancy_rate DESC LIMIT 5" in message
+        for message in repair_messages
+    )
 
     pairs = [
         (record["messages"][1]["content"], record["messages"][2]["content"])
@@ -182,3 +187,4 @@ def test_reliability_v3_variants_hold_size_structure_and_repair_ratios_fixed():
             "undefined-order-by-alias",
         }
         assert train_repair_families.isdisjoint(valid_repair_families)
+        assert "undeclared-financial-alias" in train_repair_families

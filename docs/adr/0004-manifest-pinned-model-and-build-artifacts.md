@@ -45,19 +45,17 @@ same pinned Qwen license. Both lineages also distribute the hash-pinned
 `NOTICE` containing the required Qwen attribution, Built/Improved using Qwen
 statement, non-commercial warning, and CREG modification notice.
 
-The Xcode project has no static `models/SQLModel` reference. Its build phase
-runs the fetcher through the frozen `uv` environment:
-
-- Debug bundles an already verified cache entry when available; otherwise it
-  leaves the bundle model-free for a pinned first-use Hub download.
-- Release downloads or reuses cache, verifies every byte, and bundles the
-  selected snapshot as `SQLModel`. A missing selection, network failure, or
-  hash mismatch fails the build with an actionable error.
+The Xcode project has no static `models/SQLModel` reference. Its always-run
+build phase uses the frozen `uv` environment for every configuration. Debug
+and Release both download or reuse the manifest-selected production snapshot,
+verify every byte, and bundle it as `SQLModel` with a manifest-bound receipt.
+A missing selection, network failure, or hash mismatch fails either build with
+an actionable error. Runtime Hub fallback is intentionally unsupported.
 
 ## Consequences
 
 A model upgrade is a manifest and evidence change, never an unreviewed cache
-change. Release builds require network or a complete verified cache and need
+change. All app builds require network or a complete verified cache and need
 enough disk space for the snapshot plus bundle copy. Hashing adds acquisition
 time, but a built app can now be traced to the exact evaluated artifact and
 license. A fine-tune cannot ship until publication and fresh-download

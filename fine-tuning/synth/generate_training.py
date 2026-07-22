@@ -1270,6 +1270,38 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
 
     # Every recurring binding failure gets a direct question and a repair
     # prompt with the same correct SQL. Two families are held out wholesale.
+    latest_vacancy_sql = (
+        "SELECT p.name FROM properties p "
+        "JOIN property_financials f ON f.property_id = p.property_id "
+        "WHERE p.status != 'Sold' "
+        "AND f.period_end = (SELECT MAX(period_end) FROM property_financials "
+        "WHERE property_id = p.property_id) "
+        "ORDER BY 1 - f.occupancy_rate DESC LIMIT 5"
+    )
+    failed_latest_vacancy_sql = (
+        "SELECT name FROM properties WHERE status != 'Sold' "
+        "ORDER BY 1 - f.occupancy_rate DESC LIMIT 5"
+    )
+    for question in (
+        "Rank the five current holdings with the largest vacancy at each asset's newest financial month.",
+        "Show the five held assets with the highest vacancy in their latest reported month.",
+        "Which five current properties have the greatest latest-snapshot vacancy?",
+        "List our five held properties with the largest most-recent vacancy rates.",
+        "At each held property's newest financial snapshot, which five have the highest vacancy?",
+        "Order current holdings by latest vacancy and return the first five.",
+        "Give me the top five non-sold properties by their most recently reported vacancy.",
+        "Which five assets still in the portfolio rank highest for latest vacancy?",
+    ):
+        add_binding_pair(
+            "undeclared_financial_alias",
+            question,
+            failed_latest_vacancy_sql,
+            latest_vacancy_sql,
+            "no such column: f.occupancy_rate",
+            failure_family="undeclared-financial-alias",
+            structure_family="binding:undeclared-financial-alias",
+        )
+
     for p in e["props"]:
         add_binding_pair(
             "undeclared_alias",

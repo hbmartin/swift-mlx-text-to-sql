@@ -320,20 +320,18 @@ private enum LiveDependencies {
     ) {
       guard let bundledManifest else { throw ModelManifestError.missing }
       let configuration = try ModelManifestLoader.production(url: bundledManifest)
-#if !DEBUG
       guard let bundledReceipt, let bundledModelDirectory else {
         throw ModelManifestError.missingReceipt
       }
       guard configuration.policyVersion == "bounded-three-generation-v1" else {
         throw ModelManifestError.invalidProductionConfiguration(
-          "Release requires schema-v3 bounded-policy evidence")
+          "Every build requires schema-v3 bounded-policy evidence")
       }
       try ProductionModelReceiptLoader.validate(
         manifestURL: bundledManifest,
         receiptURL: bundledReceipt,
         modelDirectory: bundledModelDirectory,
         production: configuration)
-#endif
       return configuration
     }
     switch productionResult {
@@ -345,19 +343,13 @@ private enum LiveDependencies {
         diagnosticCode: failure.code,
         diagnostic: failure.diagnostic)
     }
-    let sqlGen: SQLGenClient
-    if let bundledModelDirectory {
-      sqlGen = .live(directory: bundledModelDirectory)
-    } else {
-#if DEBUG
-      sqlGen = .live(model: production.model)
-#else
+    guard let bundledModelDirectory else {
       return .unavailable(
         userMessage: "This build is missing its verified SQL model.",
         diagnosticCode: "production_receipt_missing",
         diagnostic: ModelManifestError.missingReceipt.localizedDescription)
-#endif
     }
+    let sqlGen = SQLGenClient.live(directory: bundledModelDirectory)
 
     let db: DatabaseClient
     if let url = Bundle.main.url(forResource: "creg", withExtension: "sqlite") {
