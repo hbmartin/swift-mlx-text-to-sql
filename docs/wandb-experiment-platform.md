@@ -309,11 +309,19 @@ uv run --frozen wandb agent \
 ```
 
 Each sweep fixes seed `424242`, 600 iterations, checkpoints every 100, batch
-size 4, accumulation 1, prompt masking, a 2,048-token maximum, and a constant
-learning rate. Random search covers LoRA/DoRA, last-16/all layers, rank
+size 4, accumulation 1, gradient checkpointing, prompt masking, a 2,048-token
+maximum, and a constant learning rate. Random search covers LoRA/DoRA,
+last-16/all layers, rank
 4/8/16, scale ratio 1.0/2.0/2.5, dropout 0/0.05, and a log-uniform learning
 rate from `2e-5` through `2e-4`. There is no Hyperband early termination
 because the objective is post-training execution accuracy.
+
+The training subprocess is not evidence merely because it exits successfully.
+Before adapter materialization or checkpoint evaluation, the runner requires
+finite training and validation loss, monotonically increasing cumulative-token
+counters within the batch/sequence upper bound, and a final report at the
+configured iteration. Violations leave the immutable run failed and preserve
+its log for diagnosis.
 
 After all 36 screening runs complete, run the 15 binding regressions at five
 seeds and create one matched multi-snapshot promotion-eligibility receipt for

@@ -65,6 +65,7 @@ class ExperimentConfig:
     repair_fraction: float = 0.10
     batch_size: int = 4
     grad_accumulation_steps: int = 1
+    grad_checkpoint: bool = True
     max_seq_length: int = 2048
     save_every: int = 100
     mask_prompt: bool = True
@@ -115,6 +116,10 @@ class ExperimentConfig:
             raise ExperimentConfigurationError(
                 "grad_accumulation_steps is fixed at 1"
             )
+        if not self.grad_checkpoint:
+            raise ExperimentConfigurationError(
+                "gradient checkpointing must remain enabled"
+            )
         if self.max_seq_length != 2048:
             raise ExperimentConfigurationError("max_seq_length is fixed at 2048")
         if self.save_every != 100:
@@ -148,6 +153,7 @@ class ExperimentConfig:
             "iterations": self.iterations,
             "batch_size": self.batch_size,
             "grad_accumulation_steps": self.grad_accumulation_steps,
+            "grad_checkpoint": self.grad_checkpoint,
             "max_seq_length": self.max_seq_length,
             "save_every": self.save_every,
             "mask_prompt": self.mask_prompt,

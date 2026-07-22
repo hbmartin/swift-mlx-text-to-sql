@@ -32,6 +32,8 @@ from tools.import_wandb_history import parse_training_log
 from tools.run_experiment import (
     _wandb_subprocess_environment,
     materialize_adapter_artifact,
+    TrainingNumericalIntegrityError,
+    verify_training_numerics,
 )
 from tools.promote_experiment import base_artifact_for, require_promotion_eligibility
 
@@ -64,6 +66,53 @@ def test_configuration_hash_and_run_id_bind_every_identity_axis():
     assert first.configuration_sha256 != changed.configuration_sha256
     assert immutable_run_id(first, "wandb-a") != immutable_run_id(first, "wandb-b")
     assert immutable_run_id(first, "wandb-a") != immutable_run_id(changed, "wandb-a")
+
+
+def test_v3_training_requires_gradient_checkpointing():
+    assert experiment().grad_checkpoint is True
+    with pytest.raises(
+        ExperimentConfigurationError, match="gradient checkpointing must remain enabled"
+    ):
+        experiment(grad_checkpoint=False)
+
+
+def test_training_numerics_reject_non_finite_loss_and_impossible_token_counts(
+    tmp_path,
+):
+    config = experiment(iterations=100)
+    valid = tmp_path / "valid.log"
+    valid.write_text(
+        "Iter 1: Val loss 1.600, Val took 1.000s\n"
+        "Iter 100: Val loss 0.900, Val took 1.000s\n"
+        "Iter 100: Train loss 0.055, Learning Rate 1.000e-04, "
+        "It/sec 0.100, Tokens/sec 10.000, Trained Tokens 18833, "
+        "Peak mem 20.000 GB\n"
+    )
+    receipt = verify_training_numerics(valid, config)
+    assert receipt["status"] == "finite"
+    assert receipt["final_trained_tokens"] == 18833
+
+    non_finite = tmp_path / "non-finite.log"
+    non_finite.write_text(
+        "Iter 1: Val loss 1.600, Val took 1.000s\n"
+        "Iter 100: Train loss nan, Learning Rate 1.000e-04, "
+        "It/sec 0.100, Tokens/sec 10.000, Trained Tokens 18833, "
+        "Peak mem 20.000 GB\n"
+    )
+    with pytest.raises(TrainingNumericalIntegrityError, match="non-finite train loss"):
+        verify_training_numerics(non_finite, config)
+
+    impossible = tmp_path / "impossible.log"
+    impossible.write_text(
+        "Iter 1: Val loss 1.600, Val took 1.000s\n"
+        "Iter 100: Train loss 0.055, Learning Rate 1.000e-04, "
+        "It/sec 0.100, Tokens/sec 10.000, Trained Tokens 900000, "
+        "Peak mem 20.000 GB\n"
+    )
+    with pytest.raises(
+        TrainingNumericalIntegrityError, match="impossible trained-token counter"
+    ):
+        verify_training_numerics(impossible, config)
 
 
 def test_promotion_reports_a_missing_base_model_key():

@@ -28,7 +28,7 @@ test: false
 test_batches: 500
 max_seq_length: 2048
 config: null
-grad_checkpoint: false
+grad_checkpoint: true
 clear_cache_threshold: 0
 lr_schedule: null
 lora_parameters:

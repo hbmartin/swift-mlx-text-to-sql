@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -68,6 +70,86 @@ class LayerResolutionError(RuntimeError):
 class MissingVerifiedBaseError(RuntimeError):
     def __init__(self, model_key: str) -> None:
         super().__init__(f"{model_key}: verified base is missing; fetch it first")
+
+
+class TrainingNumericalIntegrityError(RuntimeError):
+    """Raised when MLX reports non-finite or impossible training telemetry."""
+
+
+TRAIN_REPORT_PATTERN = re.compile(
+    r"Iter (?P<iteration>\d+): Train loss (?P<loss>\S+),.*?"
+    r"Trained Tokens (?P<trained_tokens>\d+),"
+)
+VAL_REPORT_PATTERN = re.compile(
+    r"Iter (?P<iteration>\d+): Val loss (?P<loss>\S+),"
+)
+
+
+def verify_training_numerics(
+    log_path: Path, config: ExperimentConfig
+) -> dict[str, Any]:
+    """Fail closed on NaN/Inf loss or token counters outside the batch contract."""
+
+    contents = log_path.read_text(errors="replace")
+    train_reports = list(TRAIN_REPORT_PATTERN.finditer(contents))
+    if not train_reports:
+        raise TrainingNumericalIntegrityError(
+            "training log contains no parseable train-loss reports"
+        )
+
+    previous_tokens = 0
+    reports: list[dict[str, Any]] = []
+    for match in train_reports:
+        iteration = int(match.group("iteration"))
+        loss = float(match.group("loss"))
+        trained_tokens = int(match.group("trained_tokens"))
+        maximum_tokens = iteration * config.batch_size * config.max_seq_length
+        if not math.isfinite(loss):
+            raise TrainingNumericalIntegrityError(
+                f"non-finite train loss at iteration {iteration}: {match.group('loss')}"
+            )
+        if not previous_tokens < trained_tokens <= maximum_tokens:
+            raise TrainingNumericalIntegrityError(
+                "impossible trained-token counter at iteration "
+                f"{iteration}: {trained_tokens} not in "
+                f"({previous_tokens}, {maximum_tokens}]"
+            )
+        previous_tokens = trained_tokens
+        reports.append(
+            {
+                "iteration": iteration,
+                "loss": loss,
+                "trained_tokens": trained_tokens,
+            }
+        )
+
+    if reports[-1]["iteration"] != config.iterations:
+        raise TrainingNumericalIntegrityError(
+            "training log ended before the configured iteration: "
+            f"{reports[-1]['iteration']} != {config.iterations}"
+        )
+
+    validations = []
+    for match in VAL_REPORT_PATTERN.finditer(contents):
+        loss = float(match.group("loss"))
+        iteration = int(match.group("iteration"))
+        if not math.isfinite(loss):
+            raise TrainingNumericalIntegrityError(
+                f"non-finite validation loss at iteration {iteration}: "
+                f"{match.group('loss')}"
+            )
+        validations.append({"iteration": iteration, "loss": loss})
+    if not validations:
+        raise TrainingNumericalIntegrityError(
+            "training log contains no parseable validation-loss reports"
+        )
+
+    return {
+        "status": "finite",
+        "train_reports": reports,
+        "validation_reports": validations,
+        "final_trained_tokens": previous_tokens,
+    }
 
 
 def local_artifact_path(artifact: dict[str, Any], models_dir: Path) -> Path:
@@ -216,6 +298,7 @@ def write_effective_configuration(
             "iters": config.iterations,
             "learning_rate": config.learning_rate,
             "grad_accumulation_steps": config.grad_accumulation_steps,
+            "grad_checkpoint": config.grad_checkpoint,
             "save_every": config.save_every,
             "max_seq_length": config.max_seq_length,
             "mask_prompt": config.mask_prompt,
@@ -649,6 +732,16 @@ def run_experiment(
         manifest["status"] = "training_failed"
         write_json(manifest_path, manifest)
         raise RuntimeError(f"training failed; see {log_path}")
+    try:
+        manifest["training_numerics"] = verify_training_numerics(log_path, config)
+    except TrainingNumericalIntegrityError as error:
+        manifest["status"] = "training_failed"
+        manifest["training_failure"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+        write_json(manifest_path, manifest)
+        raise
     manifest["adapter_files"] = materialize_adapter_artifact(
         scratch_adapter, adapter, config
     )

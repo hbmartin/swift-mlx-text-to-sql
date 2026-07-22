@@ -92,10 +92,13 @@ Every checkpoint is evaluated on the production database and two deterministic
 counterexample snapshots. The screening sweep files fix repair prompts at 10%
 until the controlled ablation selects a different canonical variant. They also
 fix seed 424242, 600 iterations, checkpoints every 100,
-batch size 4, accumulation 1, prompt masking, a 2,048-token maximum, and a
-constant learning rate. They randomize LoRA/DoRA, last-16/all layers, rank,
-scale ratio, dropout, and log-uniform learning rate. There is no Hyperband
-pruning: selection is post-training execution accuracy.
+batch size 4, accumulation 1, gradient checkpointing, prompt masking, a
+2,048-token maximum, and a constant learning rate. They randomize LoRA/DoRA,
+last-16/all layers, rank, scale ratio, dropout, and log-uniform learning rate.
+There is no Hyperband pruning: selection is post-training execution accuracy.
+Before any checkpoint can be evaluated, the runner rejects non-finite loss,
+impossible cumulative-token counters, missing validation reports, and logs
+that end before the configured iteration.
 
 After both 18-run sweeps, run all 15 binding cases at five seeds for each
 candidate and create a `tools.analyze_promotion_eligibility` receipt against a
