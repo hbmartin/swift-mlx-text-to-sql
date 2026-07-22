@@ -66,8 +66,51 @@ public enum ProductionModelReceiptLoader {
     manifestURL: URL,
     receiptURL: URL,
     modelDirectory: URL,
-    production: ProductionGenerationConfiguration
+    production: ProductionGenerationConfiguration,
+    diagnostics: DiagnosticsClient = .noop
   ) throws {
+    let started = ContinuousClock.now
+    diagnostics.info(
+      category: .configuration,
+      code: "production_receipt_verification_started",
+      summary: "Production model receipt verification started.",
+      context: ["model_key": production.model.key])
+    do {
+      let receipt = try validateContents(
+        manifestURL: manifestURL,
+        receiptURL: receiptURL,
+        modelDirectory: modelDirectory,
+        production: production)
+      diagnostics.info(
+        category: .configuration,
+        code: "production_receipt_verified",
+        summary: "Production model receipt verification succeeded.",
+        context: [
+          "model_key": production.model.key,
+          "file_count": String(receipt.fileCount),
+          "elapsed_ms": milliseconds(started.duration(to: .now).microseconds),
+        ])
+    } catch {
+      diagnostics.record(DiagnosticEvent(
+        level: .error,
+        category: .configuration,
+        code: "production_receipt_verification_failed",
+        summary: "Production model receipt verification failed.",
+        details: DiagnosticDetails.describe(error),
+        context: [
+          "model_key": production.model.key,
+          "elapsed_ms": milliseconds(started.duration(to: .now).microseconds),
+        ]))
+      throw error
+    }
+  }
+
+  private static func validateContents(
+    manifestURL: URL,
+    receiptURL: URL,
+    modelDirectory: URL,
+    production: ProductionGenerationConfiguration
+  ) throws -> Receipt {
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(
       atPath: modelDirectory.path, isDirectory: &isDirectory),
@@ -97,6 +140,11 @@ public enum ProductionModelReceiptLoader {
       throw ModelManifestError.receiptMismatch(
         "directory digest or file count is invalid")
     }
+    return receipt
+  }
+
+  private static func milliseconds(_ microseconds: Int64) -> String {
+    String(format: "%.1f", Double(microseconds) / 1_000)
   }
 }
 

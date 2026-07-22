@@ -203,7 +203,23 @@ private struct PipelineTerminalFailure: Sendable {
       "repair_attempts": String(telemetry.repairAttempts),
     ]
 
-    if [.rewrite, .gate, .narration].contains(stage),
+    if let timeoutStage = telemetry.timeoutStage {
+      let cancelled = timeoutStage == "cancelled"
+      self.init(
+        category: .pipeline,
+        code: cancelled
+          ? "pipeline_turn_cancelled" : "pipeline_deadline_exceeded",
+        summary: cancelled
+          ? "The on-device query turn was cancelled."
+          : "The on-device query turn exceeded its deadline.",
+        userMessage: cancelled
+          ? "That answer was cancelled. Please try again."
+          : "That answer took too long. Please try again.",
+        diagnostic: fallbackDiagnostic,
+        context: baseContext.merging(["timeout_stage": timeoutStage]) {
+          current, _ in current
+        })
+    } else if [.rewrite, .gate, .narration].contains(stage),
       let terminalDiagnostic
     {
       self.init(
