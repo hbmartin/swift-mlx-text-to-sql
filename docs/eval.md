@@ -52,18 +52,19 @@ The matrix and rules are implemented by
 `fine-tuning/eval/run_matrix.py`, `fine-tuning/eval/selection.py`, and
 `fine-tuning/tools/analyze_matrix.py`.
 
-Temperature and production comparisons use a paired item-clustered bootstrap
-with seed 424242 and 10,000 replicates. For configurations with five sampling
-seeds, scores are first averaged within each gold item; item IDs—not repeated
-seeds—are then sampled with replacement.
+Development comparisons use a paired item-clustered bootstrap with seed 424242
+and 10,000 replicates. For configurations with repeated sampling seeds, scores
+are first averaged within each gold item; item IDs—not repeated seeds—are then
+sampled with replacement.
 
 A nonzero temperature can replace temperature 0 only when mean EX improves
 by at least two absolute points and the paired 95% interval excludes zero.
 Eligible temperature ties resolve by valid SQL, p95 latency, then lower
 temperature.
 
-Across artifacts, an absolute EX difference below two points or an interval
-containing zero enters the tie pool. The pool resolves by valid SQL,
+Historical across-artifact matrix analyses place a comparison in the tie pool
+when its absolute EX difference is below two points or its interval contains
+zero. The pool resolves by valid SQL,
 worst-tier EX, p95 latency, then bundle size.
 
 ## Phase 1: four-family gold_v1 screen

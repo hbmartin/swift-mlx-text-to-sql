@@ -315,6 +315,20 @@ execute_graphql(api, mutation, {
     "d": "", "t": "project-view",
     "s": json.dumps(spec, separators=(",", ":")),
 })
+refetched = [
+    edge["node"]
+    for edge in execute_graphql(api, list_q, {"e": entity, "p": project})[
+        "project"
+    ]["allViews"]["edges"]
+]
+saved = next(item for item in refetched if item["id"] == node["id"])
+saved_spec = json.loads(saved["spec"])
+saved_panels = [
+    item
+    for saved_section in saved_spec["section"]["panelBankConfig"]["sections"]
+    for item in saved_section.get("panels", [])
+]
+assert any(item.get("__id__") == panel["__id__"] for item in saved_panels)
 print(f"Updated workspace: https://wandb.ai/{entity}/{project}/?nw={token}")
 ```
 

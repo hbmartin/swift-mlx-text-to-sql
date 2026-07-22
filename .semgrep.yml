@@ -1,0 +1,17 @@
+rules:
+  - id: creg-typed-diagnostic-classification
+    message: Classify pipeline failures by typed error or validation issue, not text markers.
+    severity: ERROR
+    languages: [swift]
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $MARKER
+          - metavariable-regex:
+              metavariable: $MARKER
+              regex: (?i).*portfolio_database_unavailable.*
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $VALUE.contains($NEEDLE)
+          - pattern: $VALUE.hasPrefix($NEEDLE)
+          - pattern: $VALUE.hasSuffix($NEEDLE)

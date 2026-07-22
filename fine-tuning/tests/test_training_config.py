@@ -10,9 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_qlora_configuration_makes_every_mlx_lm_option_explicit():
-    configuration = yaml.safe_load(
-        (ROOT / "fine-tuning/config/qlora.yaml").read_text()
-    )
+    configuration = yaml.safe_load((ROOT / "fine-tuning/config/qlora.yaml").read_text())
     assert set(configuration) == set(CONFIG_DEFAULTS)
     assert configuration["seed"] == 424242
     assert configuration["iters"] == 600
@@ -21,6 +19,20 @@ def test_qlora_configuration_makes_every_mlx_lm_option_explicit():
     assert configuration["learning_rate"] == 1e-4
     assert configuration["mask_prompt"] is True
     assert configuration["fine_tune_type"] == "lora"
+
+
+def test_sweeps_launch_the_experiment_runner_as_a_python_module():
+    sweeps = sorted((ROOT / "fine-tuning/config/sweeps").glob("*.yaml"))
+    assert sweeps
+    for path in sweeps:
+        sweep = yaml.safe_load(path.read_text())
+        assert sweep["program"] == "tools.run_experiment"
+        assert sweep["command"][:4] == [
+            "${env}",
+            "${interpreter}",
+            "-m",
+            "${program}",
+        ]
 
 
 def test_committed_corpus_matches_its_versioned_manifest():
@@ -66,5 +78,61 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
         for message in user_messages
     }
     assert gold.isdisjoint(questions)
-    assert sum("Your previous attempt failed" in message for message in user_messages) >= 16
+    assert (
+        sum("Your previous attempt failed" in message for message in user_messages)
+        >= 16
+    )
     assert any("trailing 3-month NOI" in message for message in user_messages)
+
+    repair_messages = [
+        message
+        for message in user_messages
+        if "Your previous attempt failed" in message
+    ]
+    assert all("Declared sources: " in message for message in repair_messages)
+    assert all("Possible column owners: " in message for message in repair_messages)
+    assert all(
+        len(
+            next(
+                line.removeprefix("Prior failed fingerprints: ")
+                for line in message.splitlines()
+                if line.startswith("Prior failed fingerprints: ")
+            )
+        )
+        == 64
+        for message in repair_messages
+    )
+    assert all(
+        next(
+            line.removeprefix("Declared sources: ")
+            for line in message.splitlines()
+            if line.startswith("Declared sources: ")
+        )
+        for message in repair_messages
+    )
+    assert all(
+        next(
+            line.removeprefix("Possible column owners: ")
+            for line in message.splitlines()
+            if line.startswith("Possible column owners: ")
+        )
+        for message in repair_messages
+    )
+
+    pairs = [
+        (record["messages"][1]["content"], record["messages"][2]["content"])
+        for record in records
+    ]
+    tenant_counts = [
+        sql
+        for question, sql in pairs
+        if "How many tenants have active leases in" in question
+        or "Active tenant count at" in question
+    ]
+    lease_counts = [
+        sql for question, sql in pairs if "How many active leases are at" in question
+    ]
+    assert tenant_counts and all(
+        "COUNT(DISTINCT l.tenant_id)" in sql for sql in tenant_counts
+    )
+    assert lease_counts and all("COUNT(*)" in sql for sql in lease_counts)

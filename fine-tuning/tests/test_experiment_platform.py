@@ -33,6 +33,7 @@ from tools.run_experiment import (
     _wandb_subprocess_environment,
     materialize_adapter_artifact,
 )
+from tools.promote_experiment import base_artifact_for
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +64,11 @@ def test_configuration_hash_and_run_id_bind_every_identity_axis():
     assert first.configuration_sha256 != changed.configuration_sha256
     assert immutable_run_id(first, "wandb-a") != immutable_run_id(first, "wandb-b")
     assert immutable_run_id(first, "wandb-a") != immutable_run_id(changed, "wandb-a")
+
+
+def test_promotion_reports_a_missing_base_model_key():
+    with pytest.raises(SystemExit, match="missing-model"):
+        base_artifact_for({"models": []}, "missing-model")
 
 
 def test_campaign_tags_preserve_full_corpus_digest_within_wandb_limit():
@@ -229,7 +235,9 @@ def minimal_manifest(run_directory):
             "revision": "b" * 40,
             "directory_sha256": "c" * 64,
         },
-        "corpus": {"manifest": {"path": str(effective), "sha256": sha256_file(effective)}},
+        "corpus": {
+            "manifest": {"path": str(effective), "sha256": sha256_file(effective)}
+        },
         "outputs": {"adapter": None, "fused": None},
         "wandb": {
             "required": True,
@@ -498,13 +506,14 @@ def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
     evidence = tmp_path / "wandb-evidence.json"
     evidence.write_text("{}\n")
     fake = FakeWandb()
-    receipt = WandbUploader(fake).upload(
-        manifest, evidence, sha256_file(evidence)
-    )
+    receipt = WandbUploader(fake).upload(manifest, evidence, sha256_file(evidence))
     assert fake.init_kwargs["group"] == "campaign-test"
     assert fake.init_kwargs["job_type"] == "screening"
     metric_names = {
-        key for values, _step in fake.run.logs for key in values if not isinstance(values[key], FakeTable)
+        key
+        for values, _step in fake.run.logs
+        for key in values
+        if not isinstance(values[key], FakeTable)
     }
     assert "checkpoint/gold_v1/ex" in metric_names
     checkpoint_metric_logs = [
@@ -514,7 +523,12 @@ def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
     ]
     assert checkpoint_metric_logs[0][1] is None
     assert checkpoint_metric_logs[0][0]["checkpoint/iteration"] == 100
-    tables = [value for values, _ in fake.run.logs for value in values.values() if isinstance(value, FakeTable)]
+    tables = [
+        value
+        for values, _ in fake.run.logs
+        for value in values.values()
+        if isinstance(value, FakeTable)
+    ]
     assert tables[0].data[0][0] == 100
     assert {artifact.type for artifact in fake.run.artifacts} >= {
         "dataset",
@@ -523,7 +537,10 @@ def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
         "model-reference",
         "evidence",
     }
-    assert all(item["version"] == "v0" and item["digest"] for item in receipt["artifacts"])
+    assert receipt["artifacts"]
+    assert all(
+        item["version"] == "v0" and item["digest"] for item in receipt["artifacts"]
+    )
 
 
 def test_wandb_evidence_rejects_symlinked_attachment(tmp_path):
@@ -549,9 +566,7 @@ def test_wandb_evidence_rejects_attachment_through_symlinked_directory(
     (target / "evidence.json").write_text("{}\n")
     linked = tmp_path / "linked-directory"
     linked.symlink_to(target, target_is_directory=True)
-    manifest["final_evaluation"] = {
-        "files": [str(linked / "evidence.json")]
-    }
+    manifest["final_evaluation"] = {"files": [str(linked / "evidence.json")]}
     manifest_path = tmp_path / "manifest.json"
     write_json(manifest_path, manifest)
 

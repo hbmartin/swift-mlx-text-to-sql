@@ -1652,7 +1652,7 @@ existing reports, and share links, see `references/REPORTS.md`.
 | CallsFilter import | `from weave import CallsFilter` | `from weave.trace.weave_client import CallsFilter` |
 | Query import | `from weave import Query` | `from weave.trace_server.interface.query import Query` |
 | Eval status path | `summary["status"]` | `summary["weave"]["status"]` |
-| Eval success count | `summary["success_count"]` | `summary["weave"]["status_counts"]["success"]` |
+| Eval success count | `summary["success_count"]` | `summary["status_counts"]["success"]` |
 | When in doubt | Guess the type | `unwrap()` first, then inspect |
 
 ### W&B API

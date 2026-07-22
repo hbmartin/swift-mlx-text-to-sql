@@ -25,6 +25,11 @@ class RunArtifactError(RuntimeError):
     pass
 
 
+class DirtyWorktreeError(RunArtifactError):
+    def __init__(self) -> None:
+        super().__init__("immutable experiment evidence requires a clean Git worktree")
+
+
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -38,7 +43,9 @@ def slug(value: str) -> str:
     return "-".join(part for part in cleaned.split("-") if part)
 
 
-def default_run_id(model_key: str, gold: Path, gcd: str, temperature: float, seed: int) -> str:
+def default_run_id(
+    model_key: str, gold: Path, gcd: str, temperature: float, seed: int
+) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return (
         f"{stamp}-{slug(model_key)}-{slug(gold.stem)}-gcd-{gcd}"
@@ -85,6 +92,13 @@ def git_provenance() -> dict[str, Any]:
             "git provenance is required for immutable evidence; run inside "
             "the repository with git available"
         ) from error
+
+
+def clean_git_provenance() -> dict[str, Any]:
+    provenance = git_provenance()
+    if provenance["dirty"]:
+        raise DirtyWorktreeError
+    return provenance
 
 
 def dependency_versions() -> dict[str, str | None]:

@@ -2,16 +2,19 @@ import pytest
 
 from eval.selection import (
     Aggregate,
+    Run,
     SelectionError,
     paired_item_bootstrap,
     production_tie_key,
     temperature_is_eligible,
 )
 from tools.analyze_matrix import (
+    final_evaluation,
     identical_sql_runtime_drift,
     normalize_parity_explanations,
     recognized_nondeterministic_sql,
 )
+from tools import analyze_matrix
 
 
 def aggregate(scores: list[float]) -> Aggregate:
@@ -58,9 +61,7 @@ def test_production_tie_break_ignores_small_ex_difference():
         temperature=source.temperature,
         seeds=source.seeds,
         item_scores=source.item_scores,
-        item_valid={
-            str(index): float(index < 160) for index in range(200)
-        },
+        item_valid={str(index): float(index < 160) for index in range(200)},
         item_tiers=source.item_tiers,
         timings_microseconds=source.timings_microseconds,
         bundle_size_bytes=source.bundle_size_bytes,
@@ -70,9 +71,7 @@ def test_production_tie_break_ignores_small_ex_difference():
         gcd=higher_ex.gcd,
         temperature=higher_ex.temperature,
         seeds=higher_ex.seeds,
-        item_scores={
-            str(index): float(index < 100) for index in range(200)
-        },
+        item_scores={str(index): float(index < 100) for index in range(200)},
         item_valid={str(index): 1.0 for index in range(200)},
         item_tiers=higher_ex.item_tiers,
         timings_microseconds=higher_ex.timings_microseconds,
@@ -80,9 +79,7 @@ def test_production_tie_break_ignores_small_ex_difference():
     )
     assert higher_ex.ex == 0.51
     assert higher_valid.ex == 0.5
-    assert sorted(
-        [higher_ex, higher_valid], key=production_tie_key
-    )[0] is higher_valid
+    assert sorted([higher_ex, higher_valid], key=production_tie_key)[0] is higher_valid
 
 
 @pytest.mark.parametrize("invalid", [None, "", "   ", 42])
@@ -138,7 +135,7 @@ def test_parity_recognizes_only_explicit_nondeterministic_sql(sql):
     "sql",
     [
         "SELECT 'random()'",
-        "SELECT \"CURRENT_TIMESTAMP\" FROM t",
+        'SELECT "CURRENT_TIMESTAMP" FROM t',
         "SELECT 1 -- random()\n",
         "SELECT date('2025-01-01')",
         "SELECT deterministic_random_value FROM t",
@@ -146,3 +143,67 @@ def test_parity_recognizes_only_explicit_nondeterministic_sql(sql):
 )
 def test_parity_does_not_excuse_deterministic_sql(sql):
     assert not recognized_nondeterministic_sql(sql)
+
+
+def test_final_gold_v2_evaluation_cannot_replace_the_campaign_winner(
+    monkeypatch, tmp_path
+):
+    campaign = {
+        "schema_version": 1,
+        "analysis": "reliability-v2-campaign-selection",
+        "selection_dataset": "gold_v1.jsonl",
+        "confirmation_seeds": [424240, 424241, 424242],
+        "winner": {
+            "artifact_model_key": "ft-winner",
+            "recipe": "family:recipe",
+            "gcd": "on",
+            "temperature": 0,
+        },
+    }
+    rows = tuple(
+        {
+            "id": f"item-{index}",
+            "tier": 1,
+            "ex": index < 140,
+            "error": None,
+            "elapsed_microseconds": 100,
+        }
+        for index in range(200)
+    )
+    runs = {}
+    for seed in range(5):
+        path = tmp_path / f"run-{seed}"
+        path.mkdir()
+        (path / "manifest.json").write_text("{}\n")
+        runs[path.name] = Run(
+            directory=path,
+            manifest={"model": {"bundle_size_bytes": 1}},
+            summary={
+                "model_key": "ft-winner",
+                "gcd": "on",
+                "temperature": 0,
+                "seed": seed,
+                "gold": "gold_v2.jsonl",
+                "n": 200,
+            },
+            items=rows,
+        )
+    monkeypatch.setattr(
+        analyze_matrix,
+        "load_run",
+        lambda path: runs[path.name],
+    )
+
+    result = final_evaluation(
+        [tmp_path / f"run-{seed}" for seed in range(5)],
+        campaign,
+    )
+    assert result["pass"] is True
+    assert result["selection_permitted"] is False
+
+    runs["run-4"].summary["model_key"] = "ft-challenger"
+    with pytest.raises(SelectionError, match="locked gold-v1"):
+        final_evaluation(
+            [tmp_path / f"run-{seed}" for seed in range(5)],
+            campaign,
+        )

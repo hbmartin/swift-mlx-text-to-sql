@@ -214,8 +214,7 @@ private struct PipelineTerminalFailure: Sendable {
           "The on-device language service couldn’t finish this step. Try again.",
         diagnostic: terminalDiagnostic,
         context: baseContext)
-    } else if candidateDiagnostic?.contains(
-      "[portfolio_database_unavailable]") == true
+    } else if lastFailure?.validationReport?.issue?.kind == .databaseUnavailable
     {
       self.init(
         category: .database,

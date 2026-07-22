@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from eval.run_artifacts import REPO_ROOT, create_run_directory, sha256_file, write_json
-from eval.selection import SelectionError, analysis_id, load_run
+from eval.selection import SelectionError, analysis_id
 
 DEFAULT_ANALYSES = REPO_ROOT / "eval" / "analyses"
 POLICY_SCHEMA_VERSION = 3

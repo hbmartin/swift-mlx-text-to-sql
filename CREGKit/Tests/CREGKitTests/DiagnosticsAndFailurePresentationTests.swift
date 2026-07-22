@@ -107,6 +107,40 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     let redacted = DiagnosticPrivacy.redact(decoding)
     #expect(redacted.contains("models[3].quantization"))
     #expect(!redacted.contains("<redacted SQL>"))
+
+    let instruction = "Select a valid model before retrying."
+    #expect(DiagnosticPrivacy.redact(instruction) == instruction)
+    #expect(DiagnosticPrivacy.redact("SELECT 1") == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SELECT char(97, 0, 98)")
+        == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact(
+        "SELECT CASE WHEN tenant_id IS NULL THEN 'unknown' ELSE tenant_id END FROM tenants")
+        == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SELECT EXISTS(SELECT 1 FROM tenants)")
+        == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SELECT (SELECT COUNT(*) FROM tenants)")
+        == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact(
+        "SELECT\nCASE WHEN tenant_id IS NULL THEN 'unknown' ELSE tenant_id END FROM tenants")
+        == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SELECT\nEXISTS(SELECT 1 FROM tenants)")
+        == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SELECT\n(SELECT COUNT(*) FROM tenants)")
+        == "<redacted SQL>")
+    #expect(
+      DiagnosticPrivacy.redact("SQL: SELECT\nCASE WHEN active THEN 1 ELSE 0 END FROM leases")
+        == "SQL=<redacted SQL>")
+    #expect(DiagnosticPrivacy.redact("SELECT -amount FROM leases") == "<redacted SQL>")
+    #expect(DiagnosticPrivacy.redact("SELECT NOT active FROM leases") == "<redacted SQL>")
+    let caseInstruction = "Select case studies before retrying."
+    #expect(DiagnosticPrivacy.redact(caseInstruction) == caseInstruction)
   }
 
   @Test func diagnosticRedactionTargetsStatementShapesLabelsAndIdentifiers() {
@@ -310,10 +344,8 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       sqlGen: SQLGenClient { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
-      db: DatabaseClient { _ in
-        throw DiagnosticsTestError.failed(
-          "[portfolio_database_unavailable] creg.sqlite is missing")
-      },
+      db: .unavailableBundledPortfolioDatabase(
+        diagnostic: "creg.sqlite is missing"),
       serializer: InferenceSerializer(),
       configuration: configuration()
     ).reportingTerminalFailures(to: recorder.client)
@@ -327,6 +359,25 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(message.contains("portfolio data is unavailable"))
     #expect(!message.contains("sqlite"))
     #expect(recorder.events.map(\.code) == ["pipeline_portfolio_database_unavailable"])
+  }
+
+  @Test func databaseFailureClassificationDoesNotScrapeDiagnosticText() async throws {
+    let recorder = DiagnosticEventRecorder()
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient { _ in
+        throw DiagnosticsTestError.failed(
+          "[portfolio_database_unavailable] user-controlled text")
+      },
+      serializer: InferenceSerializer(),
+      configuration: configuration()
+    ).reportingTerminalFailures(to: recorder.client)
+
+    _ = await Array(pipeline.run("question", []))
+    #expect(recorder.events.map(\.code) == ["pipeline_database_execution_failed"])
   }
 
   @Test func foundationModelTerminalFailureIncludesStageWithoutQuestion() async throws {

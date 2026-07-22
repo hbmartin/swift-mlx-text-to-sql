@@ -1,9 +1,10 @@
 """Write production configuration only after every blocking evidence gate.
 
 This is the sole supported transition from `selection_pending` to `verified`.
-It validates selection, permanent binding regressions, bounded three-generation
-calibration, both public fine-tune snapshots, and full-gold Python/Swift parity
-before editing the versioned model manifest.
+It validates the gold-v1 campaign winner, its locked gold-v2 release gate,
+permanent binding regressions, bounded three-generation calibration, published
+snapshot evidence, and full-gold Python/Swift parity before editing the
+versioned model manifest.
 """
 
 from __future__ import annotations
@@ -13,17 +14,25 @@ import json
 from pathlib import Path
 from typing import Any
 
+from eval.campaign import (
+    CAMPAIGN_SELECTION_ANALYSIS,
+    CAMPAIGN_SELECTION_SCHEMA_VERSION,
+    CONFIRMATION_SEEDS,
+    LOCKED_PRODUCTION_GCD,
+    LOCKED_PRODUCTION_TEMPERATURE,
+    MINIMUM_PRODUCTION_EX,
+)
 from eval.run_artifacts import REPO_ROOT, sha256_file, write_json
 from eval.selection import SelectionError, load_run
 from tools.fetch_model import load_manifest
 
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
-MINIMUM_PRODUCTION_EX = 0.668
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--production-analysis", type=Path, required=True)
+    parser.add_argument("--campaign-winner", type=Path, required=True)
+    parser.add_argument("--final-evaluation-analysis", type=Path, required=True)
     parser.add_argument("--binding-analysis", type=Path, required=True)
     parser.add_argument("--consistency-analysis", type=Path, required=True)
     parser.add_argument("--parity-analysis", type=Path, required=True)
@@ -55,6 +64,14 @@ def evidence(path: Path) -> dict[str, str]:
     return {"path": display, "sha256": sha256_file(resolved)}
 
 
+def validate_publication_arguments(paths: list[Path]) -> list[Path]:
+    if not paths:
+        raise SelectionError("--publication must be supplied at least once")
+    if len(set(paths)) != len(paths):
+        raise SelectionError("--publication values must be distinct")
+    return paths
+
+
 def validate_binding_analysis(
     binding: dict[str, Any], selected: dict[str, Any]
 ) -> None:
@@ -75,39 +92,62 @@ def validate_binding_analysis(
         )
 
 
-def validate_production_analysis(production: dict[str, Any]) -> dict[str, Any]:
-    if production.get("analysis") != "production-artifact-selection":
-        raise SelectionError("invalid production-selection analysis")
-    selected = production.get("selected", {})
-    if selected.get("seeds") != [0, 1, 2, 3, 4]:
-        raise SelectionError("production selection is not based on five seeds")
-    if selected.get("n_items") != 200:
-        raise SelectionError("production selection is not full gold_v2")
+def validate_campaign_winner(campaign: dict[str, Any]) -> dict[str, Any]:
+    if (
+        campaign.get("schema_version") != CAMPAIGN_SELECTION_SCHEMA_VERSION
+        or campaign.get("analysis") != CAMPAIGN_SELECTION_ANALYSIS
+        or campaign.get("selection_dataset") != "gold_v1.jsonl"
+        or campaign.get("confirmation_seeds") != list(CONFIRMATION_SEEDS)
+    ):
+        raise SelectionError("invalid gold-v1 campaign winner")
+    winner = campaign.get("winner", {})
+    if (
+        not winner.get("artifact_model_key")
+        or winner.get("gcd") != LOCKED_PRODUCTION_GCD
+        or float(winner.get("temperature", -1)) != LOCKED_PRODUCTION_TEMPERATURE
+    ):
+        raise SelectionError("campaign winner lacks a locked artifact identity")
+    return winner
+
+
+def validate_final_evaluation(
+    evaluation: dict[str, Any], winner: dict[str, Any], campaign_path: Path
+) -> dict[str, Any]:
+    if (
+        evaluation.get("schema_version") != 1
+        or evaluation.get("analysis") != "final-gold-v2-evaluation"
+        or evaluation.get("selection_permitted") is not False
+        or evaluation.get("pass") is not True
+    ):
+        raise SelectionError("invalid locked-winner gold-v2 evaluation")
+    selected = evaluation.get("result", {})
+    receipt = evaluation.get("campaign_winner", {})
+    campaign_input = evaluation.get("inputs", {}).get("campaign_winner", {})
+    if (
+        not isinstance(campaign_input, dict)
+        or campaign_input.get("sha256") != sha256_file(campaign_path)
+        or receipt.get("artifact_model_key") != winner.get("artifact_model_key")
+        or receipt.get("recipe") != winner.get("recipe")
+        or selected.get("model_key") != winner.get("artifact_model_key")
+        or selected.get("gcd") != winner.get("gcd")
+        or float(selected.get("temperature", -1))
+        != float(winner.get("temperature", -2))
+        or selected.get("seeds") != [0, 1, 2, 3, 4]
+        or selected.get("n_items") != 200
+    ):
+        raise SelectionError(
+            "final evaluation does not match the gold-v1 campaign winner"
+        )
     if float(selected.get("ex", -1)) < MINIMUM_PRODUCTION_EX:
         raise SelectionError(
-            "production selection does not meet the 66.8% EX release floor"
+            "final evaluation does not meet the 66.8% EX release floor"
         )
     return selected
 
 
-def main() -> None:
-    args = parse_args()
-    if len(args.publication) != 2:
-        raise SystemExit("--publication must be supplied exactly twice")
-
-    production_path = args.production_analysis.resolve()
-    binding_path = args.binding_analysis.resolve()
-    consistency_path = args.consistency_analysis.resolve()
-    parity_path = args.parity_analysis.resolve()
-    production = read_json(production_path)
-    binding = read_json(binding_path)
-    consistency = read_json(consistency_path)
-    parity = read_json(parity_path)
-
-    selected = validate_production_analysis(production)
-
-    validate_binding_analysis(binding, selected)
-
+def validate_consistency_analysis(
+    consistency: dict[str, Any], selected: dict[str, Any]
+) -> dict[str, Any]:
     if (
         consistency.get("analysis") != "bounded-three-generation-calibration"
         or consistency.get("schema_version") != 3
@@ -129,7 +169,10 @@ def main() -> None:
         raise SelectionError(
             "consistency calibration does not match the production winner"
         )
+    return voting
 
+
+def validate_parity_analysis(parity: dict[str, Any], selected: dict[str, Any]) -> None:
     gate = parity.get("gate", {})
     if (
         parity.get("analysis") != "python-swift-full-gold-parity"
@@ -140,19 +183,40 @@ def main() -> None:
     python_run_path = Path(parity["inputs"]["python_run"]["path"])
     if not python_run_path.is_absolute():
         python_run_path = REPO_ROOT / python_run_path
-    python_run = load_run(python_run_path)
-    python_summary = python_run.summary
+    python_summary = load_run(python_run_path).summary
     if (
         python_summary.get("model_key") != selected.get("model_key")
         or python_summary.get("gcd") != selected.get("gcd")
-        or float(python_summary.get("temperature")) != float(
-            selected.get("temperature")
-        )
+        or float(python_summary.get("temperature"))
+        != float(selected.get("temperature"))
         or python_summary.get("n") != 200
     ):
         raise SelectionError(
             "parity Python run does not match the selected production configuration"
         )
+
+
+def main() -> None:
+    args = parse_args()
+    publication_paths = validate_publication_arguments(args.publication)
+
+    campaign_path = args.campaign_winner.resolve()
+    final_evaluation_path = args.final_evaluation_analysis.resolve()
+    binding_path = args.binding_analysis.resolve()
+    consistency_path = args.consistency_analysis.resolve()
+    parity_path = args.parity_analysis.resolve()
+    campaign = read_json(campaign_path)
+    final_evaluation = read_json(final_evaluation_path)
+    binding = read_json(binding_path)
+    consistency = read_json(consistency_path)
+    parity = read_json(parity_path)
+
+    winner = validate_campaign_winner(campaign)
+    selected = validate_final_evaluation(final_evaluation, winner, campaign_path)
+
+    validate_binding_analysis(binding, selected)
+    voting = validate_consistency_analysis(consistency, selected)
+    validate_parity_analysis(parity, selected)
 
     manifest = load_manifest(MODEL_MANIFEST)
     existing_production = manifest.get("production")
@@ -160,8 +224,7 @@ def main() -> None:
         raise SelectionError("model manifest has an unsupported production state")
     if (
         existing_production is not None
-        and existing_production.get("policy_version")
-        == "bounded-three-generation-v1"
+        and existing_production.get("policy_version") == "bounded-three-generation-v1"
     ):
         raise SelectionError("bounded-policy production is already finalized")
     models = {model["key"]: model for model in manifest["models"]}
@@ -169,13 +232,13 @@ def main() -> None:
     if model is None:
         raise SelectionError("selected production model is not in the manifest")
 
-    publications = [read_json(path.resolve()) for path in args.publication]
+    publications = [read_json(path.resolve()) for path in publication_paths]
     if any(
         item.get("public") is not True
         or item.get("fresh_download_verified") is not True
         for item in publications
     ):
-        raise SelectionError("both publication records must be fresh verified")
+        raise SelectionError("all publication records must be fresh verified")
     publication_identities = {
         (item["repository"], item["revision"]) for item in publications
     }
@@ -186,8 +249,7 @@ def main() -> None:
         for item in models.values()
         if item.get("derived")
         and item.get("publication_status") == "public-verified"
-        and (item.get("repository"), item.get("revision"))
-        in publication_identities
+        and (item.get("repository"), item.get("revision")) in publication_identities
     ]
     if len(derived) != len(publication_identities) or model not in derived:
         raise SelectionError(
@@ -216,13 +278,12 @@ def main() -> None:
             "always_vote": False,
         },
         "evidence": {
-            "production_selection": evidence(production_path),
+            "campaign_winner": evidence(campaign_path),
+            "final_gold_v2_evaluation": evidence(final_evaluation_path),
             "binding_regressions": evidence(binding_path),
             "consistency_calibration": evidence(consistency_path),
             "full_gold_parity": evidence(parity_path),
-            "publications": [
-                evidence(path.resolve()) for path in args.publication
-            ],
+            "publications": [evidence(path.resolve()) for path in publication_paths],
         },
     }
     manifest["production_status"] = "verified"

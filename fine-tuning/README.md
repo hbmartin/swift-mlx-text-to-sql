@@ -125,23 +125,36 @@ uv run --frozen python -m tools.analyze_binding_regressions \
   --run ../eval/runs/<seed-4>
 ```
 
-`tools.finalize_production` requires that binding analysis alongside the
-production selection, schema-v3 bounded-policy calibration, full parity, and
-both fresh-verified publication records. It is the only supported transition
-to a new verified production manifest. Release model copying then writes a
+`tools.finalize_production` requires binding analysis alongside the
+content-addressed gold-v1 campaign winner, its locked-winner gold-v2 release
+gate, schema-v3 bounded-policy calibration, full parity, and one or more
+fresh-verified publication records. It is the only supported transition to a
+new verified production manifest. Release model copying then writes a
 content-addressed `production-model-receipt.json`; Release startup and bundle
 inspection both require it to agree with the manifest and actual SQLModel
 bytes.
 
 ```sh
 uv run --frozen python -m tools.finalize_production \
-  --production-analysis ../eval/analyses/<production>/analysis.json \
+  --campaign-winner ../eval/campaign-winner.json \
+  --final-evaluation-analysis ../eval/analyses/<final-evaluation>/analysis.json \
   --binding-analysis ../eval/analyses/<binding>/analysis.json \
   --consistency-analysis ../eval/analyses/<policy>/analysis.json \
   --parity-analysis ../eval/analyses/<parity>/analysis.json \
-  --publication ../eval/publications/<first>/publication.json \
-  --publication ../eval/publications/<second>/publication.json
+  --publication ../eval/publications/<winner>/publication.json
 ```
 
-`gold_v2` is post-selection evidence only and must never influence sweep,
-recipe, checkpoint, or seed selection.
+Create the final evaluation analysis only after campaign selection:
+
+```sh
+uv run --frozen python -m tools.analyze_matrix final-evaluation \
+  --campaign-winner ../eval/campaign-winner.json \
+  --run ../eval/runs/<winner-seed-0> \
+  --run ../eval/runs/<winner-seed-1> \
+  --run ../eval/runs/<winner-seed-2> \
+  --run ../eval/runs/<winner-seed-3> \
+  --run ../eval/runs/<winner-seed-4>
+```
+
+The analyzer accepts only the artifact already locked by `campaign-winner.json`.
+`gold_v2` is post-selection evidence only and cannot rank or replace it.

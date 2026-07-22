@@ -1444,6 +1444,22 @@ import Testing
         """)
   }
 
+  @Test func repairPromptSubstitutesTheOriginalTemplateOnlyOnce() {
+    let issue = SQLValidationIssue(
+      kind: .binding,
+      disposition: .repairable,
+      message: "no such column: {{ISSUE_TYPE}}")
+    let prompt = MLXSQLGenerator.repairPrompt(
+      question: "Why did {{FAILED_SQL}} fail?",
+      context: RepairContext(
+        failedSQL: "SELECT {{QUESTION}}",
+        errorMessage: issue.message,
+        guidance: RepairGuidance(issue: issue)))
+    #expect(prompt.contains("Question: Why did {{FAILED_SQL}} fail?"))
+    #expect(prompt.contains("Previous SQL: SELECT {{QUESTION}}"))
+    #expect(prompt.contains("SQLite error: no such column: {{ISSUE_TYPE}}"))
+  }
+
   @Test func unconstrainedOutputNormalizationMatchesPythonHarness() {
     let raw =
       "<|im_start|>Here is the query:\n```sql\nSELECT name FROM properties;\n```<|im_end|>"

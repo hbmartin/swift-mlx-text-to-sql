@@ -347,7 +347,8 @@ uv run --frozen python -m tools.select_campaign select-winner \
 
 The selector compares four recipes by mean item-clustered `gold_v1` EX, then
 valid-SQL rate, worst-tier EX, p95 latency, and lower trainable-parameter
-count. The winning recipe's seed-424242 run is canonical. Promote that run to
+count. Its output records the exact `ft-<run-id>` artifact key and hashes all
+12 source manifests. The winning recipe's seed-424242 run is canonical. Promote that run to
 the final stage before post-selection evaluation:
 
 ```sh
@@ -442,13 +443,29 @@ campaign inputs.
 ## Attach post-selection evidence
 
 Only a run already marked `final` may receive final evaluation or publication
-evidence. After the winning recipe and seed-424242 run have been selected, run
-the existing `gold_v2` evaluation gate and attach its completed run:
+evidence. After the winning recipe and seed-424242 run have been selected,
+evaluate that locked artifact over `gold_v2` at seeds 0–4 and create the
+non-selecting release gate:
+
+```sh
+uv run --frozen python -m tools.analyze_matrix final-evaluation \
+  --campaign-winner ../eval/campaign-winner.json \
+  --run ../eval/runs/<seed-0> --run ../eval/runs/<seed-1> \
+  --run ../eval/runs/<seed-2> --run ../eval/runs/<seed-3> \
+  --run ../eval/runs/<seed-4>
+```
+
+The command rejects any run whose artifact key, GCD mode, or temperature does
+not match the gold-v1 winner. Attach the five completed evaluation runs:
 
 ```sh
 uv run --frozen python -m tools.sync_wandb \
   --training-run ../eval/training-runs/<final-run> \
-  --final-evaluation ../eval/runs/<gold-v2-run>
+  --final-evaluation ../eval/runs/<seed-0> \
+  --final-evaluation ../eval/runs/<seed-1> \
+  --final-evaluation ../eval/runs/<seed-2> \
+  --final-evaluation ../eval/runs/<seed-3> \
+  --final-evaluation ../eval/runs/<seed-4>
 ```
 
 The attached artifact is marked `selection_use: forbidden`. Publish through

@@ -4,7 +4,8 @@ Examples:
   uv run python -m tools.analyze_matrix screen --run ../eval/runs/<id> [...]
   uv run python -m tools.analyze_matrix gcd --run ../eval/runs/<id> [...]
   uv run python -m tools.analyze_matrix temperature --run ../eval/runs/<id> [...]
-  uv run python -m tools.analyze_matrix production --run ../eval/runs/<id> [...]
+  uv run python -m tools.analyze_matrix final-evaluation \
+    --campaign-winner ../eval/campaign-winner.json --run ../eval/runs/<id> [...]
   uv run python -m tools.analyze_matrix parity \
     --python-run ../eval/runs/<id> --swift-output ../eval/runs/<id>/swift.json
 """
@@ -17,6 +18,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from eval.campaign import (
+    CAMPAIGN_SELECTION_ANALYSIS,
+    CAMPAIGN_SELECTION_SCHEMA_VERSION,
+    CONFIRMATION_SEEDS,
+    LOCKED_PRODUCTION_GCD,
+    LOCKED_PRODUCTION_TEMPERATURE,
+    MINIMUM_PRODUCTION_EX,
+)
 from eval.run_artifacts import REPO_ROOT, create_run_directory, sha256_file, write_json
 from eval.selection import (
     Aggregate,
@@ -24,9 +33,7 @@ from eval.selection import (
     aggregate,
     analysis_id,
     best_gcd,
-    configurations_are_tied,
     load_run,
-    production_tie_key,
     rank_key,
     temperature_is_eligible,
 )
@@ -38,9 +45,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--analyses-dir", type=Path, default=DEFAULT_ANALYSES)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("screen", "gcd", "temperature", "production"):
+    for name in ("screen", "gcd", "temperature"):
         command = subparsers.add_parser(name)
         command.add_argument("--run", type=Path, action="append", required=True)
+    final_evaluation_parser = subparsers.add_parser("final-evaluation")
+    final_evaluation_parser.add_argument("--campaign-winner", type=Path, required=True)
+    final_evaluation_parser.add_argument(
+        "--run", type=Path, action="append", required=True
+    )
     parity = subparsers.add_parser("parity")
     parity.add_argument("--python-run", type=Path, required=True)
     parity.add_argument("--swift-output", type=Path, required=True)
@@ -96,9 +108,7 @@ def screen(run_paths: list[Path]) -> dict[str, Any]:
             "p95 latency",
             "bundle size",
         ],
-        "ranked_best_gcd_by_family": [
-            value.metrics() for value in ranked
-        ],
+        "ranked_best_gcd_by_family": [value.metrics() for value in ranked],
         "selected_model_keys": [value.model_key for value in ranked[:2]],
         "inputs": provenance(run_paths),
     }
@@ -123,8 +133,7 @@ def gcd_selection(run_paths: list[Path]) -> dict[str, Any]:
         if {value.gcd for value in configurations} != {"on", "off"}:
             raise SelectionError(f"{model}: GCD selection requires on and off")
     selected = [
-        best_gcd(configurations)
-        for _, configurations in sorted(grouped.items())
+        best_gcd(configurations) for _, configurations in sorted(grouped.items())
     ]
     return {
         "schema_version": 1,
@@ -146,9 +155,7 @@ def temperature(run_paths: list[Path]) -> dict[str, Any]:
     grouped: dict[tuple[str, str, float], list] = defaultdict(list)
     for run in runs:
         if run.summary["gold"] != "gold_v2.jsonl" or run.summary["n"] != 200:
-            raise SelectionError(
-                "temperature analysis requires all 200 gold_v2 items"
-            )
+            raise SelectionError("temperature analysis requires all 200 gold_v2 items")
         grouped[
             (
                 run.model_key,
@@ -172,9 +179,7 @@ def temperature(run_paths: list[Path]) -> dict[str, Any]:
             raise SelectionError(
                 "each temperature requires exactly seeds 0, 1, 2, 3, and 4"
             )
-    baseline = next(
-        (value for value in configurations if value.temperature == 0), None
-    )
+    baseline = next((value for value in configurations if value.temperature == 0), None)
     if baseline is None:
         raise SelectionError("temperature analysis requires a 0.0 baseline")
     comparisons: list[dict[str, Any]] = []
@@ -182,9 +187,7 @@ def temperature(run_paths: list[Path]) -> dict[str, Any]:
     for candidate in configurations:
         if candidate.temperature == 0:
             continue
-        is_eligible, comparison = temperature_is_eligible(
-            candidate, baseline
-        )
+        is_eligible, comparison = temperature_is_eligible(candidate, baseline)
         comparison["candidate"] = candidate.metrics()
         comparison["baseline"] = baseline.metrics()
         comparisons.append(comparison)
@@ -214,67 +217,74 @@ def temperature(run_paths: list[Path]) -> dict[str, Any]:
     }
 
 
-def production(run_paths: list[Path]) -> dict[str, Any]:
+def final_evaluation(
+    run_paths: list[Path],
+    campaign_winner: dict[str, Any],
+    campaign_winner_path: Path | None = None,
+) -> dict[str, Any]:
+    if (
+        campaign_winner.get("schema_version") != CAMPAIGN_SELECTION_SCHEMA_VERSION
+        or campaign_winner.get("analysis") != CAMPAIGN_SELECTION_ANALYSIS
+        or campaign_winner.get("selection_dataset") != "gold_v1.jsonl"
+        or campaign_winner.get("confirmation_seeds") != list(CONFIRMATION_SEEDS)
+    ):
+        raise SelectionError("invalid or non-gold-v1 campaign winner")
+    winner = campaign_winner.get("winner", {})
+    expected_identity = (
+        winner.get("artifact_model_key"),
+        winner.get("gcd"),
+        float(winner.get("temperature", -1)),
+    )
+    if (
+        not expected_identity[0]
+        or expected_identity[1] != LOCKED_PRODUCTION_GCD
+        or expected_identity[2] != LOCKED_PRODUCTION_TEMPERATURE
+    ):
+        raise SelectionError("campaign winner lacks the locked artifact identity")
+
     runs = [load_run(path) for path in run_paths]
-    grouped: dict[tuple[str, str, float], list] = defaultdict(list)
     for run in runs:
         if run.summary["gold"] != "gold_v2.jsonl" or run.summary["n"] != 200:
-            raise SelectionError(
-                "production selection requires all 200 gold_v2 items"
-            )
-        grouped[
-            (
-                run.model_key,
-                run.summary["gcd"],
-                float(run.summary["temperature"]),
-            )
-        ].append(run)
-    configurations = [aggregate(values) for values in grouped.values()]
-    if (
-        len(configurations) != 4
-        or len({value.model_key for value in configurations}) != 4
-    ):
-        raise SelectionError(
-            "production selection requires exactly one eligible configuration "
-            "for each of four artifacts"
+            raise SelectionError("final evaluation requires all 200 gold_v2 items")
+        identity = (
+            run.model_key,
+            run.summary["gcd"],
+            float(run.summary["temperature"]),
         )
-    for configuration in configurations:
-        if configuration.seeds != (0, 1, 2, 3, 4):
+        if identity != expected_identity:
             raise SelectionError(
-                "each production configuration requires exactly seeds "
-                "0, 1, 2, 3, and 4"
+                "gold_v2 run does not match the locked gold-v1 campaign winner"
             )
-    top_by_ex = sorted(configurations, key=lambda value: -value.ex)[0]
-    tie_pool = [top_by_ex]
-    comparisons: list[dict[str, Any]] = []
-    for candidate in configurations:
-        if candidate is top_by_ex:
-            continue
-        tied, comparison = configurations_are_tied(candidate, top_by_ex)
-        comparison["candidate"] = candidate.metrics()
-        comparison["incumbent"] = top_by_ex.metrics()
-        comparisons.append(comparison)
-        if tied:
-            tie_pool.append(candidate)
-    selected = sorted(tie_pool, key=production_tie_key)[0]
+    evaluated = aggregate(runs)
+    if evaluated.seeds != (0, 1, 2, 3, 4):
+        raise SelectionError(
+            "final evaluation requires exactly seeds 0, 1, 2, 3, and 4"
+        )
+    metrics = evaluated.metrics()
     return {
         "schema_version": 1,
-        "analysis": "production-artifact-selection",
-        "tie_rule": (
-            "absolute EX difference under 0.02 or paired item-clustered "
-            "bootstrap 95% interval contains zero"
-        ),
-        "tie_breaks": [
-            "valid SQL",
-            "worst-tier execution accuracy",
-            "p95 latency",
-            "bundle size",
-        ],
-        "configurations": [value.metrics() for value in configurations],
-        "comparisons_to_top_ex": comparisons,
-        "tie_pool": [value.metrics() for value in tie_pool],
-        "selected": selected.metrics(),
-        "inputs": provenance(run_paths),
+        "analysis": "final-gold-v2-evaluation",
+        "selection_permitted": False,
+        "campaign_winner": {
+            "analysis": campaign_winner["analysis"],
+            "selection_dataset": campaign_winner["selection_dataset"],
+            "artifact_model_key": winner["artifact_model_key"],
+            "recipe": winner["recipe"],
+        },
+        "release_floor": {"ex": MINIMUM_PRODUCTION_EX},
+        "pass": metrics["ex"] >= MINIMUM_PRODUCTION_EX,
+        "result": metrics,
+        "inputs": {
+            "campaign_winner": (
+                {
+                    "path": str(campaign_winner_path.resolve()),
+                    "sha256": sha256_file(campaign_winner_path.resolve()),
+                }
+                if campaign_winner_path is not None
+                else None
+            ),
+            "runs": provenance(run_paths),
+        },
     }
 
 
@@ -285,17 +295,11 @@ def normalize_parity_explanations(
         raise SelectionError("parity explanations must be a JSON object")
     raw_ids = {str(item_id) for item_id in decoded}
     if any(
-        not isinstance(value, str) or not value.strip()
-        for value in decoded.values()
+        not isinstance(value, str) or not value.strip() for value in decoded.values()
     ):
-        raise SelectionError(
-            "parity explanations must contain non-empty strings"
-        )
+        raise SelectionError("parity explanations must contain non-empty strings")
     return (
-        {
-            str(item_id): value.strip()
-            for item_id, value in decoded.items()
-        },
+        {str(item_id): value.strip() for item_id, value in decoded.items()},
         raw_ids,
     )
 
@@ -381,9 +385,9 @@ def recognized_nondeterministic_sql(sql: str) -> bool:
             "strftime",
         }:
             continue
-        if (
-            token_index + 1 >= len(tokens)
-            or tokens[token_index + 1] != ("punctuation", "(")
+        if token_index + 1 >= len(tokens) or tokens[token_index + 1] != (
+            "punctuation",
+            "(",
         ):
             continue
         depth = 0
@@ -421,8 +425,7 @@ def parity(
         or swift_summary.get("gcd") != expected_configuration["gcd"]
         or float(swift_summary.get("temperature", -1))
         != float(expected_configuration["temperature"])
-        or int(swift_summary.get("seed", -1))
-        != int(expected_configuration["run_seed"])
+        or int(swift_summary.get("seed", -1)) != int(expected_configuration["run_seed"])
         or swift_summary.get("topP") != 1
         or swift_summary.get("topK") != 0
         or swift_summary.get("maxTokens") != 512
@@ -448,8 +451,7 @@ def parity(
         != expected_model["artifact_lock"]["sha256"]
         or swift_provenance.get("modelDirectorySHA256")
         != expected_model["directory_sha256"]
-        or swift_provenance.get("grammarSHA256")
-        != python_inputs["grammar"]["sha256"]
+        or swift_provenance.get("grammarSHA256") != python_inputs["grammar"]["sha256"]
         or swift_provenance.get("systemPromptSHA256")
         != python_inputs["system_prompt_sha256"]
         or swift_provenance.get("packageLock", {}).get("sha256")
@@ -462,9 +464,7 @@ def parity(
     raw_explanation_ids: set[str] = set()
     if explanations_path is not None:
         decoded = json.loads(explanations_path.read_text())
-        explanations, raw_explanation_ids = normalize_parity_explanations(
-            decoded
-        )
+        explanations, raw_explanation_ids = normalize_parity_explanations(decoded)
     python_by_id = {item["id"]: item for item in python_run.items}
     swift_by_id = {item["id"]: item for item in swift["results"]}
     if set(python_by_id) != set(swift_by_id):
@@ -474,26 +474,20 @@ def parity(
         swift_item = swift_by_id[item_id]
         swift_item_model = swift_item.get("model", {})
         if (
-            int(swift_item.get("seed", -1))
-            != int(python_item["item_seed"])
-            or int(swift_item.get("tier", -1))
-            != int(python_item["tier"])
+            int(swift_item.get("seed", -1)) != int(python_item["item_seed"])
+            or int(swift_item.get("tier", -1)) != int(python_item["tier"])
             or swift_item.get("goldSQL") != python_item["gold_sql"]
             or swift_item.get("gcd") != python_run.summary["gcd"]
             or float(swift_item.get("temperature", -1))
             != float(python_run.summary["temperature"])
             or swift_item_model.get("key") != python_run.model_key
-            or swift_item_model.get("repository")
-            != expected_model["repository"]
-            or swift_item_model.get("revision")
-            != expected_model["revision"]
+            or swift_item_model.get("repository") != expected_model["repository"]
+            or swift_item_model.get("revision") != expected_model["revision"]
         ):
             raise SelectionError(
                 f"{item_id}: Python and Swift per-item parity inputs differ"
             )
-        python_gold_digest = (python_by_id[item_id]["gold"] or {}).get(
-            "digest"
-        )
+        python_gold_digest = (python_by_id[item_id]["gold"] or {}).get("digest")
         if python_gold_digest != swift_by_id[item_id].get("goldDigest"):
             raise SelectionError(
                 f"{item_id}: Python and Swift canonical gold digests differ"
@@ -570,19 +564,16 @@ def parity(
                 "produced different parity data; fix runtime/comparator "
                 "drift instead of explaining it"
             )
-    python_ex = sum(item["ex"] for item in python_run.items) / len(
+    python_ex = sum(item["ex"] for item in python_run.items) / len(python_run.items)
+    python_valid = sum(item["error"] is None for item in python_run.items) / len(
         python_run.items
     )
-    python_valid = sum(
-        item["error"] is None for item in python_run.items
-    ) / len(python_run.items)
     swift_ex = float(swift["summary"]["ex"])
     swift_valid = float(swift["summary"]["validSQLRate"])
     ex_delta = abs(swift_ex - python_ex)
     valid_delta = abs(swift_valid - python_valid)
     all_disagreements_explained = all(
-        item["explanation_status"] == "explained"
-        for item in disagreements
+        item["explanation_status"] == "explained" for item in disagreements
     )
     metrics_pass = ex_delta <= 0.02 and valid_delta <= 0.02
     parity_inputs: dict[str, Any] = {
@@ -647,8 +638,13 @@ def main() -> None:
         payload = gcd_selection(args.run)
     elif args.command == "temperature":
         payload = temperature(args.run)
-    elif args.command == "production":
-        payload = production(args.run)
+    elif args.command == "final-evaluation":
+        campaign_winner_path = args.campaign_winner.resolve()
+        payload = final_evaluation(
+            args.run,
+            json.loads(campaign_winner_path.read_text()),
+            campaign_winner_path,
+        )
     else:
         payload = parity(
             args.python_run,

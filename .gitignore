@@ -20,6 +20,9 @@ __pycache__/
 # Local environment configuration
 .envrc
 /fine-tuning/wandb/
+/eval/training-runs/*-wb-*/
+/triage_decisions.db
+/reviews_triage/pr-*-feedback-*.json
 
 # Model weights (fetched by script, never committed)
 /models/
