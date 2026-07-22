@@ -179,8 +179,8 @@ Checkpoint evaluation is intentionally hard-wired to:
 
 The selected checkpoint is the first winner under this ordered comparison:
 
-1. execution accuracy, descending;
-2. valid-SQL rate, descending;
+1. valid-SQL rate, descending;
+2. execution accuracy, descending;
 3. worst-tier execution accuracy, descending;
 4. p95 latency, ascending; and
 5. checkpoint iteration, ascending.
@@ -239,7 +239,7 @@ Start with a short authenticated smoke run:
 ```sh
 uv run --frozen python -m tools.run_experiment \
   --model-key qwen25-coder-3b \
-  --campaign-id creg-sql-reliability-v2-smoke \
+  --campaign-id creg-sql-reliability-v3-smoke \
   --iterations 100
 ```
 
@@ -252,7 +252,7 @@ A complete explicit screening run looks like:
 ```sh
 uv run --frozen python -m tools.run_experiment \
   --model-key qwen25-coder-3b \
-  --campaign-id creg-sql-reliability-v2-qwen25-coder-3b-screening \
+  --campaign-id creg-sql-reliability-v3-qwen25-coder-3b-screening \
   --stage screening \
   --seed 424242 \
   --fine-tune-type dora \
@@ -273,7 +273,12 @@ Screening runs do not fuse a model. Promoted and final runs synchronize once
 to authorize fusion, fuse only the selected checkpoint, and synchronize again
 to record the fused reference.
 
-## Run the initial online sweep campaign
+## Run the reliability-v3 online campaign
+
+Start with the grid-based `repair-ratio-ablation.yaml` probe. It changes only
+the canonical repair-prompt share (5%, 10%, or 20%); model, recipe, seed, and
+budget stay fixed. Launch the two broad screening sweeps only after selecting
+that single variable.
 
 The repository defines two independent 18-run random sweeps:
 
@@ -310,8 +315,12 @@ learning rate. Random search covers LoRA/DoRA, last-16/all layers, rank
 rate from `2e-5` through `2e-4`. There is no Hyperband early termination
 because the objective is post-training execution accuracy.
 
-After all 36 screening runs complete, create the promotion plan by passing all
-screening run directories:
+After all 36 screening runs complete, run the 15 binding regressions at five
+seeds and create one matched multi-snapshot promotion-eligibility receipt for
+every candidate under consideration. The promotion command requires those
+receipts, and each binding receipt identifies the exact selected adapter
+checkpoint; a high-EX recipe cannot bypass binding, validity, tier-3, or
+wrong-table/join constraints:
 
 ```sh
 uv run --frozen python -m tools.select_campaign plan-promotions \
@@ -319,6 +328,9 @@ uv run --frozen python -m tools.select_campaign plan-promotions \
   --training-run ../eval/training-runs/<screening-run-2> \
   ... \
   --training-run ../eval/training-runs/<screening-run-36> \
+  --eligibility ../eval/analyses/<eligible-run-1>.json \
+  --eligibility ../eval/analyses/<eligible-run-2>.json \
+  ... \
   --output ../eval/promotion-plan.json
 ```
 
@@ -342,6 +354,10 @@ uv run --frozen python -m tools.select_campaign select-winner \
   --training-run ../eval/training-runs/<promoted-result-1> \
   ... \
   --training-run ../eval/training-runs/<promoted-result-12> \
+  --eligibility ../eval/analyses/<eligible-recipe-1>.json \
+  --eligibility ../eval/analyses/<eligible-recipe-2>.json \
+  --eligibility ../eval/analyses/<eligible-recipe-3>.json \
+  --eligibility ../eval/analyses/<eligible-recipe-4>.json \
   --output ../eval/campaign-winner.json
 ```
 

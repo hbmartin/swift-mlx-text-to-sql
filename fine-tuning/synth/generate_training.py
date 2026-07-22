@@ -58,13 +58,72 @@ SCHEMA_CATALOG = (
 OUT_DIR = REPO_ROOT / "fine-tuning" / "synth" / "out"
 
 SEED = 424242
-TARGET = 3000
+TARGET = 1600
 VALID_FRACTION = 0.05
+CORPUS_VERSION = "reliability-v3"
+REPAIR_FRACTIONS = (0.05, 0.10, 0.20)
 OCCUPYING = "('Active', 'Holdover')"
+
+SQL_TOKEN_RE = re.compile(
+    r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]"
+    r"|\b\d+(?:\.\d+)?\b|[A-Za-z_][A-Za-z0-9_]*|<=|>=|<>|!=|\|\||\S"
+)
+SQL_KEYWORDS = frozenset(
+    "select from join inner left right full cross on where group by having order limit "
+    "offset union all distinct as with recursive and or not in is null case when then "
+    "else end asc desc over partition rows range between current row preceding following"
+    .split()
+)
 
 
 def normalize(question: str) -> str:
     return "".join(c for c in question.lower() if c.isalnum() or c == " ").strip()
+
+
+def sql_structure_signature(sql: str) -> str:
+    """Hash SQL shape while abstracting literals and declared alias spelling."""
+    tokens = SQL_TOKEN_RE.findall(sql)
+    aliases: dict[str, str] = {}
+    alias_index = 0
+
+    def register(value: str) -> None:
+        nonlocal alias_index
+        lowered = value.lower()
+        if (
+            re.fullmatch(r"[a-z_][a-z0-9_]*", lowered)
+            and lowered not in SQL_KEYWORDS
+            and lowered not in aliases
+        ):
+            alias_index += 1
+            aliases[lowered] = f"alias{alias_index}"
+
+    # Discover aliases before rendering so references in SELECT (which appear
+    # before their FROM declarations) normalize identically too.
+    for index, token in enumerate(tokens):
+        lowered = token.lower()
+        if lowered == "as" and index + 1 < len(tokens):
+            register(tokens[index + 1])
+        elif lowered in {"from", "join"} and index + 2 < len(tokens):
+            possible_alias = tokens[index + 2].lower()
+            if possible_alias not in SQL_KEYWORDS:
+                register(possible_alias)
+        elif (
+            lowered in {"with", ","}
+            and index + 2 < len(tokens)
+            and tokens[index + 2].lower() == "as"
+        ):
+            register(tokens[index + 1])
+
+    normalized: list[str] = []
+    for token in tokens:
+        lowered = token.lower()
+        if token.startswith("'"):
+            normalized.append("?")
+        elif re.fullmatch(r"\d+(?:\.\d+)?", token):
+            normalized.append("#")
+        else:
+            normalized.append(aliases.get(lowered, lowered))
+    return hashlib.sha256(" ".join(normalized).encode()).hexdigest()
 
 
 def repair_evidence(failed_sql: str, sqlite_error: str) -> dict[str, list[str]]:
@@ -130,24 +189,74 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
     than TARGET; the gate and dedup thin them out."""
     out: list[dict] = []
 
-    def add(family, tier, question, sql):
-        out.append({"family": family, "tier": tier, "question": question, "sql": sql})
-
-    def add_repair(family, tier, question, failed_sql, sql, error):
+    def add(family, tier, question, sql, **metadata):
         out.append(
             {
                 "family": family,
+                "structure_family": metadata.pop("structure_family", family),
                 "tier": tier,
                 "question": question,
                 "sql": sql,
-                "repair": {
-                    "failed_sql": failed_sql,
-                    "sqlite_error": error,
-                    "issue_type": "binding",
-                    "issue_disposition": "repairable",
-                    **repair_evidence(failed_sql, error),
-                },
+                "holdout": bool(metadata.pop("holdout", False)),
+                **metadata,
             }
+        )
+
+    def add_repair(
+        family,
+        tier,
+        question,
+        failed_sql,
+        sql,
+        error,
+        **metadata,
+    ):
+        failure_family = metadata.pop("failure_family", family)
+        add(
+            family,
+            tier,
+            question,
+            sql,
+            failure_family=failure_family,
+            repair={
+                "failed_sql": failed_sql,
+                "sqlite_error": error,
+                "issue_type": "binding",
+                "issue_disposition": "repairable",
+                **repair_evidence(failed_sql, error),
+            },
+            **metadata,
+        )
+
+    def add_binding_pair(
+        family,
+        question,
+        failed_sql,
+        sql,
+        error,
+        *,
+        failure_family,
+        holdout=False,
+        **metadata,
+    ):
+        pair_id = hashlib.sha256(
+            f"{failure_family}\0{question}\0{sql}".encode()
+        ).hexdigest()[:20]
+        shared = {
+            "pair_id": pair_id,
+            "failure_family": failure_family,
+            "holdout": holdout,
+            **metadata,
+        }
+        add(f"direct_{family}", 3, question, sql, **shared)
+        add_repair(
+            f"repair_{family}",
+            3,
+            question,
+            failed_sql,
+            sql,
+            error,
+            **shared,
         )
 
     def phr(options, **kw):
@@ -349,22 +458,24 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
     # Their questions remain structurally compositional while the gold v1/v2
     # text exclusion below prevents benchmark leakage.
     for p in e["fin_props"][:12]:
-        add_repair(
-            "repair_latest_vacancy",
-            3,
+        add_binding_pair(
+            "latest_vacancy",
             f"Give the latest reported vacancy rate for {p}.",
             f"SELECT 1 - occupancy_rate FROM properties WHERE name = '{p}'",
             f"SELECT 1 - f.occupancy_rate FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.name = '{p}' AND f.period_end = (SELECT MAX(period_end) FROM property_financials WHERE property_id = p.property_id)",
             "no such column: occupancy_rate",
+            failure_family="wrong-table-column",
+            structure_family="binding_latest_vacancy",
         )
     for fund in e["funds"]:
-        add_repair(
-            "repair_fund_current_value",
-            3,
+        add_binding_pair(
+            "fund_current_value",
             f"Total the current value of all held assets in {fund}.",
             f"SELECT SUM(current_market_value) FROM funds WHERE name = '{fund}'",
             f"SELECT SUM(p.current_market_value) FROM properties p JOIN funds f ON f.fund_id = p.fund_id WHERE f.name = '{fund}' AND p.status != 'Sold'",
             "no such column: current_market_value",
+            failure_family="missing-owning-table",
+            structure_family="binding_fund_current_value",
         )
 
     # --- monthly financial lookups ---------------------------------------
@@ -1004,7 +1115,460 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
         "SELECT COUNT(*) FROM loans WHERE is_recourse = 1",
     )
 
+    # --- reliability-v3 structural coverage -----------------------------
+    # This is an explicit covering matrix, not a list of entity substitutions.
+    # Each row carries the semantic axes used by the split/evidence gates.
+    metric_expressions = {
+        "occupancy": "f.occupancy_rate",
+        "vacancy": "1 - f.occupancy_rate",
+    }
+    time_predicates = {
+        "latest-per-property": (
+            "f.period_end = (SELECT MAX(period_end) FROM property_financials "
+            "WHERE property_id = p.property_id)"
+        ),
+        "explicit-month": "f.period_end = '2026-06-30'",
+    }
+    scopes = {"held": "p.status != 'Sold'", "all": None}
+    groupings = {
+        "fund": (
+            "fu.name",
+            " JOIN funds fu ON fu.fund_id = p.fund_id",
+        ),
+        "market": ("p.market", ""),
+        "property-type": ("p.property_type", ""),
+    }
+
+    for metric, expression in metric_expressions.items():
+        for time_grain, time_predicate in time_predicates.items():
+            for portfolio_filter, status_predicate in scopes.items():
+                predicates = [time_predicate]
+                if status_predicate:
+                    predicates.append(status_predicate)
+                where = " AND ".join(predicates)
+                scope_question = (
+                    "held properties"
+                    if portfolio_filter == "held"
+                    else "properties including sold properties"
+                )
+                time_question = (
+                    "their latest reported month"
+                    if time_grain == "latest-per-property"
+                    else "June 2026"
+                )
+                holdout_top_n = (
+                    metric == "vacancy"
+                    and time_grain == "explicit-month"
+                    and portfolio_filter == "all"
+                )
+                add(
+                    f"matrix_{metric}_top_n",
+                    3,
+                    f"Show the five {scope_question} with the highest {metric} for {time_question}.",
+                    f"SELECT p.name, {expression} AS metric_value FROM properties p JOIN property_financials f ON f.property_id = p.property_id WHERE {where} ORDER BY metric_value DESC LIMIT 5",
+                    structure_family=f"{metric}:top-n:none:{time_grain}:{portfolio_filter}",
+                    metric=metric,
+                    operation="top-n",
+                    grouping="none",
+                    time_grain=time_grain,
+                    portfolio_filter=portfolio_filter,
+                    coverage_required=True,
+                    holdout=holdout_top_n,
+                    validation_category=(
+                        "top-n-financial" if holdout_top_n else None
+                    ),
+                )
+                comparator = "> 0.15" if metric == "vacancy" else "< 0.85"
+                threshold_question = (
+                    "above 15 percent"
+                    if metric == "vacancy"
+                    else "below 85 percent"
+                )
+                add(
+                    f"matrix_{metric}_threshold",
+                    3,
+                    f"Which {scope_question} have {metric} {threshold_question} for {time_question}?",
+                    f"SELECT p.name, {expression} AS metric_value FROM properties p JOIN property_financials f ON f.property_id = p.property_id WHERE {where} AND {expression} {comparator} ORDER BY metric_value DESC",
+                    structure_family=f"{metric}:threshold:none:{time_grain}:{portfolio_filter}",
+                    metric=metric,
+                    operation="threshold",
+                    grouping="none",
+                    time_grain=time_grain,
+                    portfolio_filter=portfolio_filter,
+                    coverage_required=True,
+                )
+                for grouping, (group_column, extra_join) in groupings.items():
+                    holdout_average = (
+                        metric == "occupancy"
+                        and grouping == "property-type"
+                        and time_grain == "explicit-month"
+                        and portfolio_filter == "all"
+                    )
+                    add(
+                        f"matrix_{metric}_average_{grouping}",
+                        3,
+                        f"Average {metric} by {grouping} for {scope_question} in {time_question}.",
+                        f"SELECT {group_column} AS grouping_value, AVG({expression}) AS average_metric FROM properties p JOIN property_financials f ON f.property_id = p.property_id{extra_join} WHERE {where} GROUP BY {group_column} ORDER BY average_metric DESC",
+                        structure_family=f"{metric}:average:{grouping}:{time_grain}:{portfolio_filter}",
+                        metric=metric,
+                        operation="average",
+                        grouping=grouping,
+                        time_grain=time_grain,
+                        portfolio_filter=portfolio_filter,
+                        coverage_required=True,
+                        holdout=holdout_average,
+                        validation_category=(
+                            "join-composition" if holdout_average else None
+                        ),
+                    )
+                    threshold = "0.01" if metric == "vacancy" else "0.80"
+                    holdout_having = (
+                        metric == "vacancy"
+                        and grouping == "market"
+                        and time_grain == "latest-per-property"
+                        and portfolio_filter == "held"
+                    )
+                    add(
+                        f"matrix_{metric}_having_{grouping}",
+                        3,
+                        f"Which {grouping} groups have average {metric} above {float(threshold) * 100:g} percent for {scope_question} in {time_question}?",
+                        f"SELECT {group_column} AS grouping_value, AVG({expression}) AS average_metric FROM properties p JOIN property_financials f ON f.property_id = p.property_id{extra_join} WHERE {where} GROUP BY {group_column} HAVING AVG({expression}) > {threshold} ORDER BY average_metric DESC",
+                        structure_family=f"{metric}:having:{grouping}:{time_grain}:{portfolio_filter}",
+                        metric=metric,
+                        operation="having",
+                        grouping=grouping,
+                        time_grain=time_grain,
+                        portfolio_filter=portfolio_filter,
+                        coverage_required=True,
+                        holdout=holdout_having,
+                        validation_category=(
+                            "aggregation-having" if holdout_having else None
+                        ),
+                    )
+
+    for p in e["fin_props"][:8]:
+        for metric, expression in metric_expressions.items():
+            for time_grain, time_predicate in time_predicates.items():
+                time_question = (
+                    "latest reported month"
+                    if time_grain == "latest-per-property"
+                    else "June 2026"
+                )
+                add(
+                    f"matrix_{metric}_single_property",
+                    2,
+                    f"What is {p}'s {metric} for its {time_question}?",
+                    f"SELECT {expression} FROM properties p JOIN property_financials f ON f.property_id = p.property_id WHERE p.name = '{p}' AND {time_predicate}",
+                    structure_family=f"{metric}:projection:property:{time_grain}:one-property",
+                    metric=metric,
+                    operation="projection",
+                    grouping="property",
+                    time_grain=time_grain,
+                    portfolio_filter="one-property",
+                    coverage_required=True,
+                )
+
+    # Every recurring binding failure gets a direct question and a repair
+    # prompt with the same correct SQL. Two families are held out wholesale.
+    for p in e["props"]:
+        add_binding_pair(
+            "undeclared_alias",
+            f"Show the name and market for {p}.",
+            f"SELECT asset.name, asset.market FROM properties p WHERE p.name = '{p}'",
+            f"SELECT p.name, p.market FROM properties p WHERE p.name = '{p}'",
+            "no such column: asset.name",
+            failure_family="undeclared-alias",
+            structure_family="binding:undeclared-alias",
+        )
+        add_binding_pair(
+            "missing_fund_join",
+            f"Which fund owns {p}?",
+            f"SELECT fu.name FROM properties p WHERE p.name = '{p}'",
+            f"SELECT fu.name FROM properties p JOIN funds fu ON fu.fund_id = p.fund_id WHERE p.name = '{p}'",
+            "no such column: fu.name",
+            failure_family="missing-join",
+            structure_family="binding:missing-fund-join",
+        )
+        add_binding_pair(
+            "ambiguous_name",
+            f"Show {p} together with its fund name.",
+            f"SELECT name, name FROM properties p JOIN funds fu ON fu.fund_id = p.fund_id WHERE p.name = '{p}'",
+            f"SELECT asset.name, vehicle.name FROM properties asset JOIN funds vehicle ON vehicle.fund_id = asset.fund_id WHERE asset.name = '{p}'",
+            "ambiguous column name: name",
+            failure_family="ambiguous-name",
+            structure_family="binding:ambiguous-name",
+            holdout=True,
+            validation_category="alias-choice",
+        )
+        add_binding_pair(
+            "undefined_order_alias",
+            f"Place {p} in a held-property list ordered by current value.",
+            f"SELECT p.name, p.current_market_value AS property_value FROM properties p WHERE p.name = '{p}' AND p.status != 'Sold' ORDER BY current_value DESC",
+            f"SELECT asset.name, asset.current_market_value AS ranked_value FROM properties asset WHERE asset.name = '{p}' AND asset.status != 'Sold' ORDER BY ranked_value DESC",
+            "no such column: current_value",
+            failure_family="undefined-order-by-alias",
+            structure_family="binding:undefined-order-alias",
+            holdout=True,
+            validation_category="binding-failure",
+        )
+        add_binding_pair(
+            "missing_source_filter",
+            f"Show {p}'s current value and fund.",
+            f"SELECT p.current_market_value FROM properties p WHERE fu.name IS NOT NULL AND p.name = '{p}'",
+            f"SELECT p.current_market_value, fu.name FROM properties p JOIN funds fu ON fu.fund_id = p.fund_id WHERE p.name = '{p}'",
+            "no such column: fu.name",
+            failure_family="filter-missing-source",
+            structure_family="binding:filter-missing-source",
+        )
+
+    for p in e["fin_props"]:
+        add_binding_pair(
+            "wrong_table_occupancy",
+            f"Give the latest occupancy for {p}.",
+            f"SELECT p.occupancy_rate FROM properties p WHERE p.name = '{p}'",
+            f"SELECT f.occupancy_rate FROM properties p JOIN property_financials f ON f.property_id = p.property_id WHERE p.name = '{p}' AND f.period_end = (SELECT MAX(period_end) FROM property_financials WHERE property_id = p.property_id)",
+            "no such column: p.occupancy_rate",
+            failure_family="wrong-table-column",
+            structure_family="binding:wrong-table-occupancy",
+        )
+        add_binding_pair(
+            "copied_filter",
+            f"Show June 2026 occupancy for held property {p}.",
+            f"SELECT f.occupancy_rate FROM properties p JOIN property_financials f ON f.property_id = p.property_id WHERE p.name = '{p}' AND f.status != 'Sold' AND f.period_end = '2026-06-30'",
+            f"SELECT f.occupancy_rate FROM properties p JOIN property_financials f ON f.property_id = p.property_id WHERE p.name = '{p}' AND p.status != 'Sold' AND f.period_end = '2026-06-30'",
+            "no such column: f.status",
+            failure_family="filter-copied-to-unrelated-table",
+            structure_family="binding:copied-filter",
+        )
+        add_binding_pair(
+            "wrong_group_source",
+            f"Show {p}'s average monthly NOI grouped by property name.",
+            f"SELECT f.name, AVG(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.name = '{p}' GROUP BY f.name",
+            f"SELECT p.name, AVG(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE p.name = '{p}' GROUP BY p.name",
+            "no such column: f.name",
+            failure_family="grouping-column-wrong-table",
+            structure_family="binding:wrong-group-source",
+        )
+
+    for p in e["props"]:
+        add_binding_pair(
+            "wrong_join_key",
+            f"Show the current loan balance for {p} when debt exists.",
+            f"SELECT ln.current_balance FROM properties p JOIN loans ln ON ln.fund_id = p.fund_id WHERE p.name = '{p}'",
+            f"SELECT ln.current_balance FROM properties p JOIN loans ln ON ln.property_id = p.property_id WHERE p.name = '{p}'",
+            "no such column: ln.fund_id",
+            failure_family="join-column-wrong-table",
+            structure_family="binding:wrong-join-key",
+        )
+
     return out
+
+
+def candidate_record_id(item: dict) -> str:
+    mode = "repair" if "repair" in item else "direct"
+    return hashlib.sha256(
+        f"{mode}\0{item['question']}\0{item['sql']}".encode()
+    ).hexdigest()
+
+
+def candidate_sort_key(item: dict) -> tuple[str, ...]:
+    return (
+        str(item.get("failure_family", "")),
+        str(item["structure_family"]),
+        item["question"],
+        "repair" if "repair" in item else "direct",
+        item["sql"],
+    )
+
+
+def round_robin_repairs(candidates: list[dict], count: int) -> list[dict]:
+    by_failure: dict[str, list[dict]] = {}
+    for item in sorted(candidates, key=candidate_sort_key):
+        by_failure.setdefault(item["failure_family"], []).append(item)
+    selected: list[dict] = []
+    while len(selected) < count and by_failure:
+        for failure in sorted(tuple(by_failure)):
+            selected.append(by_failure[failure].pop(0))
+            if not by_failure[failure]:
+                del by_failure[failure]
+            if len(selected) == count:
+                break
+    if len(selected) != count:
+        raise RuntimeError(
+            f"insufficient repair candidates: required {count}, found {len(selected)}"
+        )
+    return selected
+
+
+def select_partition(
+    candidates: list[dict],
+    *,
+    total_count: int,
+    repair_count: int,
+    required_categories: set[str] = frozenset(),
+) -> list[dict]:
+    direct_by_pair = {
+        item["pair_id"]: item
+        for item in candidates
+        if "repair" not in item and item.get("pair_id")
+    }
+    repair_pool = [
+        item
+        for item in candidates
+        if "repair" in item and item.get("pair_id") in direct_by_pair
+    ]
+    selected_repairs = round_robin_repairs(repair_pool, repair_count)
+    selected: list[dict] = list(selected_repairs)
+    selected_ids = {candidate_record_id(item) for item in selected}
+
+    # Every selected repair retains its direct question -> correct SQL pair.
+    for repair in selected_repairs:
+        direct = direct_by_pair[repair["pair_id"]]
+        identifier = candidate_record_id(direct)
+        if identifier not in selected_ids:
+            selected.append(direct)
+            selected_ids.add(identifier)
+
+    if len(selected) > total_count:
+        raise RuntimeError("repair ratio leaves no room for paired direct examples")
+
+    direct_pool = sorted(
+        (item for item in candidates if "repair" not in item),
+        key=candidate_sort_key,
+    )
+    present_categories = {
+        item.get("validation_category")
+        for item in selected
+        if item.get("validation_category")
+    }
+    for category in sorted(required_categories - present_categories):
+        choice = next(
+            (
+                item
+                for item in direct_pool
+                if item.get("validation_category") == category
+                and candidate_record_id(item) not in selected_ids
+            ),
+            None,
+        )
+        if choice is None:
+            raise RuntimeError(f"missing validation category {category}")
+        selected.append(choice)
+        selected_ids.add(candidate_record_id(choice))
+
+    for item in direct_pool:
+        if not item.get("coverage_required"):
+            continue
+        identifier = candidate_record_id(item)
+        if identifier not in selected_ids:
+            selected.append(item)
+            selected_ids.add(identifier)
+    if len(selected) > total_count:
+        raise RuntimeError("required structural coverage exceeds partition size")
+
+    for item in direct_pool:
+        if len(selected) == total_count:
+            break
+        identifier = candidate_record_id(item)
+        if identifier not in selected_ids:
+            selected.append(item)
+            selected_ids.add(identifier)
+    if len(selected) != total_count:
+        raise RuntimeError(
+            f"insufficient candidates: required {total_count}, found {len(selected)}"
+        )
+    if sum("repair" in item for item in selected) != repair_count:
+        raise RuntimeError("selected repair count differs from requested ratio")
+    return selected
+
+
+def select_corpus(candidates: list[dict], repair_fraction: float) -> tuple[list[dict], list[dict]]:
+    valid_count = int(TARGET * VALID_FRACTION)
+    total_repair_count = round(TARGET * repair_fraction)
+    valid_repair_count = round(valid_count * repair_fraction)
+    holdout = [item for item in candidates if item["holdout"]]
+    valid = select_partition(
+        holdout,
+        total_count=valid_count,
+        repair_count=valid_repair_count,
+        required_categories={
+            "aggregation-having",
+            "alias-choice",
+            "binding-failure",
+            "join-composition",
+            "top-n-financial",
+        },
+    )
+    valid_signatures = {item["structure_sha256"] for item in valid}
+    training_pool = [
+        item
+        for item in candidates
+        if not item["holdout"] and item["structure_sha256"] not in valid_signatures
+    ]
+    train = select_partition(
+        training_pool,
+        total_count=TARGET - valid_count,
+        repair_count=total_repair_count - valid_repair_count,
+    )
+    overlap = valid_signatures & {item["structure_sha256"] for item in train}
+    if overlap:
+        raise RuntimeError(f"train/validation SQL structure leakage: {sorted(overlap)}")
+    return train, valid
+
+
+def training_record(item: dict, system_prompt: str) -> dict:
+    return {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    build_repair_prompt(
+                        question=item["question"],
+                        failed_sql=item["repair"]["failed_sql"],
+                        sqlite_error=item["repair"]["sqlite_error"],
+                        issue_type=item["repair"]["issue_type"],
+                        issue_disposition=item["repair"]["issue_disposition"],
+                        declared_sources=item["repair"]["declared_sources"],
+                        possible_column_owners=item["repair"][
+                            "possible_column_owners"
+                        ],
+                        failed_fingerprints=item["repair"]["failed_fingerprints"],
+                    )
+                    if "repair" in item
+                    else f"Question: {item['question']}"
+                ),
+            },
+            {"role": "assistant", "content": item["sql"]},
+        ]
+    }
+
+
+def split_record(item: dict, split: str) -> dict:
+    axes = {
+        key: item[key]
+        for key in (
+            "metric",
+            "operation",
+            "grouping",
+            "time_grain",
+            "portfolio_filter",
+        )
+        if item.get(key) is not None
+    }
+    return {
+        "id": candidate_record_id(item),
+        "split": split,
+        "family": item["family"],
+        "structure_family": item["structure_family"],
+        "sql_structure_sha256": item["structure_sha256"],
+        "tier": item["tier"],
+        "mode": "repair" if "repair" in item else "direct",
+        "pair_id": item.get("pair_id"),
+        "failure_family": item.get("failure_family"),
+        "validation_category": item.get("validation_category"),
+        "axes": axes,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -1014,6 +1578,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=OUT_DIR,
         help="output directory (default: committed synth/out corpus)",
+    )
+    parser.add_argument(
+        "--repair-fraction",
+        type=float,
+        choices=REPAIR_FRACTIONS,
+        default=0.10,
+        help="exact fraction of repair-prompt records in the fixed-size corpus",
     )
     return parser.parse_args()
 
@@ -1044,14 +1615,15 @@ def main() -> None:
         "not_in_grammar": 0,
         "kept": 0,
     }
-    seen: set[str] = set()
-    kept: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    eligible: list[dict] = []
     for item in candidates:
         key = normalize(item["question"])
         if key in gold_questions:
             stats["gold_dup"] += 1
             continue
-        if key in seen:
+        mode = "repair" if "repair" in item else "direct"
+        if (key, mode) in seen:
             stats["batch_dup"] += 1
             continue
         try:
@@ -1065,48 +1637,35 @@ def main() -> None:
         if not grammar_accepts(grammar, item["sql"]):
             stats["not_in_grammar"] += 1
             continue
-        seen.add(key)
-        kept.append(item)
-        if len(kept) >= TARGET:
-            break
+        seen.add((key, mode))
+        item["structure_sha256"] = sql_structure_signature(item["sql"])
+        eligible.append(item)
+
+    train_items, valid_items = select_corpus(eligible, args.repair_fraction)
+    output_rng = random.Random(SEED + round(args.repair_fraction * 1000))
+    output_rng.shuffle(train_items)
+    output_rng.shuffle(valid_items)
+    kept = train_items + valid_items
+    stats["eligible"] = len(eligible)
     stats["kept"] = len(kept)
 
     system_prompt = build_system_prompt(SCHEMA_PROMPT.read_text().strip())
-    records = [
-        {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        build_repair_prompt(
-                            question=item["question"],
-                            failed_sql=item["repair"]["failed_sql"],
-                            sqlite_error=item["repair"]["sqlite_error"],
-                            issue_type=item["repair"]["issue_type"],
-                            issue_disposition=item["repair"]["issue_disposition"],
-                            declared_sources=item["repair"]["declared_sources"],
-                            possible_column_owners=item["repair"][
-                                "possible_column_owners"
-                            ],
-                            failed_fingerprints=item["repair"]["failed_fingerprints"],
-                        )
-                        if "repair" in item
-                        else f"Question: {item['question']}"
-                    ),
-                },
-                {"role": "assistant", "content": item["sql"]},
-            ]
-        }
-        for item in kept
-    ]
-    n_valid = max(1, int(len(records) * VALID_FRACTION))
     out_dir.mkdir(parents=True, exist_ok=True)
+    train_records = [training_record(item, system_prompt) for item in train_items]
+    valid_records = [training_record(item, system_prompt) for item in valid_items]
     (out_dir / "valid.jsonl").write_text(
-        "\n".join(json.dumps(r) for r in records[:n_valid]) + "\n"
+        "\n".join(
+            json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            for record in valid_records
+        )
+        + "\n"
     )
     (out_dir / "train.jsonl").write_text(
-        "\n".join(json.dumps(r) for r in records[n_valid:]) + "\n"
+        "\n".join(
+            json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            for record in train_records
+        )
+        + "\n"
     )
 
     families: dict[str, int] = {}
@@ -1114,12 +1673,103 @@ def main() -> None:
     for item in kept:
         families[item["family"]] = families.get(item["family"], 0) + 1
         tiers[item["tier"]] = tiers.get(item["tier"], 0) + 1
+    stats["schema_version"] = 3
+    stats["corpus_version"] = CORPUS_VERSION
+    stats["generator_seed"] = SEED
+    stats["target"] = TARGET
+    stats["repair_fraction"] = args.repair_fraction
+    stats["actual_repair_fraction"] = sum(
+        "repair" in item for item in kept
+    ) / len(kept)
     stats["families"] = dict(sorted(families.items()))
     stats["tiers"] = {str(k): v for k, v in sorted(tiers.items())}
     stats["repair_examples"] = sum("repair" in item for item in kept)
-    (out_dir / "gate_stats.json").write_text(json.dumps(stats, indent=2))
+    stats["repair_failure_families"] = dict(
+        sorted(
+            (
+                failure,
+                sum(
+                    "repair" in item and item.get("failure_family") == failure
+                    for item in kept
+                ),
+            )
+            for failure in {
+                item["failure_family"]
+                for item in kept
+                if "repair" in item
+            }
+        )
+    )
+    stats["splits"] = {
+        "train": {
+            "records": len(train_items),
+            "repairs": sum("repair" in item for item in train_items),
+            "sql_structures": len(
+                {item["structure_sha256"] for item in train_items}
+            ),
+        },
+        "valid": {
+            "records": len(valid_items),
+            "repairs": sum("repair" in item for item in valid_items),
+            "sql_structures": len(
+                {item["structure_sha256"] for item in valid_items}
+            ),
+            "categories": sorted(
+                {
+                    item["validation_category"]
+                    for item in valid_items
+                    if item.get("validation_category")
+                }
+            ),
+        },
+        "sql_structure_overlap": [],
+    }
+    stats["paired_repairs"] = sum(
+        "repair" in item
+        and any(
+            other.get("pair_id") == item.get("pair_id")
+            and "repair" not in other
+            for other in kept
+        )
+        for item in kept
+    )
+    matrix_items = [item for item in kept if item.get("metric")]
+    stats["structural_matrix"] = {
+        "records": len(matrix_items),
+        "cells": sorted(
+            {
+                "|".join(
+                    item[key]
+                    for key in (
+                        "metric",
+                        "operation",
+                        "grouping",
+                        "time_grain",
+                        "portfolio_filter",
+                    )
+                )
+                for item in matrix_items
+            }
+        ),
+    }
+    split_manifest = {
+        "schema_version": 3,
+        "corpus_version": CORPUS_VERSION,
+        "generator_seed": SEED,
+        "repair_fraction": args.repair_fraction,
+        "records": [
+            *[split_record(item, "train") for item in train_items],
+            *[split_record(item, "valid") for item in valid_items],
+        ],
+    }
+    (out_dir / "split_manifest.json").write_text(
+        json.dumps(split_manifest, indent=2, sort_keys=True) + "\n"
+    )
+    (out_dir / "gate_stats.json").write_text(
+        json.dumps(stats, indent=2, sort_keys=True) + "\n"
+    )
     print(json.dumps({k: v for k, v in stats.items() if k != "families"}, indent=2))
-    print(f"train={len(records) - n_valid} valid={n_valid} -> {out_dir}")
+    print(f"train={len(train_records)} valid={len(valid_records)} -> {out_dir}")
 
 
 if __name__ == "__main__":

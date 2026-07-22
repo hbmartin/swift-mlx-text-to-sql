@@ -50,7 +50,10 @@ def make_run(
     (directory / "manifest.json").write_text("{}\n")
     return Run(
         directory=directory,
-        manifest={"inputs": {"gold": {"sha256": fixture_hash}}},
+        manifest={
+            "inputs": {"gold": {"sha256": fixture_hash}},
+            "adapter": {"checkpoint": {"sha256": "a" * 64}},
+        },
         summary={
             "model_key": "winner",
             "gcd": "on",
@@ -78,6 +81,10 @@ def test_binding_gate_requires_all_cases_to_pass_all_five_seeds(monkeypatch, tmp
 
     assert result["pass"] is True
     assert result["checks"] == 75
+    assert result["evaluated_artifact"] == {
+        "kind": "adapter-checkpoint",
+        "sha256": "a" * 64,
+    }
     assert result["failures"] == []
     assert result["regressions"]["sha256"] == fixture_hash
 
@@ -136,6 +143,32 @@ def test_binding_gate_records_any_failed_check(monkeypatch, tmp_path):
     ]
 
 
+def test_binding_gate_rejects_mixed_checkpoint_evidence(monkeypatch, tmp_path):
+    regressions, rows = install_fixture(monkeypatch, tmp_path)
+    fixture_hash = sha256_file(regressions)
+    runs = [
+        make_run(tmp_path / f"run-{seed}", seed, rows, fixture_hash)
+        for seed in range(5)
+    ]
+    changed_manifest = copy.deepcopy(runs[-1].manifest)
+    changed_manifest["adapter"]["checkpoint"]["sha256"] = "b" * 64
+    runs[-1] = Run(
+        directory=runs[-1].directory,
+        manifest=changed_manifest,
+        summary=runs[-1].summary,
+        items=runs[-1].items,
+    )
+    by_name = {run.directory.name: run for run in runs}
+    monkeypatch.setattr(
+        analyze_binding_regressions,
+        "load_run",
+        lambda path: by_name[path.name],
+    )
+
+    with pytest.raises(SelectionError, match="one identical artifact"):
+        analyze_binding_regressions.analyze([run.directory for run in runs])
+
+
 def test_production_finalization_requires_matching_binding_receipt():
     selected = {"model_key": "winner", "gcd": "on", "temperature": 0}
     binding = {
@@ -159,8 +192,8 @@ def test_production_finalization_requires_matching_binding_receipt():
 
 def test_production_finalization_locks_gold_v2_to_gold_v1_winner(tmp_path):
     campaign = {
-        "schema_version": 1,
-        "analysis": "reliability-v2-campaign-selection",
+            "schema_version": 2,
+            "analysis": "reliability-v3-campaign-selection",
         "selection_dataset": "gold_v1.jsonl",
         "confirmation_seeds": [424240, 424241, 424242],
         "winner": {

@@ -14,6 +14,23 @@ REGRESSIONS = REPO_ROOT / "eval" / "gold" / "binding_regressions.jsonl"
 DEFAULT_ANALYSES = REPO_ROOT / "eval" / "analyses"
 
 
+def evaluated_artifact(run) -> dict[str, str]:
+    checkpoint = run.manifest.get("adapter", {}).get("checkpoint", {})
+    if checkpoint.get("sha256"):
+        return {
+            "kind": "adapter-checkpoint",
+            "sha256": checkpoint["sha256"],
+        }
+    model_sha256 = run.manifest.get("model", {}).get(
+        "verified_directory_sha256"
+    )
+    if model_sha256:
+        return {"kind": "model-directory", "sha256": model_sha256}
+    raise SelectionError(
+        f"binding run does not identify the evaluated artifact: {run.directory}"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, action="append", required=True)
@@ -47,6 +64,9 @@ def analyze(paths: list[Path]) -> dict[str, Any]:
         or {run.summary.get("seed") for run in runs} != set(range(5))
     ):
         raise SelectionError("binding runs must use one configuration and seeds 0...4")
+    evaluated_artifacts = {tuple(evaluated_artifact(run).items()) for run in runs}
+    if len(evaluated_artifacts) != 1:
+        raise SelectionError("binding runs must evaluate one identical artifact")
     failures = []
     for run in runs:
         if (
@@ -76,6 +96,7 @@ def analyze(paths: list[Path]) -> dict[str, Any]:
         "seeds": list(range(5)),
         "item_count": 15,
         "checks": 75,
+        "evaluated_artifact": dict(evaluated_artifacts.pop()),
         "regressions": {
             "path": REGRESSIONS.relative_to(REPO_ROOT).as_posix(),
             "sha256": expected_hash,

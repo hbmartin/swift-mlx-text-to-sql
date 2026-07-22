@@ -44,12 +44,18 @@ def slug(value: str) -> str:
 
 
 def default_run_id(
-    model_key: str, gold: Path, gcd: str, temperature: float, seed: int
+    model_key: str,
+    gold: Path,
+    gcd: str,
+    temperature: float,
+    seed: int,
+    snapshot_identity: str | None = None,
 ) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    snapshot_suffix = f"-db-{snapshot_identity[:12]}" if snapshot_identity else ""
     return (
         f"{stamp}-{slug(model_key)}-{slug(gold.stem)}-gcd-{gcd}"
-        f"-t-{str(temperature).replace('.', '_')}-s-{seed}"
+        f"-t-{str(temperature).replace('.', '_')}-s-{seed}{snapshot_suffix}"
     )
 
 

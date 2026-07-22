@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -92,6 +93,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--iterations", type=int, default=600)
+    parser.add_argument(
+        "--repair-fraction",
+        type=float,
+        choices=[0.05, 0.10, 0.20],
+        default=0.10,
+    )
     parser.add_argument("--campaign-id", required=True)
     parser.add_argument(
         "--stage",
@@ -107,6 +114,7 @@ def parse_args() -> argparse.Namespace:
 def verify_regenerated_corpus(
     run_directory: Path,
     *,
+    repair_fraction: float = 0.10,
     runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     generated = run_directory / "regenerated-corpus"
@@ -117,13 +125,21 @@ def verify_regenerated_corpus(
             "synth.generate_training",
             "--out-dir",
             str(generated),
+            "--repair-fraction",
+            str(repair_fraction),
         ],
         cwd=REPO_ROOT / "fine-tuning",
         check=True,
     )
     declaration = json.loads(CORPUS_MANIFEST.read_text())
+    variant_key = f"repair-{round(repair_fraction * 100):02d}"
+    try:
+        variant = declaration["variants"][variant_key]
+    except KeyError as error:
+        raise CorpusMismatchError(CORPUS_MANIFEST) from error
     comparisons = []
-    for file in declaration["files"]:
+    canonical_files = []
+    for file in variant["files"]:
         committed = REPO_ROOT / file["path"]
         regenerated = generated / committed.name
         committed_hash = sha256_file(committed)
@@ -141,7 +157,29 @@ def verify_regenerated_corpus(
                 "byte_for_byte_equal": True,
             }
         )
-    return {"manifest": input_hash(CORPUS_MANIFEST), "files": comparisons}
+        canonical_files.append({"name": committed.name, "sha256": file["sha256"]})
+    variant_payload = {
+        "corpus_version": declaration["corpus_version"],
+        "repair_fraction": repair_fraction,
+        "files": sorted(canonical_files, key=lambda item: item["name"]),
+    }
+    variant_sha256 = hashlib.sha256(
+        json.dumps(
+            variant_payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    if variant_sha256 != variant["corpus_sha256"]:
+        raise CorpusMismatchError(CORPUS_MANIFEST)
+    return {
+        "manifest": input_hash(CORPUS_MANIFEST),
+        "variant": {
+            "key": variant_key,
+            "corpus_version": declaration["corpus_version"],
+            "repair_fraction": repair_fraction,
+            "sha256": variant_sha256,
+        },
+        "files": comparisons,
+    }
 
 
 def resolve_num_layers(config: ExperimentConfig, base: Path) -> int:
@@ -480,16 +518,21 @@ def run_experiment(
         raise RuntimeError(f"refusing to overwrite output for {run_id}")
     run_directory = create_run_directory(training_runs_dir, run_id)
 
-    corpus = verify_regenerated_corpus(run_directory, runner=runner)
+    corpus = verify_regenerated_corpus(
+        run_directory,
+        repair_fraction=config.repair_fraction,
+        runner=runner,
+    )
     experiment = config.manifest_payload()
     prompt_contract = prompt_contract_receipt()
     tags = campaign_tags(
         config,
-        corpus_sha256=corpus["manifest"]["sha256"],
+        corpus_sha256=corpus["variant"]["sha256"],
         git_commit=git["commit"],
         status="running",
         prompt_version=prompt_contract["prompt_version"],
         policy_version=prompt_contract["policy_version"],
+        corpus_version=corpus["variant"]["corpus_version"],
     )
     effective_config_path = run_directory / "effective-config.yaml"
     effective = write_effective_configuration(
@@ -504,6 +547,9 @@ def run_experiment(
             "run_id": run_id,
             "base_directory_sha256": base_sha256,
             "corpus_manifest_sha256": corpus["manifest"]["sha256"],
+            "corpus_variant_sha256": corpus["variant"]["sha256"],
+            "corpus_version": corpus["variant"]["corpus_version"],
+            "repair_fraction": config.repair_fraction,
             "git_commit": git["commit"],
             **prompt_contract,
         },
@@ -517,7 +563,7 @@ def run_experiment(
         str(effective_config_path),
     ]
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": run_id,
         "status": "training",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -651,6 +697,7 @@ def main() -> None:
             iterations=args.iterations,
             campaign_id=args.campaign_id,
             stage=args.stage,
+            repair_fraction=args.repair_fraction,
         )
     except ValueError as error:
         raise SystemExit(str(error)) from error

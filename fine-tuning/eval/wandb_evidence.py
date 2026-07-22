@@ -125,6 +125,12 @@ def evidence_paths(run_directory: Path, manifest: dict[str, Any]) -> list[Path]:
         if path.is_file():
             candidates.append(path)
 
+    for record in manifest.get("selection_evidence", {}).values():
+        for value in record.get("files", []):
+            path = Path(value)
+            if path.is_file():
+                candidates.append(path)
+
     for record in manifest.get("post_selection_evidence", {}).values():
         for value in record.get("files", []):
             path = Path(value)
@@ -153,6 +159,7 @@ def canonical_evidence(
         "checkpoint_evaluation": manifest.get("checkpoint_evaluation"),
         "fused_reference": manifest.get("fused_reference"),
         "final_evaluation": manifest.get("final_evaluation"),
+        "selection_evidence": manifest.get("selection_evidence"),
         "post_selection_evidence": manifest.get("post_selection_evidence"),
         "headline_metrics": manifest.get("headline_metrics"),
         "files": [file_receipt(path) for path in evidence_paths(run_directory, manifest)],
@@ -394,8 +401,11 @@ class WandbUploader:
                 **experiment,
                 "prompt_contract": manifest.get("prompt_contract"),
                 "corpus_sha256": manifest.get("corpus", {})
-                .get("manifest", {})
+                .get("variant", {})
                 .get("sha256"),
+                "corpus_version": manifest.get("corpus", {})
+                .get("variant", {})
+                .get("corpus_version"),
             },
             resume="allow",
         )
@@ -543,6 +553,26 @@ class WandbUploader:
                         metadata={
                             "evidence_sha256": evidence_sha256,
                             "selection_use": "forbidden",
+                        },
+                    )
+                )
+
+            for category, record in sorted(
+                manifest.get("selection_evidence", {}).items()
+            ):
+                category_files = [Path(value) for value in record.get("files", [])]
+                if not category_files:
+                    continue
+                artifacts.append(
+                    self._log_artifact(
+                        run,
+                        name=f"{manifest['run_id']}-{category}",
+                        artifact_type=record.get("artifact_type", "evaluation"),
+                        files=category_files,
+                        metadata={
+                            "evidence_sha256": evidence_sha256,
+                            "selection_use": "required",
+                            "category": category,
                         },
                     )
                 )

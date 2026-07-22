@@ -59,18 +59,22 @@ export WANDB_API_KEY=...
 # Short authenticated smoke: 100 training iterations, then all gold_v1 rows.
 uv run --frozen python -m tools.run_experiment \
   --model-key qwen25-coder-3b \
-  --campaign-id creg-sql-reliability-v2-smoke \
+  --campaign-id creg-sql-reliability-v3-smoke \
   --iterations 100
 
 # One explicit screening experiment.
 uv run --frozen python -m tools.run_experiment \
   --model-key qwen25-coder-3b \
-  --campaign-id creg-sql-reliability-v2-qwen25-coder-3b-screening \
+  --campaign-id creg-sql-reliability-v3-qwen25-coder-3b-screening \
   --fine-tune-type dora --trainable-layers all \
   --rank 16 --scale-ratio 2.0 --dropout 0.05 \
   --learning-rate 0.00005 --iterations 600
 
-# Create the two independent 18-run random sweeps.
+# First run the controlled 5/10/20 percent repair-ratio probe.
+wandb sweep --entity "$WANDB_ENTITY" --project "${WANDB_PROJECT:-creg-sql}" \
+  config/sweeps/repair-ratio-ablation.yaml
+
+# After choosing the repair ratio, create the two 18-run random sweeps.
 wandb sweep --entity "$WANDB_ENTITY" --project "${WANDB_PROJECT:-creg-sql}" \
   config/sweeps/qwen25-coder-3b.yaml
 wandb sweep --entity "$WANDB_ENTITY" --project "${WANDB_PROJECT:-creg-sql}" \
@@ -84,14 +88,24 @@ uv run --frozen python -m tools.sync_wandb \
 uv run --frozen python -m tools.import_wandb_history
 ```
 
-The sweep files fix seed 424242, 600 iterations, checkpoints every 100,
+Every checkpoint is evaluated on the production database and two deterministic
+counterexample snapshots. The screening sweep files fix repair prompts at 10%
+until the controlled ablation selects a different canonical variant. They also
+fix seed 424242, 600 iterations, checkpoints every 100,
 batch size 4, accumulation 1, prompt masking, a 2,048-token maximum, and a
 constant learning rate. They randomize LoRA/DoRA, last-16/all layers, rank,
 scale ratio, dropout, and log-uniform learning rate. There is no Hyperband
 pruning: selection is post-training execution accuracy.
 
-After both 18-run sweeps, `tools.select_campaign plan-promotions` chooses two
-recipes per family and emits the 12-result confirmation plan. Seed 424242 is
+After both 18-run sweeps, run all 15 binding cases at five seeds for each
+candidate and create a `tools.analyze_promotion_eligibility` receipt against a
+matched multi-snapshot baseline. The receipt also requires paired EX
+non-inferiority, valid-SQL non-inferiority, tier-3 improvement, and a bounded
+wrong-table/join rate. Binding evidence is locked to the exact selected adapter
+checkpoint, so evidence from another checkpoint in the same model family is
+rejected. `tools.select_campaign plan-promotions` accepts those
+receipts, chooses two eligible recipes per family, and emits the 12-result
+confirmation plan. Seed 424242 is
 reused and only seeds 424240/424241 are newly trained, producing eight extra
 runs and 44 training runs total. Use `tools.promote_experiment` on reused
 screening runs so W&B receives every promoted checkpoint and the selected
@@ -111,9 +125,9 @@ uv run --frozen python -m tools.sync_wandb \
   --publication ../eval/publications/<publication>/publication.json
 ```
 
-The permanent binding set is a separate release gate. Evaluate its 15 cases
-at seeds 0–4 using the selected model/GCD/temperature, then require all 75
-checks to pass:
+The permanent binding set is both a promotion and release gate. Evaluate its
+15 cases at seeds 0–4 using each candidate model/GCD/temperature, then require
+all 75 checks to pass against one byte-identical evaluated artifact:
 
 ```sh
 uv run --frozen python -m eval.run_eval \
@@ -123,6 +137,12 @@ uv run --frozen python -m tools.analyze_binding_regressions \
   --run ../eval/runs/<seed-0> --run ../eval/runs/<seed-1> \
   --run ../eval/runs/<seed-2> --run ../eval/runs/<seed-3> \
   --run ../eval/runs/<seed-4>
+
+uv run --frozen python -m tools.analyze_promotion_eligibility \
+  --candidate-training-run ../eval/training-runs/<candidate> \
+  --binding-analysis ../eval/analyses/<binding>/analysis.json \
+  --baseline-run ../eval/runs/<selection-safe-baseline> \
+  --output ../eval/analyses/<candidate>-promotion-eligibility.json
 ```
 
 `tools.finalize_production` requires binding analysis alongside the

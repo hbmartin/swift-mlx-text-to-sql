@@ -1,5 +1,5 @@
-name: creg-sql-reliability-v2-qwen25-coder-3b-screening
-description: Reliability-v2 18-run random screening campaign; selection uses post-training gold_v1 EX.
+name: creg-sql-reliability-v3-qwen25-coder-3b-screening
+description: Reliability-v3 18-run random screening after the controlled repair-ratio probe; promotion is eligibility-gated.
 program: tools.run_experiment
 method: random
 run_cap: 18
@@ -12,12 +12,14 @@ command:
   - -m
   - ${program}
   - --model-key=qwen25-coder-3b
-  - --campaign-id=creg-sql-reliability-v2-qwen25-coder-3b-screening
+  - --campaign-id=creg-sql-reliability-v3-qwen25-coder-3b-screening
   - --stage=screening
   - ${args}
 parameters:
   seed:
     value: 424242
+  repair-fraction:
+    value: 0.10
   fine-tune-type:
     values: [lora, dora]
   trainable-layers:

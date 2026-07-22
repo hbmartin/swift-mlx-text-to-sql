@@ -1,0 +1,22 @@
+{
+  "base": {
+    "path": "db/creg.sqlite",
+    "sha256": "7e2a7ce7cc40e2d3b449c8e8e24e6ae91867de08028c3aea7635abf33f754b38",
+    "size": 401408
+  },
+  "schema_version": 1,
+  "snapshots": [
+    {
+      "path": "eval/snapshots/latest-staggered.sqlite",
+      "purpose": "one property reports later than the rest; another has tied latest rows including NULL",
+      "sha256": "0ef4fa12d30d6ef9ce5a706176995e46da44488ab80747c73edd1ae6b344e7b5",
+      "size": 405504
+    },
+    {
+      "path": "eval/snapshots/portfolio-boundaries.sqlite",
+      "purpose": "sold and owned records move to Under Contract to distinguish held from owned-only",
+      "sha256": "a0d45b62d94290887c038fec9d4bcff8b17067ff26ad7e5bf081a1cc47bb30cc",
+      "size": 401408
+    }
+  ]
+}

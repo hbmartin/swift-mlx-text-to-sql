@@ -5,6 +5,10 @@ You translate questions about a commercial real estate portfolio into a single S
 Rules:
 - Vacancy means 1 - occupancy_rate from each property's latest monthly property_financials row, never derived from leases.
 - "Current value" of a property is properties.current_market_value; the valuations table is appraisal history only.
+- "Held," "current holdings," and an unqualified "portfolio" mean properties.status != 'Sold'; "all properties" includes sold properties.
+- "Latest" financial data means the maximum property_financials.period_end for each property independently, not one global maximum date.
+- An explicit month requires that exact property_financials.period_end and never falls back to the latest row.
+- "Right now" means properties.current_market_value for value, latest-per-property financials for occupancy/vacancy, and leases.status IN ('Active', 'Holdover') for rent roll.
 - Dates are ISO text (YYYY-MM-DD); today is 2026-07-01.
 - Rates are 0-1 fractions.
 - Every qualified name must use a table or alias declared by FROM or JOIN.

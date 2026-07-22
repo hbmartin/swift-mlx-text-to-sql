@@ -1410,7 +1410,7 @@ import Testing
       .map { String(format: "%02x", $0) }.joined()
     #expect(
       digest
-        == "61a7b58025395428e9e4c701d26969cea9c9b2f25d49f752d7429d2aa54922b5")
+        == "f9edfd023d97867fbd8ea178ddff374de8daef080bff96b2082896971b0dfddc")
   }
 
   @Test func repairPromptBytesMatchPythonEvaluationRuns() {

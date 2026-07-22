@@ -149,8 +149,8 @@ def test_final_gold_v2_evaluation_cannot_replace_the_campaign_winner(
     monkeypatch, tmp_path
 ):
     campaign = {
-        "schema_version": 1,
-        "analysis": "reliability-v2-campaign-selection",
+            "schema_version": 2,
+            "analysis": "reliability-v3-campaign-selection",
         "selection_dataset": "gold_v1.jsonl",
         "confirmation_seeds": [424240, 424241, 424242],
         "winner": {

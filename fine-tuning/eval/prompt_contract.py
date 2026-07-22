@@ -13,7 +13,7 @@ RESOURCE_DIRECTORY = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resourc
 SYSTEM_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "system_prompt_template.txt"
 REPAIR_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "repair_prompt_template.txt"
 SCHEMA_CATALOG_PATH = RESOURCE_DIRECTORY / "schema_catalog.json"
-PROMPT_VERSION = "reliability-v2"
+PROMPT_VERSION = "reliability-v3"
 POLICY_VERSION = "bounded-three-generation-v1"
 
 

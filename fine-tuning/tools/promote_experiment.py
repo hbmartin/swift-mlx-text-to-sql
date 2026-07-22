@@ -28,6 +28,28 @@ def base_artifact_for(model_manifest: dict, model_key: str) -> dict:
     return artifact
 
 
+def require_promotion_eligibility(manifest: dict) -> None:
+    record = manifest.get("selection_evidence", {}).get(
+        "promotion-eligibility", {}
+    )
+    files = record.get("files", [])
+    if record.get("selection_use") != "required" or len(files) != 1:
+        raise SystemExit(
+            "screening run must mirror one passing promotion-eligibility receipt"
+        )
+    receipt = json.loads(Path(files[0]).read_text())
+    if (
+        receipt.get("analysis") != "reliability-v3-promotion-eligibility"
+        or receipt.get("pass") is not True
+        or receipt.get("candidate_run_id") != manifest["run_id"]
+        or receipt.get("selected_checkpoint_sha256")
+        != manifest.get("checkpoint_evaluation", {})
+        .get("selected", {})
+        .get("checkpoint_sha256")
+    ):
+        raise SystemExit("promotion-eligibility receipt does not match this run")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--training-run", type=Path, required=True)
@@ -53,6 +75,8 @@ def main() -> None:
         raise SystemExit(f"run is already {current}")
     if current not in {"screening", "promoted"} and current != args.stage:
         raise SystemExit(f"unsupported promotion from {current}")
+    if current == "screening" and current != args.stage:
+        require_promotion_eligibility(manifest)
 
     if current != args.stage:
         manifest["experiment"]["stage"] = args.stage

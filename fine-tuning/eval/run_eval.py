@@ -30,6 +30,7 @@ from mlx_lm.sample_utils import make_sampler
 from eval.ex import (
     ExecutionError,
     QueryExecution,
+    ROW_CAP,
     execute_with_metadata,
     result_digest,
     results_match,
@@ -58,6 +59,7 @@ from tools.fetch_model import (
 )
 
 DB = REPO_ROOT / "db" / "creg.sqlite"
+DEFAULT_DATABASES = (DB,)
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
 GRAMMAR_PATH = (
     REPO_ROOT
@@ -241,6 +243,15 @@ def artifact_path(artifact: dict[str, Any], models_dir: Path) -> Path:
     return models_dir / directory
 
 
+def execution_payload(execution: QueryExecution) -> dict[str, Any]:
+    return {
+        "row_count": len(execution),
+        "is_truncated": execution.is_truncated,
+        "digest": None if execution.is_truncated else result_digest(execution),
+        "rows": typed_rows(execution),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-key", required=True)
@@ -258,6 +269,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--max-items", type=int)
+    parser.add_argument(
+        "--database",
+        action="append",
+        type=Path,
+        help=(
+            "SQLite snapshot to score; repeat for multi-snapshot EX. "
+            "Defaults to the production database; checkpoint selection passes "
+            "the committed counterexamples explicitly."
+        ),
+    )
     parser.add_argument(
         "--prompt-overrides",
         type=Path,
@@ -288,6 +309,18 @@ def main() -> None:
         raise SystemExit("--temperature must be non-negative")
     if args.adapter_checkpoint is not None and args.adapter_path is None:
         raise SystemExit("--adapter-checkpoint requires --adapter-path")
+    database_paths = tuple(
+        path.resolve() for path in (args.database or DEFAULT_DATABASES)
+    )
+    if len(set(database_paths)) != len(database_paths):
+        raise SystemExit("--database snapshots must be unique")
+    missing_databases = [path for path in database_paths if not path.is_file()]
+    if missing_databases:
+        raise SystemExit(f"evaluation database is missing: {missing_databases[0]}")
+    database_inputs = [input_hash(path) for path in database_paths]
+    snapshot_identity = sha256_bytes(
+        "\n".join(item["sha256"] for item in database_inputs).encode()
+    )
     # Provenance is a precondition, not an output-writing step. A git-less
     # environment must fail before reserving the deterministic run ID.
     git = git_provenance()
@@ -346,7 +379,12 @@ def main() -> None:
             )
 
     run_id = args.run_id or default_run_id(
-        args.model_key, gold_path, args.gcd, args.temperature, args.seed
+        args.model_key,
+        gold_path,
+        args.gcd,
+        args.temperature,
+        args.seed,
+        snapshot_identity,
     )
     run_directory = create_run_directory(args.runs_dir.resolve(), run_id)
     schema = SCHEMA_PROMPT_PATH.read_text().strip()
@@ -373,7 +411,7 @@ def main() -> None:
         }
 
     run_manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "status": "running",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -409,6 +447,8 @@ def main() -> None:
             "top_k": 0,
             "max_tokens": args.max_tokens,
             "timing_unit": "microseconds",
+            "evaluator_row_cap": ROW_CAP,
+            "database_count": len(database_paths),
             "prompt_mode": (
                 "repair_override" if prompt_overrides else "question"
             ),
@@ -420,7 +460,9 @@ def main() -> None:
             "swift_package_lock": input_hash(
                 REPO_ROOT / "CREGKit" / "Package.resolved"
             ),
-            "database": input_hash(DB),
+            "database": database_inputs[0],
+            "databases": database_inputs,
+            "database_set_sha256": snapshot_identity,
             "gold": input_hash(gold_path),
             "grammar": input_hash(GRAMMAR_PATH),
             "schema_prompt": input_hash(SCHEMA_PROMPT_PATH),
@@ -548,22 +590,59 @@ def main() -> None:
 
             text = strip_special_tokens(text)
             predicted_sql = text.strip() if args.gcd == "on" else extract_sql(text)
-            gold = execute_with_metadata(DB, item["sql"])
-            predicted: QueryExecution | None = None
+            snapshot_results: list[dict[str, Any]] = []
+            primary_gold: QueryExecution | None = None
+            primary_predicted: QueryExecution | None = None
             error: str | None = None
-            try:
-                predicted = execute_with_metadata(DB, predicted_sql)
-            except ExecutionError as execution_error:
-                error = str(execution_error)
-            ex = predicted is not None and results_match(predicted, gold)
+            for snapshot_index, (database_path, database_input) in enumerate(
+                zip(database_paths, database_inputs, strict=True)
+            ):
+                gold = execute_with_metadata(database_path, item["sql"])
+                predicted: QueryExecution | None = None
+                snapshot_error: str | None = None
+                try:
+                    predicted = execute_with_metadata(database_path, predicted_sql)
+                except ExecutionError as execution_error:
+                    snapshot_error = str(execution_error)
+                    if error is None:
+                        error = snapshot_error
+                snapshot_ex = predicted is not None and results_match(predicted, gold)
+                snapshot_results.append(
+                    {
+                        "database": database_input,
+                        "ex": snapshot_ex,
+                        "error": snapshot_error,
+                        "predicted": (
+                            None if predicted is None else execution_payload(predicted)
+                        ),
+                        "gold": execution_payload(gold),
+                        "predicted_execution_microseconds": (
+                            predicted.elapsed_microseconds
+                            if predicted is not None
+                            else None
+                        ),
+                        "gold_execution_microseconds": gold.elapsed_microseconds,
+                    }
+                )
+                if snapshot_index == 0:
+                    primary_gold = gold
+                    primary_predicted = predicted
+            assert primary_gold is not None
+            ex = all(snapshot["ex"] for snapshot in snapshot_results)
             bucket = (
                 "correct"
                 if ex
-                else taxonomy(predicted_sql, item["sql"], error, predicted, gold)
+                else taxonomy(
+                    predicted_sql,
+                    item["sql"],
+                    error,
+                    primary_predicted,
+                    primary_gold,
+                )
             )
             entropies = processor.entropies
             record = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "id": item["id"],
                 "tier": item["tier"],
                 "tags": item.get("tags", []),
@@ -577,11 +656,11 @@ def main() -> None:
                 "item_seed": item_seed,
                 "generation_microseconds": generation_microseconds,
                 "predicted_execution_microseconds": (
-                    predicted.elapsed_microseconds
-                    if predicted is not None
+                    primary_predicted.elapsed_microseconds
+                    if primary_predicted is not None
                     else None
                 ),
-                "gold_execution_microseconds": gold.elapsed_microseconds,
+                "gold_execution_microseconds": primary_gold.elapsed_microseconds,
                 "elapsed_microseconds": (
                     time.perf_counter_ns() - item_started_ns
                 )
@@ -591,26 +670,11 @@ def main() -> None:
                 "max_entropy": float(np.max(entropies)) if entropies else None,
                 "predicted": (
                     None
-                    if predicted is None
-                    else {
-                        "row_count": len(predicted),
-                        "is_truncated": predicted.is_truncated,
-                        "digest": (
-                            None
-                            if predicted.is_truncated
-                            else result_digest(predicted)
-                        ),
-                        "rows": typed_rows(predicted),
-                    }
+                    if primary_predicted is None
+                    else execution_payload(primary_predicted)
                 ),
-                "gold": {
-                    "row_count": len(gold),
-                    "is_truncated": gold.is_truncated,
-                    "digest": (
-                        None if gold.is_truncated else result_digest(gold)
-                    ),
-                    "rows": typed_rows(gold),
-                },
+                "gold": execution_payload(primary_gold),
+                "snapshots": snapshot_results,
             }
             results.append(record)
             output.write(
@@ -638,7 +702,7 @@ def main() -> None:
         ) / len(tier_results)
     timings = [record["elapsed_microseconds"] for record in results]
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "model_key": args.model_key,
         "model_repository": artifact.get("repository") or "local-derived",
@@ -654,6 +718,10 @@ def main() -> None:
         "temperature": args.temperature,
         "seed": args.seed,
         "gold": gold_path.name,
+        "snapshot_count": len(database_paths),
+        "database_set_sha256": snapshot_identity,
+        "databases": database_inputs,
+        "evaluator_row_cap": ROW_CAP,
         "n": count,
         "ex": correct / count,
         "valid_sql_rate": valid / count,
