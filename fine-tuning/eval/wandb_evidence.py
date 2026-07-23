@@ -57,7 +57,12 @@ def _repository_name(path: Path) -> str:
     try:
         return resolved.relative_to(REPO_ROOT).as_posix()
     except ValueError:
-        return str(resolved)
+        # Durable evidence can intentionally live outside the clean source
+        # worktree used for an experiment. W&B artifact names must remain
+        # relative, so give external files a stable, collision-resistant
+        # namespace without weakening the local absolute-path receipts.
+        path_identity = canonical_sha256({"path": str(resolved)})[:16]
+        return f"external/{path_identity}/{resolved.name}"
 
 
 def file_receipt(path: Path) -> dict[str, Any]:
