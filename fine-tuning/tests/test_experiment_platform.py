@@ -748,7 +748,7 @@ def test_sweep_files_define_v3_screening_and_controlled_repair_ablation():
         assert campaign_argument.removeprefix("--campaign-id=") == config["name"]
         assert config["metric"] == {"name": "development/ex", "goal": "maximize"}
         assert config["parameters"]["seed"]["value"] == 424242
-        assert config["parameters"]["repair-fraction"]["value"] == 0.10
+        assert config["parameters"]["repair-fraction"]["value"] == 0.20
     ablation = yaml.safe_load(
         (ROOT / "fine-tuning/config/sweeps/repair-ratio-ablation.yaml").read_text()
     )

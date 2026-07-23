@@ -89,8 +89,8 @@ uv run --frozen python -m tools.import_wandb_history
 ```
 
 Every checkpoint is evaluated on the production database and two deterministic
-counterexample snapshots. The screening sweep files fix repair prompts at 10%
-until the controlled ablation selects a different canonical variant. They also
+counterexample snapshots. The controlled ablation selected the 20% repair
+variant, which the screening sweep files now fix for both model families. They also
 fix seed 424242, 600 iterations, checkpoints every 100,
 batch size 4, accumulation 1, gradient checkpointing, prompt masking, a
 2,048-token maximum, and a constant learning rate. They randomize LoRA/DoRA,
