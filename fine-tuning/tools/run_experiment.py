@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -69,6 +72,86 @@ class MissingVerifiedBaseError(RuntimeError):
         super().__init__(f"{model_key}: verified base is missing; fetch it first")
 
 
+class TrainingNumericalIntegrityError(RuntimeError):
+    """Raised when MLX reports non-finite or impossible training telemetry."""
+
+
+TRAIN_REPORT_PATTERN = re.compile(
+    r"Iter (?P<iteration>\d+): Train loss (?P<loss>\S+),.*?"
+    r"Trained Tokens (?P<trained_tokens>\d+),"
+)
+VAL_REPORT_PATTERN = re.compile(
+    r"Iter (?P<iteration>\d+): Val loss (?P<loss>\S+),"
+)
+
+
+def verify_training_numerics(
+    log_path: Path, config: ExperimentConfig
+) -> dict[str, Any]:
+    """Fail closed on NaN/Inf loss or token counters outside the batch contract."""
+
+    contents = log_path.read_text(errors="replace")
+    train_reports = list(TRAIN_REPORT_PATTERN.finditer(contents))
+    if not train_reports:
+        raise TrainingNumericalIntegrityError(
+            "training log contains no parseable train-loss reports"
+        )
+
+    previous_tokens = 0
+    reports: list[dict[str, Any]] = []
+    for match in train_reports:
+        iteration = int(match.group("iteration"))
+        loss = float(match.group("loss"))
+        trained_tokens = int(match.group("trained_tokens"))
+        maximum_tokens = iteration * config.batch_size * config.max_seq_length
+        if not math.isfinite(loss):
+            raise TrainingNumericalIntegrityError(
+                f"non-finite train loss at iteration {iteration}: {match.group('loss')}"
+            )
+        if not previous_tokens < trained_tokens <= maximum_tokens:
+            raise TrainingNumericalIntegrityError(
+                "impossible trained-token counter at iteration "
+                f"{iteration}: {trained_tokens} not in "
+                f"({previous_tokens}, {maximum_tokens}]"
+            )
+        previous_tokens = trained_tokens
+        reports.append(
+            {
+                "iteration": iteration,
+                "loss": loss,
+                "trained_tokens": trained_tokens,
+            }
+        )
+
+    if reports[-1]["iteration"] != config.iterations:
+        raise TrainingNumericalIntegrityError(
+            "training log ended before the configured iteration: "
+            f"{reports[-1]['iteration']} != {config.iterations}"
+        )
+
+    validations = []
+    for match in VAL_REPORT_PATTERN.finditer(contents):
+        loss = float(match.group("loss"))
+        iteration = int(match.group("iteration"))
+        if not math.isfinite(loss):
+            raise TrainingNumericalIntegrityError(
+                f"non-finite validation loss at iteration {iteration}: "
+                f"{match.group('loss')}"
+            )
+        validations.append({"iteration": iteration, "loss": loss})
+    if not validations:
+        raise TrainingNumericalIntegrityError(
+            "training log contains no parseable validation-loss reports"
+        )
+
+    return {
+        "status": "finite",
+        "train_reports": reports,
+        "validation_reports": validations,
+        "final_trained_tokens": previous_tokens,
+    }
+
+
 def local_artifact_path(artifact: dict[str, Any], models_dir: Path) -> Path:
     conversion = artifact.get("conversion")
     directory = (
@@ -92,6 +175,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--iterations", type=int, default=600)
+    parser.add_argument(
+        "--repair-fraction",
+        type=float,
+        choices=[0.05, 0.10, 0.20],
+        default=0.10,
+    )
     parser.add_argument("--campaign-id", required=True)
     parser.add_argument(
         "--stage",
@@ -107,6 +196,7 @@ def parse_args() -> argparse.Namespace:
 def verify_regenerated_corpus(
     run_directory: Path,
     *,
+    repair_fraction: float = 0.10,
     runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     generated = run_directory / "regenerated-corpus"
@@ -117,13 +207,21 @@ def verify_regenerated_corpus(
             "synth.generate_training",
             "--out-dir",
             str(generated),
+            "--repair-fraction",
+            str(repair_fraction),
         ],
         cwd=REPO_ROOT / "fine-tuning",
         check=True,
     )
     declaration = json.loads(CORPUS_MANIFEST.read_text())
+    variant_key = f"repair-{round(repair_fraction * 100):02d}"
+    try:
+        variant = declaration["variants"][variant_key]
+    except KeyError as error:
+        raise CorpusMismatchError(CORPUS_MANIFEST) from error
     comparisons = []
-    for file in declaration["files"]:
+    canonical_files = []
+    for file in variant["files"]:
         committed = REPO_ROOT / file["path"]
         regenerated = generated / committed.name
         committed_hash = sha256_file(committed)
@@ -141,7 +239,29 @@ def verify_regenerated_corpus(
                 "byte_for_byte_equal": True,
             }
         )
-    return {"manifest": input_hash(CORPUS_MANIFEST), "files": comparisons}
+        canonical_files.append({"name": committed.name, "sha256": file["sha256"]})
+    variant_payload = {
+        "corpus_version": declaration["corpus_version"],
+        "repair_fraction": repair_fraction,
+        "files": sorted(canonical_files, key=lambda item: item["name"]),
+    }
+    variant_sha256 = hashlib.sha256(
+        json.dumps(
+            variant_payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    if variant_sha256 != variant["corpus_sha256"]:
+        raise CorpusMismatchError(CORPUS_MANIFEST)
+    return {
+        "manifest": input_hash(CORPUS_MANIFEST),
+        "variant": {
+            "key": variant_key,
+            "corpus_version": declaration["corpus_version"],
+            "repair_fraction": repair_fraction,
+            "sha256": variant_sha256,
+        },
+        "files": comparisons,
+    }
 
 
 def resolve_num_layers(config: ExperimentConfig, base: Path) -> int:
@@ -178,6 +298,7 @@ def write_effective_configuration(
             "iters": config.iterations,
             "learning_rate": config.learning_rate,
             "grad_accumulation_steps": config.grad_accumulation_steps,
+            "grad_checkpoint": config.grad_checkpoint,
             "save_every": config.save_every,
             "max_seq_length": config.max_seq_length,
             "mask_prompt": config.mask_prompt,
@@ -480,16 +601,21 @@ def run_experiment(
         raise RuntimeError(f"refusing to overwrite output for {run_id}")
     run_directory = create_run_directory(training_runs_dir, run_id)
 
-    corpus = verify_regenerated_corpus(run_directory, runner=runner)
+    corpus = verify_regenerated_corpus(
+        run_directory,
+        repair_fraction=config.repair_fraction,
+        runner=runner,
+    )
     experiment = config.manifest_payload()
     prompt_contract = prompt_contract_receipt()
     tags = campaign_tags(
         config,
-        corpus_sha256=corpus["manifest"]["sha256"],
+        corpus_sha256=corpus["variant"]["sha256"],
         git_commit=git["commit"],
         status="running",
         prompt_version=prompt_contract["prompt_version"],
         policy_version=prompt_contract["policy_version"],
+        corpus_version=corpus["variant"]["corpus_version"],
     )
     effective_config_path = run_directory / "effective-config.yaml"
     effective = write_effective_configuration(
@@ -504,6 +630,9 @@ def run_experiment(
             "run_id": run_id,
             "base_directory_sha256": base_sha256,
             "corpus_manifest_sha256": corpus["manifest"]["sha256"],
+            "corpus_variant_sha256": corpus["variant"]["sha256"],
+            "corpus_version": corpus["variant"]["corpus_version"],
+            "repair_fraction": config.repair_fraction,
             "git_commit": git["commit"],
             **prompt_contract,
         },
@@ -517,7 +646,7 @@ def run_experiment(
         str(effective_config_path),
     ]
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": run_id,
         "status": "training",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -603,6 +732,16 @@ def run_experiment(
         manifest["status"] = "training_failed"
         write_json(manifest_path, manifest)
         raise RuntimeError(f"training failed; see {log_path}")
+    try:
+        manifest["training_numerics"] = verify_training_numerics(log_path, config)
+    except TrainingNumericalIntegrityError as error:
+        manifest["status"] = "training_failed"
+        manifest["training_failure"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+        write_json(manifest_path, manifest)
+        raise
     manifest["adapter_files"] = materialize_adapter_artifact(
         scratch_adapter, adapter, config
     )
@@ -651,6 +790,7 @@ def main() -> None:
             iterations=args.iterations,
             campaign_id=args.campaign_id,
             stage=args.stage,
+            repair_fraction=args.repair_fraction,
         )
     except ValueError as error:
         raise SystemExit(str(error)) from error

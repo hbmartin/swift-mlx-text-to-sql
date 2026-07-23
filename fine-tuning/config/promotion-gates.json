@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "selection_dataset": "gold_v1.jsonl",
+  "minimum_snapshot_count": 3,
+  "baseline": {
+    "model_key": "ft-xiyansql-qwencoder-3b",
+    "gcd": "on",
+    "temperature": 0.0
+  },
+  "binding": {
+    "item_count": 15,
+    "seeds": [0, 1, 2, 3, 4],
+    "checks": 75
+  },
+  "single_shot": {
+    "ex_noninferiority_margin": 0.02,
+    "ex_confidence": 0.95,
+    "valid_sql_noninferiority_margin": 0.0,
+    "minimum_tier3_absolute_improvement": 0.02,
+    "maximum_wrong_table_or_join_rate": 0.10
+  },
+  "full_policy_release": {
+    "minimum_valid_sql_rate": 0.99
+  }
+}

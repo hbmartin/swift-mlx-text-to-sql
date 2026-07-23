@@ -1,4 +1,4 @@
-"""Verify that a Release app contains the exact selected production snapshot."""
+"""Verify that an app bundle contains the exact selected production snapshot."""
 
 from __future__ import annotations
 
@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--configuration",
+        choices=("Debug", "Release"),
+        default="Release",
+        help="build configuration recorded in the verification report",
+    )
     parser.add_argument("--reports-dir", type=Path, default=DEFAULT_REPORTS)
     return parser.parse_args()
 
@@ -58,7 +64,7 @@ def main() -> None:
         or not model_directory.is_dir()
     ):
         raise SystemExit(
-            "Release bundle is missing model-manifest.json, "
+            f"{args.configuration} bundle is missing model-manifest.json, "
             f"production-model-receipt.json, or SQLModel: {app}"
         )
     if bundled_manifest.read_bytes() != MODEL_MANIFEST.read_bytes():
@@ -146,7 +152,7 @@ def main() -> None:
     )
     if mismatches or unsupported_extras or core_digest != expected_digest:
         raise SystemExit(
-            "Release model verification failed: "
+            f"{args.configuration} model verification failed: "
             f"mismatches={mismatches}, unsupported_extras={unsupported_extras}, "
             f"digest={core_digest}, expected={expected_digest}"
         )
@@ -165,7 +171,7 @@ def main() -> None:
         "schema_version": 1,
         "run_id": args.run_id,
         "status": "complete",
-        "configuration": "Release",
+        "configuration": args.configuration,
         "app": str(app),
         "production": production,
         "model": {

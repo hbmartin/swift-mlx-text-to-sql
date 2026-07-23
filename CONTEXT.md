@@ -39,6 +39,25 @@ A property's per-month operating figures: gross potential rent, vacancy loss, ef
 **Current Market Value**:
 The canonical present value of a property, held on the property record.
 
+**Held Property**:
+A Property whose status is anything other than Sold. “Held,” “current holdings,” and an unqualified “portfolio” refer to this set unless the question explicitly asks for sold or historical properties.
+_Avoid_: active property, owned-only property
+
+**Portfolio**:
+The set of Held Properties across all Funds. A named Fund, market, or Property Type narrows that set; “all properties” explicitly includes sold properties.
+_Avoid_: all properties
+
+**Latest Snapshot**:
+The most recent Monthly Financials row for each Property independently. It is not the single greatest reporting date across the entire Portfolio.
+_Avoid_: current month, global latest date
+
+**Explicit Month**:
+The Monthly Financials row whose period end matches the month named in the question. It never falls back to a Property's Latest Snapshot.
+
+**Right Now**:
+The canonical current source for the requested metric: Current Market Value for value, Latest Snapshot for occupancy or vacancy, and Active or Holdover Leases for current rent-roll measures.
+_Avoid_: latest appraisal
+
 **Valuation**:
 A historical appraisal event for a property (date, method, value, cap rate). Answers trend and history questions, never "what is it worth now."
 

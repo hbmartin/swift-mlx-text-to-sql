@@ -17,6 +17,7 @@ TRAINABLE_LAYERS = frozenset({"last-16", "all"})
 RANKS = frozenset({4, 8, 16})
 SCALE_RATIOS = (1.0, 2.0, 2.5)
 DROPOUTS = (0.0, 0.05)
+REPAIR_FRACTIONS = (0.05, 0.10, 0.20)
 STAGES = frozenset({"screening", "promoted", "final"})
 MIN_LEARNING_RATE = 2e-5
 MAX_LEARNING_RATE = 2e-4
@@ -61,8 +62,10 @@ class ExperimentConfig:
     iterations: int
     campaign_id: str
     stage: str = "screening"
+    repair_fraction: float = 0.10
     batch_size: int = 4
     grad_accumulation_steps: int = 1
+    grad_checkpoint: bool = True
     max_seq_length: int = 2048
     save_every: int = 100
     mask_prompt: bool = True
@@ -101,6 +104,10 @@ class ExperimentConfig:
             )
         if self.stage not in STAGES:
             raise ExperimentConfigurationError(f"unsupported stage {self.stage!r}")
+        if not _one_of_float(self.repair_fraction, REPAIR_FRACTIONS):
+            raise ExperimentConfigurationError(
+                f"unsupported repair_fraction {self.repair_fraction}"
+            )
         if not self.campaign_id.strip():
             raise ExperimentConfigurationError("campaign_id must not be empty")
         if self.batch_size != 4:
@@ -108,6 +115,10 @@ class ExperimentConfig:
         if self.grad_accumulation_steps != 1:
             raise ExperimentConfigurationError(
                 "grad_accumulation_steps is fixed at 1"
+            )
+        if not self.grad_checkpoint:
+            raise ExperimentConfigurationError(
+                "gradient checkpointing must remain enabled"
             )
         if self.max_seq_length != 2048:
             raise ExperimentConfigurationError("max_seq_length is fixed at 2048")
@@ -142,10 +153,12 @@ class ExperimentConfig:
             "iterations": self.iterations,
             "batch_size": self.batch_size,
             "grad_accumulation_steps": self.grad_accumulation_steps,
+            "grad_checkpoint": self.grad_checkpoint,
             "max_seq_length": self.max_seq_length,
             "save_every": self.save_every,
             "mask_prompt": self.mask_prompt,
             "learning_rate_schedule": self.learning_rate_schedule,
+            "repair_fraction": self.repair_fraction,
         }
 
     @property
@@ -177,12 +190,12 @@ def worst_tier_ex(summary: dict[str, Any]) -> float:
 
 
 def checkpoint_rank_key(candidate: dict[str, Any]) -> tuple[float, float, float, int, int]:
-    """Higher is better, including negated latency and iteration tie-breaks."""
+    """Rank binding safety before EX, then use quality/latency tie-breaks."""
 
     summary = candidate.get("summary", candidate)
     return (
-        float(summary["ex"]),
         float(summary["valid_sql_rate"]),
+        float(summary["ex"]),
         worst_tier_ex(summary),
         -int(summary["p95_microseconds"]),
         -int(candidate["iteration"]),
@@ -206,6 +219,7 @@ def campaign_tags(
     status: str,
     prompt_version: str,
     policy_version: str,
+    corpus_version: str,
 ) -> list[str]:
     stage = "confirmation" if config.stage == "promoted" else config.stage
     try:
@@ -228,6 +242,8 @@ def campaign_tags(
         f"git:{git_commit}",
         f"status:{status}",
         f"stage:{stage}",
+        f"corpus:{corpus_version}",
+        f"repair:{round(config.repair_fraction * 100):02d}pct",
         f"prompt:{prompt_version}",
         f"policy:{policy_version}",
     ]

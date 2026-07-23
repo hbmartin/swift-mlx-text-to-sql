@@ -238,10 +238,9 @@ reproducibility.
 
 The project no longer points at a static `models/SQLModel`.
 
-- A clean-cache Debug build succeeds with the exact manifest and no bundled
-  model; the runtime follows the documented first-use pinned download path.
-- A clean-cache Release build downloads or reuses the exact public snapshot,
-  verifies it, and bundles it as `SQLModel`.
+- Clean-cache Debug and Release builds both download or reuse the exact public
+  production snapshot, verify it, and bundle it as `SQLModel` with its receipt.
+  Neither configuration permits a model-free app or a first-use Hub fallback.
 
 The final Release inspector matched the embedded and source manifest SHA-256,
 all 12 model files, the 1,747,812,702-byte tree, both licenses, and the notice.

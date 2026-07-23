@@ -24,7 +24,7 @@ from eval.wandb_evidence import (
     write_canonical_evidence,
 )
 from eval.file_integrity import IntegrityError
-from tools.sync_wandb import attach_post_selection_evidence
+from tools.sync_wandb import attach_post_selection_evidence, attach_selection_evidence
 from tools.evaluate_checkpoints import (
     evaluate_training_checkpoints,
 )
@@ -32,8 +32,10 @@ from tools.import_wandb_history import parse_training_log
 from tools.run_experiment import (
     _wandb_subprocess_environment,
     materialize_adapter_artifact,
+    TrainingNumericalIntegrityError,
+    verify_training_numerics,
 )
-from tools.promote_experiment import base_artifact_for
+from tools.promote_experiment import base_artifact_for, require_promotion_eligibility
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,9 +68,85 @@ def test_configuration_hash_and_run_id_bind_every_identity_axis():
     assert immutable_run_id(first, "wandb-a") != immutable_run_id(changed, "wandb-a")
 
 
+def test_v3_training_requires_gradient_checkpointing():
+    assert experiment().grad_checkpoint is True
+    with pytest.raises(
+        ExperimentConfigurationError, match="gradient checkpointing must remain enabled"
+    ):
+        experiment(grad_checkpoint=False)
+
+
+def test_training_numerics_reject_non_finite_loss_and_impossible_token_counts(
+    tmp_path,
+):
+    config = experiment(iterations=100)
+    valid = tmp_path / "valid.log"
+    valid.write_text(
+        "Iter 1: Val loss 1.600, Val took 1.000s\n"
+        "Iter 100: Val loss 0.900, Val took 1.000s\n"
+        "Iter 100: Train loss 0.055, Learning Rate 1.000e-04, "
+        "It/sec 0.100, Tokens/sec 10.000, Trained Tokens 18833, "
+        "Peak mem 20.000 GB\n"
+    )
+    receipt = verify_training_numerics(valid, config)
+    assert receipt["status"] == "finite"
+    assert receipt["final_trained_tokens"] == 18833
+
+    non_finite = tmp_path / "non-finite.log"
+    non_finite.write_text(
+        "Iter 1: Val loss 1.600, Val took 1.000s\n"
+        "Iter 100: Train loss nan, Learning Rate 1.000e-04, "
+        "It/sec 0.100, Tokens/sec 10.000, Trained Tokens 18833, "
+        "Peak mem 20.000 GB\n"
+    )
+    with pytest.raises(TrainingNumericalIntegrityError, match="non-finite train loss"):
+        verify_training_numerics(non_finite, config)
+
+    impossible = tmp_path / "impossible.log"
+    impossible.write_text(
+        "Iter 1: Val loss 1.600, Val took 1.000s\n"
+        "Iter 100: Train loss 0.055, Learning Rate 1.000e-04, "
+        "It/sec 0.100, Tokens/sec 10.000, Trained Tokens 900000, "
+        "Peak mem 20.000 GB\n"
+    )
+    with pytest.raises(
+        TrainingNumericalIntegrityError, match="impossible trained-token counter"
+    ):
+        verify_training_numerics(impossible, config)
+
+
 def test_promotion_reports_a_missing_base_model_key():
     with pytest.raises(SystemExit, match="missing-model"):
         base_artifact_for({"models": []}, "missing-model")
+
+
+def test_reused_screening_run_requires_a_matching_eligibility_receipt(tmp_path):
+    manifest = {
+        "run_id": "screening-run",
+        "checkpoint_evaluation": {
+            "selected": {"checkpoint_sha256": "a" * 64}
+        },
+    }
+    with pytest.raises(SystemExit, match="promotion-eligibility"):
+        require_promotion_eligibility(manifest)
+    receipt = tmp_path / "eligibility.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "analysis": "reliability-v3-promotion-eligibility",
+                "pass": True,
+                "candidate_run_id": "screening-run",
+                "selected_checkpoint_sha256": "a" * 64,
+            }
+        )
+    )
+    manifest["selection_evidence"] = {
+        "promotion-eligibility": {
+            "selection_use": "required",
+            "files": [str(receipt)],
+        }
+    }
+    require_promotion_eligibility(manifest)
 
 
 def test_campaign_tags_preserve_full_corpus_digest_within_wandb_limit():
@@ -78,8 +156,9 @@ def test_campaign_tags_preserve_full_corpus_digest_within_wandb_limit():
         corpus_sha256=corpus_sha256,
         git_commit="a" * 40,
         status="running",
-        prompt_version="reliability-v2",
+        prompt_version="reliability-v3",
         policy_version="bounded-three-generation-v1",
+        corpus_version="reliability-v3",
     )
 
     assert all(1 <= len(tag) <= 64 for tag in tags)
@@ -87,6 +166,8 @@ def test_campaign_tags_preserve_full_corpus_digest_within_wandb_limit():
     encoded = encoded.removeprefix("corpus-sha256:")
     decoded = base64.urlsafe_b64decode(encoded + "=")
     assert decoded.hex() == corpus_sha256
+    assert "corpus:reliability-v3" in tags
+    assert "repair:10pct" in tags
 
 
 def test_training_wandb_environment_keeps_transport_out_of_adapter(tmp_path):
@@ -95,7 +176,7 @@ def test_training_wandb_environment_keeps_transport_out_of_adapter(tmp_path):
         {
             "group": "campaign-test",
             "job_type": "confirmation",
-            "tags": ["prompt:reliability-v2"],
+            "tags": ["prompt:reliability-v3"],
         }
     )
     manifest["experiment"]["stage"] = "promoted"
@@ -307,6 +388,8 @@ def _fake_evaluation_runner(command, **_kwargs):
         "valid_sql_rate": 0.9,
         "ex_by_tier": {"1": 0.7},
         "p95_microseconds": 100,
+        "snapshot_count": 3,
+        "database_set_sha256": "d" * 64,
         "failure_buckets": {"wrong-filter-or-value": 12},
         "mean_entropy_correct": 0.1,
         "mean_entropy_wrong": 0.2,
@@ -557,6 +640,35 @@ def test_wandb_evidence_rejects_symlinked_attachment(tmp_path):
         write_canonical_evidence(manifest_path)
 
 
+def test_promotion_eligibility_becomes_required_wandb_selection_evidence(tmp_path):
+    manifest = minimal_manifest(tmp_path)
+    manifest["checkpoint_evaluation"] = {
+        "selected": {"checkpoint_sha256": "a" * 64}
+    }
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+    eligibility = tmp_path / "eligibility.json"
+    write_json(
+        eligibility,
+        {
+            "schema_version": 1,
+            "analysis": "reliability-v3-promotion-eligibility",
+            "pass": True,
+            "candidate_run_id": manifest["run_id"],
+            "selected_checkpoint_sha256": "a" * 64,
+        },
+    )
+    attach_selection_evidence(manifest_path, [eligibility])
+    updated = json.loads(manifest_path.read_text())
+    assert updated["selection_evidence"]["promotion-eligibility"] == {
+        "selection_use": "required",
+        "artifact_type": "evaluation",
+        "files": [str(eligibility.absolute())],
+    }
+    _, _, evidence = write_canonical_evidence(manifest_path)
+    assert evidence["selection_evidence"] == updated["selection_evidence"]
+
+
 def test_wandb_evidence_rejects_attachment_through_symlinked_directory(
     tmp_path,
 ):
@@ -610,14 +722,16 @@ def test_final_run_accepts_separate_post_selection_artifacts_and_metrics(tmp_pat
     assert updated["headline_metrics"]["release_verified"] is True
 
 
-def test_sweep_files_define_two_18_run_random_campaigns():
+def test_sweep_files_define_v3_screening_and_controlled_repair_ablation():
     sweeps = sorted((ROOT / "fine-tuning/config/sweeps").glob("*.yaml"))
-    assert len(sweeps) == 2
-    for path in sweeps:
+    assert len(sweeps) == 3
+    screening = [path for path in sweeps if "repair-ratio" not in path.name]
+    assert len(screening) == 2
+    for path in screening:
         config = yaml.safe_load(path.read_text())
         assert config["method"] == "random"
         assert config["run_cap"] == 18
-        assert "reliability-v2" in config["name"]
+        assert "reliability-v3" in config["name"]
         campaign_argument = next(
             value
             for value in config["command"]
@@ -626,6 +740,12 @@ def test_sweep_files_define_two_18_run_random_campaigns():
         assert campaign_argument.removeprefix("--campaign-id=") == config["name"]
         assert config["metric"] == {"name": "development/ex", "goal": "maximize"}
         assert config["parameters"]["seed"]["value"] == 424242
+        assert config["parameters"]["repair-fraction"]["value"] == 0.10
+    ablation = yaml.safe_load(
+        (ROOT / "fine-tuning/config/sweeps/repair-ratio-ablation.yaml").read_text()
+    )
+    assert ablation["method"] == "grid"
+    assert ablation["parameters"]["repair-fraction"]["values"] == [0.05, 0.10, 0.20]
 
 
 def test_backfill_parser_reads_current_logs_without_mutating_manifests():

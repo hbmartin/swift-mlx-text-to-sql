@@ -1,29 +1,114 @@
 {
-  "schema_version": 2,
+  "corpus_version": "reliability-v3",
+  "default_variant": "repair-10",
+  "files": [
+    {
+      "path": "fine-tuning/synth/out/train.jsonl",
+      "sha256": "8314dced2e27975fc1bb6b75719648132baf52ba08ba261d000b9338d356772a"
+    },
+    {
+      "path": "fine-tuning/synth/out/valid.jsonl",
+      "sha256": "17496a36703a02d556d21b17febb5a22df423ed825a7b06a53f5473513a5791e"
+    },
+    {
+      "path": "fine-tuning/synth/out/gate_stats.json",
+      "sha256": "62fd331b132d273b7477c89546a5cb0c3ef39dff7ee75b51720fc5465dcc4b4e"
+    },
+    {
+      "path": "fine-tuning/synth/out/split_manifest.json",
+      "sha256": "cb899d4c43bdeef7a2717e009c3e1d66bab61ee63979e65afbc98265d46bd0a3"
+    }
+  ],
   "generator_seed": 424242,
   "gold_holdouts": [
     "eval/gold/gold_v1.jsonl",
     "eval/gold/gold_v2.jsonl"
   ],
   "prompt_contract": {
-    "prompt_version": "reliability-v2",
     "policy_version": "bounded-three-generation-v1",
-    "system_template_sha256": "3a660970002d91f9e859a9c446794533b86878b28b627296b70d3e9d823578e1",
+    "prompt_version": "reliability-v3",
     "repair_template_sha256": "832eab01e1d849982165ac040f3c2b3b919d7155e332419ee4175223c65a0249",
-    "schema_catalog_sha256": "05d5d159313f87f0b7d030091aca416f7e66b5274dd0d5ee8c3124d81afcece4"
+    "schema_catalog_sha256": "05d5d159313f87f0b7d030091aca416f7e66b5274dd0d5ee8c3124d81afcece4",
+    "schema_catalog_version": 1,
+    "system_template_sha256": "8a0b8fb5bbfcd5767ad898b5b823e8ab52f8263fa1f1bfd411fa00475743b635"
   },
-  "files": [
-    {
-      "path": "fine-tuning/synth/out/train.jsonl",
-      "sha256": "f9f27987dce8bd95487f4668753d3d64bf5d09ad14938062d9643a66c715182c"
+  "repair_fraction_probe": [
+    0.05,
+    0.1,
+    0.2
+  ],
+  "schema_version": 3,
+  "split_contract": {
+    "maximum_sql_structure_overlap": 0,
+    "strategy": "sql-structure-family-held-out",
+    "validation_fraction": 0.05
+  },
+  "variants": {
+    "repair-05": {
+      "corpus_sha256": "ae4374e0047dbcb820011ccc4d9995ba07855b826a26815cfdc9e133fae5aa5b",
+      "files": [
+        {
+          "path": "fine-tuning/synth/out/repair-05/train.jsonl",
+          "sha256": "73a4d48141a1611512d6a8d0104088eab7ee4c20041e74808f0cab79afe2b603"
+        },
+        {
+          "path": "fine-tuning/synth/out/repair-05/valid.jsonl",
+          "sha256": "85357b6b64a71315ce11fbd74f839ccc7cbed029ab75f576c1e59cd7a37b7fe1"
+        },
+        {
+          "path": "fine-tuning/synth/out/repair-05/gate_stats.json",
+          "sha256": "a5a206165a43878df06b01b731de8cc655bcc6e3ebdd72fef59669a28920f3b7"
+        },
+        {
+          "path": "fine-tuning/synth/out/repair-05/split_manifest.json",
+          "sha256": "d879f08c0473a59c3a2e8f22f3ba0604a2d8dec661e1cc8c14c89a21fafdb7b3"
+        }
+      ],
+      "repair_fraction": 0.05
     },
-    {
-      "path": "fine-tuning/synth/out/valid.jsonl",
-      "sha256": "8e81640b41149cd136b4aa91c86b5cd65a2a6ffe125fa068c2bbdd8a2f810517"
+    "repair-10": {
+      "corpus_sha256": "f4dfa03a0d10937412a18f450d2c71f7bed5c2d1b66fdf85f043ea65030a7367",
+      "files": [
+        {
+          "path": "fine-tuning/synth/out/train.jsonl",
+          "sha256": "8314dced2e27975fc1bb6b75719648132baf52ba08ba261d000b9338d356772a"
+        },
+        {
+          "path": "fine-tuning/synth/out/valid.jsonl",
+          "sha256": "17496a36703a02d556d21b17febb5a22df423ed825a7b06a53f5473513a5791e"
+        },
+        {
+          "path": "fine-tuning/synth/out/gate_stats.json",
+          "sha256": "62fd331b132d273b7477c89546a5cb0c3ef39dff7ee75b51720fc5465dcc4b4e"
+        },
+        {
+          "path": "fine-tuning/synth/out/split_manifest.json",
+          "sha256": "cb899d4c43bdeef7a2717e009c3e1d66bab61ee63979e65afbc98265d46bd0a3"
+        }
+      ],
+      "repair_fraction": 0.1
     },
-    {
-      "path": "fine-tuning/synth/out/gate_stats.json",
-      "sha256": "0e252c190b1f625e8237d78029416de790b2fb180502e1a6420cf10f81f38ed2"
+    "repair-20": {
+      "corpus_sha256": "9a0f4ada80073bc28dcf1756c899d7aa8daa0a46efa3b1286bed3c4096f06d4f",
+      "files": [
+        {
+          "path": "fine-tuning/synth/out/repair-20/train.jsonl",
+          "sha256": "624bffe1c7f8d52825e459e728fac9f451f1a8777bcd13889a533269a121dad5"
+        },
+        {
+          "path": "fine-tuning/synth/out/repair-20/valid.jsonl",
+          "sha256": "6d011bcdc27f012cc9f8a781af9da913e0d35c2ab676f52eda7618a024e0e21d"
+        },
+        {
+          "path": "fine-tuning/synth/out/repair-20/gate_stats.json",
+          "sha256": "fa5e50548c2d6b6d92560686bec566cde2d4f0a608cd113823958e3abfa2aff2"
+        },
+        {
+          "path": "fine-tuning/synth/out/repair-20/split_manifest.json",
+          "sha256": "2ada49fa39d56add87bbb6041bc361f442e6eb8d694b45fa14b77c1249663d10"
+        }
+      ],
+      "repair_fraction": 0.2
     }
-  ]
+  }
 }

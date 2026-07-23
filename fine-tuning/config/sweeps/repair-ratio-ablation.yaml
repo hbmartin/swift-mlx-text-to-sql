@@ -1,0 +1,35 @@
+name: creg-sql-reliability-v3-repair-ratio-ablation
+description: Controlled 5/10/20 percent repair-prompt ablation with every other training axis fixed.
+program: tools.run_experiment
+method: grid
+metric:
+  name: development/valid_sql_rate
+  goal: maximize
+command:
+  - ${env}
+  - ${interpreter}
+  - -m
+  - ${program}
+  - --model-key=qwen25-coder-3b
+  - --campaign-id=creg-sql-reliability-v3-repair-ratio-ablation
+  - --stage=screening
+  - ${args}
+parameters:
+  seed:
+    value: 424242
+  repair-fraction:
+    values: [0.05, 0.10, 0.20]
+  fine-tune-type:
+    value: dora
+  trainable-layers:
+    value: last-16
+  rank:
+    value: 8
+  scale-ratio:
+    value: 2.0
+  dropout:
+    value: 0.0
+  learning-rate:
+    value: 0.0001
+  iterations:
+    value: 600

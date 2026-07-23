@@ -24,7 +24,7 @@ def test_system_prompt_matches_the_swift_parity_contract() -> None:
         .strip()
     )
     digest = hashlib.sha256(build_system_prompt(schema).encode()).hexdigest()
-    assert digest == "61a7b58025395428e9e4c701d26969cea9c9b2f25d49f752d7429d2aa54922b5"
+    assert digest == "f9edfd023d97867fbd8ea178ddff374de8daef080bff96b2082896971b0dfddc"
 
 
 def test_repair_prompt_matches_the_swift_runtime_contract() -> None:
@@ -67,7 +67,7 @@ def test_repair_prompt_substitutes_original_template_only_once() -> None:
 
 def test_prompt_receipt_binds_both_templates_and_generated_catalog() -> None:
     receipt = prompt_contract_receipt("example schema")
-    assert receipt["prompt_version"] == "reliability-v2"
+    assert receipt["prompt_version"] == "reliability-v3"
     assert receipt["policy_version"] == "bounded-three-generation-v1"
     assert receipt["schema_catalog_version"] == 1
     for name in (

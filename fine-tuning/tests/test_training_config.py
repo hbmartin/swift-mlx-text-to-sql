@@ -5,8 +5,18 @@ import yaml
 from mlx_lm.lora import CONFIG_DEFAULTS
 
 from eval.run_artifacts import sha256_file
+from synth.generate_training import sql_structure_signature
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_sql_structure_signature_abstracts_literals_and_alias_spelling():
+    first = "SELECT p.name AS label FROM properties p WHERE p.name = 'Alpha'"
+    second = (
+        "SELECT asset.name AS output_name FROM properties asset "
+        "WHERE asset.name = 'Beta'"
+    )
+    assert sql_structure_signature(first) == sql_structure_signature(second)
 
 
 def test_qlora_configuration_makes_every_mlx_lm_option_explicit():
@@ -40,14 +50,17 @@ def test_committed_corpus_matches_its_versioned_manifest():
         (ROOT / "fine-tuning/config/corpus-manifest.json").read_text()
     )
     assert declaration["generator_seed"] == 424242
-    assert declaration["schema_version"] == 2
+    assert declaration["schema_version"] == 3
+    assert declaration["corpus_version"] == "reliability-v3"
+    assert set(declaration["variants"]) == {"repair-05", "repair-10", "repair-20"}
     assert declaration["gold_holdouts"] == [
         "eval/gold/gold_v1.jsonl",
         "eval/gold/gold_v2.jsonl",
     ]
-    assert declaration["prompt_contract"]["prompt_version"] == "reliability-v2"
-    for file in declaration["files"]:
-        assert sha256_file(ROOT / file["path"]) == file["sha256"]
+    assert declaration["prompt_contract"]["prompt_version"] == "reliability-v3"
+    for variant in declaration["variants"].values():
+        for file in variant["files"]:
+            assert sha256_file(ROOT / file["path"]) == file["sha256"]
 
 
 def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
@@ -110,12 +123,10 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
         )
         for message in repair_messages
     )
-    assert all(
-        next(
-            line.removeprefix("Possible column owners: ")
-            for line in message.splitlines()
-            if line.startswith("Possible column owners: ")
-        )
+    assert any("Possible column owners: properties" in message for message in repair_messages)
+    assert any(
+        "SELECT name FROM properties WHERE status != 'Sold' "
+        "ORDER BY 1 - f.occupancy_rate DESC LIMIT 5" in message
         for message in repair_messages
     )
 
@@ -136,3 +147,44 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
         "COUNT(DISTINCT l.tenant_id)" in sql for sql in tenant_counts
     )
     assert lease_counts and all("COUNT(*)" in sql for sql in lease_counts)
+
+
+def test_reliability_v3_variants_hold_size_structure_and_repair_ratios_fixed():
+    expected_repairs = {"repair-05": 80, "repair-10": 160, "repair-20": 320}
+    manifest = json.loads(
+        (ROOT / "fine-tuning/config/corpus-manifest.json").read_text()
+    )
+    for key, variant in manifest["variants"].items():
+        directory = (ROOT / variant["files"][0]["path"]).parent
+        stats = json.loads((directory / "gate_stats.json").read_text())
+        split = json.loads((directory / "split_manifest.json").read_text())
+        assert stats["kept"] == 1600
+        assert stats["repair_examples"] == expected_repairs[key]
+        assert stats["actual_repair_fraction"] == variant["repair_fraction"]
+        assert stats["splits"]["sql_structure_overlap"] == []
+        assert stats["paired_repairs"] == expected_repairs[key]
+        assert stats["structural_matrix"]["records"] >= 80
+        assert len(split["records"]) == 1600
+        assert {
+            "aggregation-having",
+            "alias-choice",
+            "binding-failure",
+            "join-composition",
+            "top-n-financial",
+        }.issubset(stats["splits"]["valid"]["categories"])
+        train_repair_families = {
+            record["failure_family"]
+            for record in split["records"]
+            if record["split"] == "train" and record["mode"] == "repair"
+        }
+        valid_repair_families = {
+            record["failure_family"]
+            for record in split["records"]
+            if record["split"] == "valid" and record["mode"] == "repair"
+        }
+        assert valid_repair_families == {
+            "ambiguous-name",
+            "undefined-order-by-alias",
+        }
+        assert train_repair_families.isdisjoint(valid_repair_families)
+        assert "undeclared-financial-alias" in train_repair_families

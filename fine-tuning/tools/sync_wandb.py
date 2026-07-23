@@ -21,6 +21,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--training-run", type=Path, required=True)
     parser.add_argument(
+        "--promotion-eligibility",
+        action="append",
+        type=Path,
+        help="passing reliability-v3 eligibility receipt used for promotion",
+    )
+    parser.add_argument(
         "--final-evaluation",
         action="append",
         type=Path,
@@ -65,6 +71,47 @@ def parse_args() -> argparse.Namespace:
 
 def verify_receipt(receipt: dict[str, Any]) -> None:
     validate_wandb_receipt(receipt)
+
+
+def attach_selection_evidence(
+    manifest_path: Path, promotion_eligibility: list[Path]
+) -> None:
+    if not promotion_eligibility:
+        return
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("experiment", {}).get("stage") != "screening":
+        raise WandbEvidenceError(
+            "promotion eligibility attaches to the screening run it evaluated"
+        )
+    files = []
+    for path in promotion_eligibility:
+        absolute = path.absolute()
+        input_hash(absolute)
+        receipt = json.loads(absolute.read_text())
+        if (
+            receipt.get("analysis")
+            != "reliability-v3-promotion-eligibility"
+            or receipt.get("schema_version") != 1
+            or receipt.get("pass") is not True
+            or receipt.get("candidate_run_id") != manifest["run_id"]
+            or receipt.get("selected_checkpoint_sha256")
+            != manifest.get("checkpoint_evaluation", {})
+            .get("selected", {})
+            .get("checkpoint_sha256")
+        ):
+            raise WandbEvidenceError(
+                "promotion eligibility is incomplete or belongs to another run"
+            )
+        files.append(str(absolute))
+    manifest["selection_evidence"] = {
+        "promotion-eligibility": {
+            "selection_use": "required",
+            "artifact_type": "evaluation",
+            "files": sorted(set(files)),
+        }
+    }
+    manifest["status"] = "local_complete"
+    write_json(manifest_path, manifest)
 
 
 def attach_post_selection_evidence(
@@ -218,6 +265,9 @@ def attach_post_selection_evidence(
 def main() -> None:
     args = parse_args()
     manifest_path = args.training_run.resolve() / "manifest.json"
+    attach_selection_evidence(
+        manifest_path, args.promotion_eligibility or []
+    )
     attach_post_selection_evidence(
         manifest_path,
         final_evaluations=args.final_evaluation or [],

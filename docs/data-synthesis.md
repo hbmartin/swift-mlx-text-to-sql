@@ -94,6 +94,19 @@ Quality gate per candidate (stats logged to `synth/out/gate_stats.json`):
    and both generators use different seeds
 5. batch-level dedup
 
+Reliability-v3 then performs a structure-family split. SQL literals and
+declared alias spelling are normalized into a structural SHA-256; no
+signature may occur in both train and validation. Validation holds out alias
+choices, join compositions, top-N financial queries, HAVING aggregations, and
+binding-repair patterns. The split manifest records the semantic coverage
+axes (`metric × operation × grouping × time grain × portfolio filter`) for
+every selected record.
+
+Each recurring binding failure has a direct question/correct-SQL record and a
+failed-SQL/SQLite-error/corrected-SQL partner. Three fixed-size, canonical
+variants hold every other axis constant while setting repair prompts to 5%,
+10%, or 20%.
+
 Format: chat JSONL whose system prompt is byte-identical to the app's
 runtime prompt (schema serialization + canonical rules + today's date), so
 the model trains on exactly the distribution it will see. Assistant turn is
@@ -105,12 +118,11 @@ ever sees them) and no clarification behavior (that's the FM ambiguity
 gate). EXISTS-based SQL is avoided in favor of `NOT IN (SELECT …)` because
 the frozen grammar does not include EXISTS.
 
-Leakage accounting: 3 of 1,441 raw candidates collided with normalized gold
-questions and were dropped by the gate. Before each finalist trains, the
-runner regenerates `train.jsonl`, `valid.jsonl`, and `gate_stats.json` into
+Before each finalist trains, the
+runner regenerates `train.jsonl`, `valid.jsonl`, `gate_stats.json`, and
+`split_manifest.json` into
 its immutable training-run directory and requires byte-for-byte equality
 with the SHA-256 values in `fine-tuning/config/corpus-manifest.json`.
 `gold_v2.jsonl` is recorded separately as an untouched 200-item holdout.
-Exact-match dedup plus seed separation is the leakage control for this round.
-Family *shapes* intentionally overlap with gold—teaching the schema's
-canonical query shapes is the purpose of in-domain fine-tuning (PRD §8.2).
+Gold question exclusion, exact-match dedup, and zero train/validation
+structural overlap are independent leakage controls.

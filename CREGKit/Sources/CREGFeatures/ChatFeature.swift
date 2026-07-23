@@ -448,13 +448,12 @@ private enum LiveDependencies {
     ) {
       guard let bundledManifest else { throw ModelManifestError.missing }
       let configuration = try ModelManifestLoader.production(url: bundledManifest)
-#if !DEBUG
       guard let bundledReceipt, let bundledModelDirectory else {
         throw ModelManifestError.missingReceipt
       }
       guard configuration.policyVersion == "bounded-three-generation-v1" else {
         throw ModelManifestError.invalidProductionConfiguration(
-          "Release requires schema-v3 bounded-policy evidence")
+          "Every build requires schema-v3 bounded-policy evidence")
       }
       try ProductionModelReceiptLoader.validate(
         manifestURL: bundledManifest,
@@ -462,7 +461,6 @@ private enum LiveDependencies {
         modelDirectory: bundledModelDirectory,
         production: configuration,
         diagnostics: diagnostics)
-#endif
       return configuration
     }
     switch productionResult {
@@ -479,30 +477,16 @@ private enum LiveDependencies {
         diagnosticCode: failure.code,
         diagnostic: failure.diagnostic)
     }
-    let sqlGen: SQLGenClient
-    if let bundledModelDirectory {
-      sqlGen = SQLGenClient.live(directory: bundledModelDirectory)
-        .reportingModelLoad(
-          to: diagnostics,
-          modelKey: production.model.key)
-    } else {
-#if DEBUG
-      diagnostics.info(
-        category: .configuration,
-        code: "debug_hub_model_selected",
-        summary: "Debug bootstrap selected the model Hub source.",
-        context: ["model_key": production.model.key])
-      sqlGen = SQLGenClient.live(model: production.model)
-        .reportingModelLoad(
-          to: diagnostics,
-          modelKey: production.model.key)
-#else
+    guard let bundledModelDirectory else {
       return .unavailable(
         userMessage: "This build is missing its verified SQL model.",
         diagnosticCode: "production_receipt_missing",
         diagnostic: ModelManifestError.missingReceipt.localizedDescription)
-#endif
     }
+    let sqlGen = SQLGenClient.live(directory: bundledModelDirectory)
+      .reportingModelLoad(
+        to: diagnostics,
+        modelKey: production.model.key)
 
     let db: DatabaseClient
     let databaseReady: Bool

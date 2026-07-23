@@ -1,43 +1,9 @@
 import Foundation
-import HuggingFace
 import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXStructured
 import Tokenizers
-
-private enum ModelArtifactDownloadError: Error {
-  case invalidRepositoryID(String)
-}
-
-/// Concrete adapters mirror mlx-swift-lm's Hugging Face convenience macros
-/// without requiring a compiler plugin in the consuming Xcode target.
-private struct HubArtifactDownloader: MLXLMCommon.Downloader {
-  let client: HuggingFace.HubClient
-
-  init(client: HuggingFace.HubClient = .default) {
-    self.client = client
-  }
-
-  func download(
-    id: String,
-    revision: String?,
-    matching patterns: [String],
-    useLatest _: Bool,
-    progressHandler: @Sendable @escaping (Progress) -> Void
-  ) async throws -> URL {
-    guard let repository = HuggingFace.Repo.ID(rawValue: id) else {
-      throw ModelArtifactDownloadError.invalidRepositoryID(id)
-    }
-    return try await client.downloadSnapshot(
-      of: repository,
-      revision: revision ?? "main",
-      matching: patterns,
-      progressHandler: { @MainActor progress in
-        progressHandler(progress)
-      })
-  }
-}
 
 private struct HuggingFaceTokenizerBridge: MLXLMCommon.Tokenizer {
   let tokenizer: any Tokenizers.Tokenizer
@@ -125,14 +91,6 @@ actor PreparationCoalescer<Value: Sendable> {
 }
 
 extension SQLGenClient {
-  public static func live(model: ModelReference) -> SQLGenClient {
-    let generator = MLXSQLGenerator(
-      source: .hub(repository: model.repository, revision: model.revision))
-    return SQLGenClient(
-      prepare: { try await generator.prepare() },
-      generate: { request in try await generator.generate(request) })
-  }
-
   /// Load from a local weights directory (used by creg-eval-cli for parity runs).
   public static func live(directory: URL) -> SQLGenClient {
     let generator = MLXSQLGenerator(source: .directory(directory))
@@ -213,7 +171,6 @@ extension SQLGenClient {
 /// grammar-constrained decoding via MLXStructured (XGrammar).
 actor MLXSQLGenerator {
   enum Source: Sendable {
-    case hub(repository: String, revision: String)
     case directory(URL)
   }
 
@@ -222,7 +179,6 @@ actor MLXSQLGenerator {
 
   private nonisolated var modelName: String {
     switch source {
-    case .hub(let repository, let revision): "\(repository)@\(revision)"
     case .directory(let url): url.lastPathComponent
     }
   }
@@ -367,24 +323,6 @@ actor MLXSQLGenerator {
         return try await loadModelContainer(
           from: url,
           using: HuggingFaceTokenizerLoader())
-      case .hub(let repository, let revision):
-        if let bundled = Bundle.main.url(
-          forResource: "SQLModel", withExtension: nil)
-        {
-          return try await loadModelContainer(
-            from: bundled,
-            using: HuggingFaceTokenizerLoader())
-        }
-#if DEBUG
-        // Debug convenience only. Release must use the verified bundle path.
-        return try await loadModelContainer(
-          from: HubArtifactDownloader(),
-          using: HuggingFaceTokenizerLoader(),
-          configuration: ModelConfiguration(
-            id: repository, revision: revision))
-#else
-        throw CocoaError(.fileNoSuchFile)
-#endif
       }
     }
   }

@@ -21,6 +21,11 @@ from eval.run_artifacts import REPO_ROOT, input_hash, sha256_file, write_json
 
 
 GOLD_DEVELOPMENT = REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl"
+DEVELOPMENT_DATABASES = (
+    REPO_ROOT / "db" / "creg.sqlite",
+    REPO_ROOT / "eval" / "snapshots" / "latest-staggered.sqlite",
+    REPO_ROOT / "eval" / "snapshots" / "portfolio-boundaries.sqlite",
+)
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
 MODELS_DIR = REPO_ROOT / "models"
 CHECKPOINT_RE = re.compile(r"^(?P<iteration>[0-9]{7})_adapters\.safetensors$")
@@ -79,7 +84,11 @@ def _evaluation_record(
             f"checkpoint {iteration} evaluation is incomplete"
         )
     summary = json.loads(summary_path.read_text())
-    if summary.get("gold") != GOLD_DEVELOPMENT.name or summary.get("n") != 60:
+    if (
+        summary.get("gold") != GOLD_DEVELOPMENT.name
+        or summary.get("n") != 60
+        or summary.get("snapshot_count") != len(DEVELOPMENT_DATABASES)
+    ):
         raise CheckpointEvaluationError(
             f"checkpoint {iteration} did not evaluate all 60 gold_v1 items"
         )
@@ -162,6 +171,8 @@ def evaluate_training_checkpoints(
                 "--runs-dir",
                 str(evaluations_directory),
             ]
+            for database in DEVELOPMENT_DATABASES:
+                command.extend(("--database", str(database)))
             log_path = comparison_directory / f"checkpoint-{iteration:06d}.log"
             with log_path.open("xb") as log:
                 completed = runner(
@@ -192,7 +203,7 @@ def evaluate_training_checkpoints(
 
     selected = select_development_checkpoint(records)
     comparison = {
-        "schema_version": 1,
+        "schema_version": 2,
         "training_run_id": training["run_id"],
         "protocol": {
             "gold": input_hash(GOLD_DEVELOPMENT),
@@ -200,9 +211,11 @@ def evaluate_training_checkpoints(
             "temperature": 0.0,
             "seed": 0,
             "item_count": 60,
+            "databases": [input_hash(path) for path in DEVELOPMENT_DATABASES],
+            "evaluator_row_cap": 10_000,
             "selection_order": [
-                "ex_desc",
                 "valid_sql_rate_desc",
+                "ex_desc",
                 "worst_tier_ex_desc",
                 "p95_latency_asc",
                 "iteration_asc",
