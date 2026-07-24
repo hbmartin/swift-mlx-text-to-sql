@@ -232,10 +232,17 @@ def select_campaign_winner(
     used_receipts = []
     for recipe, recipe_manifests in grouped.items():
         canonical = next(
-            item
-            for item in recipe_manifests
-            if item["experiment"]["seed"] == 424242
+            (
+                item
+                for item in recipe_manifests
+                if item["experiment"]["seed"] == 424242
+            ),
+            None,
         )
+        if canonical is None:
+            raise CampaignSelectionError(
+                f"recipe {recipe} lacks canonical seed 424242"
+            )
         receipt = validate_eligibility(canonical, receipts)
         if receipt is None:
             raise CampaignSelectionError(

@@ -451,10 +451,12 @@ private enum LiveDependencies {
       guard let bundledReceipt, let bundledModelDirectory else {
         throw ModelManifestError.missingReceipt
       }
-      guard configuration.policyVersion == "bounded-three-generation-v1" else {
-        throw ModelManifestError.invalidProductionConfiguration(
-          "Every build requires schema-v3 bounded-policy evidence")
-      }
+      #if !DEBUG
+        guard configuration.policyVersion == "bounded-three-generation-v1" else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "Release requires schema-v3 bounded-policy evidence")
+        }
+      #endif
       try ProductionModelReceiptLoader.validate(
         manifestURL: bundledManifest,
         receiptURL: bundledReceipt,

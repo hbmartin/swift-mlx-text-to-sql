@@ -159,9 +159,10 @@ uv run --frozen python tools/fetch_model.py --production
 The Xcode build phase runs the manifest fetcher through the frozen `uv`
 environment and copies the exact manifest into the app.
 
-- Debug bundles `SQLModel` only when the pinned snapshot is already in the
-  configured local cache. With no cache, the build succeeds without weights
-  and the runtime downloads that pinned revision on first use.
+- Debug downloads or reuses the manifest-selected verified snapshot, verifies
+  it transactionally, and always bundles it as `SQLModel` with a matching
+  `production-model-receipt.json`. During the v3 rollout only, Debug accepts
+  the current historical-policy selection; there is no runtime Hub fallback.
 - Release requires a newly finalized bounded-policy selection, downloads or
   reuses cache, transactionally verifies the complete snapshot, and bundles
   it as `SQLModel` with `production-model-receipt.json`. Historical policy,

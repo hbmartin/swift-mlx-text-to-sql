@@ -575,6 +575,18 @@ def copy_distribution_license(
     local_files_only: bool,
 ) -> None:
     for declared_file in distribution_files(artifact["license"]):
+        target = destination / declared_file["path"]
+        if target.exists() or target.is_symlink():
+            if (
+                target.is_symlink()
+                or not target.is_file()
+                or target.stat().st_size != declared_file["size"]
+                or sha256_file(target) != declared_file["sha256"]
+            ):
+                raise ArtifactError(
+                    f"{target}: bundled distribution license verification failed"
+                )
+            continue
         source = Path(
             hf_hub_download(
                 repo_id=declared_file["source_repository"],
@@ -591,11 +603,22 @@ def copy_distribution_license(
             raise ArtifactError(
                 f"{source}: distribution license hash mismatch"
             )
-        target = destination / declared_file["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
     declared_notice = notice_file(artifact["license"])
     if declared_notice is not None:
+        target = destination / declared_notice["path"]
+        if target.exists() or target.is_symlink():
+            if (
+                target.is_symlink()
+                or not target.is_file()
+                or target.stat().st_size != declared_notice["size"]
+                or sha256_file(target) != declared_notice["sha256"]
+            ):
+                raise ArtifactError(
+                    f"{target}: bundled attribution notice verification failed"
+                )
+            return
         source = REPO_ROOT / declared_notice["source_path"]
         if (
             not source.is_file()
@@ -605,7 +628,6 @@ def copy_distribution_license(
             raise ArtifactError(
                 f"{source}: attribution notice verification failed"
             )
-        target = destination / declared_notice["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
@@ -809,11 +831,36 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="forbid network access and use only the Hugging Face/local cache",
     )
+    parser.add_argument(
+        "--allow-historical-policy",
+        action="store_true",
+        help=(
+            "allow a verified historical production selection during the Debug "
+            "rollout; artifact and receipt verification remain mandatory"
+        ),
+    )
     return parser.parse_args()
+
+
+def require_current_production_policy(
+    production: dict[str, Any], *, allow_historical_policy: bool
+) -> None:
+    if (
+        production.get("policy_version") != "bounded-three-generation-v1"
+        and not allow_historical_policy
+    ):
+        raise ArtifactError(
+            "the selected production model has historical policy evidence; "
+            "schema-v3 bounded-policy calibration and finalization are required"
+        )
 
 
 def main() -> None:
     args = parse_args()
+    if args.allow_historical_policy and not args.production:
+        raise ArtifactError(
+            "--allow-historical-policy is valid only with --production"
+        )
     manifest = load_manifest(args.manifest.resolve())
     models_dir = args.models_dir.resolve()
 
@@ -824,11 +871,10 @@ def main() -> None:
                 "production model selection is pending; run the evaluation matrix "
                 "and update model-manifest.json before building Release"
             )
-        if production.get("policy_version") != "bounded-three-generation-v1":
-            raise ArtifactError(
-                "the selected production model has historical policy evidence; "
-                "schema-v3 bounded-policy calibration and finalization are required"
-            )
+        require_current_production_policy(
+            production,
+            allow_historical_policy=args.allow_historical_policy,
+        )
         artifact = next(
             model
             for model in manifest["models"]

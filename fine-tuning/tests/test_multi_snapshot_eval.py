@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from eval.ex import score
+from eval.run_eval import database_set_identity
 from eval.run_artifacts import REPO_ROOT, sha256_file
 from tools.generate_eval_snapshots import BASE_DATABASE, generate
 
@@ -29,6 +30,15 @@ def test_second_snapshot_exposes_coincidentally_equivalent_sql(tmp_path):
     candidate = "SELECT value FROM values_table WHERE value < 3"
     assert score(first, candidate, gold)["ex"] is True
     assert score(second, candidate, gold)["ex"] is False
+
+
+def test_database_set_identity_is_independent_of_argument_order():
+    first = {"sha256": "a" * 64}
+    second = {"sha256": "b" * 64}
+    assert database_set_identity([first, second]) == database_set_identity(
+        [second, first]
+    )
+    assert database_set_identity([first, second]) != database_set_identity([first])
 
 
 def test_committed_counterexample_snapshots_regenerate_byte_identically(tmp_path):

@@ -89,8 +89,8 @@ uv run --frozen python -m tools.import_wandb_history
 ```
 
 Every checkpoint is evaluated on the production database and two deterministic
-counterexample snapshots. The screening sweep files fix repair prompts at 10%
-until the controlled ablation selects a different canonical variant. They also
+counterexample snapshots. The controlled ablation selected the 20% repair
+variant, which the screening sweep files now fix for both model families. They also
 fix seed 424242, 600 iterations, checkpoints every 100,
 batch size 4, accumulation 1, gradient checkpointing, prompt masking, a
 2,048-token maximum, and a constant learning rate. They randomize LoRA/DoRA,
@@ -155,9 +155,11 @@ fresh-verified publication records. It is the only supported transition to a
 new verified production manifest. Release model copying then writes a
 content-addressed `production-model-receipt.json`; Release startup and bundle
 inspection both require it to agree with the manifest and actual SQLModel
-bytes. Debug uses the identical fail-closed build path: every app build embeds
-the latest manifest-selected verified production revision and no runtime Hub
-fallback is permitted.
+bytes. Every app build embeds the latest manifest-selected verified production
+revision and no runtime Hub fallback is permitted. During the v3 rollout,
+Debug alone may bundle the historical-policy selection; it still downloads or
+reuses the pinned snapshot and requires complete artifact and receipt
+verification. Release remains blocked until bounded-policy finalization.
 
 ```sh
 uv run --frozen python -m tools.finalize_production \
