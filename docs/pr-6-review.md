@@ -1,6 +1,6 @@
 # PR #6 Review: reliability-v3 corpus, training, and bundle gates
 
-- **PR**: [#6 — Implement reliability-v3 corpus, training, and bundle gates](../../pull/6)
+- **PR**: [#6 — Implement reliability-v3 corpus, training, and bundle gates](../../../pull/6)
 - **Branch**: `codex/reliability-v3-corpus-gates` → `main`
 - **Scope**: 58 files, +72,073 / −1,907
 - **Review date**: 2026-07-23
@@ -110,11 +110,11 @@ not blockers.
 - Multi-snapshot EX triples per-item SQL executions; with a 10k row cap and 60-item
   gold set this is negligible. The 10k-sample bootstrap over 60 paired differences is
   also cheap and correctly seeded for determinism.
-- No security concerns: subprocess invocations use fixed argument lists, snapshot
-  generation refuses symlinked bases and writes atomically via `os.replace`, and the
-  pbxproj script keeps `set -euo pipefail`. Removing the runtime Hub download path
-  *reduces* supply-chain surface — the app can now only load the hash-verified bundled
-  snapshot.
+- No additional runtime security concerns: subprocess invocations use fixed argument
+  lists, snapshot generation refuses symlinked bases and writes atomically via
+  `os.replace`, and the pbxproj script keeps `set -euo pipefail`. Removing the runtime
+  Hub download path *reduces* supply-chain surface — the app can now only load the
+  hash-verified bundled snapshot.
 - Test coverage is a highlight: every new gate has both a passing and a refusing test
   (mixed-checkpoint binding evidence, failed binding receipt, missing eligibility,
   non-finite loss, impossible token counters, byte-identical snapshot regeneration,

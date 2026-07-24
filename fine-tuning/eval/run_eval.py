@@ -138,6 +138,21 @@ def database_set_identity(database_inputs: list[dict[str, Any]]) -> str:
     return sha256_bytes("\n".join(digests).encode())
 
 
+def canonicalize_database_inputs(
+    database_paths: tuple[Path, ...],
+) -> tuple[tuple[Path, ...], list[dict[str, Any]]]:
+    """Hash and deterministically order database paths as associated pairs."""
+
+    database_pairs = sorted(
+        ((path, input_hash(path)) for path in database_paths),
+        key=lambda pair: (str(pair[1]["sha256"]), str(pair[0])),
+    )
+    return (
+        tuple(path for path, _ in database_pairs),
+        [database_input for _, database_input in database_pairs],
+    )
+
+
 def strip_special_tokens(text: str) -> str:
     return re.sub(r"<\|[a-zA-Z0-9_]+\|>", "", text)
 
@@ -324,7 +339,7 @@ def main() -> None:
     missing_databases = [path for path in database_paths if not path.is_file()]
     if missing_databases:
         raise SystemExit(f"evaluation database is missing: {missing_databases[0]}")
-    database_inputs = [input_hash(path) for path in database_paths]
+    database_paths, database_inputs = canonicalize_database_inputs(database_paths)
     snapshot_identity = database_set_identity(database_inputs)
     # Provenance is a precondition, not an output-writing step. A git-less
     # environment must fail before reserving the deterministic run ID.

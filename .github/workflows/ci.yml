@@ -79,16 +79,23 @@ jobs:
         working-directory: fine-tuning
         run: uv run --frozen python -m tools.check_ci_contracts
 
-      - name: Prevent string-based diagnostic classification
+      - name: Prevent unsafe diagnostic and evaluation identity patterns
         run: >-
           uvx --from semgrep==1.170.0 semgrep scan --error
           --config .semgrep.yml --include 'CREGKit/Sources/**/*.swift'
+          --include 'fine-tuning/eval/**/*.py'
 
       - name: Test diagnostic classification rule
         run: |
           uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
             | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
                 semgrep-tests/typed-diagnostic-classification.swift
+
+      - name: Test database input canonicalization rule
+        run: |
+          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
+            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
+                semgrep-tests/database-input-canonicalization.py
 
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD

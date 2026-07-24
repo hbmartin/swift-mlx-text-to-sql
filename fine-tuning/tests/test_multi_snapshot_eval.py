@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from eval.ex import score
-from eval.run_eval import database_set_identity
+from eval.run_eval import canonicalize_database_inputs, database_set_identity
 from eval.run_artifacts import REPO_ROOT, sha256_file
 from tools.generate_eval_snapshots import BASE_DATABASE, generate
 
@@ -39,6 +39,22 @@ def test_database_set_identity_is_independent_of_argument_order():
         [second, first]
     )
     assert database_set_identity([first, second]) != database_set_identity([first])
+
+
+def test_database_paths_and_inputs_are_canonicalized_as_pairs(tmp_path):
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    database(first, (1, 2))
+    database(second, (1, 2, 3))
+
+    forward = canonicalize_database_inputs((first.resolve(), second.resolve()))
+    reversed_order = canonicalize_database_inputs(
+        (second.resolve(), first.resolve())
+    )
+
+    assert forward == reversed_order
+    paths, inputs = forward
+    assert [record["path"] for record in inputs] == [str(path) for path in paths]
 
 
 def test_committed_counterexample_snapshots_regenerate_byte_identically(tmp_path):
