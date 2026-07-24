@@ -514,7 +514,9 @@ private enum LiveDependencies {
         diagnosticCode: "production_receipt_missing",
         diagnostic: ModelManifestError.missingReceipt.localizedDescription)
     }
-    let sqlGen = SQLGenClient.live(directory: bundledModelDirectory)
+    let sqlGen = SQLGenClient.live(
+      directory: bundledModelDirectory,
+      diagnostics: diagnostics)
       .reportingModelLoad(
         to: diagnostics,
         modelKey: production.model.key)

@@ -68,7 +68,15 @@ public struct QueryPipeline: Sendable {
 
 private struct PipelineDeadlineExceeded: Error, CustomStringConvertible, Sendable {
   var stage: String
-  var description: String { "pipeline deadline exceeded during \(stage)" }
+  var limitSeconds: Double
+
+  var description: String {
+    let limitMilliseconds = max(0, limitSeconds) * 1_000
+    return String(
+      format:
+        "pipeline deadline exceeded during %@ (deadline_ms=%.1f; cancellation cleanup may extend observed elapsed time)",
+      stage, limitMilliseconds)
+  }
 }
 
 private func withPipelineDeadline<Value: Sendable>(
@@ -76,16 +84,18 @@ private func withPipelineDeadline<Value: Sendable>(
   stage: String,
   operation: @escaping @Sendable () async throws -> Value
 ) async throws -> Value {
-  guard seconds > 0 else { throw PipelineDeadlineExceeded(stage: stage) }
+  guard seconds > 0 else {
+    throw PipelineDeadlineExceeded(stage: stage, limitSeconds: seconds)
+  }
   return try await withThrowingTaskGroup(of: Value.self) { group in
     group.addTask { try await operation() }
     group.addTask {
       try await Task.sleep(for: .seconds(seconds))
-      throw PipelineDeadlineExceeded(stage: stage)
+      throw PipelineDeadlineExceeded(stage: stage, limitSeconds: seconds)
     }
     defer { group.cancelAll() }
     guard let result = try await group.next() else {
-      throw PipelineDeadlineExceeded(stage: stage)
+      throw PipelineDeadlineExceeded(stage: stage, limitSeconds: seconds)
     }
     return result
   }
@@ -174,7 +184,8 @@ extension QueryPipeline {
             do {
               let remaining = remainingTurnSeconds()
               guard remaining > 0 else {
-                throw PipelineDeadlineExceeded(stage: "turn")
+                throw PipelineDeadlineExceeded(
+                  stage: "turn", limitSeconds: remaining)
               }
               let generation = try await withPipelineDeadline(
                 seconds: min(configuration.deadlines.generationSeconds, remaining),
@@ -414,7 +425,8 @@ extension QueryPipeline {
             telemetry.candidates.append(initial)
 
             if let stage = telemetry.timeoutStage {
-              telemetry.terminalError = "turn stopped during \(stage)"
+              telemetry.terminalError =
+                initial.error ?? "turn stopped during \(stage)"
               finish(.failed(
                 message: "That answer took too long. Please try again."))
               return
@@ -444,7 +456,8 @@ extension QueryPipeline {
                 telemetry.candidates.append(sample)
                 voteCandidates.append(sample)
                 if let stage = telemetry.timeoutStage {
-                  telemetry.terminalError = "turn stopped during \(stage)"
+                  telemetry.terminalError =
+                    sample.error ?? "turn stopped during \(stage)"
                   finish(.failed(
                     message: "That answer took too long. Please try again."))
                   return
@@ -487,7 +500,8 @@ extension QueryPipeline {
               telemetry.repairAttempts += 1
               voteCandidates.append(deterministic)
               if let stage = telemetry.timeoutStage {
-                telemetry.terminalError = "turn stopped during \(stage)"
+                telemetry.terminalError =
+                  deterministic.error ?? "turn stopped during \(stage)"
                 finish(.failed(
                   message: "That answer took too long. Please try again."))
                 return
@@ -522,7 +536,8 @@ extension QueryPipeline {
               telemetry.repairAttempts += 1
               voteCandidates.append(sampled)
               if let stage = telemetry.timeoutStage {
-                telemetry.terminalError = "turn stopped during \(stage)"
+                telemetry.terminalError =
+                  sampled.error ?? "turn stopped during \(stage)"
                 finish(.failed(
                   message: "That answer took too long. Please try again."))
                 return

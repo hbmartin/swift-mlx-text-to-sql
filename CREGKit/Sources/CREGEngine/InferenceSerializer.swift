@@ -56,16 +56,20 @@ public actor InferenceSerializer {
     }
     tail = Task { _ = try? await task.value }
     do {
-      let result = try await task.value
+      let result = try await withTaskCancellationHandler {
+        try await task.value
+      } onCancel: {
+        task.cancel()
+      }
       operationCompleted(
         kind: operationKind,
-        succeeded: true,
+        error: nil,
         elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
       return result
     } catch {
       operationCompleted(
         kind: operationKind,
-        succeeded: false,
+        error: error,
         elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
       throw error
     }
@@ -73,29 +77,36 @@ public actor InferenceSerializer {
 
   private func operationCompleted(
     kind: Operation,
-    succeeded: Bool,
+    error: (any Error)?,
     elapsedMicroseconds: Int64
   ) {
     pendingCount -= 1
     if pendingCount == 0 { tail = nil }
-    let context = [
+    var context = [
       "operation": kind.rawValue,
       "remaining_operations": String(pendingCount),
       "total_elapsed_ms": Self.milliseconds(elapsedMicroseconds),
     ]
-    if succeeded {
-      diagnostics.info(
-        category: .inference,
-        code: "inference_finished",
-        summary: "An inference operation released the shared model slot.",
-        context: context)
-    } else {
+    if let error {
+      context["error_type"] = String(reflecting: type(of: error))
+      context["is_cancellation"] = String(error is CancellationError)
+      let details =
+        error is CancellationError
+        ? "The serialized inference task was cancelled by its parent operation."
+        : "error_type=\(String(reflecting: type(of: error)))"
       diagnostics.record(DiagnosticEvent(
         level: .error,
         category: .inference,
         code: "inference_failed",
         summary: "An inference operation failed and released the shared model slot.",
+        details: details,
         context: context))
+    } else {
+      diagnostics.info(
+        category: .inference,
+        code: "inference_finished",
+        summary: "An inference operation released the shared model slot.",
+        context: context)
     }
   }
 

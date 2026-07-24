@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-ANNOTATION = re.compile(r"//\s*(ruleid|ok):\s*([a-z0-9-]+)\s*$")
+ANNOTATION = re.compile(r"(?:#|//)\s*(ruleid|ok):\s*([a-z0-9-]+)\s*$")
 
 
 def annotated_findings(path: Path) -> tuple[set[tuple[str, int]], set[tuple[str, int]]]:

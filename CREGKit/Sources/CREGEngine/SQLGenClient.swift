@@ -90,10 +90,35 @@ actor PreparationCoalescer<Value: Sendable> {
   }
 }
 
+private final class MLXGenerationDiagnosticState: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedPhase: String
+
+  init(phase: String) {
+    self.storedPhase = phase
+  }
+
+  var phase: String {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedPhase
+  }
+
+  func setPhase(_ phase: String) {
+    lock.lock()
+    storedPhase = phase
+    lock.unlock()
+  }
+}
+
 extension SQLGenClient {
   /// Load from a local weights directory (used by creg-eval-cli for parity runs).
-  public static func live(directory: URL) -> SQLGenClient {
-    let generator = MLXSQLGenerator(source: .directory(directory))
+  public static func live(
+    directory: URL,
+    diagnostics: DiagnosticsClient = .noop
+  ) -> SQLGenClient {
+    let generator = MLXSQLGenerator(
+      source: .directory(directory), diagnostics: diagnostics)
     return SQLGenClient(
       prepare: { try await generator.prepare() },
       generate: { request in try await generator.generate(request) })
@@ -108,8 +133,9 @@ extension SQLGenClient {
   }
 
   /// Adds payload-free model-load milestones around `prepare()`. Generation
-  /// details are emitted by the pipeline observer, which deliberately omits
-  /// question text, SQL, seeds, model paths, and generated content.
+  /// lifecycle details are emitted by the pipeline observer and live MLX
+  /// adapter; both deliberately omit question text, SQL, seeds, model paths,
+  /// and generated content.
   public func reportingModelLoad(
     to diagnostics: DiagnosticsClient,
     modelKey: String
@@ -175,6 +201,7 @@ actor MLXSQLGenerator {
   }
 
   private let source: Source
+  private let diagnostics: DiagnosticsClient
   private let containerLoader = PreparationCoalescer<ModelContainer>()
 
   private nonisolated var modelName: String {
@@ -183,8 +210,9 @@ actor MLXSQLGenerator {
     }
   }
 
-  init(source: Source) {
+  init(source: Source, diagnostics: DiagnosticsClient = .noop) {
     self.source = source
+    self.diagnostics = diagnostics
   }
 
   func prepare() async throws {
@@ -192,65 +220,232 @@ actor MLXSQLGenerator {
   }
 
   func generate(_ request: SQLGenerationRequest) async throws -> SQLGeneration {
-    let container = try await loadedContainer()
-    let schema = try Self.schemaPrompt()
+    let operationStarted = ContinuousClock.now
+    let state = MLXGenerationDiagnosticState(phase: "model_access")
+    let baseContext = Self.generationDiagnosticContext(request)
+    let diagnosticClient = diagnostics
+    let generatedModelName = modelName
+    diagnosticClient.info(
+      category: .inference,
+      code: "mlx_sql_generation_started",
+      summary: "MLX SQL generation started.",
+      context: baseContext)
 
-    let userContent = request.repair.map {
-      Self.repairPrompt(question: request.question, context: $0)
-    } ?? "Question: \(request.question)"
-    let systemContent = Self.systemPrompt(schema: schema)
+    do {
+      let container = try await loadedContainer()
+      state.setPhase("schema_loading")
+      let schema = try Self.schemaPrompt()
 
-    return try await container.perform { (context: ModelContext) in
-      let chat: [Chat.Message] = [.system(systemContent), .user(userContent)]
-      let input = try await context.processor.prepare(input: UserInput(chat: chat))
-      let parameters = GenerateParameters(
-        maxTokens: request.maxTokens,
-        temperature: Float(request.temperature),
-        topP: 1.0,
-        topK: 0,
-        seed: request.seed)
-      let started = ContinuousClock.now
-      let stream: AsyncStream<Generation>
-      switch request.gcd {
-      case .on:
-        stream = try await MLXStructured.generate(
-          input: input,
-          parameters: parameters,
-          context: context,
-          ebnf: try Self.grammarEBNF())
-      case .off:
-        stream = try MLXLMCommon.generate(
-          input: input,
-          parameters: parameters,
-          context: context)
-      }
-      var sql = ""
-      var tokensPerSecond = 0.0
-      var tokenCount: Int?
-      for await generation in stream {
-        switch generation {
-        case .chunk(let chunk):
-          sql += chunk
-        case .info(let info):
-          tokensPerSecond = info.tokensPerSecond
-          tokenCount = info.generationTokenCount
-        default:
-          break
+      let userContent = request.repair.map {
+        Self.repairPrompt(question: request.question, context: $0)
+      } ?? "Question: \(request.question)"
+      let systemContent = Self.systemPrompt(schema: schema)
+
+      let generation = try await container.perform { (context: ModelContext) in
+        state.setPhase("input_preparation")
+        let inputStarted = ContinuousClock.now
+        diagnosticClient.info(
+          category: .inference,
+          code: "mlx_input_preparation_started",
+          summary: "MLX prompt tokenization and input preparation started.",
+          context: baseContext)
+        let chat: [Chat.Message] = [.system(systemContent), .user(userContent)]
+        let input = try await context.processor.prepare(
+          input: UserInput(chat: chat))
+        diagnosticClient.info(
+          category: .inference,
+          code: "mlx_input_preparation_finished",
+          summary: "MLX prompt tokenization and input preparation finished.",
+          context: baseContext.merging([
+            "elapsed_ms": Self.milliseconds(
+              inputStarted.duration(to: .now).microseconds)
+          ]) { current, _ in current })
+
+        state.setPhase("decoder_setup")
+        let decoderStarted = ContinuousClock.now
+        diagnosticClient.info(
+          category: .inference,
+          code: "mlx_decoder_setup_started",
+          summary: "MLX decoder setup started.",
+          context: baseContext)
+        let parameters = GenerateParameters(
+          maxTokens: request.maxTokens,
+          temperature: Float(request.temperature),
+          topP: 1.0,
+          topK: 0,
+          seed: request.seed)
+        let stream: AsyncStream<Generation>
+        switch request.gcd {
+        case .on:
+          stream = try await MLXStructured.generate(
+            input: input,
+            parameters: parameters,
+            context: context,
+            ebnf: try Self.grammarEBNF())
+        case .off:
+          stream = try MLXLMCommon.generate(
+            input: input,
+            parameters: parameters,
+            context: context)
         }
+        diagnosticClient.info(
+          category: .inference,
+          code: "mlx_decoder_setup_finished",
+          summary: "MLX decoder setup finished.",
+          context: baseContext.merging([
+            "elapsed_ms": Self.milliseconds(
+              decoderStarted.duration(to: .now).microseconds)
+          ]) { current, _ in current })
+
+        state.setPhase("token_streaming")
+        let decodeStarted = ContinuousClock.now
+        diagnosticClient.info(
+          category: .inference,
+          code: "mlx_token_stream_started",
+          summary: "MLX token streaming started.",
+          context: baseContext)
+        let heartbeat = Task {
+          while !Task.isCancelled {
+            do {
+              try await Task.sleep(for: .seconds(5))
+            } catch {
+              break
+            }
+            guard !Task.isCancelled else { break }
+            diagnosticClient.info(
+              category: .inference,
+              code: "mlx_token_stream_heartbeat",
+              summary: "MLX token streaming is still in progress.",
+              context: baseContext.merging([
+                "decode_elapsed_ms": Self.milliseconds(
+                  decodeStarted.duration(to: .now).microseconds)
+              ]) { current, _ in current })
+          }
+        }
+        defer { heartbeat.cancel() }
+
+        var sql = ""
+        var tokensPerSecond = 0.0
+        var tokenCount: Int?
+        var chunkCount = 0
+        var didObserveFirstChunk = false
+        for await generation in stream {
+          switch generation {
+          case .chunk(let chunk):
+            chunkCount += 1
+            sql += chunk
+            if !didObserveFirstChunk {
+              didObserveFirstChunk = true
+              diagnosticClient.info(
+                category: .inference,
+                code: "mlx_first_output_chunk_observed",
+                summary: "MLX produced its first output chunk.",
+                context: baseContext.merging([
+                  "first_chunk_elapsed_ms": Self.milliseconds(
+                    decodeStarted.duration(to: .now).microseconds)
+                ]) { current, _ in current })
+            }
+          case .info(let info):
+            tokensPerSecond = info.tokensPerSecond
+            tokenCount = info.generationTokenCount
+          default:
+            break
+          }
+        }
+        let decodeElapsed = decodeStarted.duration(to: .now).microseconds
+        diagnosticClient.info(
+          category: .inference,
+          code: "mlx_token_stream_finished",
+          summary: "MLX token streaming finished.",
+          context: baseContext.merging([
+            "chunk_count": String(chunkCount),
+            "decode_elapsed_ms": Self.milliseconds(decodeElapsed),
+            "output_character_count": String(sql.count),
+            "task_cancelled": String(Task.isCancelled),
+            "token_count": tokenCount.map(String.init) ?? "unknown",
+            "tokens_per_second": String(format: "%.1f", tokensPerSecond),
+          ]) { current, _ in current })
+        try Task.checkCancellation()
+
+        state.setPhase("output_normalization")
+        let normalized = Self.stripSpecialTokens(sql)
+        let finalSQL =
+          request.gcd == .on
+          ? normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+          : Self.extractSQL(normalized)
+        state.setPhase("finished")
+        return SQLGeneration(
+          sql: finalSQL,
+          tokensPerSecond: tokensPerSecond,
+          modelName: generatedModelName,
+          tokenCount: tokenCount,
+          elapsedMicroseconds: decodeElapsed)
       }
-      let normalized = Self.stripSpecialTokens(sql)
-      let finalSQL =
-        request.gcd == .on
-        ? normalized.trimmingCharacters(in: .whitespacesAndNewlines)
-        : Self.extractSQL(normalized)
-      return SQLGeneration(
-        sql: finalSQL,
-        tokensPerSecond: tokensPerSecond,
-        modelName: self.modelName,
-        tokenCount: tokenCount,
-        elapsedMicroseconds: started.duration(to: .now).microseconds
-      )
+      diagnosticClient.info(
+        category: .inference,
+        code: "mlx_sql_generation_finished",
+        summary: "MLX SQL generation finished.",
+        context: baseContext.merging([
+          "decode_elapsed_ms": Self.milliseconds(
+            generation.elapsedMicroseconds),
+          "token_count": generation.tokenCount.map(String.init) ?? "unknown",
+          "tokens_per_second": String(
+            format: "%.1f", generation.tokensPerSecond),
+          "total_elapsed_ms": Self.milliseconds(
+            operationStarted.duration(to: .now).microseconds),
+        ]) { current, _ in current })
+      return generation
+    } catch {
+      var context = baseContext
+      context["error_type"] = String(reflecting: type(of: error))
+      context["failure_phase"] = state.phase
+      context["is_cancellation"] = String(error is CancellationError)
+      context["total_elapsed_ms"] = Self.milliseconds(
+        operationStarted.duration(to: .now).microseconds)
+      diagnosticClient.record(DiagnosticEvent(
+        level: .error,
+        category: .inference,
+        code: "mlx_sql_generation_failed",
+        summary: "MLX SQL generation failed during \(state.phase).",
+        details: PipelineDiagnosticPrivacy.redact(
+          DiagnosticDetails.describe(error),
+          conversationContent: [request.question]),
+        context: context))
+      throw error
     }
+  }
+
+  private nonisolated static func generationDiagnosticContext(
+    _ request: SQLGenerationRequest
+  ) -> [String: String] {
+    [
+      "candidate_role": diagnosticRole(request.role),
+      "gcd": request.gcd.rawValue,
+      "is_repair": String(request.repair != nil),
+      "max_tokens": String(request.maxTokens),
+      "temperature": String(format: "%.2f", request.temperature),
+    ]
+  }
+
+  private nonisolated static func diagnosticRole(
+    _ role: CandidateRole
+  ) -> String {
+    switch role {
+    case .initial:
+      "initial"
+    case .repair(let attempt):
+      "repair_\(attempt)"
+    case .deterministicAnchor:
+      "deterministic_anchor"
+    case .consistencySample(let index):
+      "consistency_sample_\(index)"
+    }
+  }
+
+  private nonisolated static func milliseconds(
+    _ microseconds: Int64
+  ) -> String {
+    String(format: "%.1f", Double(microseconds) / 1_000)
   }
 
   static func systemPrompt(schema: String) -> String {

@@ -15,3 +15,13 @@ rules:
           - pattern: $VALUE.contains($NEEDLE)
           - pattern: $VALUE.hasPrefix($NEEDLE)
           - pattern: $VALUE.hasSuffix($NEEDLE)
+  - id: creg-database-identity-requires-canonical-inputs
+    message: Canonicalize paired database paths and inputs before deriving their set identity.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern: database_set_identity($INPUTS)
+      - pattern-not-inside: |
+          $PATHS, $INPUTS = canonicalize_database_inputs(...)
+          ...
+          database_set_identity($INPUTS)
