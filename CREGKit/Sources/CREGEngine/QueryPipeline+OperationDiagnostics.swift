@@ -44,7 +44,10 @@ extension QueryPipeline {
       run: { question, history in
         AsyncStream { continuation in
           let task = Task {
-            var observer = PipelineOperationObserver(diagnostics: diagnostics)
+            var observer = PipelineOperationObserver(
+              diagnostics: diagnostics,
+              question: question,
+              history: history)
             diagnostics.info(
               category: .pipeline,
               code: "pipeline_stream_opened",
@@ -58,6 +61,7 @@ extension QueryPipeline {
               observer.record(event)
               continuation.yield(event)
             }
+            observer.streamClosed(cancelled: Task.isCancelled)
             continuation.finish()
           }
           continuation.onTermination = { termination in
@@ -77,14 +81,27 @@ extension QueryPipeline {
 private struct PipelineOperationObserver {
   var diagnostics: DiagnosticsClient
   private var roles: [CandidateID: CandidateRole] = [:]
+  private var candidateStates: [CandidateID: CandidateOperationState] = [:]
+  private var eventCount = 0
+  private var terminalEventSeen = false
+  private var turnStartedAt: ContinuousClock.Instant?
+  private var conversationContent: [String]
 
-  init(diagnostics: DiagnosticsClient) {
+  init(
+    diagnostics: DiagnosticsClient,
+    question: String,
+    history: [ConversationTurn]
+  ) {
     self.diagnostics = diagnostics
+    self.conversationContent = [question]
+      + history.flatMap { [$0.question, $0.answerSummary] }
   }
 
   mutating func record(_ event: PipelineEvent) {
+    eventCount += 1
     switch event {
     case .turnStarted:
+      turnStartedAt = .now
       info("pipeline_turn_started", "Pipeline turn started.")
 
     case .rewriteStarted:
@@ -116,6 +133,11 @@ private struct PipelineOperationObserver {
 
     case .generationStarted(let request):
       roles[request.candidateID] = request.role
+      conversationContent.append(request.question)
+      candidateStates[request.candidateID] = CandidateOperationState(
+        startedAt: .now,
+        stageStartedAt: .now,
+        stage: .generation)
       info(
         "pipeline_generation_started",
         "SQL candidate generation started.",
@@ -127,6 +149,10 @@ private struct PipelineOperationObserver {
         ])
 
     case .generationFinished(let candidateID, let generation):
+      candidateStates[candidateID]?.generationMicroseconds =
+        generation.elapsedMicroseconds
+      candidateStates[candidateID]?.stage = .postGeneration
+      candidateStates[candidateID]?.stageStartedAt = .now
       var context = candidateContext(candidateID)
       context["elapsed_ms"] = operationMilliseconds(
         generation.elapsedMicroseconds)
@@ -139,12 +165,23 @@ private struct PipelineOperationObserver {
         context: context)
 
     case .validationStarted(let candidateID):
+      candidateStates[candidateID]?.stage = .validation
+      candidateStates[candidateID]?.stageStartedAt = .now
       info(
         "pipeline_validation_started",
         "SQL candidate validation started.",
         context: candidateContext(candidateID))
 
     case .validationFinished(let candidateID, let report):
+      candidateStates[candidateID]?.validationMicroseconds =
+        report.elapsedMicroseconds
+      candidateStates[candidateID]?.issueKind = report.issue?.kind.rawValue
+      candidateStates[candidateID]?.disposition =
+        report.issue?.disposition.rawValue
+      if report.issue == nil {
+        candidateStates[candidateID]?.stage = .postValidation
+        candidateStates[candidateID]?.stageStartedAt = .now
+      }
       var context = candidateContext(candidateID)
       context["elapsed_ms"] = operationMilliseconds(
         report.elapsedMicroseconds)
@@ -157,12 +194,15 @@ private struct PipelineOperationObserver {
         context: context)
 
     case .executionStarted(let candidateID, _):
+      candidateStates[candidateID]?.stage = .execution
+      candidateStates[candidateID]?.stageStartedAt = .now
       info(
         "pipeline_execution_started",
         "SQL candidate execution started.",
         context: candidateContext(candidateID))
 
     case .executionFinished(let candidateID, let result):
+      candidateStates[candidateID]?.stage = .finished
       var context = candidateContext(candidateID)
       context["column_count"] = String(result.columns.count)
       context["row_count"] = String(result.rowCount)
@@ -175,13 +215,30 @@ private struct PipelineOperationObserver {
         "SQL candidate execution finished.",
         context: context)
 
-    case .executionFailed(let candidateID, _, let attempt):
+    case .executionFailed(let candidateID, let message, let attempt):
       var context = candidateContext(candidateID)
       context["attempt"] = String(attempt)
-      info(
-        "pipeline_candidate_failed",
-        "A SQL candidate did not produce an executable result.",
-        context: context)
+      let state = candidateStates[candidateID]
+      let failureStage = state?.stage.rawValue ?? "unknown"
+      context["failure_stage"] = failureStage
+      context["issue_kind"] = state?.issueKind ?? "none"
+      context["disposition"] = state?.disposition ?? "none"
+      if let startedAt = state?.startedAt {
+        context["candidate_elapsed_ms"] = operationMilliseconds(
+          startedAt.duration(to: .now).microseconds)
+      }
+      if let stageStartedAt = state?.stageStartedAt {
+        context["stage_elapsed_ms"] = operationMilliseconds(
+          stageStartedAt.duration(to: .now).microseconds)
+      }
+      diagnostics.record(DiagnosticEvent(
+        level: .error,
+        category: .pipeline,
+        code: "pipeline_candidate_failed",
+        summary: "A SQL candidate failed during \(failureStage).",
+        details: PipelineDiagnosticPrivacy.redact(
+          message, conversationContent: conversationContent),
+        context: addingTurnElapsed(to: context)))
 
     case .repairStarted(let attempt):
       info(
@@ -229,10 +286,15 @@ private struct PipelineOperationObserver {
         ])
 
     case .turnFinished(let outcome, let telemetry):
+      terminalEventSeen = true
       var context = [
         "outcome": turnOutcome(outcome),
         "generated_count": String(telemetry.generatedCount),
         "repair_attempts": String(telemetry.repairAttempts),
+        "failed_candidate_count": String(
+          telemetry.candidates.filter { $0.error != nil }.count),
+        "successful_candidate_count": String(
+          telemetry.candidates.filter { $0.result != nil }.count),
         "total_elapsed_ms": operationMilliseconds(
           telemetry.stageTimings.totalMicroseconds),
       ]
@@ -241,6 +303,8 @@ private struct PipelineOperationObserver {
       context["timeout_stage"] = timeoutStage(telemetry.timeoutStage)
       context["no_consensus_reason"] =
         telemetry.noConsensusReason?.rawValue ?? "none"
+      context["terminal_error_present"] = String(telemetry.terminalError != nil)
+      addTimingContext(telemetry.stageTimings, to: &context)
       info(
         "pipeline_turn_finished",
         "Pipeline turn finished.",
@@ -248,8 +312,41 @@ private struct PipelineOperationObserver {
     }
   }
 
+  mutating func streamClosed(cancelled: Bool) {
+    let context = addingTurnElapsed(to: [
+      "cancelled": String(cancelled),
+      "event_count": String(eventCount),
+      "terminal_event_seen": String(terminalEventSeen),
+    ])
+    if !cancelled && !terminalEventSeen {
+      diagnostics.record(DiagnosticEvent(
+        level: .error,
+        category: .pipeline,
+        code: "pipeline_stream_ended_without_terminal_event",
+        summary: "The pipeline event stream ended without a terminal event.",
+        context: context))
+    } else {
+      diagnostics.info(
+        category: .pipeline,
+        code: "pipeline_stream_closed",
+        summary: "The pipeline event stream closed.",
+        context: context)
+    }
+  }
+
   private func candidateContext(_ id: CandidateID) -> [String: String] {
-    ["candidate_role": roles[id].map(candidateRole) ?? "unknown"]
+    var context = [
+      "candidate_role": roles[id].map(candidateRole) ?? "unknown"
+    ]
+    if let generationMicroseconds = candidateStates[id]?.generationMicroseconds {
+      context["generation_elapsed_ms"] = operationMilliseconds(
+        generationMicroseconds)
+    }
+    if let validationMicroseconds = candidateStates[id]?.validationMicroseconds {
+      context["validation_elapsed_ms"] = operationMilliseconds(
+        validationMicroseconds)
+    }
+    return context
   }
 
   private func info(
@@ -261,8 +358,55 @@ private struct PipelineOperationObserver {
       category: .pipeline,
       code: code,
       summary: summary,
-      context: context)
+      context: addingTurnElapsed(to: context))
   }
+
+  private func addingTurnElapsed(
+    to context: [String: String]
+  ) -> [String: String] {
+    guard let turnStartedAt else { return context }
+    var context = context
+    context["turn_elapsed_ms"] = operationMilliseconds(
+      turnStartedAt.duration(to: .now).microseconds)
+    return context
+  }
+
+  private func addTimingContext(
+    _ timings: StageTimings,
+    to context: inout [String: String]
+  ) {
+    context["rewrite_elapsed_ms"] = optionalMilliseconds(
+      timings.rewriteMicroseconds)
+    context["gate_elapsed_ms"] = optionalMilliseconds(
+      timings.gateMicroseconds)
+    context["validation_elapsed_ms"] = optionalMilliseconds(
+      timings.validationMicroseconds)
+    context["grounding_elapsed_ms"] = optionalMilliseconds(
+      timings.groundingMicroseconds)
+    context["voting_elapsed_ms"] = optionalMilliseconds(
+      timings.votingMicroseconds)
+    context["narration_elapsed_ms"] = optionalMilliseconds(
+      timings.narrationMicroseconds)
+  }
+}
+
+private struct CandidateOperationState {
+  var startedAt: ContinuousClock.Instant
+  var stageStartedAt: ContinuousClock.Instant
+  var stage: CandidateOperationStage
+  var generationMicroseconds: Int64?
+  var validationMicroseconds: Int64?
+  var issueKind: String?
+  var disposition: String?
+}
+
+private enum CandidateOperationStage: String {
+  case generation
+  case postGeneration = "post_generation"
+  case validation
+  case postValidation = "post_validation"
+  case execution
+  case finished
 }
 
 private func candidateRole(_ role: CandidateRole) -> String {
@@ -332,4 +476,8 @@ private func turnOutcome(_ outcome: TurnOutcome) -> String {
 
 private func operationMilliseconds(_ microseconds: Int64) -> String {
   String(format: "%.1f", Double(microseconds) / 1_000)
+}
+
+private func optionalMilliseconds(_ microseconds: Int64?) -> String {
+  microseconds.map(operationMilliseconds) ?? "not_started"
 }

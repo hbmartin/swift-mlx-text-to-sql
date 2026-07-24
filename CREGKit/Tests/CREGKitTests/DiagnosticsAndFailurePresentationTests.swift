@@ -600,6 +600,162 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(recorder.events.first?.details?.contains("private question") == false)
   }
 
+  @Test func operationalCandidateFailureIncludesExactStageTimingAndSafeDetails()
+    async
+  {
+    let recorder = DiagnosticEventRecorder()
+    let privateQuestion = "private portfolio vacancy question"
+    let privateSQL = "SELECT secret_value FROM private_table"
+    let request = SQLGenerationRequest(
+      candidateID: CandidateID(rawValue: "initial"),
+      role: .initial,
+      model: Self.model,
+      question: privateQuestion,
+      gcd: .on,
+      temperature: 0,
+      seed: nil,
+      maxTokens: 64)
+    let message =
+      "validation rejected question=\(privateQuestion) at /private/db.sqlite; SQL: \(privateSQL)"
+    let report = SQLValidationReport(
+      issue: SQLValidationIssue(
+        kind: .binding,
+        disposition: .repairable,
+        message: message),
+      elapsedMicroseconds: 2_000)
+    var candidate = CandidateTelemetry(request: request)
+    candidate.sql = privateSQL
+    candidate.error = message
+    candidate.generationMicroseconds = 1_000
+    candidate.validationReport = report
+    let telemetry: TurnTelemetry = {
+      var telemetry = TurnTelemetry(originalQuestion: privateQuestion)
+      telemetry.candidates = [candidate]
+      telemetry.generatedCount = 1
+      telemetry.terminalError = message
+      telemetry.stageTimings.totalMicroseconds = 4_000
+      return telemetry
+    }()
+
+    let source = QueryPipeline { _, _ in
+      AsyncStream { continuation in
+        continuation.yield(.turnStarted(question: privateQuestion))
+        continuation.yield(.generationStarted(request: request))
+        continuation.yield(.generationFinished(
+          candidateID: request.candidateID,
+          generation: SQLGeneration(
+            sql: privateSQL,
+            tokensPerSecond: 1,
+            modelName: "test",
+            tokenCount: 1,
+            elapsedMicroseconds: 1_000)))
+        continuation.yield(.validationStarted(
+          candidateID: request.candidateID))
+        continuation.yield(.validationFinished(
+          candidateID: request.candidateID,
+          report: report))
+        continuation.yield(.executionFailed(
+          candidateID: request.candidateID,
+          message: message,
+          attempt: 0))
+        continuation.yield(.turnFinished(
+          outcome: .failed(message: "Try again."),
+          telemetry: telemetry))
+        continuation.finish()
+      }
+    }.reportingOperations(to: recorder.client)
+
+    _ = await Array(source.run(privateQuestion, []))
+
+    let failure = recorder.events.first {
+      $0.code == "pipeline_candidate_failed"
+    }
+    #expect(failure?.level == .error)
+    #expect(failure?.context["candidate_role"] == "initial")
+    #expect(failure?.context["failure_stage"] == "validation")
+    #expect(failure?.context["issue_kind"] == "binding")
+    #expect(failure?.context["disposition"] == "repairable")
+    #expect(failure?.context["generation_elapsed_ms"] == "1.0")
+    #expect(failure?.context["validation_elapsed_ms"] == "2.0")
+    #expect(failure?.context["candidate_elapsed_ms"] != nil)
+    #expect(failure?.context["stage_elapsed_ms"] != nil)
+    #expect(failure?.context["turn_elapsed_ms"] != nil)
+    #expect(failure?.details?.contains(privateQuestion) == false)
+    #expect(failure?.details?.contains(privateSQL) == false)
+    #expect(failure?.details?.contains("/private/db.sqlite") == false)
+    #expect(
+      failure?.details?.contains("<redacted conversation content>") == true)
+    #expect(failure?.details?.contains("<redacted SQL>") == true)
+    #expect(failure?.details?.contains("<redacted path>") == true)
+  }
+
+  @Test func operationalStreamWithoutTerminalEventIsReportedAsAnError() async {
+    let recorder = DiagnosticEventRecorder()
+    let source = QueryPipeline { question, _ in
+      AsyncStream { continuation in
+        continuation.yield(.turnStarted(question: question))
+        continuation.finish()
+      }
+    }.reportingOperations(to: recorder.client)
+
+    _ = await Array(source.run("question", []))
+
+    let failure = recorder.events.last
+    #expect(failure?.code == "pipeline_stream_ended_without_terminal_event")
+    #expect(failure?.level == .error)
+    #expect(failure?.context["cancelled"] == "false")
+    #expect(failure?.context["event_count"] == "1")
+    #expect(failure?.context["terminal_event_seen"] == "false")
+    #expect(failure?.context["turn_elapsed_ms"] != nil)
+  }
+
+  @Test func liveGenerationDeadlineExplainsLimitAndCancellationCleanup()
+    async throws
+  {
+    let recorder = DiagnosticEventRecorder()
+    var config = configuration()
+    config.deadlines = PipelineDeadlines(
+      generationSeconds: 0.01,
+      wholeTurnSeconds: 1)
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _ in
+        try await Task.sleep(for: .milliseconds(100))
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient { _ in
+        Issue.record("database must not run after a generation deadline")
+        return QueryResult(columns: [], rows: [])
+      },
+      serializer: InferenceSerializer(diagnostics: recorder.client),
+      configuration: config
+    ).reportingOperations(to: recorder.client)
+
+    let terminal = try #require(terminalEvent(
+      await Array(pipeline.run("question", []))))
+    #expect(terminal.1.timeoutStage == "generation")
+
+    let candidateFailure = recorder.events.first {
+      $0.code == "pipeline_candidate_failed"
+    }
+    #expect(candidateFailure?.context["failure_stage"] == "generation")
+    #expect(candidateFailure?.context["candidate_role"] == "initial")
+    #expect(candidateFailure?.context["candidate_elapsed_ms"] != nil)
+    #expect(candidateFailure?.details?.contains("deadline_ms=10.0") == true)
+    #expect(
+      candidateFailure?.details?.contains("cancellation cleanup") == true)
+
+    let deadline = recorder.events.first {
+      $0.code == "pipeline_deadline_exceeded"
+    }
+    #expect(deadline?.context["timeout_stage"] == "generation")
+    #expect(deadline?.context["candidate_role"] == "initial")
+    #expect(deadline?.context["total_elapsed_ms"] != nil)
+    #expect(deadline?.details?.contains("deadline_ms=10.0") == true)
+    #expect(recorder.events.map(\.code).contains("inference_failed"))
+  }
+
   @Test func operationalPipelineLogsMetadataWithoutPayloads() async {
     let recorder = DiagnosticEventRecorder()
     let privateQuestion = "private vacancy question"
@@ -750,6 +906,30 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(recorder.events.first?.context["wait_ms"] != nil)
     #expect(recorder.events.last?.context["total_elapsed_ms"] != nil)
     #expect(recorder.events.allSatisfy { $0.details == nil })
+  }
+
+  @Test func inferenceSerializerFailureIncludesSafeErrorClassification() async {
+    let recorder = DiagnosticEventRecorder()
+    let serializer = InferenceSerializer(diagnostics: recorder.client)
+
+    await #expect(throws: (any Error).self) {
+      _ = try await serializer.run(operation: .sqlGeneration) {
+        throw DiagnosticsTestError.failed(
+          "decoder weights unavailable at /private/model/weights.safetensors")
+      } as Int
+    }
+
+    let failure = recorder.events.last
+    #expect(failure?.code == "inference_failed")
+    #expect(failure?.level == .error)
+    #expect(failure?.context["operation"] == "sql_generation")
+    #expect(failure?.context["error_type"]?.contains("DiagnosticsTestError") == true)
+    #expect(failure?.context["is_cancellation"] == "false")
+    #expect(failure?.context["total_elapsed_ms"] != nil)
+    #expect(failure?.details?.contains("DiagnosticsTestError") == true)
+    #expect(
+      failure?.details?.contains("/private/model/weights.safetensors") == false)
+    #expect(failure?.details?.contains("decoder weights unavailable") == false)
   }
 }
 

@@ -89,17 +89,26 @@ private struct PipelineUnavailableError: Error, CustomStringConvertible {
   var description: String { diagnostic }
 }
 
-private enum PipelineDiagnosticPrivacy {
+enum PipelineDiagnosticPrivacy {
   static func redact(
     _ diagnostic: String,
     question: String,
     history: [ConversationTurn],
     telemetry: TurnTelemetry
   ) -> String {
-    var value = diagnostic
-    let conversationContent = Set(
+    redact(
+      diagnostic,
+      conversationContent:
       [question, telemetry.originalQuestion, telemetry.standaloneQuestion]
         + history.flatMap { [$0.question, $0.answerSummary] })
+  }
+
+  static func redact(
+    _ diagnostic: String,
+    conversationContent: [String]
+  ) -> String {
+    var value = diagnostic
+    let conversationContent = Set(conversationContent)
       .filter { !$0.isEmpty }
       .sorted { $0.count > $1.count }
     for content in conversationContent {
@@ -139,7 +148,8 @@ private enum PipelineDiagnosticStage: String, Sendable {
   case rewrite
   case gate
   case generation
-  case database
+  case validation
+  case execution
   case narration
   case unexpected
 
@@ -151,8 +161,10 @@ private enum PipelineDiagnosticStage: String, Sendable {
       self = .gate
     case .generationStarted:
       self = .generation
-    case .validationStarted, .executionStarted:
-      self = .database
+    case .validationStarted:
+      self = .validation
+    case .executionStarted:
+      self = .execution
     case .narrationStarted:
       self = .narration
     default:
@@ -197,11 +209,26 @@ private struct PipelineTerminalFailure: Sendable {
       terminalDiagnostic
       ?? candidateDiagnostic
       ?? "The pipeline ended without an underlying diagnostic."
-    let baseContext = [
+    var baseContext = [
       "stage": stage.rawValue,
       "candidate_count": String(telemetry.candidates.count),
       "repair_attempts": String(telemetry.repairAttempts),
+      "total_elapsed_ms": terminalMilliseconds(
+        telemetry.stageTimings.totalMicroseconds),
     ]
+    if let lastFailure {
+      baseContext["candidate_role"] = terminalCandidateRole(lastFailure.role)
+      baseContext["candidate_generation_elapsed_ms"] =
+        lastFailure.generationMicroseconds.map(terminalMilliseconds) ?? "not_started"
+      baseContext["candidate_execution_elapsed_ms"] =
+        lastFailure.executionMicroseconds.map(terminalMilliseconds) ?? "not_started"
+      baseContext["issue_kind"] =
+        lastFailure.validationReport?.issue?.kind.rawValue ?? "none"
+      baseContext["disposition"] =
+        lastFailure.validationReport?.issue?.disposition.rawValue ?? "none"
+      baseContext["generated_sql"] = String(lastFailure.sql != nil)
+      baseContext["produced_result"] = String(lastFailure.result != nil)
+    }
 
     if let timeoutStage = telemetry.timeoutStage {
       let cancelled = timeoutStage == "cancelled"
@@ -215,7 +242,7 @@ private struct PipelineTerminalFailure: Sendable {
         userMessage: cancelled
           ? "That answer was cancelled. Please try again."
           : "That answer took too long. Please try again.",
-        diagnostic: fallbackDiagnostic,
+        diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
         context: baseContext.merging(["timeout_stage": timeoutStage]) {
           current, _ in current
         })
@@ -268,4 +295,21 @@ private struct PipelineTerminalFailure: Sendable {
         context: baseContext)
     }
   }
+}
+
+private func terminalCandidateRole(_ role: CandidateRole) -> String {
+  switch role {
+  case .initial:
+    "initial"
+  case .repair(let attempt):
+    "repair_\(attempt)"
+  case .deterministicAnchor:
+    "deterministic_anchor"
+  case .consistencySample(let index):
+    "consistency_sample_\(index)"
+  }
+}
+
+private func terminalMilliseconds(_ microseconds: Int64) -> String {
+  String(format: "%.1f", Double(microseconds) / 1_000)
 }
