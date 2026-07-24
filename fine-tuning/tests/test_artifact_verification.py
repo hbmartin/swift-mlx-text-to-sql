@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import subprocess
@@ -11,10 +12,12 @@ from tools.fetch_model import (
     ArtifactError,
     LOCK_FILE,
     PRODUCTION_RECEIPT_FILE,
+    copy_distribution_license,
     copy_production,
     declared_directory_sha256,
     directory_digest,
     directory_inventory,
+    require_current_production_policy,
     verify_artifact_tree_at_use,
 )
 
@@ -29,6 +32,83 @@ def test_fetch_model_direct_script_entrypoint_resolves_shared_integrity():
 
     assert completed.returncode == 0, completed.stderr
     assert "--production" in completed.stdout
+    assert "--allow-historical-policy" in completed.stdout
+
+
+def test_historical_policy_exception_is_rejected_outside_production_mode():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/fetch_model.py",
+            "--model",
+            "qwen25-coder-3b",
+            "--allow-historical-policy",
+        ],
+        cwd=fetch_model.REPO_ROOT / "fine-tuning",
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert (
+        "--allow-historical-policy is valid only with --production"
+        in completed.stderr
+    )
+
+
+def test_historical_policy_requires_an_explicit_rollout_exception():
+    historical = {"model_key": "historical"}
+
+    with pytest.raises(ArtifactError, match="historical policy evidence"):
+        require_current_production_policy(
+            historical,
+            allow_historical_policy=False,
+        )
+
+    require_current_production_policy(
+        historical,
+        allow_historical_policy=True,
+    )
+
+
+def test_bounded_policy_never_needs_the_rollout_exception():
+    require_current_production_policy(
+        {"policy_version": "bounded-three-generation-v1"},
+        allow_historical_policy=False,
+    )
+
+
+def test_distribution_files_already_in_verified_artifact_avoid_hub_symlinks(
+    tmp_path, monkeypatch
+):
+    license_bytes = b"pinned license bytes\n"
+    notice_bytes = b"pinned notice bytes\n"
+    (tmp_path / "LICENSE").write_bytes(license_bytes)
+    (tmp_path / "NOTICE").write_bytes(notice_bytes)
+    artifact = {
+        "license": {
+            "required_distribution_file": {
+                "path": "LICENSE",
+                "source_path": "LICENSE",
+                "source_repository": "owner/source",
+                "source_revision": "a" * 40,
+                "size": len(license_bytes),
+                "sha256": hashlib.sha256(license_bytes).hexdigest(),
+            },
+            "required_notice_file": {
+                "path": "NOTICE",
+                "source_path": "missing-notice.txt",
+                "size": len(notice_bytes),
+                "sha256": hashlib.sha256(notice_bytes).hexdigest(),
+            },
+        }
+    }
+
+    def fail_download(**_kwargs):
+        raise AssertionError("verified bundled licenses must not hit the Hub")
+
+    monkeypatch.setattr(fetch_model, "hf_hub_download", fail_download)
+    copy_distribution_license(artifact, tmp_path, local_files_only=False)
 
 
 def make_artifact_tree(tmp_path):

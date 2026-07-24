@@ -620,6 +620,14 @@ def test_wandb_test_double_observes_group_metrics_tables_artifacts_and_receipts(
         "model-reference",
         "evidence",
     }
+    artifact_names = [
+        name
+        for artifact in fake.run.artifacts
+        for _path, name in artifact.files
+    ]
+    assert artifact_names
+    assert all(not name.startswith("/") for name in artifact_names)
+    assert all(".." not in Path(name).parts for name in artifact_names)
     assert receipt["artifacts"]
     assert all(
         item["version"] == "v0" and item["digest"] for item in receipt["artifacts"]
@@ -740,7 +748,7 @@ def test_sweep_files_define_v3_screening_and_controlled_repair_ablation():
         assert campaign_argument.removeprefix("--campaign-id=") == config["name"]
         assert config["metric"] == {"name": "development/ex", "goal": "maximize"}
         assert config["parameters"]["seed"]["value"] == 424242
-        assert config["parameters"]["repair-fraction"]["value"] == 0.10
+        assert config["parameters"]["repair-fraction"]["value"] == 0.20
     ablation = yaml.safe_load(
         (ROOT / "fine-tuning/config/sweeps/repair-ratio-ablation.yaml").read_text()
     )

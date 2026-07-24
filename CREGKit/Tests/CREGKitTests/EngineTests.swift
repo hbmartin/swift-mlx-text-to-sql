@@ -542,6 +542,61 @@ import Testing
       try ModelManifestLoader.production(url: url)
     }
   }
+
+  @Test func debugCandidateRequiresExplicitOptInAndLoadsIdentity() throws {
+    let revision = String(repeating: "b", count: 40)
+    let checkpoint = String(repeating: "b", count: 64)
+    let url = try manifestURL(
+      """
+      {
+        "production_status": "debug-candidate",
+        "models": [{
+          "key": "debug-ft-run-new",
+          "repository": "local-debug/run-new",
+          "revision": "\(revision)",
+          "quantization": {"bits": 4}
+        }],
+        "production": {
+          "model_key": "debug-ft-run-new",
+          "gcd": "on",
+          "temperature": 0,
+          "top_p": 1.0,
+          "top_k": 0,
+          "max_tokens": 512,
+          "voting": {
+            "candidate_count": 1,
+            "sample_temperature": 0,
+            "always_vote": false
+          }
+        },
+        "debug_candidate": {
+          "model_key": "debug-ft-run-new",
+          "base_model_key": "qwen25-coder-3b",
+          "training_run_id": "run-new",
+          "selected_iteration": 600,
+          "selected_checkpoint_sha256": "\(checkpoint)",
+          "local_evidence_status": "awaiting_wandb",
+          "wandb_receipt_required": false
+        }
+      }
+      """)
+
+    #expect(
+      throws: ModelManifestError.invalidProductionConfiguration(
+        "Debug candidate manifests are forbidden in this build configuration")
+    ) {
+      try ModelManifestLoader.production(url: url)
+    }
+
+    let production = try ModelManifestLoader.production(
+      url: url,
+      allowDebugCandidate: true)
+    #expect(production.model.key == "debug-ft-run-new")
+    #expect(production.candidateCount == 1)
+    #expect(production.debugModelIdentity?.trainingRunID == "run-new")
+    #expect(production.debugModelIdentity?.selectedIteration == 600)
+    #expect(production.debugModelIdentity?.wandbReceiptRequired == false)
+  }
 }
 
 @Suite struct QueryPipelineTests {

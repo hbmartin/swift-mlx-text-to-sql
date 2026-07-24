@@ -68,7 +68,7 @@
 				C4E60000000000000000000A /* Sources */,
 				C4E60000000000000000000B /* Frameworks */,
 				C4E60000000000000000000C /* Resources */,
-				C4E60000000000000000001C /* Materialize Verified Production Model */,
+				C4E60000000000000000001C /* Materialize Bundled SQL Model */,
 			);
 			buildRules = (
 			);
@@ -131,7 +131,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		C4E60000000000000000001C /* Materialize Verified Production Model */ = {
+		C4E60000000000000000001C /* Materialize Bundled SQL Model */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -143,16 +143,17 @@
 				"$(SRCROOT)/model-manifest.json",
 				"$(SRCROOT)/fine-tuning/uv.lock",
 				"$(SRCROOT)/fine-tuning/tools/fetch_model.py",
+				"$(SRCROOT)/fine-tuning/tools/materialize_debug_model.py",
 				"$(SRCROOT)/fine-tuning/eval/file_integrity.py",
 			);
-			name = "Materialize Verified Production Model";
+			name = "Materialize Bundled SQL Model";
 			outputFileListPaths = (
 			);
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\n\nUV_BIN=\"$(command -v uv || true)\"\nif [[ -z \"$UV_BIN\" && -x \"$HOME/.local/bin/uv\" ]]; then\n  UV_BIN=\"$HOME/.local/bin/uv\"\nfi\nif [[ -z \"$UV_BIN\" ]]; then\n  echo \"error: uv is required to materialize the pinned SQL model. Install uv and rebuild.\"\n  exit 1\nfi\n\nRESOURCE_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nMODEL_DIR=\"$RESOURCE_DIR/SQLModel\"\nMODELS_CACHE=\"${CREG_MODELS_DIR:-$SRCROOT/models}\"\nmkdir -p \"$RESOURCE_DIR\"\ncp \"$SRCROOT/model-manifest.json\" \"$RESOURCE_DIR/model-manifest.json\"\ncd \"$SRCROOT/fine-tuning\"\n\n\"$UV_BIN\" run --frozen python tools/fetch_model.py \\\n  --production --models-dir \"$MODELS_CACHE\" --destination \"$MODEL_DIR\"\n";
+			shellScript = "set -euo pipefail\n\nUV_BIN=\"$(command -v uv || true)\"\nif [[ -z \"$UV_BIN\" && -x \"$HOME/.local/bin/uv\" ]]; then\n  UV_BIN=\"$HOME/.local/bin/uv\"\nfi\nif [[ -z \"$UV_BIN\" ]]; then\n  echo \"error: uv is required to materialize the pinned SQL model. Install uv and rebuild.\"\n  exit 1\nfi\n\nRESOURCE_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nMODEL_DIR=\"$RESOURCE_DIR/SQLModel\"\nMANIFEST_DESTINATION=\"$RESOURCE_DIR/model-manifest.json\"\nRECEIPT_DESTINATION=\"$RESOURCE_DIR/production-model-receipt.json\"\nMODELS_CACHE=\"${CREG_MODELS_DIR:-$SRCROOT/models}\"\nDEBUG_FUSED_CACHE=\"${CREG_DEBUG_FUSED_MODELS_DIR:-$MODELS_CACHE/debug-fused}\"\nDEBUG_TRAINING_RUN=\"${CREG_DEBUG_TRAINING_RUN:-}\"\nmkdir -p \"$RESOURCE_DIR\"\ncd \"$SRCROOT/fine-tuning\"\n\nif [[ \"$CONFIGURATION\" == \"Debug\" && -n \"$DEBUG_TRAINING_RUN\" ]]; then\n  DEBUG_ARGS=(\n    --training-runs-dir \"$SRCROOT/eval/training-runs\"\n    --model-manifest \"$SRCROOT/model-manifest.json\"\n    --models-dir \"$MODELS_CACHE\"\n    --fused-cache \"$DEBUG_FUSED_CACHE\"\n    --destination \"$MODEL_DIR\"\n    --manifest-destination \"$MANIFEST_DESTINATION\"\n    --receipt-destination \"$RECEIPT_DESTINATION\"\n  )\n  if [[ \"$DEBUG_TRAINING_RUN\" == \"latest-local-v3\" ]]; then\n    DEBUG_ARGS+=(--latest-local-v3)\n  else\n    DEBUG_ARGS+=(--training-run \"$DEBUG_TRAINING_RUN\")\n  fi\n  echo \"warning: Debug is bundling an experimental local reliability-v3 model without requiring a W&B receipt.\"\n  \"$UV_BIN\" run --frozen python tools/materialize_debug_model.py \"${DEBUG_ARGS[@]}\"\n  exit 0\nfi\n\nif [[ -n \"$DEBUG_TRAINING_RUN\" ]]; then\n  echo \"error: CREG_DEBUG_TRAINING_RUN is forbidden outside Debug builds.\"\n  exit 1\nfi\n\ncp \"$SRCROOT/model-manifest.json\" \"$MANIFEST_DESTINATION\"\nFETCH_ARGS=(\n  --production\n  --models-dir \"$MODELS_CACHE\"\n  --destination \"$MODEL_DIR\"\n)\nif [[ \"$CONFIGURATION\" == \"Debug\" ]]; then\n  FETCH_ARGS+=(--allow-historical-policy)\nfi\n\"$UV_BIN\" run --frozen python tools/fetch_model.py \"${FETCH_ARGS[@]}\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -230,6 +231,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
+				CREG_DEBUG_TRAINING_RUN = "latest-local-v3";
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = MGPHJKUJSY;
 				ENABLE_PREVIEWS = YES;

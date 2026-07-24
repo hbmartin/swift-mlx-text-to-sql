@@ -19,7 +19,7 @@ parameters:
   seed:
     value: 424242
   repair-fraction:
-    value: 0.10
+    value: 0.20
   fine-tune-type:
     values: [lora, dora]
   trainable-layers:

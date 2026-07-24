@@ -1,6 +1,12 @@
 import json
 
-from eval.campaign import promotion_plan, select_campaign_winner
+import pytest
+
+from eval.campaign import (
+    CampaignSelectionError,
+    promotion_plan,
+    select_campaign_winner,
+)
 
 
 def manifest(tmp_path, family, recipe, seed, ex, parameters):
@@ -142,6 +148,42 @@ def test_winner_uses_clustered_development_metrics_and_canonical_seed(tmp_path):
     assert result["winner"]["artifact_model_key"].startswith("ft-")
     assert len(result["inputs"]) == 12
     assert all(len(item["manifest_sha256"]) == 64 for item in result["inputs"])
+
+
+def test_winner_reports_a_recipe_missing_the_canonical_seed(tmp_path):
+    promoted = []
+    recipes = [
+        ("qwen25-coder-3b", "recipe-a"),
+        ("qwen25-coder-3b", "recipe-b"),
+        ("xiyansql-qwencoder-3b", "recipe-c"),
+        ("xiyansql-qwencoder-3b", "recipe-d"),
+    ]
+    for family, recipe in recipes:
+        seeds = (424239, 424240, 424241) if recipe == "recipe-a" else (
+            424240,
+            424241,
+            424242,
+        )
+        for seed in seeds:
+            promoted.append(
+                manifest(
+                    tmp_path,
+                    family,
+                    recipe,
+                    seed,
+                    0.75,
+                    parameters(),
+                )
+            )
+    receipts = [
+        eligibility(item)
+        for item in promoted
+        if item["experiment"]["seed"] == 424242
+    ]
+    with pytest.raises(
+        CampaignSelectionError, match="recipe-a lacks canonical seed 424242"
+    ):
+        select_campaign_winner(promoted, receipts)
 
 
 def test_promotion_rejects_a_high_ex_recipe_without_binding_eligibility(tmp_path):

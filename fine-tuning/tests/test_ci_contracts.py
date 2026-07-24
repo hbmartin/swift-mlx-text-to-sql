@@ -63,14 +63,20 @@ def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
         check_ci_contracts.main()
 
 
-def test_every_xcode_configuration_bundles_the_verified_production_model():
+def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only():
     project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
-    assert "Materialize Verified Production Model" in project
-    assert "--production --models-dir" in project
+    assert "Materialize Bundled SQL Model" in project
+    assert "--production" in project
+    assert "--models-dir" in project
     assert '--destination \\"$MODEL_DIR\\"' in project
     assert "--local-files-only" not in project
-    assert "Debug will download" not in project
-    assert 'if [[ \\"$CONFIGURATION\\"' not in project
+    assert "--allow-historical-policy" in project
+    assert 'if [[ \\"$CONFIGURATION\\" == \\"Debug\\" ]]' in project
+    assert "tools/materialize_debug_model.py" in project
+    assert "--latest-local-v3" in project
+    assert 'CREG_DEBUG_TRAINING_RUN = "latest-local-v3";' in project
+    assert "CREG_DEBUG_TRAINING_RUN is forbidden outside Debug builds" in project
+    assert "without requiring a W&B receipt" in project
 
     live_dependencies = (
         check_ci_contracts.ROOT
@@ -79,3 +85,6 @@ def test_every_xcode_configuration_bundles_the_verified_production_model():
     assert "ProductionModelReceiptLoader.validate" in live_dependencies
     assert "SQLGenClient.live(directory: bundledModelDirectory)" in live_dependencies
     assert "SQLGenClient.live(model:" not in live_dependencies
+    assert "#if !DEBUG" in live_dependencies
+    assert "Release requires schema-v3 bounded-policy evidence" in live_dependencies
+    assert "Release refuses Debug candidate model identities" in live_dependencies

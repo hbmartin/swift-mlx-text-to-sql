@@ -131,6 +131,13 @@ class EntropyOnlyProcessor:
         return logits
 
 
+def database_set_identity(database_inputs: list[dict[str, Any]]) -> str:
+    """Return an order-independent identity for one set of database bytes."""
+
+    digests = sorted(str(item["sha256"]) for item in database_inputs)
+    return sha256_bytes("\n".join(digests).encode())
+
+
 def strip_special_tokens(text: str) -> str:
     return re.sub(r"<\|[a-zA-Z0-9_]+\|>", "", text)
 
@@ -318,9 +325,7 @@ def main() -> None:
     if missing_databases:
         raise SystemExit(f"evaluation database is missing: {missing_databases[0]}")
     database_inputs = [input_hash(path) for path in database_paths]
-    snapshot_identity = sha256_bytes(
-        "\n".join(item["sha256"] for item in database_inputs).encode()
-    )
+    snapshot_identity = database_set_identity(database_inputs)
     # Provenance is a precondition, not an output-writing step. A git-less
     # environment must fail before reserving the deterministic run ID.
     git = git_provenance()

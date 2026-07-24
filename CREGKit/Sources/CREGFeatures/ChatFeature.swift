@@ -29,8 +29,26 @@ public struct ChatFeature: Sendable {
     /// Set after a successful export, consumed by the share sheet.
     public var exportURL: URL?
     public var presentedFailure: FailurePresentation?
+    public var debugModelIdentity: DebugModelIdentity?
 
-    public init() {}
+    public init(debugModelIdentity: DebugModelIdentity? = nil) {
+      #if DEBUG
+        self.debugModelIdentity = debugModelIdentity ?? Self.bundledDebugModelIdentity()
+      #else
+        self.debugModelIdentity = nil
+      #endif
+    }
+
+    private static func bundledDebugModelIdentity() -> DebugModelIdentity? {
+      guard
+        let url = Bundle.main.url(
+          forResource: "model-manifest", withExtension: "json")
+      else { return nil }
+      return try? ModelManifestLoader.production(
+        url: url,
+        allowDebugCandidate: true
+      ).debugModelIdentity
+    }
   }
 
   public enum Action: BindableAction, Sendable, Equatable {
@@ -447,14 +465,27 @@ private enum LiveDependencies {
       diagnostics: diagnostics
     ) {
       guard let bundledManifest else { throw ModelManifestError.missing }
-      let configuration = try ModelManifestLoader.production(url: bundledManifest)
+      #if DEBUG
+        let configuration = try ModelManifestLoader.production(
+          url: bundledManifest,
+          allowDebugCandidate: true)
+      #else
+        let configuration = try ModelManifestLoader.production(
+          url: bundledManifest)
+      #endif
       guard let bundledReceipt, let bundledModelDirectory else {
         throw ModelManifestError.missingReceipt
       }
-      guard configuration.policyVersion == "bounded-three-generation-v1" else {
-        throw ModelManifestError.invalidProductionConfiguration(
-          "Every build requires schema-v3 bounded-policy evidence")
-      }
+      #if !DEBUG
+        guard configuration.debugModelIdentity == nil else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "Release refuses Debug candidate model identities")
+        }
+        guard configuration.policyVersion == "bounded-three-generation-v1" else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "Release requires schema-v3 bounded-policy evidence")
+        }
+      #endif
       try ProductionModelReceiptLoader.validate(
         manifestURL: bundledManifest,
         receiptURL: bundledReceipt,
@@ -535,6 +566,7 @@ private enum LiveDependencies {
         "database_ready": String(databaseReady),
         "model_key": production.model.key,
         "policy_version": production.policyVersion ?? "legacy",
+        "debug_training_run": production.debugModelIdentity?.trainingRunID ?? "none",
       ])
     return QueryPipeline.live(
       fm: .live(),
