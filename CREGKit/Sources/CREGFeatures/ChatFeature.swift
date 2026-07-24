@@ -27,10 +27,14 @@ public struct ChatFeature: Sendable {
     case onAppear
     case historyLoaded(conversationID: UUID, messages: [ChatMessage])
     case sendTapped
+    case starterQuestionTapped(String)
+    case stopTapped
     case pipelineEvent(PipelineEvent)
     case exportTapped
     case exportReady(URL)
   }
+
+  private enum CancelID { case pipeline }
 
   @Dependency(\.queryPipeline) var pipeline
   @Dependency(\.historyClient) var history
@@ -59,32 +63,38 @@ public struct ChatFeature: Sendable {
         return .none
 
       case .sendTapped:
-        let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !state.isProcessing else { return .none }
-        state.composerText = ""
-        state.isProcessing = true
+        return submitComposer(&state)
+
+      case .starterQuestionTapped(let question):
+        guard !state.isProcessing else { return .none }
+        state.composerText = question
+        return submitComposer(&state)
+
+      case .stopTapped:
+        guard state.isProcessing else { return .none }
+        state.isProcessing = false
+        let stoppedMessage = ChatMessage(
+          id: uuid(), role: .assistant,
+          body: .text("Stopped — ask again whenever you're ready."),
+          traceSteps: state.currentTrace, createdAt: now)
+        state.messages.append(stoppedMessage)
         state.currentTrace = []
+        let lines = state.currentEventLines
         state.currentEventLines = []
-
-        let userMessage = ChatMessage(id: uuid(), role: .user, body: .text(question), createdAt: now)
-        state.messages.append(userMessage)
-        let conversationID = state.conversationID
-
-        let turns = Self.conversationTurns(from: state.messages)
+        guard let conversationID = state.conversationID else {
+          return .cancel(id: CancelID.pipeline)
+        }
         return .merge(
+          .cancel(id: CancelID.pipeline),
           .run { _ in
-            if let conversationID {
-              try? await history.appendMessage(conversationID, userMessage)
-            }
-          },
-          .run { send in
-            for await event in pipeline.run(question, turns) {
-              await send(.pipelineEvent(event))
-            }
-          }
+            try await history.appendMessage(conversationID, stoppedMessage)
+            try await history.appendEvents(conversationID, stoppedMessage.id, lines)
+          } catch: { _, _ in }
         )
 
       case .pipelineEvent(let event):
+        // A late event racing a stop must not resurrect the turn.
+        guard state.isProcessing else { return .none }
         if let line = event.traceLine {
           state.currentTrace.append(line)
         }
@@ -129,6 +139,37 @@ public struct ChatFeature: Sendable {
         return .none
       }
     }
+  }
+
+  /// Starts a turn from the composer text; shared by the send button and the
+  /// starter-question chips. The pipeline effect is cancellable so Stop can
+  /// end the turn (the stream's onTermination cancels the underlying task).
+  private func submitComposer(_ state: inout State) -> Effect<Action> {
+    let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !question.isEmpty, !state.isProcessing else { return .none }
+    state.composerText = ""
+    state.isProcessing = true
+    state.currentTrace = []
+    state.currentEventLines = []
+
+    let userMessage = ChatMessage(id: uuid(), role: .user, body: .text(question), createdAt: now)
+    state.messages.append(userMessage)
+    let conversationID = state.conversationID
+
+    let turns = Self.conversationTurns(from: state.messages)
+    return .merge(
+      .run { _ in
+        if let conversationID {
+          try? await history.appendMessage(conversationID, userMessage)
+        }
+      },
+      .run { send in
+        for await event in pipeline.run(question, turns) {
+          await send(.pipelineEvent(event))
+        }
+      }
+      .cancellable(id: CancelID.pipeline, cancelInFlight: true)
+    )
   }
 
   /// Prior answered exchanges, oldest first, for the FM follow-up rewrite.

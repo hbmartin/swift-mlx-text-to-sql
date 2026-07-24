@@ -59,17 +59,38 @@ public struct ChatView: View {
     .onAppear { store.send(.onAppear) }
   }
 
+  static let starterQuestions = [
+    "Which properties have the highest vacancy?",
+    "What's my rent roll by property type?",
+    "Which leases expire in the next 12 months?",
+  ]
+
   private var emptyState: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 12) {
       Text("Ask about your portfolio")
         .font(.headline)
-      Text("Try: “Which properties have the highest vacancy?”, “What's my rent roll by property type?”, or “Which leases expire in the next 12 months?”")
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
+      ForEach(Self.starterQuestions, id: \.self) { question in
+        Button {
+          store.send(.starterQuestionTapped(question))
+        } label: {
+          HStack {
+            Text(question)
+              .font(.subheadline)
+              .multilineTextAlignment(.leading)
+            Spacer(minLength: 8)
+            Image(systemName: "arrow.up.right")
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+          .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding()
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
     .padding(.top, 24)
   }
 
@@ -79,15 +100,25 @@ public struct ChatView: View {
         .textFieldStyle(.roundedBorder)
         .lineLimit(1...4)
         .onSubmit { store.send(.sendTapped) }
-      Button {
-        store.send(.sendTapped)
-      } label: {
-        Image(systemName: "arrow.up.circle.fill")
-          .font(.title2)
+      if store.isProcessing {
+        Button {
+          store.send(.stopTapped)
+        } label: {
+          Image(systemName: "stop.circle.fill")
+            .font(.title2)
+        }
+        .accessibilityLabel("Stop answering")
+      } else {
+        Button {
+          store.send(.sendTapped)
+        } label: {
+          Image(systemName: "arrow.up.circle.fill")
+            .font(.title2)
+        }
+        .disabled(
+          store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityLabel("Send")
       }
-      .disabled(
-        store.isProcessing
-          || store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .padding(.horizontal)
     .padding(.vertical, 8)
@@ -132,6 +163,9 @@ struct MessageCell: View {
           .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
       case .answer(let result, let narration, let sql, let notice):
         assistantBubble(narration)
+        if let confidence = AnswerConfidence(telemetry: message.devInfo) {
+          ConfidenceChipView(confidence: confidence)
+        }
         if let notice {
           Label(notice, systemImage: "lightbulb")
             .font(.caption)
@@ -164,6 +198,30 @@ struct MessageCell: View {
   }
 }
 
+/// One line of plain-English trust context under every answer: agreement,
+/// verification caveats, and latency from the turn's telemetry. Never SQL.
+struct ConfidenceChipView: View {
+  let confidence: AnswerConfidence
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(systemName: confidence.symbolName)
+        .foregroundStyle(iconColor)
+      Text(confidence.label)
+        .foregroundStyle(.secondary)
+    }
+    .font(.caption2)
+  }
+
+  private var iconColor: Color {
+    switch confidence.tone {
+    case .agreement: .green
+    case .caution: .orange
+    case .neutral: .secondary
+    }
+  }
+}
+
 /// Developer-mode internals under an answer: SQL, per-stage stats, and
 /// self-consistency candidates with their votes (PRD §11).
 struct DevFooterView: View {
@@ -172,9 +230,19 @@ struct DevFooterView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(sql)
-        .font(.caption.monospaced())
-        .textSelection(.enabled)
+      HStack(alignment: .top, spacing: 8) {
+        Text(sql)
+          .font(.caption.monospaced())
+          .textSelection(.enabled)
+        Spacer(minLength: 0)
+        Button {
+          Pasteboard.copy(sql)
+        } label: {
+          Image(systemName: "doc.on.doc")
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Copy SQL")
+      }
       if let devInfo {
         Text("original: \(devInfo.originalQuestion)")
         Text("standalone: \(devInfo.standaloneQuestion)")

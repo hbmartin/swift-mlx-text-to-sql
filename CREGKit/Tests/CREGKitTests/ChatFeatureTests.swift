@@ -153,6 +153,87 @@ private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")
     #expect(legacy.devInfo == nil)
   }
 
+  @Test func starterQuestionSendsImmediately() async {
+    var initialState = ChatFeature.State()
+    initialState.conversationID = UUID()
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .starterQuestionTapped("Which properties have the highest vacancy?"))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.composerText.isEmpty)
+    #expect(store.state.messages.count == 2)
+    #expect(
+      store.state.messages.first?.body
+        == .text("Which properties have the highest vacancy?"))
+    #expect(store.state.isProcessing == false)
+  }
+
+  @Test func stopEndsTurnAndRecordsStoppedMessage() async {
+    let hangingPipeline = QueryPipeline { question, _ in
+      AsyncStream { continuation in
+        continuation.yield(.turnStarted(question: question))
+        // Intentionally never finishes; Stop must cancel and end the turn.
+      }
+    }
+    var initialState = ChatFeature.State()
+    initialState.conversationID = UUID()
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = hangingPipeline
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.binding(.set(\.composerText, "Which property leads?")))
+    await store.send(.sendTapped)
+    await store.send(.stopTapped)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.isProcessing == false)
+    #expect(store.state.messages.count == 2)
+    #expect(store.state.messages.last?.role == .assistant)
+    guard case .text(let text)? = store.state.messages.last?.body else {
+      Issue.record(
+        "expected a stopped text message, got \(String(describing: store.state.messages.last?.body))")
+      return
+    }
+    #expect(text.contains("Stopped"))
+  }
+
+  @Test func turnFinishedWhileIdleIsIgnored() async {
+    let store = TestStore(initialState: ChatFeature.State()) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pipelineEvent(.turnFinished(
+      outcome: .failed(message: "late"),
+      telemetry: TurnTelemetry(originalQuestion: "q"))))
+
+    #expect(store.state.messages.isEmpty)
+    #expect(store.state.isProcessing == false)
+  }
+
   @Test func legacyMillisecondQueryResultDecodesToMicroseconds() throws {
     // Obtain the compiler's enum representation while preserving an old
     // timing key, rather than depending on a hand-authored SQLValue shape.

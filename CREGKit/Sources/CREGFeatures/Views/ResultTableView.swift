@@ -29,10 +29,15 @@ struct ResultTableView: View {
             Divider()
             ForEach(Array(result.rows.prefix(visibleRows).enumerated()), id: \.offset) { _, row in
               GridRow {
-                ForEach(Array(row.enumerated()), id: \.offset) { _, value in
-                  Text(value.displayString)
-                    .font(.caption.monospacedDigit())
-                    .lineLimit(1)
+                ForEach(Array(row.enumerated()), id: \.offset) { index, value in
+                  Text(
+                    PortfolioValueFormatting.displayString(
+                      for: value,
+                      column: index < result.columns.count
+                        ? result.columns[index] : "")
+                  )
+                  .font(.caption.monospacedDigit())
+                  .lineLimit(1)
                 }
               }
             }
@@ -51,6 +56,24 @@ struct ResultTableView: View {
             }
             .font(.caption2)
           }
+          Spacer(minLength: 0)
+          Menu {
+            Button("Copy as CSV") {
+              Pasteboard.copy(result.csvString())
+            }
+            Button("Copy as Markdown") {
+              Pasteboard.copy(result.markdownTableString())
+            }
+          } label: {
+            Image(systemName: "doc.on.doc")
+              .font(.caption)
+          }
+          .accessibilityLabel("Copy table")
+          ShareLink(item: result.csvString()) {
+            Image(systemName: "square.and.arrow.up")
+              .font(.caption)
+          }
+          .accessibilityLabel("Share table as CSV")
         }
       }
     }
