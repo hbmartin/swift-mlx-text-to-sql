@@ -14,6 +14,35 @@ public struct ProductionGenerationConfiguration:
   public var sampleTemperature: Double
   public var alwaysVote: Bool
   public var policyVersion: String? = nil
+  public var debugModelIdentity: DebugModelIdentity? = nil
+}
+
+public struct DebugModelIdentity: Sendable, Equatable {
+  public var modelKey: String
+  public var baseModelKey: String
+  public var trainingRunID: String
+  public var selectedIteration: Int
+  public var selectedCheckpointSHA256: String
+  public var localEvidenceStatus: String
+  public var wandbReceiptRequired: Bool
+
+  public init(
+    modelKey: String,
+    baseModelKey: String,
+    trainingRunID: String,
+    selectedIteration: Int,
+    selectedCheckpointSHA256: String,
+    localEvidenceStatus: String,
+    wandbReceiptRequired: Bool
+  ) {
+    self.modelKey = modelKey
+    self.baseModelKey = baseModelKey
+    self.trainingRunID = trainingRunID
+    self.selectedIteration = selectedIteration
+    self.selectedCheckpointSHA256 = selectedCheckpointSHA256
+    self.localEvidenceStatus = localEvidenceStatus
+    self.wandbReceiptRequired = wandbReceiptRequired
+  }
 }
 
 public enum ModelManifestError: LocalizedError, Equatable {
@@ -153,11 +182,33 @@ public enum ModelManifestLoader {
     var models: [Model]
     var productionStatus: String
     var production: Production?
+    var debugCandidate: DebugCandidate?
 
     enum CodingKeys: String, CodingKey {
       case models
       case productionStatus = "production_status"
       case production
+      case debugCandidate = "debug_candidate"
+    }
+  }
+
+  private struct DebugCandidate: Decodable {
+    var modelKey: String
+    var baseModelKey: String
+    var trainingRunID: String
+    var selectedIteration: Int
+    var selectedCheckpointSHA256: String
+    var localEvidenceStatus: String
+    var wandbReceiptRequired: Bool
+
+    enum CodingKeys: String, CodingKey {
+      case modelKey = "model_key"
+      case baseModelKey = "base_model_key"
+      case trainingRunID = "training_run_id"
+      case selectedIteration = "selected_iteration"
+      case selectedCheckpointSHA256 = "selected_checkpoint_sha256"
+      case localEvidenceStatus = "local_evidence_status"
+      case wandbReceiptRequired = "wandb_receipt_required"
     }
   }
 
@@ -205,7 +256,10 @@ public enum ModelManifestLoader {
     }
   }
 
-  public static func production(url: URL) throws
+  public static func production(
+    url: URL,
+    allowDebugCandidate: Bool = false
+  ) throws
     -> ProductionGenerationConfiguration
   {
     let decoder = JSONDecoder()
@@ -214,7 +268,34 @@ public enum ModelManifestLoader {
     guard let production = document.production else {
       throw ModelManifestError.productionSelectionPending
     }
-    guard document.productionStatus == "verified" else {
+    let debugIdentity: DebugModelIdentity?
+    switch document.productionStatus {
+    case "verified":
+      debugIdentity = nil
+    case "debug-candidate":
+      guard allowDebugCandidate, let candidate = document.debugCandidate else {
+        throw ModelManifestError.invalidProductionConfiguration(
+          "Debug candidate manifests are forbidden in this build configuration")
+      }
+      guard
+        candidate.modelKey == production.modelKey,
+        candidate.selectedIteration > 0,
+        candidate.selectedCheckpointSHA256.count == 64,
+        candidate.selectedCheckpointSHA256.allSatisfy(\.isHexDigit),
+        candidate.wandbReceiptRequired == false
+      else {
+        throw ModelManifestError.invalidProductionConfiguration(
+          "Debug candidate identity is incomplete or inconsistent")
+      }
+      debugIdentity = DebugModelIdentity(
+        modelKey: candidate.modelKey,
+        baseModelKey: candidate.baseModelKey,
+        trainingRunID: candidate.trainingRunID,
+        selectedIteration: candidate.selectedIteration,
+        selectedCheckpointSHA256: candidate.selectedCheckpointSHA256,
+        localEvidenceStatus: candidate.localEvidenceStatus,
+        wandbReceiptRequired: candidate.wandbReceiptRequired)
+    default:
       throw ModelManifestError.invalidProductionConfiguration(
         "production_status must be verified when a production selection is present")
     }
@@ -272,10 +353,14 @@ public enum ModelManifestLoader {
       candidateCount: production.voting.candidateCount,
       sampleTemperature: production.voting.sampleTemperature,
       alwaysVote: production.voting.alwaysVote,
-      policyVersion: production.policyVersion)
+      policyVersion: production.policyVersion,
+      debugModelIdentity: debugIdentity)
   }
 
-  public static func production(bundle: Bundle = .main) throws
+  public static func production(
+    bundle: Bundle = .main,
+    allowDebugCandidate: Bool = false
+  ) throws
     -> ProductionGenerationConfiguration
   {
     guard
@@ -284,7 +369,9 @@ public enum ModelManifestLoader {
     else {
       throw ModelManifestError.missing
     }
-    return try production(url: url)
+    return try production(
+      url: url,
+      allowDebugCandidate: allowDebugCandidate)
   }
 }
 

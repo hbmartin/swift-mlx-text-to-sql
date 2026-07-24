@@ -156,23 +156,34 @@ uv run --frozen python tools/fetch_model.py --production
 
 ## Build behavior
 
-The Xcode build phase runs the manifest fetcher through the frozen `uv`
-environment and copies the exact manifest into the app.
+The Xcode build phase runs the model materializer through the frozen `uv`
+environment and writes the exact bundled manifest into the app.
 
-- Debug downloads or reuses the manifest-selected verified snapshot, verifies
-  it transactionally, and always bundles it as `SQLModel` with a matching
-  `production-model-receipt.json`. During the v3 rollout only, Debug accepts
-  the current historical-policy selection; there is no runtime Hub fallback.
+- Debug defaults `CREG_DEBUG_TRAINING_RUN` to `latest-local-v3`. It selects the
+  newest locally eligible reliability-v3 run, verifies finite training,
+  three-snapshot checkpoint selection, the selected adapter hash, and the
+  manifest-pinned base bytes, then fuses and bundles that checkpoint. This
+  developer path intentionally does not require a W&B receipt. Its generated
+  manifest is marked `debug-candidate`, uses deterministic single-shot
+  generation, and displays a permanent experimental-model banner. Set the
+  build setting to an immutable run ID/path to pin a particular run, or set it
+  to an empty value to use the historical manifest-selected Debug model.
 - Release requires a newly finalized bounded-policy selection, downloads or
   reuses cache, transactionally verifies the complete snapshot, and bundles
   it as `SQLModel` with `production-model-receipt.json`. Historical policy,
-  network, selection, receipt, or integrity failure stops the build.
+  Debug candidate override, network, selection, receipt, or integrity failure
+  stops the build. Neither configuration has a runtime Hub fallback.
 
 ```sh
 xcodebuild -project CREG.xcodeproj -scheme CREG \
   -configuration Debug -destination 'generic/platform=iOS' \
   -skipPackagePluginValidation -skipMacroValidation \
   CODE_SIGNING_ALLOWED=NO build
+
+# Pin one immutable local run instead of selecting the newest eligible run.
+xcodebuild -project CREG.xcodeproj -scheme CREG \
+  -configuration Debug -destination 'generic/platform=iOS' \
+  CREG_DEBUG_TRAINING_RUN='<run-id-or-directory>' build
 
 xcodebuild -project CREG.xcodeproj -scheme CREG \
   -configuration Release -destination 'generic/platform=iOS' \

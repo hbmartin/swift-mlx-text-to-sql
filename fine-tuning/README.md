@@ -30,6 +30,9 @@ uv run python tools/fetch_model.py
   (compact schema serialization with enumerated low-cardinality values) into
   `CREGKit/Sources/CREGEngine/Resources/`.
 - `tools/fetch_model.py` — snapshot-downloads candidate models.
+- `tools/materialize_debug_model.py` — verifies and fuses a local reliability-v3
+  checkpoint into a receipt-bound, explicitly experimental Debug bundle without
+  requiring W&B synchronization.
 - `tools/run_experiment.py` — one immutable MLX-LM + W&B experiment.
 - `tools/evaluate_checkpoints.py` — fixed gold_v1 comparison for every saved
   checkpoint and deterministic development-checkpoint selection.
@@ -155,11 +158,14 @@ fresh-verified publication records. It is the only supported transition to a
 new verified production manifest. Release model copying then writes a
 content-addressed `production-model-receipt.json`; Release startup and bundle
 inspection both require it to agree with the manifest and actual SQLModel
-bytes. Every app build embeds the latest manifest-selected verified production
-revision and no runtime Hub fallback is permitted. During the v3 rollout,
-Debug alone may bundle the historical-policy selection; it still downloads or
-reuses the pinned snapshot and requires complete artifact and receipt
-verification. Release remains blocked until bounded-policy finalization.
+bytes. Release embeds only the latest manifest-selected verified production
+revision, and no runtime Hub fallback is permitted. During the v3 rollout,
+Debug defaults to the newest locally eligible v3 training run. That path
+verifies the local training/evaluation/checkpoint/base evidence, fuses the
+selected adapter, and writes a Debug-specific manifest and bundle receipt, but
+deliberately does not require a W&B receipt. The app labels it as experimental.
+Release rejects this override and remains blocked until bounded-policy
+finalization.
 
 ```sh
 uv run --frozen python -m tools.finalize_production \

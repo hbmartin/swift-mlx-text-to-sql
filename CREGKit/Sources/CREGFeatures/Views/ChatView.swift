@@ -12,6 +12,9 @@ public struct ChatView: View {
 
   public var body: some View {
     VStack(spacing: 0) {
+      if let identity = store.debugModelIdentity {
+        experimentalModelBanner(identity)
+      }
       ScrollViewReader { proxy in
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 12) {
@@ -67,6 +70,27 @@ public struct ChatView: View {
       SettingsView(store: store)
     }
     .onAppear { store.send(.onAppear) }
+  }
+
+  private func experimentalModelBanner(
+    _ identity: DebugModelIdentity
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Label("Experimental SQL model", systemImage: "testtube.2")
+        .font(.caption.weight(.bold))
+        .textCase(.uppercase)
+      Text(
+        "\(identity.baseModelKey) · iteration \(identity.selectedIteration) · run \(identity.trainingRunID.suffix(8))")
+        .font(.caption2.monospaced())
+      Text("Local Debug evidence only — not production finalized")
+        .font(.caption2)
+    }
+    .foregroundStyle(.orange)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal)
+    .padding(.vertical, 8)
+    .background(.orange.opacity(0.12))
+    .accessibilityIdentifier("experimental-model-banner")
   }
 
   private var emptyState: some View {
