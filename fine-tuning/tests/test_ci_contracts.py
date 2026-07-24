@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -92,3 +93,16 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
     assert "#if !DEBUG" in live_dependencies
     assert "Release requires schema-v3 bounded-policy evidence" in live_dependencies
     assert "Release refuses Debug candidate model identities" in live_dependencies
+
+
+def test_xcode_app_is_iphone_only():
+    project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
+    app_icons = (
+        check_ci_contracts.ROOT
+        / "CREG/Assets.xcassets/AppIcon.appiconset/Contents.json"
+    ).read_text()
+
+    assert project.count("TARGETED_DEVICE_FAMILY = 1;") == 2
+    assert 'TARGETED_DEVICE_FAMILY = "1,2";' not in project
+    assert "UISupportedInterfaceOrientations_iPad" not in project
+    assert '"idiom" : "ipad"' not in app_icons
