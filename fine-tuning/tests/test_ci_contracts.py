@@ -83,7 +83,11 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
         / "CREGKit/Sources/CREGFeatures/ChatFeature.swift"
     ).read_text()
     assert "ProductionModelReceiptLoader.validate" in live_dependencies
-    assert "SQLGenClient.live(directory: bundledModelDirectory)" in live_dependencies
+    # The diagnostics-threaded call spans lines, so assert the loader shape
+    # and the bundled-directory argument separately; the contract is that the
+    # app loads only the bundled, receipt-verified directory.
+    assert "SQLGenClient.live(" in live_dependencies
+    assert "directory: bundledModelDirectory" in live_dependencies
     assert "SQLGenClient.live(model:" not in live_dependencies
     assert "#if !DEBUG" in live_dependencies
     assert "Release requires schema-v3 bounded-policy evidence" in live_dependencies

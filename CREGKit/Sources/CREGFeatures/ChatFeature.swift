@@ -62,12 +62,16 @@ public struct ChatFeature: Sendable {
     case submissionFocusSettled
     case submissionRefocused
     case sendTapped
+    case starterQuestionTapped(String)
+    case stopTapped
     case pipelineEvent(PipelineEvent)
     case exportTapped
     case exportReady(URL)
     case operationFailed(FailurePresentation)
     case dismissFailure
   }
+
+  private enum CancelID { case pipeline }
 
   @Dependency(\.queryPipeline) var pipeline
   @Dependency(\.historyClient) var history
@@ -205,7 +209,55 @@ public struct ChatFeature: Sendable {
           summary: "The send action was invoked.")
         return startSubmission(state: &state)
 
+      case .starterQuestionTapped(let question):
+        // Starter chips carry no typed keyboard candidates, so they bypass
+        // the focus-settling latch and submit directly. If the model is not
+        // ready yet the question simply stays in the composer.
+        guard !state.isProcessing else { return .none }
+        state.composerText = question
+        state.isSubmissionPending = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_starter_question_tapped",
+          summary: "A starter-question chip submitted the composer.")
+        return startSubmission(state: &state)
+
+      case .stopTapped:
+        guard state.isProcessing else { return .none }
+        state.isProcessing = false
+        let stoppedMessage = ChatMessage(
+          id: uuid(), role: .assistant,
+          body: .text("Stopped — ask again whenever you're ready."),
+          traceSteps: state.currentTrace, createdAt: now)
+        state.messages.append(stoppedMessage)
+        state.currentTrace = []
+        let lines = state.currentEventLines
+        state.currentEventLines = []
+        diagnostics.info(
+          category: .submission,
+          code: "chat_turn_stopped",
+          summary: "The user stopped the in-flight turn.",
+          context: ["partial_event_count": String(lines.count)])
+        guard let conversationID = state.conversationID else {
+          return .cancel(id: CancelID.pipeline)
+        }
+        return .merge(
+          .cancel(id: CancelID.pipeline),
+          .run { send in
+            do {
+              try await history.appendMessage(conversationID, stoppedMessage)
+              try await history.appendEvents(
+                conversationID, stoppedMessage.id, lines)
+            } catch {
+              await send(.operationFailed(.history(
+                operation: .messageSave, error: error)))
+            }
+          }
+        )
+
       case .pipelineEvent(let event):
+        // A late event racing a stop must not resurrect the turn.
+        guard state.isProcessing else { return .none }
         if let line = event.traceLine {
           state.currentTrace.append(line)
         }
@@ -308,6 +360,9 @@ public struct ChatFeature: Sendable {
     }
   }
 
+  /// Starts a turn from the composer text; shared by the send path and the
+  /// starter-question chips. The pipeline effect is cancellable so Stop can
+  /// end the turn (the stream's onTermination cancels the underlying task).
   private func startSubmission(state: inout State) -> Effect<Action> {
     let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard
@@ -333,23 +388,27 @@ public struct ChatFeature: Sendable {
         "history_turn_count": String(turns.count),
         "message_count": String(state.messages.count),
       ])
-    return .merge(
-      .run { send in
-        if let conversationID {
-          do {
-            try await history.appendMessage(conversationID, userMessage)
-          } catch {
-            await send(.operationFailed(.history(
-              operation: .messageSave, error: error)))
-          }
+    return .run { send in
+      if let conversationID {
+        // Unstructured so a Stop cancellation cannot abort the user-message
+        // write; the pipeline starts only after the write settles so turn
+        // records land in transcript order.
+        let userWrite = Task {
+          try await history.appendMessage(conversationID, userMessage)
         }
-      },
-      .run { send in
-        for await event in pipeline.run(question, turns) {
-          await send(.pipelineEvent(event))
+        do {
+          try await userWrite.value
+        } catch {
+          await send(.operationFailed(.history(
+            operation: .messageSave, error: error)))
         }
       }
-    )
+      guard !Task.isCancelled else { return }
+      for await event in pipeline.run(question, turns) {
+        await send(.pipelineEvent(event))
+      }
+    }
+    .cancellable(id: CancelID.pipeline, cancelInFlight: true)
   }
 
   private func preparationEffect() -> Effect<Action> {

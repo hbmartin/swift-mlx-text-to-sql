@@ -309,6 +309,114 @@ private final class CallCounter: @unchecked Sendable {
     #expect(legacy.devInfo == nil)
   }
 
+  @Test func starterQuestionSendsImmediately() async {
+    var initialState = ChatFeature.State()
+    initialState.conversationID = UUID()
+    initialState.modelReadiness = .ready
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .starterQuestionTapped("Which properties have the highest vacancy?"))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.composerText.isEmpty)
+    #expect(store.state.messages.count == 2)
+    #expect(
+      store.state.messages.first?.body
+        == .text("Which properties have the highest vacancy?"))
+    #expect(store.state.isProcessing == false)
+  }
+
+  @Test func stopEndsTurnPreservingPartialTraceAndPersistingIt() async {
+    // Held open so the turn only ends via Stop; the test injects its partial
+    // event directly so the preserved trace is deterministic.
+    let openContinuation = LockIsolated<AsyncStream<PipelineEvent>.Continuation?>(nil)
+    let hangingPipeline = QueryPipeline { _, _ in
+      AsyncStream { continuation in
+        openContinuation.setValue(continuation)
+      }
+    }
+    let savedMessages = LockIsolated<[ChatMessage]>([])
+    let savedEventBatches = LockIsolated<[[String]]>([])
+    let recordingHistory = HistoryClient(
+      loadCurrentConversation: { (UUID(0), []) },
+      appendMessage: { _, message in
+        savedMessages.withValue { $0.append(message) }
+      },
+      appendEvents: { _, _, lines in
+        savedEventBatches.withValue { $0.append(lines) }
+      },
+      exportJSONL: { _ in FileManager.default.temporaryDirectory })
+
+    var initialState = ChatFeature.State()
+    initialState.conversationID = UUID(0)
+    initialState.modelReadiness = .ready
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = hangingPipeline
+      $0.historyClient = recordingHistory
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.binding(.set(\.composerText, "Which property leads?")))
+    await store.send(.sendTapped)
+    await store.send(
+      .pipelineEvent(.turnStarted(question: "Which property leads?")))
+    await store.send(.stopTapped)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.isProcessing == false)
+    #expect(store.state.messages.count == 2)
+    let stopped = store.state.messages.last
+    #expect(stopped?.role == .assistant)
+    guard case .text(let text)? = stopped?.body else {
+      Issue.record(
+        "expected a stopped text message, got \(String(describing: stopped?.body))")
+      return
+    }
+    #expect(text.contains("Stopped"))
+    // The partial trace survives on the stopped message…
+    #expect(stopped?.traceSteps == ["Understanding your question"])
+    // …and both writes persist in transcript order with the partial log.
+    #expect(savedMessages.value.map(\.role) == [.user, .assistant])
+    #expect(savedEventBatches.value.count == 1)
+    #expect(
+      savedEventBatches.value.first?.first?.contains("turnStarted") == true)
+    openContinuation.withValue { $0 = nil }
+  }
+
+  @Test func turnFinishedWhileIdleIsIgnored() async {
+    let store = TestStore(initialState: ChatFeature.State()) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pipelineEvent(.turnFinished(
+      outcome: .failed(message: "late"),
+      telemetry: TurnTelemetry(originalQuestion: "q"))))
+
+    #expect(store.state.messages.isEmpty)
+    #expect(store.state.isProcessing == false)
+  }
+
   @Test func legacyMillisecondQueryResultDecodesToMicroseconds() throws {
     // Obtain the compiler's enum representation while preserving an old
     // timing key, rather than depending on a hand-authored SQLValue shape.
