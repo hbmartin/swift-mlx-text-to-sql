@@ -138,13 +138,15 @@ import Testing
         [.text("Sable, Tower"), .text("says \"hi\""), .real(1234567.89)],
         [.null, .text("line\nbreak"), .integer(42)],
       ])
-    let expected = """
+    // Raw delimiters keep the embedded quote runs (`""hi""` followed by a
+    // closing field quote) from reading as the literal's own terminator.
+    let expected = #"""
       name,note,value
       "Sable, Tower","says ""hi""",1234567.89
       ,"line
       break",42
 
-      """
+      """#
     #expect(result.csvString() == expected)
   }
 
@@ -152,12 +154,12 @@ import Testing
     let result = QueryResult(
       columns: ["name", "current_market_value"],
       rows: [[.text("Sable|Tower"), .real(45_000_000.0)]])
-    let expected = """
+    let expected = #"""
       | name | current_market_value |
       | --- | --- |
-      | Sable\\|Tower | $45,000,000 |
+      | Sable\|Tower | $45,000,000 |
 
-      """
+      """#
     #expect(result.markdownTableString() == expected)
   }
 
