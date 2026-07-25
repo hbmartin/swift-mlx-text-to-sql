@@ -69,7 +69,10 @@ struct ResultTableView: View {
               .font(.caption)
           }
           .accessibilityLabel("Copy table")
-          ShareLink(item: result.csvString()) {
+          ShareLink(
+            item: ResultCSVTransfer(result: result),
+            preview: SharePreview("Result table (CSV)")
+          ) {
             Image(systemName: "square.and.arrow.up")
               .font(.caption)
           }

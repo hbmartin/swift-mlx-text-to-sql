@@ -388,24 +388,27 @@ public struct ChatFeature: Sendable {
         "history_turn_count": String(turns.count),
         "message_count": String(state.messages.count),
       ])
-    return .merge(
-      .run { send in
-        if let conversationID {
-          do {
-            try await history.appendMessage(conversationID, userMessage)
-          } catch {
-            await send(.operationFailed(.history(
-              operation: .messageSave, error: error)))
-          }
+    return .run { send in
+      if let conversationID {
+        // Unstructured so a Stop cancellation cannot abort the user-message
+        // write; the pipeline starts only after the write settles so turn
+        // records land in transcript order.
+        let userWrite = Task {
+          try await history.appendMessage(conversationID, userMessage)
         }
-      },
-      .run { send in
-        for await event in pipeline.run(question, turns) {
-          await send(.pipelineEvent(event))
+        do {
+          try await userWrite.value
+        } catch {
+          await send(.operationFailed(.history(
+            operation: .messageSave, error: error)))
         }
       }
-      .cancellable(id: CancelID.pipeline, cancelInFlight: true)
-    )
+      guard !Task.isCancelled else { return }
+      for await event in pipeline.run(question, turns) {
+        await send(.pipelineEvent(event))
+      }
+    }
+    .cancellable(id: CancelID.pipeline, cancelInFlight: true)
   }
 
   private func preparationEffect() -> Effect<Action> {

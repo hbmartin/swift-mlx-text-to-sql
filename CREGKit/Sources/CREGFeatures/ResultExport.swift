@@ -1,11 +1,30 @@
 import CREGEngine
+import CoreTransferable
 import Foundation
+import UniformTypeIdentifiers
 
 #if canImport(UIKit)
   import UIKit
 #elseif canImport(AppKit)
   import AppKit
 #endif
+
+/// Defers CSV generation to share time so rendering the table never pays the
+/// export cost, and shares with a real CSV content type and filename.
+public struct ResultCSVTransfer: Transferable, Sendable {
+  public let result: QueryResult
+
+  public init(result: QueryResult) {
+    self.result = result
+  }
+
+  public static var transferRepresentation: some TransferRepresentation {
+    DataRepresentation(exportedContentType: .commaSeparatedText) { transfer in
+      Data(transfer.result.csvString().utf8)
+    }
+    .suggestedFileName("creg-result.csv")
+  }
+}
 
 extension QueryResult {
   /// Machine-facing CSV: raw full-precision values, RFC-4180 quoting, no

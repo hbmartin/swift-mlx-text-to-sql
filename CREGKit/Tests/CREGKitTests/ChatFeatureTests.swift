@@ -336,21 +336,35 @@ private final class CallCounter: @unchecked Sendable {
     #expect(store.state.isProcessing == false)
   }
 
-  @Test func stopEndsTurnAndRecordsStoppedMessage() async {
-    let hangingPipeline = QueryPipeline { question, _ in
+  @Test func stopEndsTurnPreservingPartialTraceAndPersistingIt() async {
+    // Held open so the turn only ends via Stop; the test injects its partial
+    // event directly so the preserved trace is deterministic.
+    let openContinuation = LockIsolated<AsyncStream<PipelineEvent>.Continuation?>(nil)
+    let hangingPipeline = QueryPipeline { _, _ in
       AsyncStream { continuation in
-        continuation.yield(.turnStarted(question: question))
-        // Intentionally never finishes; Stop must cancel and end the turn.
+        openContinuation.setValue(continuation)
       }
     }
+    let savedMessages = LockIsolated<[ChatMessage]>([])
+    let savedEventBatches = LockIsolated<[[String]]>([])
+    let recordingHistory = HistoryClient(
+      loadCurrentConversation: { (UUID(0), []) },
+      appendMessage: { _, message in
+        savedMessages.withValue { $0.append(message) }
+      },
+      appendEvents: { _, _, lines in
+        savedEventBatches.withValue { $0.append(lines) }
+      },
+      exportJSONL: { _ in FileManager.default.temporaryDirectory })
+
     var initialState = ChatFeature.State()
-    initialState.conversationID = UUID()
+    initialState.conversationID = UUID(0)
     initialState.modelReadiness = .ready
     let store = TestStore(initialState: initialState) {
       ChatFeature()
     } withDependencies: {
       $0.queryPipeline = hangingPipeline
-      $0.historyClient = .noop()
+      $0.historyClient = recordingHistory
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 0))
     }
@@ -358,19 +372,30 @@ private final class CallCounter: @unchecked Sendable {
 
     await store.send(.binding(.set(\.composerText, "Which property leads?")))
     await store.send(.sendTapped)
+    await store.send(
+      .pipelineEvent(.turnStarted(question: "Which property leads?")))
     await store.send(.stopTapped)
     await store.finish()
     await store.skipReceivedActions()
 
     #expect(store.state.isProcessing == false)
     #expect(store.state.messages.count == 2)
-    #expect(store.state.messages.last?.role == .assistant)
-    guard case .text(let text)? = store.state.messages.last?.body else {
+    let stopped = store.state.messages.last
+    #expect(stopped?.role == .assistant)
+    guard case .text(let text)? = stopped?.body else {
       Issue.record(
-        "expected a stopped text message, got \(String(describing: store.state.messages.last?.body))")
+        "expected a stopped text message, got \(String(describing: stopped?.body))")
       return
     }
     #expect(text.contains("Stopped"))
+    // The partial trace survives on the stopped message…
+    #expect(stopped?.traceSteps == ["Understanding your question"])
+    // …and both writes persist in transcript order with the partial log.
+    #expect(savedMessages.value.map(\.role) == [.user, .assistant])
+    #expect(savedEventBatches.value.count == 1)
+    #expect(
+      savedEventBatches.value.first?.first?.contains("turnStarted") == true)
+    openContinuation.withValue { $0 = nil }
   }
 
   @Test func turnFinishedWhileIdleIsIgnored() async {
