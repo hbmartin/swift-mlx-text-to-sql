@@ -96,6 +96,35 @@ private final class CallCounter: @unchecked Sendable {
     #expect(assistant?.devInfo?.standaloneQuestion == "Which property leads?")
   }
 
+  @Test func debugLaunchBenchmarkWaitsForReadinessAndRunsStandalone() async {
+    let oldQuestion = ChatMessage(
+      id: UUID(), role: .user, body: .text("old question"), createdAt: Date())
+    var initialState = ChatFeature.State(
+      launchBenchmarkQuestion: "Which property leads?")
+    initialState.conversationID = UUID()
+    initialState.messages.append(oldQuestion)
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.modelPrepared)
+    #expect(store.state.launchBenchmarkStarted)
+    #expect(store.state.composerText.isEmpty)
+    #expect(!store.state.messages.contains(oldQuestion))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.messages.count == 2)
+    #expect(store.state.isProcessing == false)
+    #expect(store.state.messages.first?.body == .text("Which property leads?"))
+  }
+
   @Test func duplicateSendWhileProcessingStartsOnlyOneTurn() async {
     let pipelineCalls = CallCounter()
     var initialState = ChatFeature.State()
@@ -376,7 +405,6 @@ private final class CallCounter: @unchecked Sendable {
       .pipelineEvent(.turnStarted(question: "Which property leads?")))
     await store.send(.stopTapped)
     await store.finish()
-    await store.skipReceivedActions()
 
     #expect(store.state.isProcessing == false)
     #expect(store.state.messages.count == 2)

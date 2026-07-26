@@ -1,3 +1,5 @@
+import CryptoKit
+import Darwin
 import Foundation
 import MLX
 import MLXLLM
@@ -111,14 +113,182 @@ private final class MLXGenerationDiagnosticState: @unchecked Sendable {
   }
 }
 
+/// An evaluated, immutable KV-cache snapshot for the prompt tokens shared by
+/// every request. Generation always receives deep copies, so concurrent model
+/// work cannot mutate the stored prefix.
+private final class MLXPromptPrefixCache: @unchecked Sendable {
+  let tokens: [Int]
+  let suffixTokens: [Int]?
+  let cache: [KVCache]
+
+  init(tokens: [Int], suffixTokens: [Int]?, cache: [KVCache]) {
+    self.tokens = tokens
+    self.suffixTokens = suffixTokens
+    self.cache = cache
+  }
+}
+
+private struct SQLDraftCorpusResource: Decodable {
+  let schemaVersion: Int
+  let sourceSHA256: String
+  let statementCount: Int
+  let statements: [String]
+
+  enum CodingKeys: String, CodingKey {
+    case schemaVersion = "schema_version"
+    case sourceSHA256 = "source_sha256"
+    case statementCount = "statement_count"
+    case statements
+  }
+}
+
+/// Immutable request-vocabulary index. Static SQL/schema rows come only from
+/// bundled production resources; request rows are selected when their decoded
+/// text occurs in the current question or repair context.
+private final class SQLQuestionOutputVocabulary: @unchecked Sendable {
+  private static let trimCharacters = CharacterSet(
+    charactersIn: " \t\r\n'\"`.,;:()[]{}<>!=+-*/%_|&")
+  private static let lexicalPrefixes = [
+    "", " ", ".", "_", "'", " '", "\"", "(", ", ",
+  ]
+  private static let syntaxLexemes = """
+    SELECT FROM WHERE JOIN LEFT INNER OUTER ON AS AND OR NOT IN IS NULL
+    GROUP BY ORDER ASC DESC HAVING LIMIT OFFSET DISTINCT WITH UNION ALL
+    COUNT SUM AVG MIN MAX CASE WHEN THEN ELSE END BETWEEN LIKE GLOB
+    = != <> < <= > >= + - * / % ( ) , . ; ' " _
+    0 1 2 3 4 5 6 7 8 9 Yes No True False YES NO TRUE FALSE
+    """.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+
+  private let staticTokenIDs: Set<Int>
+  private let coreTokenIDs: [String: [Int]]
+
+  init(
+    vocabularySize: Int,
+    tokenizer: any MLXLMCommon.Tokenizer,
+    draftCorpus: [String],
+    lexicalSources: [String],
+    stopStrings: Set<String>
+  ) {
+    var staticTokenIDs = Set<Int>()
+    func include(_ text: String) {
+      staticTokenIDs.formUnion(
+        tokenizer.encode(text: text, addSpecialTokens: false))
+    }
+
+    for statement in draftCorpus { include(statement) }
+    var lexemes = Set<String>()
+    for source in lexicalSources {
+      lexemes.formUnion(source.split { character in
+        !(character.isLetter || character.isNumber || character == "_")
+      }.map(String.init))
+    }
+    lexemes.formUnion(Self.syntaxLexemes)
+    for lexeme in lexemes {
+      let variants = [
+        lexeme,
+        lexeme.lowercased(),
+        lexeme.uppercased(),
+        lexeme.capitalized,
+      ]
+      for variant in variants {
+        for prefix in Self.lexicalPrefixes { include(prefix + variant) }
+      }
+    }
+    for stopString in stopStrings { include(stopString) }
+    for token in [tokenizer.eosToken, tokenizer.unknownToken].compactMap({ $0 }) {
+      if let id = tokenizer.convertTokenToId(token) {
+        staticTokenIDs.insert(id)
+      }
+    }
+    self.staticTokenIDs = staticTokenIDs
+
+    var coreTokenIDs: [String: [Int]] = [:]
+    coreTokenIDs.reserveCapacity(vocabularySize)
+    for tokenID in 0..<vocabularySize
+    where tokenizer.convertIdToToken(tokenID) != nil {
+      let decoded = tokenizer.decode(
+        tokenIds: [tokenID],
+        skipSpecialTokens: false)
+      guard !decoded.isEmpty, decoded.count <= 40 else { continue }
+      let core = decoded.trimmingCharacters(
+        in: Self.trimCharacters).lowercased()
+      guard !core.isEmpty else { continue }
+      coreTokenIDs[core, default: []].append(tokenID)
+    }
+    self.coreTokenIDs = coreTokenIDs
+  }
+
+  func allowedTokenIDs(for requestText: String) -> [Int] {
+    var allowed = staticTokenIDs
+    let words = requestText.split { character in
+      !(character.isLetter || character.isNumber || character == "_")
+    }
+    for word in words {
+      let characters = Array(word.lowercased())
+      guard characters.count >= 2 else { continue }
+      for start in 0..<(characters.count - 1) {
+        var fragment = String(characters[start])
+        for end in (start + 1)..<characters.count {
+          fragment.append(characters[end])
+          if let tokenIDs = coreTokenIDs[fragment] {
+            allowed.formUnion(tokenIDs)
+          }
+        }
+      }
+    }
+    return allowed.sorted()
+  }
+}
+
 extension SQLGenClient {
   /// Load from a local weights directory (used by creg-eval-cli for parity runs).
   public static func live(
     directory: URL,
-    diagnostics: DiagnosticsClient = .noop
+    diagnostics: DiagnosticsClient = .noop,
+    experimentalKVBits: Int? = nil,
+    useWiredMemory: Bool = false,
+    useDirectPromptSuffix: Bool = true,
+    metalCommandBufferLimitMB: Int? = nil,
+    compiledQwen2MLPFusion: Bool = false,
+    compiledQwen2QKVVerificationFusion: Bool = false,
+    verificationMLPSkipLayers: [Int] = [],
+    verificationMLPLongBatchExtraSkipLayers: [Int] = [],
+    verificationMLPConfidenceSkip: VerificationMLPConfidenceSkipPolicy? = nil,
+    verificationMLPAdditionalConfidenceSkips:
+      [VerificationMLPConfidenceSkipPolicy] = [],
+    questionAwareOutputHead: Bool = false,
+    compactQuestionAwareOutputHead: Bool = false,
+    productionNGramSpeculation: SQLNGramSpeculationPolicy? = nil,
+    experimentalNGramDraftCorpus: [String] = [],
+    experimentalNGramDraftTokens: Int = 0,
+    experimentalNGramSerialPrefixTokens: Int = 0,
+    experimentalNGramAdaptiveDraftMinimumSupport: Int = 0
   ) -> SQLGenClient {
     let generator = MLXSQLGenerator(
-      source: .directory(directory), diagnostics: diagnostics)
+      source: .directory(directory),
+      diagnostics: diagnostics,
+      experimentalKVBits: experimentalKVBits,
+      useWiredMemory: useWiredMemory,
+      useDirectPromptSuffix: useDirectPromptSuffix,
+      metalCommandBufferLimitMB: metalCommandBufferLimitMB,
+      compiledQwen2MLPFusion: compiledQwen2MLPFusion,
+      compiledQwen2QKVVerificationFusion:
+        compiledQwen2QKVVerificationFusion,
+      verificationMLPSkipLayers: verificationMLPSkipLayers,
+      verificationMLPLongBatchExtraSkipLayers:
+        verificationMLPLongBatchExtraSkipLayers,
+      verificationMLPConfidenceSkip: verificationMLPConfidenceSkip,
+      verificationMLPAdditionalConfidenceSkips:
+        verificationMLPAdditionalConfidenceSkips,
+      questionAwareOutputHead: questionAwareOutputHead,
+      compactQuestionAwareOutputHead: compactQuestionAwareOutputHead,
+      productionNGramSpeculation: productionNGramSpeculation,
+      experimentalNGramDraftCorpus: experimentalNGramDraftCorpus,
+      experimentalNGramDraftTokens: experimentalNGramDraftTokens,
+      experimentalNGramSerialPrefixTokens:
+        experimentalNGramSerialPrefixTokens,
+      experimentalNGramAdaptiveDraftMinimumSupport:
+        experimentalNGramAdaptiveDraftMinimumSupport)
     return SQLGenClient(
       prepare: { try await generator.prepare() },
       generate: { request in try await generator.generate(request) })
@@ -191,6 +361,39 @@ extension SQLGenClient {
     else { throw CocoaError(.fileNoSuchFile) }
     return try Data(contentsOf: url)
   }
+
+  static func productionDraftCorpus(
+    policy: SQLNGramSpeculationPolicy
+  ) throws -> [String] {
+    guard let url = Bundle.module.url(
+      forResource: "sql_draft_corpus",
+      withExtension: "json")
+    else { throw CocoaError(.fileNoSuchFile) }
+    let data = try Data(contentsOf: url)
+    let digest = SHA256.hash(data: data)
+      .map { String(format: "%02x", $0) }
+      .joined()
+    guard digest == policy.corpusSHA256 else {
+      throw CocoaError(.fileReadCorruptFile)
+    }
+    let resource = try JSONDecoder().decode(
+      SQLDraftCorpusResource.self,
+      from: data)
+    guard resource.schemaVersion == 1,
+      resource.statementCount == policy.statementCount,
+      resource.statementCount == resource.statements.count,
+      resource.sourceSHA256 == policy.sourceCorpusSHA256,
+      resource.statements.allSatisfy({ statement in
+        let normalized = statement
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+          .uppercased()
+        return normalized.hasPrefix("SELECT") || normalized.hasPrefix("WITH")
+      })
+    else {
+      throw CocoaError(.fileReadCorruptFile)
+    }
+    return resource.statements
+  }
 }
 
 /// Keeps the MLX model resident between turns (PRD §7.1) and runs
@@ -202,7 +405,29 @@ actor MLXSQLGenerator {
 
   private let source: Source
   private let diagnostics: DiagnosticsClient
+  private let experimentalKVBits: Int?
+  private let useWiredMemory: Bool
+  private let useDirectPromptSuffix: Bool
+  private let metalCommandBufferLimitMB: Int?
+  private let compiledQwen2MLPFusion: Bool
+  private let compiledQwen2QKVVerificationFusion: Bool
+  private let verificationMLPSkipLayers: Set<Int>
+  private let verificationMLPLongBatchExtraSkipLayers: Set<Int>
+  private let verificationMLPConfidenceSkips:
+    [VerificationMLPConfidenceSkipPolicy]
+  private let questionAwareOutputHead: Bool
+  private let compactQuestionAwareOutputHead: Bool
+  private let productionNGramSpeculation: SQLNGramSpeculationPolicy?
+  private let experimentalNGramDraftCorpus: [String]
+  private let ngramDraftTokens: Int
+  private let ngramSerialPrefixTokens: Int
+  private let ngramAdaptiveDraftMinimumSupport: Int
+  private let ngramOrder: Int
   private let containerLoader = PreparationCoalescer<ModelContainer>()
+  private var didPrepareCompiledQwen2QKVFusion = false
+  private var promptPrefixCache: MLXPromptPrefixCache?
+  private var ngramDraftModel: SQLNGramPredictor?
+  private var questionOutputVocabulary: SQLQuestionOutputVocabulary?
 
   private nonisolated var modelName: String {
     switch source {
@@ -210,13 +435,64 @@ actor MLXSQLGenerator {
     }
   }
 
-  init(source: Source, diagnostics: DiagnosticsClient = .noop) {
+  init(
+    source: Source,
+    diagnostics: DiagnosticsClient = .noop,
+    experimentalKVBits: Int? = nil,
+    useWiredMemory: Bool = false,
+    useDirectPromptSuffix: Bool = true,
+    metalCommandBufferLimitMB: Int? = nil,
+    compiledQwen2MLPFusion: Bool = false,
+    compiledQwen2QKVVerificationFusion: Bool = false,
+    verificationMLPSkipLayers: [Int] = [],
+    verificationMLPLongBatchExtraSkipLayers: [Int] = [],
+    verificationMLPConfidenceSkip: VerificationMLPConfidenceSkipPolicy? = nil,
+    verificationMLPAdditionalConfidenceSkips:
+      [VerificationMLPConfidenceSkipPolicy] = [],
+    questionAwareOutputHead: Bool = false,
+    compactQuestionAwareOutputHead: Bool = false,
+    productionNGramSpeculation: SQLNGramSpeculationPolicy? = nil,
+    experimentalNGramDraftCorpus: [String] = [],
+    experimentalNGramDraftTokens: Int = 0,
+    experimentalNGramSerialPrefixTokens: Int = 0,
+    experimentalNGramAdaptiveDraftMinimumSupport: Int = 0
+  ) {
     self.source = source
     self.diagnostics = diagnostics
+    self.experimentalKVBits = experimentalKVBits
+    self.useWiredMemory = useWiredMemory
+    self.useDirectPromptSuffix = useDirectPromptSuffix
+    self.metalCommandBufferLimitMB = metalCommandBufferLimitMB
+    self.compiledQwen2MLPFusion = compiledQwen2MLPFusion
+    self.compiledQwen2QKVVerificationFusion =
+      compiledQwen2QKVVerificationFusion
+    self.verificationMLPSkipLayers = Set(verificationMLPSkipLayers)
+    self.verificationMLPLongBatchExtraSkipLayers =
+      Set(verificationMLPLongBatchExtraSkipLayers)
+    self.verificationMLPConfidenceSkips =
+      (verificationMLPConfidenceSkip.map { [$0] } ?? [])
+      + verificationMLPAdditionalConfidenceSkips
+    self.questionAwareOutputHead = questionAwareOutputHead
+    self.compactQuestionAwareOutputHead = compactQuestionAwareOutputHead
+    self.productionNGramSpeculation = productionNGramSpeculation
+    self.experimentalNGramDraftCorpus = experimentalNGramDraftCorpus
+    self.ngramDraftTokens = productionNGramSpeculation?.draftTokens
+      ?? experimentalNGramDraftTokens
+    self.ngramSerialPrefixTokens =
+      productionNGramSpeculation?.serialPrefixTokens
+      ?? experimentalNGramSerialPrefixTokens
+    self.ngramAdaptiveDraftMinimumSupport =
+      productionNGramSpeculation?.adaptiveDraftMinimumSupport
+      ?? experimentalNGramAdaptiveDraftMinimumSupport
+    self.ngramOrder = productionNGramSpeculation?.order ?? 6
   }
 
   func prepare() async throws {
-    _ = try await loadedContainer()
+    let container = try await loadedContainer()
+    try await preparedCompiledQwen2QKVFusion(using: container)
+    _ = try await preparedPromptPrefixCache(using: container)
+    _ = try await preparedNGramDraftModel(using: container)
+    _ = try await preparedQuestionOutputVocabulary(using: container)
   }
 
   func generate(_ request: SQLGenerationRequest) async throws -> SQLGeneration {
@@ -233,15 +509,27 @@ actor MLXSQLGenerator {
 
     do {
       let container = try await loadedContainer()
-      state.setPhase("schema_loading")
-      let schema = try Self.schemaPrompt()
+      try await preparedCompiledQwen2QKVFusion(using: container)
+      let prefixCache = try await preparedPromptPrefixCache(using: container)
+      let ngramDraftModel = try await preparedNGramDraftModel(using: container)
+      let questionOutputVocabulary = try await
+        preparedQuestionOutputVocabulary(using: container)
 
       let userContent = request.repair.map {
         Self.repairPrompt(question: request.question, context: $0)
       } ?? "Question: \(request.question)"
-      let systemContent = Self.systemPrompt(schema: schema)
+      let systemContent: String?
+      if useDirectPromptSuffix,
+        prefixCache?.suffixTokens != nil
+      {
+        systemContent = nil
+      } else {
+        state.setPhase("schema_loading")
+        systemContent = Self.systemPrompt(schema: try Self.schemaPrompt())
+      }
 
       let generation = try await container.perform { (context: ModelContext) in
+        var generationContext = context
         state.setPhase("input_preparation")
         let inputStarted = ContinuousClock.now
         diagnosticClient.info(
@@ -249,16 +537,43 @@ actor MLXSQLGenerator {
           code: "mlx_input_preparation_started",
           summary: "MLX prompt tokenization and input preparation started.",
           context: baseContext)
-        let chat: [Chat.Message] = [.system(systemContent), .user(userContent)]
-        let input = try await context.processor.prepare(
-          input: UserInput(chat: chat))
+        let inputAndCache: (LMInput, [KVCache]?, Int)
+        let inputPreparationMode: String
+        if useDirectPromptSuffix,
+          let direct = Self.applyingDirectPromptSuffix(
+            prefixCache,
+            userContent: userContent,
+            tokenizer: context.tokenizer)
+        {
+          inputAndCache = direct
+          inputPreparationMode = "direct_user_suffix"
+        } else {
+          guard let systemContent else {
+            preconditionFailure("missing fallback system prompt")
+          }
+          let chat: [Chat.Message] = [
+            .system(systemContent), .user(userContent),
+          ]
+          let fullInput = try await context.processor.prepare(
+            input: UserInput(chat: chat))
+          inputAndCache = Self.applyingPromptPrefixCache(
+            prefixCache,
+            to: fullInput)
+          inputPreparationMode = "full_chat_template"
+        }
+        let (input, generationCache, cachedTokenCount) = inputAndCache
+        let inputPreparationMicroseconds =
+          inputStarted.duration(to: .now).microseconds
         diagnosticClient.info(
           category: .inference,
           code: "mlx_input_preparation_finished",
           summary: "MLX prompt tokenization and input preparation finished.",
           context: baseContext.merging([
+            "cached_prompt_token_count": String(cachedTokenCount),
             "elapsed_ms": Self.milliseconds(
-              inputStarted.duration(to: .now).microseconds)
+              inputPreparationMicroseconds),
+            "input_preparation_mode": inputPreparationMode,
+            "remaining_prompt_token_count": String(input.text.tokens.size),
           ]) { current, _ in current })
 
         state.setPhase("decoder_setup")
@@ -270,23 +585,66 @@ actor MLXSQLGenerator {
           context: baseContext)
         let parameters = GenerateParameters(
           maxTokens: request.maxTokens,
+          kvBits: experimentalKVBits,
           temperature: Float(request.temperature),
           topP: 1.0,
           topK: 0,
           seed: request.seed)
+        if let questionOutputVocabulary,
+          request.repair == nil,
+          request.gcd == .off,
+          request.temperature == 0
+        {
+          let allowedTokenIDs = questionOutputVocabulary.allowedTokenIDs(
+            for: userContent)
+          let returnsCompactLogits = compactQuestionAwareOutputHead
+            && ngramDraftModel != nil
+            && ngramDraftTokens > 0
+            && ngramSerialPrefixTokens == 1
+          if let restrictedModel = CompiledQwen2ModelFactory.restricting(
+            context.model,
+            to: allowedTokenIDs,
+            returnsCompactLogits: returnsCompactLogits)
+          {
+            generationContext.model = restrictedModel
+          }
+        }
         let stream: AsyncStream<Generation>
         switch request.gcd {
         case .on:
           stream = try await MLXStructured.generate(
             input: input,
+            cache: generationCache,
             parameters: parameters,
-            context: context,
+            context: generationContext,
             ebnf: try Self.grammarEBNF())
         case .off:
-          stream = try MLXLMCommon.generate(
-            input: input,
-            parameters: parameters,
-            context: context)
+          if let ngramDraftModel,
+            ngramDraftTokens > 0,
+            request.repair == nil
+          {
+            stream = try generateWithSQLNGramDraft(
+              input: input,
+              cache: generationCache,
+              parameters: parameters,
+              context: generationContext,
+              predictor: ngramDraftModel,
+              numDraftTokens: ngramDraftTokens,
+              serialPrefixTokens: ngramSerialPrefixTokens,
+              adaptiveDraftMinimumSupport:
+                ngramAdaptiveDraftMinimumSupport,
+              confidenceSkipPolicies: verificationMLPConfidenceSkips,
+              wiredMemoryTicket: Self.wiredMemoryTicket(
+                enabled: useWiredMemory))
+          } else {
+            stream = try MLXLMCommon.generate(
+              input: input,
+              cache: generationCache,
+              parameters: parameters,
+              context: generationContext,
+              wiredMemoryTicket: Self.wiredMemoryTicket(
+                enabled: useWiredMemory))
+          }
         }
         diagnosticClient.info(
           category: .inference,
@@ -327,6 +685,7 @@ actor MLXSQLGenerator {
         var sql = ""
         var tokensPerSecond = 0.0
         var tokenCount: Int?
+        var speculation: SQLSpeculationMetrics?
         var chunkCount = 0
         var didObserveFirstChunk = false
         for await generation in stream {
@@ -348,23 +707,45 @@ actor MLXSQLGenerator {
           case .info(let info):
             tokensPerSecond = info.tokensPerSecond
             tokenCount = info.generationTokenCount
+            if let metrics = info.speculativeDecodingTelemetry {
+              speculation = SQLSpeculationMetrics(
+                roundCount: metrics.roundCount,
+                draftTokenCount: metrics.draftTokenCount,
+                acceptedDraftTokenCount: metrics.acceptedDraftTokenCount,
+                targetModelCallCount: metrics.targetModelCallCount,
+                targetVerifiedTokenCount: metrics.targetVerifiedTokenCount,
+                emittedTokenCount: metrics.emittedTokenCount)
+            }
           default:
             break
           }
         }
         let decodeElapsed = decodeStarted.duration(to: .now).microseconds
+        var streamFinishedContext = [
+          "chunk_count": String(chunkCount),
+          "decode_elapsed_ms": Self.milliseconds(decodeElapsed),
+          "output_character_count": String(sql.count),
+          "task_cancelled": String(Task.isCancelled),
+          "token_count": tokenCount.map(String.init) ?? "unknown",
+          "tokens_per_second": String(format: "%.1f", tokensPerSecond),
+        ]
+        if let speculation {
+          streamFinishedContext["speculation_round_count"] = String(
+            speculation.roundCount)
+          streamFinishedContext["speculation_draft_token_count"] = String(
+            speculation.draftTokenCount)
+          streamFinishedContext["speculation_accepted_token_count"] = String(
+            speculation.acceptedDraftTokenCount)
+          streamFinishedContext["speculation_target_call_count"] = String(
+            speculation.targetModelCallCount)
+        }
         diagnosticClient.info(
           category: .inference,
           code: "mlx_token_stream_finished",
           summary: "MLX token streaming finished.",
-          context: baseContext.merging([
-            "chunk_count": String(chunkCount),
-            "decode_elapsed_ms": Self.milliseconds(decodeElapsed),
-            "output_character_count": String(sql.count),
-            "task_cancelled": String(Task.isCancelled),
-            "token_count": tokenCount.map(String.init) ?? "unknown",
-            "tokens_per_second": String(format: "%.1f", tokensPerSecond),
-          ]) { current, _ in current })
+          context: baseContext.merging(streamFinishedContext) {
+            current, _ in current
+          })
         try Task.checkCancellation()
 
         state.setPhase("output_normalization")
@@ -379,21 +760,34 @@ actor MLXSQLGenerator {
           tokensPerSecond: tokensPerSecond,
           modelName: generatedModelName,
           tokenCount: tokenCount,
+          inputPreparationMicroseconds: inputPreparationMicroseconds,
+          speculation: speculation,
           elapsedMicroseconds: decodeElapsed)
+      }
+      var finishedContext = [
+        "decode_elapsed_ms": Self.milliseconds(
+          generation.elapsedMicroseconds),
+        "token_count": generation.tokenCount.map(String.init) ?? "unknown",
+        "tokens_per_second": String(
+          format: "%.1f", generation.tokensPerSecond),
+        "total_elapsed_ms": Self.milliseconds(
+          operationStarted.duration(to: .now).microseconds),
+      ]
+      if let speculation = generation.speculation {
+        finishedContext["speculation_round_count"] = String(
+          speculation.roundCount)
+        finishedContext["speculation_draft_token_count"] = String(
+          speculation.draftTokenCount)
+        finishedContext["speculation_accepted_token_count"] = String(
+          speculation.acceptedDraftTokenCount)
+        finishedContext["speculation_target_call_count"] = String(
+          speculation.targetModelCallCount)
       }
       diagnosticClient.info(
         category: .inference,
         code: "mlx_sql_generation_finished",
         summary: "MLX SQL generation finished.",
-        context: baseContext.merging([
-          "decode_elapsed_ms": Self.milliseconds(
-            generation.elapsedMicroseconds),
-          "token_count": generation.tokenCount.map(String.init) ?? "unknown",
-          "tokens_per_second": String(
-            format: "%.1f", generation.tokensPerSecond),
-          "total_elapsed_ms": Self.milliseconds(
-            operationStarted.duration(to: .now).microseconds),
-        ]) { current, _ in current })
+        context: baseContext.merging(finishedContext) { current, _ in current })
       return generation
     } catch {
       var context = baseContext
@@ -446,6 +840,21 @@ actor MLXSQLGenerator {
     _ microseconds: Int64
   ) -> String {
     String(format: "%.1f", Double(microseconds) / 1_000)
+  }
+
+  /// Keep model weights resident while unconstrained generation is active.
+  /// The OS-recommended working-set limit is a cap, not an allocation, and
+  /// MLX restores the previous process limit when the generation task ends.
+  private nonisolated static func wiredMemoryTicket(
+    enabled: Bool
+  ) -> WiredMemoryTicket? {
+    guard enabled,
+      let limit = GPU.maxRecommendedWorkingSetBytes(),
+      limit > 0
+    else { return nil }
+    return MLXLMCommon.WiredFixedPolicy(limit: limit).ticket(
+      size: limit,
+      kind: .active)
   }
 
   static func systemPrompt(schema: String) -> String {
@@ -511,15 +920,267 @@ actor MLXSQLGenerator {
 
   private func loadedContainer() async throws -> ModelContainer {
     let source = self.source
+    if let metalCommandBufferLimitMB {
+      guard setenv(
+        "MLX_MAX_MB_PER_BUFFER",
+        String(metalCommandBufferLimitMB),
+        1)
+        == 0
+      else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EINVAL)
+      }
+    }
     return try await containerLoader.value {
       MLX.Memory.cacheLimit = 20 * 1024 * 1024
       switch source {
       case .directory(let url):
+        if self.compiledQwen2MLPFusion {
+          return try await CompiledQwen2ModelFactory.make(
+            verificationMLPSkipLayers: self.verificationMLPSkipLayers,
+            verificationMLPLongBatchExtraSkipLayers:
+              self.verificationMLPLongBatchExtraSkipLayers
+          ).loadContainer(
+              from: url,
+              using: HuggingFaceTokenizerLoader())
+        }
         return try await loadModelContainer(
           from: url,
           using: HuggingFaceTokenizerLoader())
       }
     }
+  }
+
+  private func preparedCompiledQwen2QKVFusion(
+    using container: ModelContainer
+  ) async throws {
+    guard compiledQwen2QKVVerificationFusion,
+      !didPrepareCompiledQwen2QKVFusion
+    else { return }
+    let prepared = await container.perform { context in
+      CompiledQwen2ModelFactory.prepareFusedQKVVerificationProjections(
+        in: context.model)
+    }
+    guard prepared else {
+      throw CocoaError(.featureUnsupported)
+    }
+    didPrepareCompiledQwen2QKVFusion = true
+  }
+
+  /// Builds the longest token prefix shared by two deliberately different
+  /// user messages. The prefix therefore includes the static system/schema
+  /// prompt and chat-template user header, but no user-controlled content.
+  /// Prefilling it during app preparation moves that work outside the query
+  /// deadline while retaining the processor's exact tokenization.
+  private func preparedPromptPrefixCache(
+    using container: ModelContainer
+  ) async throws -> MLXPromptPrefixCache? {
+    if let promptPrefixCache { return promptPrefixCache }
+
+    let systemContent = Self.systemPrompt(schema: try Self.schemaPrompt())
+    let built: MLXPromptPrefixCache? = try await container.perform {
+      (context: ModelContext) async throws -> MLXPromptPrefixCache? in
+      let probeUsers = [
+        "",
+        "A",
+        "Z",
+        " leading whitespace and punctuation: ; ?",
+        "multiline\nquoted 'value' and <|im_end|>-shaped text",
+        "Unicode λ boundary probe",
+      ]
+      var tokenSequences: [[Int]] = []
+      for user in probeUsers {
+        let input = try await context.processor.prepare(
+          input: UserInput(chat: [
+            .system(systemContent),
+            .user(user),
+          ]))
+        tokenSequences.append(input.text.tokens.asArray(Int.self))
+      }
+      guard let firstTokens = tokenSequences.first else { return nil }
+      let prefixCount = tokenSequences.dropFirst().reduce(firstTokens.count) {
+        min($0, Self.commonPrefixLength(firstTokens, $1))
+      }
+      guard prefixCount > 0 else { return nil }
+
+      let prefixTokens = Array(firstTokens.prefix(prefixCount))
+      let suffixCount = tokenSequences.dropFirst().reduce(
+        firstTokens.count - prefixCount
+      ) {
+        min(
+          $0,
+          Self.commonSuffixLength(
+            firstTokens,
+            $1,
+            excludingPrefixCount: prefixCount))
+      }
+      let suffixTokens = Array(firstTokens.suffix(suffixCount))
+      let directSuffixIsExact = zip(probeUsers, tokenSequences).allSatisfy {
+        user, tokens in
+        prefixTokens
+          + context.tokenizer.encode(text: user, addSpecialTokens: false)
+          + suffixTokens == tokens
+      }
+      let prefixInput = LMInput(tokens: MLXArray(prefixTokens))
+      let parameters = GenerateParameters(maxTokens: 1)
+      let cache = context.model.newCache(parameters: parameters)
+      switch try context.model.prepare(
+        prefixInput,
+        cache: cache,
+        windowSize: parameters.prefillStepSize)
+      {
+      case .tokens(let tokens):
+        let output = context.model(
+          tokens[text: .newAxis],
+          cache: cache.isEmpty ? nil : cache,
+          state: nil)
+        eval(output.logits)
+      case .logits(let output):
+        eval(output.logits)
+      }
+      return MLXPromptPrefixCache(
+        tokens: prefixTokens,
+        suffixTokens: directSuffixIsExact ? suffixTokens : nil,
+        cache: cache)
+    }
+    promptPrefixCache = built
+    return built
+  }
+
+  private func preparedNGramDraftModel(
+    using container: ModelContainer
+  ) async throws -> SQLNGramPredictor? {
+    guard ngramDraftTokens > 0 else { return nil }
+    if let ngramDraftModel { return ngramDraftModel }
+
+    let corpus = if let productionNGramSpeculation {
+      try SQLGenClient.productionDraftCorpus(
+        policy: productionNGramSpeculation)
+    } else {
+      experimentalNGramDraftCorpus
+    }
+    guard !corpus.isEmpty else { return nil }
+    let built = await container.perform { context in
+      let eosToken = context.tokenizer.eosTokenId
+      let sequences = corpus.map { sql in
+        var tokens = context.tokenizer.encode(
+          text: sql,
+          addSpecialTokens: false)
+        if let eosToken { tokens.append(eosToken) }
+        return tokens
+      }
+      return SQLNGramPredictor(sequences: sequences, order: ngramOrder)
+    }
+    ngramDraftModel = built
+    return built
+  }
+
+  private func preparedQuestionOutputVocabulary(
+    using container: ModelContainer
+  ) async throws -> SQLQuestionOutputVocabulary? {
+    guard questionAwareOutputHead else { return nil }
+    if let questionOutputVocabulary { return questionOutputVocabulary }
+
+    let corpus = if let productionNGramSpeculation {
+      try SQLGenClient.productionDraftCorpus(
+        policy: productionNGramSpeculation)
+    } else {
+      experimentalNGramDraftCorpus
+    }
+    guard !corpus.isEmpty else { return nil }
+    let lexicalSources = [try Self.grammarEBNF(), try Self.schemaPrompt()]
+    let built = await container.perform { context in
+      guard let vocabularySize = CompiledQwen2ModelFactory.vocabularySize(
+        of: context.model)
+      else { return nil as SQLQuestionOutputVocabulary? }
+      let vocabulary = SQLQuestionOutputVocabulary(
+        vocabularySize: vocabularySize,
+        tokenizer: context.tokenizer,
+        draftCorpus: corpus,
+        lexicalSources: lexicalSources,
+        stopStrings: context.configuration.effectiveStopStrings)
+      let warmupTokenIDs = vocabulary.allowedTokenIDs(
+        for: "Question: warm up SQL output projection")
+      if let model = CompiledQwen2ModelFactory.restricting(
+        context.model,
+        to: warmupTokenIDs)
+      {
+        let token = context.tokenizer.eosTokenId ?? 0
+        for tokens in [[token], [token, token]] {
+          let input = MLXArray(tokens).reshaped([1, -1])
+          let cache = model.newCache(
+            parameters: GenerateParameters(maxTokens: 1))
+          eval(model(input, cache: cache))
+        }
+      }
+      return vocabulary
+    }
+    questionOutputVocabulary = built
+    return built
+  }
+
+  private nonisolated static func commonPrefixLength(
+    _ lhs: [Int],
+    _ rhs: [Int]
+  ) -> Int {
+    var index = 0
+    let limit = min(lhs.count, rhs.count)
+    while index < limit, lhs[index] == rhs[index] {
+      index += 1
+    }
+    return index
+  }
+
+  private nonisolated static func commonSuffixLength(
+    _ lhs: [Int],
+    _ rhs: [Int],
+    excludingPrefixCount prefixCount: Int
+  ) -> Int {
+    var count = 0
+    let limit = min(lhs.count, rhs.count) - prefixCount
+    while count < limit,
+      lhs[lhs.count - count - 1] == rhs[rhs.count - count - 1]
+    {
+      count += 1
+    }
+    return count
+  }
+
+  private nonisolated static func applyingDirectPromptSuffix(
+    _ prefix: MLXPromptPrefixCache?,
+    userContent: String,
+    tokenizer: any MLXLMCommon.Tokenizer
+  ) -> (LMInput, [KVCache]?, Int)? {
+    guard let prefix, let suffixTokens = prefix.suffixTokens else {
+      return nil
+    }
+    let userTokens = tokenizer.encode(
+      text: userContent,
+      addSpecialTokens: false)
+    return (
+      LMInput(tokens: MLXArray(userTokens + suffixTokens)),
+      prefix.cache.map { $0.copy() },
+      prefix.tokens.count)
+  }
+
+  /// Returns the unchanged input when a tokenizer/model does not share the
+  /// prepared prefix. This keeps directory-based evaluation compatible with
+  /// arbitrary supported model families.
+  private nonisolated static func applyingPromptPrefixCache(
+    _ prefix: MLXPromptPrefixCache?,
+    to input: LMInput
+  ) -> (LMInput, [KVCache]?, Int) {
+    guard let prefix else { return (input, nil, 0) }
+    let tokens = input.text.tokens.asArray(Int.self)
+    guard tokens.count > prefix.tokens.count,
+      tokens.starts(with: prefix.tokens)
+    else {
+      return (input, nil, 0)
+    }
+    let remainder = Array(tokens.dropFirst(prefix.tokens.count))
+    return (
+      LMInput(tokens: MLXArray(remainder)),
+      prefix.cache.map { $0.copy() },
+      prefix.tokens.count)
   }
 
   static func grammarEBNF() throws -> String {

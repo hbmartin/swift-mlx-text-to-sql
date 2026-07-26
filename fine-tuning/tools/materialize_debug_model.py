@@ -33,7 +33,19 @@ from tools.fetch_model import (
     ArtifactError,
     DEFAULT_MANIFEST,
     DEFAULT_MODELS_DIR,
+    DEVICE_RUNTIME_COMPILED_QWEN2_MLP_FUSION,
+    DEVICE_RUNTIME_COMPILED_QWEN2_QKV_VERIFICATION_FUSION,
+    DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP,
+    DEVICE_RUNTIME_VERIFICATION_MLP_ADDITIONAL_CONFIDENCE_SKIPS,
+    DEVICE_RUNTIME_VERIFICATION_MLP_LONG_BATCH_EXTRA_SKIP_LAYERS,
+    DEVICE_RUNTIME_VERIFICATION_MLP_SKIP_LAYERS,
+    DEVICE_RUNTIME_GCD,
+    DEVICE_RUNTIME_MAX_TOKENS,
+    DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB,
+    DEVICE_RUNTIME_QUESTION_AWARE_OUTPUT_HEAD,
+    DEVICE_RUNTIME_SPECULATIVE_DECODING,
     LOCK_FILE,
+    MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
     PRODUCTION_RECEIPT_FILE,
     directory_digest,
     directory_inventory,
@@ -51,6 +63,27 @@ DEFAULT_FUSED_CACHE = DEFAULT_MODELS_DIR / "debug-fused"
 ELIGIBLE_LOCAL_STATUSES = frozenset(
     {"local_complete", "awaiting_wandb", "wandb_complete", "complete"}
 )
+DEVICE_QUANTIZATION_POLICY_VERSION = "iphone-q4-g128-v2"
+DEVICE_QUANTIZATION = {"bits": 4, "group_size": 128, "mode": "affine"}
+EVALUATED_QWEN_RUN = (
+    "qwen25-coder-3b-"
+    "73cb7525c61bc76c76d880076d56d39e0f25cd1675f21a01c28ae2b560838500-"
+    "seed-424242-wb-0qvg7e4k"
+)
+EVALUATED_DEVICE_ARTIFACTS = {
+    EVALUATED_QWEN_RUN: {
+        "selected_iteration": 600,
+        "selected_checkpoint_sha256": (
+            "6dddb9955037c294e37b29526e6a6b3bbb6b489eb19c251931bfa87106616baa"
+        ),
+        "source_fused_directory_sha256": (
+            "b839a6bcadfe56a6c62935017beedcb7bfc0c1d91cb121340aa38c4424a9afa4"
+        ),
+        "device_directory_sha256": (
+            "6a99ed1b3126390b15a82c06cdb1aed7f12bbbc06cb51abd1eee0c4e8ee2aab6"
+        ),
+    }
+}
 Runner = Callable[..., subprocess.CompletedProcess[Any]]
 
 
@@ -233,7 +266,7 @@ def verify_local_candidate(
     return manifest, artifact, base, checkpoint
 
 
-def debug_cache_path(
+def debug_source_cache_path(
     fused_cache: Path, manifest: dict[str, Any], selected: dict[str, Any]
 ) -> Path:
     return fused_cache / (
@@ -242,12 +275,39 @@ def debug_cache_path(
     )
 
 
-def verify_cached_fusion(
+def debug_cache_path(
+    fused_cache: Path, manifest: dict[str, Any], selected: dict[str, Any]
+) -> Path:
+    quantization = DEVICE_QUANTIZATION
+    return fused_cache / (
+        f"{manifest['run_id']}-iter-{selected['iteration']:06d}-"
+        f"{selected['checkpoint_sha256'][:12]}-q{quantization['bits']}-"
+        f"g{quantization['group_size']}-{quantization['mode']}-v2"
+    )
+
+
+def evaluated_device_artifact(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    evidence = EVALUATED_DEVICE_ARTIFACTS.get(manifest["run_id"])
+    if evidence is None:
+        return None
+    selected = manifest["checkpoint_evaluation"]["selected"]
+    if (
+        selected["iteration"] != evidence["selected_iteration"]
+        or selected["checkpoint_sha256"]
+        != evidence["selected_checkpoint_sha256"]
+    ):
+        raise ArtifactError(
+            "Evaluated Debug device artifact disagrees with selected checkpoint"
+        )
+    return evidence
+
+
+def verify_cached_source_fusion(
     fused: Path, manifest: dict[str, Any], base_sha256: str
 ) -> str:
     lock_path = fused / LOCK_FILE
     if not fused.is_dir() or fused.is_symlink() or not lock_path.is_file():
-        raise ArtifactError(f"Debug fused cache is incomplete: {fused}")
+        raise ArtifactError(f"Debug source fusion is incomplete: {fused}")
     lock = json.loads(lock_path.read_text())
     selected = manifest["checkpoint_evaluation"]["selected"]
     expected = {
@@ -258,14 +318,58 @@ def verify_cached_fusion(
     }
     for key, value in expected.items():
         if lock.get(key) != value:
-            raise ArtifactError(f"Debug fused cache lock disagrees on {key}: {fused}")
+            raise ArtifactError(
+                f"Debug source fusion lock disagrees on {key}: {fused}"
+            )
     actual = directory_digest(directory_inventory(fused))
     if lock.get("directory_sha256") != actual:
-        raise ArtifactError(f"Debug fused cache bytes are stale or modified: {fused}")
+        raise ArtifactError(f"Debug source fusion bytes are stale: {fused}")
+    evidence = evaluated_device_artifact(manifest)
+    if (
+        evidence is not None
+        and evidence["source_fused_directory_sha256"] != actual
+    ):
+        raise ArtifactError(
+            "Debug source fusion differs from the latency/accuracy-evaluated bytes"
+        )
     return actual
 
 
-def fuse_candidate(
+def verify_cached_fusion(
+    fused: Path,
+    manifest: dict[str, Any],
+    base_sha256: str,
+    source_fused_sha256: str,
+) -> str:
+    lock_path = fused / LOCK_FILE
+    if not fused.is_dir() or fused.is_symlink() or not lock_path.is_file():
+        raise ArtifactError(f"Debug device cache is incomplete: {fused}")
+    lock = json.loads(lock_path.read_text())
+    selected = manifest["checkpoint_evaluation"]["selected"]
+    expected = {
+        "training_run_id": manifest["run_id"],
+        "selected_iteration": selected["iteration"],
+        "selected_checkpoint_sha256": selected["checkpoint_sha256"],
+        "base_directory_sha256": base_sha256,
+        "source_fused_directory_sha256": source_fused_sha256,
+        "device_quantization_policy_version": DEVICE_QUANTIZATION_POLICY_VERSION,
+        "device_quantization": DEVICE_QUANTIZATION,
+    }
+    for key, value in expected.items():
+        if lock.get(key) != value:
+            raise ArtifactError(f"Debug device cache lock disagrees on {key}: {fused}")
+    actual = directory_digest(directory_inventory(fused))
+    if lock.get("directory_sha256") != actual:
+        raise ArtifactError(f"Debug device cache bytes are stale: {fused}")
+    evidence = evaluated_device_artifact(manifest)
+    if evidence is not None and evidence["device_directory_sha256"] != actual:
+        raise ArtifactError(
+            "Debug device cache differs from the latency/accuracy-evaluated bytes"
+        )
+    return actual
+
+
+def fuse_source_candidate(
     fused: Path,
     manifest: dict[str, Any],
     base: Path,
@@ -275,7 +379,7 @@ def fuse_candidate(
 ) -> str:
     base_sha256 = manifest["base"]["directory_sha256"]
     if fused.exists() or fused.is_symlink():
-        return verify_cached_fusion(fused, manifest, base_sha256)
+        return verify_cached_source_fusion(fused, manifest, base_sha256)
 
     fused.parent.mkdir(parents=True, exist_ok=True)
     staged = Path(
@@ -313,7 +417,7 @@ def fuse_candidate(
                 (
                     "from mlx_lm import load; "
                     f"load({str(staged)!r}); "
-                    "print('Debug fused model load verified')"
+                    "print('Debug source fusion load verified')"
                 ),
             ],
             cwd=REPO_ROOT / "fine-tuning",
@@ -340,7 +444,112 @@ def fuse_candidate(
     finally:
         if staged.exists():
             shutil.rmtree(staged)
-    return verify_cached_fusion(fused, manifest, base_sha256)
+    return verify_cached_source_fusion(fused, manifest, base_sha256)
+
+
+def requantize_candidate(
+    fused: Path,
+    source_fused: Path,
+    source_fused_sha256: str,
+    manifest: dict[str, Any],
+    *,
+    runner: Runner = subprocess.run,
+) -> str:
+    base_sha256 = manifest["base"]["directory_sha256"]
+    if fused.exists() or fused.is_symlink():
+        return verify_cached_fusion(
+            fused, manifest, base_sha256, source_fused_sha256
+        )
+
+    fused.parent.mkdir(parents=True, exist_ok=True)
+    workspace = Path(
+        tempfile.mkdtemp(prefix=f".{fused.name}.workspace-", dir=fused.parent)
+    )
+    optimized = fused.parent / f".{fused.name}.staging-{uuid.uuid4().hex}"
+    try:
+        dequantized = workspace / "dequantized"
+        # Preserve the exact evaluated source fusion. Direct BF16 fusion and
+        # re-fusion under a changed toolchain both altered SQL accuracy.
+        runner(
+            [
+                sys.executable,
+                "-m",
+                "mlx_lm",
+                "convert",
+                "--hf-path",
+                str(source_fused),
+                "--mlx-path",
+                str(dequantized),
+                "--dequantize",
+            ],
+            cwd=REPO_ROOT / "fine-tuning",
+            check=True,
+        )
+        runner(
+            [
+                sys.executable,
+                "-m",
+                "mlx_lm",
+                "convert",
+                "--hf-path",
+                str(dequantized),
+                "--mlx-path",
+                str(optimized),
+                "--quantize",
+                "--q-bits",
+                str(DEVICE_QUANTIZATION["bits"]),
+                "--q-group-size",
+                str(DEVICE_QUANTIZATION["group_size"]),
+                "--q-mode",
+                DEVICE_QUANTIZATION["mode"],
+            ],
+            cwd=REPO_ROOT / "fine-tuning",
+            check=True,
+        )
+        runner(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from mlx_lm import load; "
+                    f"load({str(optimized)!r}); "
+                    "print('Debug device-quantized model load verified')"
+                ),
+            ],
+            cwd=REPO_ROOT / "fine-tuning",
+            check=True,
+        )
+        inventory = directory_inventory(optimized)
+        digest = directory_digest(inventory)
+        selected = manifest["checkpoint_evaluation"]["selected"]
+        atomic_write_json(
+            optimized / LOCK_FILE,
+            {
+                "schema_version": 1,
+                "kind": "creg-debug-device-model",
+                "training_run_id": manifest["run_id"],
+                "selected_iteration": selected["iteration"],
+                "selected_checkpoint_sha256": selected["checkpoint_sha256"],
+                "base_directory_sha256": base_sha256,
+                "source_fused_directory_sha256": source_fused_sha256,
+                "device_quantization_policy_version": (
+                    DEVICE_QUANTIZATION_POLICY_VERSION
+                ),
+                "device_quantization": DEVICE_QUANTIZATION,
+                "directory_sha256": digest,
+                "all_files": inventory,
+                "wandb_receipt_required": False,
+            },
+        )
+        transactionally_replace_directory(optimized, fused)
+    finally:
+        if optimized.exists():
+            shutil.rmtree(optimized)
+        if workspace.exists():
+            shutil.rmtree(workspace)
+    return verify_cached_fusion(
+        fused, manifest, base_sha256, source_fused_sha256
+    )
 
 
 def debug_identity(
@@ -349,11 +558,13 @@ def debug_identity(
     selected = manifest["checkpoint_evaluation"]["selected"]
     return {
         "schema_version": 1,
-        "model_key": f"debug-ft-{manifest['run_id']}",
+        "model_key": f"debug-ft-{manifest['run_id']}-q4-g128-v2",
         "base_model_key": artifact["key"],
         "training_run_id": manifest["run_id"],
         "selected_iteration": selected["iteration"],
         "selected_checkpoint_sha256": selected["checkpoint_sha256"],
+        "device_quantization_policy_version": DEVICE_QUANTIZATION_POLICY_VERSION,
+        "device_quantization": copy.deepcopy(DEVICE_QUANTIZATION),
         "local_evidence_status": manifest["status"],
         "wandb_receipt_required": False,
     }
@@ -372,14 +583,25 @@ def debug_quantization(artifact: dict[str, Any]) -> dict[str, Any]:
     raise ArtifactError(f"Debug base has no declared MLX quantization: {artifact['key']}")
 
 
+def validate_device_requantization(artifact: dict[str, Any]) -> dict[str, Any]:
+    source = debug_quantization(artifact)
+    if source.get("bits") != 4 or source.get("mode", "affine") != "affine":
+        raise ArtifactError(
+            "Debug device requantization requires a 4-bit affine training base"
+        )
+    return source
+
+
 def generated_manifest(
     source: dict[str, Any],
     training: dict[str, Any],
     artifact: dict[str, Any],
     fused_sha256: str,
+    source_fused_sha256: str,
 ) -> dict[str, Any]:
     result = copy.deepcopy(source)
     identity = debug_identity(training, artifact)
+    source_quantization = validate_device_requantization(artifact)
     synthetic_revision = identity["selected_checkpoint_sha256"][:40]
     repository = f"local-debug/{identity['training_run_id']}"
     result["models"].append(
@@ -396,7 +618,13 @@ def generated_manifest(
             "derived": True,
             "publication_status": "debug-local-unpublished",
             "snapshot_directory_sha256": fused_sha256,
-            "quantization": debug_quantization(artifact),
+            "quantization": copy.deepcopy(DEVICE_QUANTIZATION),
+            "derivation": {
+                "policy_version": DEVICE_QUANTIZATION_POLICY_VERSION,
+                "source_quantization": source_quantization,
+                "source_fused_directory_sha256": source_fused_sha256,
+                "pipeline": "fuse-dequantize-requantize-v1",
+            },
             "license": artifact["license"],
             "required_files": [],
             "training_run": identity["training_run_id"],
@@ -411,6 +639,40 @@ def generated_manifest(
         "top_p": 1.0,
         "top_k": 0,
         "max_tokens": int(production.get("max_tokens", 512)),
+        "device_runtime": {
+            "policy_version": (
+                MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION
+            ),
+            "gcd": DEVICE_RUNTIME_GCD,
+            "max_tokens": DEVICE_RUNTIME_MAX_TOKENS,
+            "metal_command_buffer_limit_mb": (
+                DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB
+            ),
+            "compiled_qwen2_mlp_fusion": (
+                DEVICE_RUNTIME_COMPILED_QWEN2_MLP_FUSION
+            ),
+            "compiled_qwen2_qkv_verification_fusion": (
+                DEVICE_RUNTIME_COMPILED_QWEN2_QKV_VERIFICATION_FUSION
+            ),
+            "verification_mlp_skip_layers": copy.deepcopy(
+                DEVICE_RUNTIME_VERIFICATION_MLP_SKIP_LAYERS
+            ),
+            "verification_mlp_long_batch_extra_skip_layers": copy.deepcopy(
+                DEVICE_RUNTIME_VERIFICATION_MLP_LONG_BATCH_EXTRA_SKIP_LAYERS
+            ),
+            "verification_mlp_confidence_skip": copy.deepcopy(
+                DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP
+            ),
+            "verification_mlp_additional_confidence_skips": copy.deepcopy(
+                DEVICE_RUNTIME_VERIFICATION_MLP_ADDITIONAL_CONFIDENCE_SKIPS
+            ),
+            "question_aware_output_head": (
+                DEVICE_RUNTIME_QUESTION_AWARE_OUTPUT_HEAD
+            ),
+            "speculative_decoding": copy.deepcopy(
+                DEVICE_RUNTIME_SPECULATIVE_DECODING
+            ),
+        },
         "voting": {
             "candidate_count": 1,
             "sample_temperature": 0.0,
@@ -515,13 +777,26 @@ def materialize_debug_model(
     training, artifact, base, checkpoint = verify_local_candidate(
         run_directory, source_manifest, models_dir
     )
+    validate_device_requantization(artifact)
     selected = training["checkpoint_evaluation"]["selected"]
+    source_fused = debug_source_cache_path(fused_cache, training, selected)
+    source_fused_sha256 = fuse_source_candidate(
+        source_fused, training, base, checkpoint, runner=runner
+    )
     fused = debug_cache_path(fused_cache, training, selected)
-    fused_sha256 = fuse_candidate(
-        fused, training, base, checkpoint, runner=runner
+    fused_sha256 = requantize_candidate(
+        fused,
+        source_fused,
+        source_fused_sha256,
+        training,
+        runner=runner,
     )
     manifest = generated_manifest(
-        source_manifest, training, artifact, fused_sha256
+        source_manifest,
+        training,
+        artifact,
+        fused_sha256,
+        source_fused_sha256,
     )
     debug_artifact = manifest["models"][-1]
     debug_artifact["required_files"] = directory_inventory(fused)

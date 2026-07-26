@@ -24,7 +24,13 @@ from eval.campaign import (
 )
 from eval.run_artifacts import REPO_ROOT, sha256_file, write_json
 from eval.selection import SelectionError, load_run
-from tools.fetch_model import load_manifest
+from tools.fetch_model import (
+    DEVICE_RUNTIME_GCD,
+    DEVICE_RUNTIME_MAX_TOKENS,
+    DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB,
+    DEVICE_RUNTIME_POLICY_VERSION,
+    load_manifest,
+)
 
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
 
@@ -271,6 +277,14 @@ def main() -> None:
         "top_p": 1.0,
         "top_k": 0,
         "max_tokens": 512,
+        "device_runtime": {
+            "policy_version": DEVICE_RUNTIME_POLICY_VERSION,
+            "gcd": DEVICE_RUNTIME_GCD,
+            "max_tokens": DEVICE_RUNTIME_MAX_TOKENS,
+            "metal_command_buffer_limit_mb": (
+                DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB
+            ),
+        },
         "policy_version": "bounded-three-generation-v1",
         "voting": {
             "candidate_count": 3,

@@ -30,12 +30,22 @@ public struct ChatFeature: Sendable {
     public var exportURL: URL?
     public var presentedFailure: FailurePresentation?
     public var debugModelIdentity: DebugModelIdentity?
+    /// Experimental physical-device benchmark input supplied at process
+    /// launch. Ordinary Release builds always leave this nil.
+    public var launchBenchmarkQuestion: String?
+    public var launchBenchmarkStarted = false
 
-    public init(debugModelIdentity: DebugModelIdentity? = nil) {
-      #if DEBUG
+    public init(
+      debugModelIdentity: DebugModelIdentity? = nil,
+      launchBenchmarkQuestion: String? = nil
+    ) {
+      #if DEBUG || CREG_DEVICE_BENCHMARK
         self.debugModelIdentity = debugModelIdentity ?? Self.bundledDebugModelIdentity()
+        self.launchBenchmarkQuestion = launchBenchmarkQuestion
+          ?? ProcessInfo.processInfo.environment["CREG_BENCHMARK_QUESTION"]
       #else
         self.debugModelIdentity = nil
+        self.launchBenchmarkQuestion = nil
       #endif
     }
 
@@ -124,7 +134,7 @@ public struct ChatFeature: Sendable {
           category: .submission,
           code: "chat_model_ready",
           summary: "Chat submission is enabled because the SQL model is ready.")
-        return .none
+        return startLaunchBenchmarkIfReady(state: &state)
 
       case .modelPreparationFailed(let diagnostic):
         state.modelReadiness = .failed(
@@ -146,7 +156,7 @@ public struct ChatFeature: Sendable {
           code: "history_loaded",
           summary: "Conversation history loaded.",
           context: ["message_count": String(messages.count)])
-        return .none
+        return startLaunchBenchmarkIfReady(state: &state)
 
       case .submissionRequested:
         guard
@@ -411,6 +421,32 @@ public struct ChatFeature: Sendable {
     .cancellable(id: CancelID.pipeline, cancelInFlight: true)
   }
 
+  private func startLaunchBenchmarkIfReady(
+    state: inout State
+  ) -> Effect<Action> {
+    guard
+      let question = state.launchBenchmarkQuestion?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !question.isEmpty,
+      !state.launchBenchmarkStarted,
+      state.modelReadiness == .ready,
+      state.conversationID != nil,
+      !state.isProcessing
+    else { return .none }
+
+    // A launch benchmark is a standalone turn. Do not let a prior installed
+    // build's conversation trigger Foundation Models rewrite work or alter the
+    // SQL prompt being timed.
+    state.messages.removeAll()
+    state.launchBenchmarkStarted = true
+    state.composerText = question
+    diagnostics.info(
+      category: .submission,
+      code: "launch_benchmark_started",
+      summary: "The Debug launch benchmark started.")
+    return startSubmission(state: &state)
+  }
+
   private func preparationEffect() -> Effect<Action> {
     .run { send in
       try await pipeline.prepare()
@@ -524,7 +560,7 @@ private enum LiveDependencies {
       diagnostics: diagnostics
     ) {
       guard let bundledManifest else { throw ModelManifestError.missing }
-      #if DEBUG
+      #if DEBUG || CREG_DEVICE_BENCHMARK
         let configuration = try ModelManifestLoader.production(
           url: bundledManifest,
           allowDebugCandidate: true)
@@ -535,7 +571,7 @@ private enum LiveDependencies {
       guard let bundledReceipt, let bundledModelDirectory else {
         throw ModelManifestError.missingReceipt
       }
-      #if !DEBUG
+      #if !DEBUG && !CREG_DEVICE_BENCHMARK
         guard configuration.debugModelIdentity == nil else {
           throw ModelManifestError.invalidProductionConfiguration(
             "Release refuses Debug candidate model identities")
@@ -573,9 +609,32 @@ private enum LiveDependencies {
         diagnosticCode: "production_receipt_missing",
         diagnostic: ModelManifestError.missingReceipt.localizedDescription)
     }
+    #if DEBUG || CREG_DEVICE_BENCHMARK
+      let useWiredMemory =
+        ProcessInfo.processInfo.environment["CREG_WIRED_MEMORY"] == "true"
+    #else
+      let useWiredMemory = false
+    #endif
     let sqlGen = SQLGenClient.live(
       directory: bundledModelDirectory,
-      diagnostics: diagnostics)
+      diagnostics: diagnostics,
+      useWiredMemory: useWiredMemory,
+      useDirectPromptSuffix: true,
+      metalCommandBufferLimitMB: production.metalCommandBufferLimitMB,
+      compiledQwen2MLPFusion: production.compiledQwen2MLPFusion,
+      compiledQwen2QKVVerificationFusion:
+        production.compiledQwen2QKVVerificationFusion,
+      verificationMLPSkipLayers: production.verificationMLPSkipLayers,
+      verificationMLPLongBatchExtraSkipLayers:
+        production.verificationMLPLongBatchExtraSkipLayers,
+      verificationMLPConfidenceSkip:
+        production.verificationMLPConfidenceSkip,
+      verificationMLPAdditionalConfidenceSkips:
+        production.verificationMLPAdditionalConfidenceSkips,
+      questionAwareOutputHead: production.questionAwareOutputHead,
+      compactQuestionAwareOutputHead:
+        production.compactQuestionAwareOutputHead,
+      productionNGramSpeculation: production.sqlNGramSpeculation)
       .reportingModelLoad(
         to: diagnostics,
         modelKey: production.model.key)
@@ -627,6 +686,7 @@ private enum LiveDependencies {
         "database_ready": String(databaseReady),
         "model_key": production.model.key,
         "policy_version": production.policyVersion ?? "legacy",
+        "runtime_policy_version": production.runtimePolicyVersion ?? "legacy",
         "debug_training_run": production.debugModelIdentity?.trainingRunID ?? "none",
       ])
     return QueryPipeline.live(

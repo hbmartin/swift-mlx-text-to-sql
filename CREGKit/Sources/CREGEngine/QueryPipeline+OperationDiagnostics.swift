@@ -159,6 +159,15 @@ private struct PipelineOperationObserver {
       context["token_count"] = generation.tokenCount.map(String.init) ?? "unknown"
       context["tokens_per_second"] = String(
         format: "%.1f", generation.tokensPerSecond)
+      if let speculation = generation.speculation {
+        context["speculation_round_count"] = String(speculation.roundCount)
+        context["speculation_draft_token_count"] = String(
+          speculation.draftTokenCount)
+        context["speculation_accepted_token_count"] = String(
+          speculation.acceptedDraftTokenCount)
+        context["speculation_target_call_count"] = String(
+          speculation.targetModelCallCount)
+      }
       info(
         "pipeline_generation_finished",
         "SQL candidate generation finished.",

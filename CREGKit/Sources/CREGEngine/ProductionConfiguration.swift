@@ -14,7 +14,93 @@ public struct ProductionGenerationConfiguration:
   public var sampleTemperature: Double
   public var alwaysVote: Bool
   public var policyVersion: String? = nil
+  public var runtimePolicyVersion: String? = nil
+  public var metalCommandBufferLimitMB: Int? = nil
+  public var compiledQwen2MLPFusion: Bool = false
+  public var compiledQwen2QKVVerificationFusion: Bool = false
+  public var verificationMLPSkipLayers: [Int] = []
+  public var verificationMLPLongBatchExtraSkipLayers: [Int] = []
+  public var verificationMLPConfidenceSkip:
+    VerificationMLPConfidenceSkipPolicy? = nil
+  public var verificationMLPAdditionalConfidenceSkips:
+    [VerificationMLPConfidenceSkipPolicy] = []
+  public var questionAwareOutputHead: Bool = false
+  public var compactQuestionAwareOutputHead: Bool = false
+  public var sqlNGramSpeculation: SQLNGramSpeculationPolicy? = nil
   public var debugModelIdentity: DebugModelIdentity? = nil
+}
+
+public struct VerificationMLPConfidenceSkipPolicy: Sendable, Equatable {
+  public static let supported = VerificationMLPConfidenceSkipPolicy(
+    layer: 16,
+    targetInputLength: 3,
+    minimumSupport: 512,
+    requiresUnanimity: true)
+  public static let supportedSingleDraft = VerificationMLPConfidenceSkipPolicy(
+    layer: 35,
+    targetInputLength: 2,
+    minimumSupport: 512,
+    requiresUnanimity: true)
+
+  public var layer: Int
+  public var targetInputLength: Int
+  public var minimumSupport: Int
+  public var requiresUnanimity: Bool
+
+  public init(
+    layer: Int,
+    targetInputLength: Int,
+    minimumSupport: Int,
+    requiresUnanimity: Bool
+  ) {
+    self.layer = layer
+    self.targetInputLength = targetInputLength
+    self.minimumSupport = minimumSupport
+    self.requiresUnanimity = requiresUnanimity
+  }
+}
+
+public struct SQLNGramSpeculationPolicy: Sendable, Equatable {
+  public static let supported = SQLNGramSpeculationPolicy(
+    strategy: "sql-ngram-target-verification-v3",
+    order: 6,
+    draftTokens: 3,
+    serialPrefixTokens: 1,
+    adaptiveDraftMinimumSupport: 8,
+    corpusSHA256:
+      "a7cc3c8cc3d7771353c5133c24f6516d201d31a25897949c94d048684c8244dc",
+    sourceCorpusSHA256:
+      "3a9ad4806692cdc89e8e68c77e29c5e1eedaefac5745c3a87bd4e4fb1758021e",
+    statementCount: 1_353)
+
+  public var strategy: String
+  public var order: Int
+  public var draftTokens: Int
+  public var serialPrefixTokens: Int
+  public var adaptiveDraftMinimumSupport: Int
+  public var corpusSHA256: String
+  public var sourceCorpusSHA256: String
+  public var statementCount: Int
+
+  public init(
+    strategy: String,
+    order: Int,
+    draftTokens: Int,
+    serialPrefixTokens: Int,
+    adaptiveDraftMinimumSupport: Int,
+    corpusSHA256: String,
+    sourceCorpusSHA256: String,
+    statementCount: Int
+  ) {
+    self.strategy = strategy
+    self.order = order
+    self.draftTokens = draftTokens
+    self.serialPrefixTokens = serialPrefixTokens
+    self.adaptiveDraftMinimumSupport = adaptiveDraftMinimumSupport
+    self.corpusSHA256 = corpusSHA256
+    self.sourceCorpusSHA256 = sourceCorpusSHA256
+    self.statementCount = statementCount
+  }
 }
 
 public struct DebugModelIdentity: Sendable, Equatable {
@@ -224,6 +310,95 @@ public enum ModelManifestLoader {
   }
 
   private struct Production: Decodable {
+    struct DeviceRuntime: Decodable {
+      struct ConfidenceSkip: Decodable {
+        var layer: Int
+        var targetInputLength: Int
+        var minimumSupport: Int
+        var requiresUnanimity: Bool
+
+        enum CodingKeys: String, CodingKey {
+          case layer
+          case targetInputLength = "target_input_length"
+          case minimumSupport = "minimum_support"
+          case requiresUnanimity = "requires_unanimity"
+        }
+
+        var policy: VerificationMLPConfidenceSkipPolicy {
+          VerificationMLPConfidenceSkipPolicy(
+            layer: layer,
+            targetInputLength: targetInputLength,
+            minimumSupport: minimumSupport,
+            requiresUnanimity: requiresUnanimity)
+        }
+      }
+
+      struct SpeculativeDecoding: Decodable {
+        var strategy: String
+        var order: Int
+        var draftTokens: Int
+        var serialPrefixTokens: Int
+        var adaptiveDraftMinimumSupport: Int
+        var corpusSHA256: String
+        var sourceCorpusSHA256: String
+        var statementCount: Int
+
+        enum CodingKeys: String, CodingKey {
+          case strategy, order
+          case draftTokens = "draft_tokens"
+          case serialPrefixTokens = "serial_prefix_tokens"
+          case adaptiveDraftMinimumSupport = "adaptive_draft_min_support"
+          case corpusSHA256 = "corpus_sha256"
+          case sourceCorpusSHA256 = "source_corpus_sha256"
+          case statementCount = "statement_count"
+        }
+
+        var policy: SQLNGramSpeculationPolicy {
+          SQLNGramSpeculationPolicy(
+            strategy: strategy,
+            order: order,
+            draftTokens: draftTokens,
+            serialPrefixTokens: serialPrefixTokens,
+            adaptiveDraftMinimumSupport: adaptiveDraftMinimumSupport,
+            corpusSHA256: corpusSHA256,
+            sourceCorpusSHA256: sourceCorpusSHA256,
+            statementCount: statementCount)
+        }
+      }
+
+      var policyVersion: String
+      var gcd: GCDMode
+      var maxTokens: Int
+      var metalCommandBufferLimitMB: Int?
+      var compiledQwen2MLPFusion: Bool?
+      var compiledQwen2QKVVerificationFusion: Bool?
+      var verificationMLPSkipLayers: [Int]?
+      var verificationMLPLongBatchExtraSkipLayers: [Int]?
+      var verificationMLPConfidenceSkip: ConfidenceSkip?
+      var verificationMLPAdditionalConfidenceSkips: [ConfidenceSkip]?
+      var questionAwareOutputHead: Bool?
+      var speculativeDecoding: SpeculativeDecoding?
+
+      enum CodingKeys: String, CodingKey {
+        case policyVersion = "policy_version"
+        case gcd
+        case maxTokens = "max_tokens"
+        case metalCommandBufferLimitMB = "metal_command_buffer_limit_mb"
+        case compiledQwen2MLPFusion = "compiled_qwen2_mlp_fusion"
+        case compiledQwen2QKVVerificationFusion =
+          "compiled_qwen2_qkv_verification_fusion"
+        case verificationMLPSkipLayers = "verification_mlp_skip_layers"
+        case verificationMLPLongBatchExtraSkipLayers =
+          "verification_mlp_long_batch_extra_skip_layers"
+        case verificationMLPConfidenceSkip =
+          "verification_mlp_confidence_skip"
+        case verificationMLPAdditionalConfidenceSkips =
+          "verification_mlp_additional_confidence_skips"
+        case questionAwareOutputHead = "question_aware_output_head"
+        case speculativeDecoding = "speculative_decoding"
+      }
+    }
+
     struct Voting: Decodable {
       var candidateCount: Int
       var sampleTemperature: Double
@@ -242,6 +417,7 @@ public enum ModelManifestLoader {
     var topP: Double
     var topK: Int
     var maxTokens: Int
+    var deviceRuntime: DeviceRuntime?
     var policyVersion: String?
     var voting: Voting
 
@@ -251,6 +427,7 @@ public enum ModelManifestLoader {
       case topP = "top_p"
       case topK = "top_k"
       case maxTokens = "max_tokens"
+      case deviceRuntime = "device_runtime"
       case policyVersion = "policy_version"
       case voting
     }
@@ -339,21 +516,221 @@ public enum ModelManifestLoader {
           "the bounded policy version requires three generations and a 0.7 sample temperature")
       }
     }
+    if let runtime = production.deviceRuntime {
+      guard runtime.maxTokens > 0,
+        runtime.maxTokens <= production.maxTokens
+      else {
+        throw ModelManifestError.invalidProductionConfiguration(
+          "the iPhone runtime policy requires a positive token cap no larger than the evaluated cap"
+        )
+      }
+      switch runtime.policyVersion {
+      case "iphone-30-second-v1":
+        guard runtime.metalCommandBufferLimitMB == nil,
+          runtime.compiledQwen2MLPFusion == nil,
+          runtime.compiledQwen2QKVVerificationFusion == nil,
+          runtime.verificationMLPSkipLayers == nil,
+          runtime.verificationMLPLongBatchExtraSkipLayers == nil,
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == nil
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v1 iPhone runtime policy cannot declare newer runtime optimizations"
+          )
+        }
+      case "iphone-30-second-v2":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == nil,
+          runtime.compiledQwen2QKVVerificationFusion == nil,
+          runtime.verificationMLPSkipLayers == nil,
+          runtime.verificationMLPLongBatchExtraSkipLayers == nil,
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == nil
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v2 iPhone runtime policy requires only the 10 MB Metal command-buffer limit"
+          )
+        }
+      case "iphone-30-second-v3":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == nil,
+          runtime.verificationMLPSkipLayers == nil,
+          runtime.verificationMLPLongBatchExtraSkipLayers == nil,
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == nil,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v3 iPhone runtime policy requires the evaluated Metal, Qwen2 MLP fusion, and SQL n-gram settings"
+          )
+        }
+      case "iphone-30-second-v4":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == nil,
+          runtime.verificationMLPSkipLayers == nil,
+          runtime.verificationMLPLongBatchExtraSkipLayers == nil,
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == true,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v4 iPhone runtime policy requires the evaluated Metal, Qwen2 MLP fusion, question-aware output head, and SQL n-gram settings"
+          )
+        }
+      case "iphone-30-second-v5":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == true,
+          runtime.verificationMLPSkipLayers == nil,
+          runtime.verificationMLPLongBatchExtraSkipLayers == nil,
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == true,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v5 iPhone runtime policy requires the evaluated Metal, Qwen2 MLP fusion, verification-only Q/K/V fusion, question-aware output head, and SQL n-gram settings"
+          )
+        }
+      case "iphone-30-second-v6":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == true,
+          runtime.verificationMLPSkipLayers == nil,
+          runtime.verificationMLPLongBatchExtraSkipLayers == nil,
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == true,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v6 iPhone runtime policy requires the evaluated Metal, Qwen2 MLP fusion, verification-only Q/K/V fusion, compact question-aware output head, and SQL n-gram settings"
+          )
+        }
+      case "iphone-30-second-v7":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == true,
+          runtime.verificationMLPSkipLayers == [8, 10],
+          runtime.verificationMLPLongBatchExtraSkipLayers == nil,
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == true,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v7 iPhone runtime policy requires the evaluated Metal, Qwen2 MLP/Q/K/V fusion, verification-only MLP skip layers, compact question-aware output head, and SQL n-gram settings"
+          )
+        }
+      case "iphone-30-second-v8":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == true,
+          runtime.verificationMLPSkipLayers == [8, 10],
+          runtime.verificationMLPLongBatchExtraSkipLayers == [2],
+          runtime.verificationMLPConfidenceSkip == nil,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == true,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v8 iPhone runtime policy requires the evaluated Metal, Qwen2 MLP/Q/K/V fusion, shape-specific verification MLP skip layers, compact question-aware output head, and SQL n-gram settings"
+          )
+        }
+      case "iphone-30-second-v9":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == true,
+          runtime.verificationMLPSkipLayers == [8, 10],
+          runtime.verificationMLPLongBatchExtraSkipLayers == [2],
+          runtime.verificationMLPConfidenceSkip?.policy == .supported,
+          runtime.verificationMLPAdditionalConfidenceSkips == nil,
+          runtime.questionAwareOutputHead == true,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v9 iPhone runtime policy requires the evaluated Metal, Qwen2 fusion, shape/confidence-gated verification MLP skips, compact question-aware output head, and SQL n-gram settings"
+          )
+        }
+      case "iphone-30-second-v10":
+        guard runtime.metalCommandBufferLimitMB == 10,
+          runtime.compiledQwen2MLPFusion == true,
+          runtime.compiledQwen2QKVVerificationFusion == true,
+          runtime.verificationMLPSkipLayers == [8, 10],
+          runtime.verificationMLPLongBatchExtraSkipLayers == [2],
+          runtime.verificationMLPConfidenceSkip?.policy == .supported,
+          runtime.verificationMLPAdditionalConfidenceSkips?.map(\.policy)
+            == [.supportedSingleDraft],
+          runtime.questionAwareOutputHead == true,
+          runtime.speculativeDecoding?.policy == .supported
+        else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the v10 iPhone runtime policy requires the evaluated Metal, Qwen2 fusion, exact shape/confidence-gated verification MLP skips, compact question-aware output head, and SQL n-gram settings"
+          )
+        }
+      default:
+        throw ModelManifestError.invalidProductionConfiguration(
+          "the iPhone runtime policy version is unsupported"
+        )
+      }
+      if let speculativeDecoding = runtime.speculativeDecoding {
+        guard speculativeDecoding.policy == .supported else {
+          throw ModelManifestError.invalidProductionConfiguration(
+            "the SQL n-gram speculative-decoding policy is unsupported or its corpus provenance is invalid"
+          )
+        }
+      }
+    }
+    let deployedGCD = production.deviceRuntime?.gcd ?? production.gcd
+    let deployedMaxTokens =
+      production.deviceRuntime?.maxTokens ?? production.maxTokens
     return ProductionGenerationConfiguration(
       model: ModelReference(
         key: model.key,
         repository: repository,
         revision: revision,
         quantization: "\(quantization.bits)-bit"),
-      gcd: production.gcd,
+      gcd: deployedGCD,
       temperature: production.temperature,
       topP: production.topP,
       topK: production.topK,
-      maxTokens: production.maxTokens,
+      maxTokens: deployedMaxTokens,
       candidateCount: production.voting.candidateCount,
       sampleTemperature: production.voting.sampleTemperature,
       alwaysVote: production.voting.alwaysVote,
       policyVersion: production.policyVersion,
+      runtimePolicyVersion: production.deviceRuntime?.policyVersion,
+      metalCommandBufferLimitMB:
+        production.deviceRuntime?.metalCommandBufferLimitMB,
+      compiledQwen2MLPFusion:
+        production.deviceRuntime?.compiledQwen2MLPFusion == true,
+      compiledQwen2QKVVerificationFusion:
+        production.deviceRuntime?.compiledQwen2QKVVerificationFusion == true,
+      verificationMLPSkipLayers:
+        production.deviceRuntime?.verificationMLPSkipLayers ?? [],
+      verificationMLPLongBatchExtraSkipLayers:
+        production.deviceRuntime?.verificationMLPLongBatchExtraSkipLayers ?? [],
+      verificationMLPConfidenceSkip:
+        production.deviceRuntime?.verificationMLPConfidenceSkip?.policy,
+      verificationMLPAdditionalConfidenceSkips:
+        production.deviceRuntime?.verificationMLPAdditionalConfidenceSkips?
+          .map(\.policy) ?? [],
+      questionAwareOutputHead:
+        production.deviceRuntime?.questionAwareOutputHead == true,
+      compactQuestionAwareOutputHead:
+        production.deviceRuntime?.policyVersion == "iphone-30-second-v6"
+        || production.deviceRuntime?.policyVersion == "iphone-30-second-v7"
+        || production.deviceRuntime?.policyVersion == "iphone-30-second-v8"
+        || production.deviceRuntime?.policyVersion == "iphone-30-second-v9"
+        || production.deviceRuntime?.policyVersion == "iphone-30-second-v10",
+      sqlNGramSpeculation:
+        production.deviceRuntime?.speculativeDecoding?.policy,
       debugModelIdentity: debugIdentity)
   }
 

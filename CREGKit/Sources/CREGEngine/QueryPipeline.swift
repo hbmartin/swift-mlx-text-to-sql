@@ -198,6 +198,7 @@ extension QueryPipeline {
               candidate.sql = generation.sql
               candidate.tokensPerSecond = generation.tokensPerSecond
               candidate.tokenCount = generation.tokenCount
+              candidate.speculation = generation.speculation
               candidate.generationMicroseconds =
                 generation.elapsedMicroseconds
               continuation.yield(.generationFinished(
@@ -413,8 +414,9 @@ extension QueryPipeline {
               return
             }
 
-            // 3–7. Exactly three SQL-generation calls: initial plus two
-            // independent validation candidates, or initial plus two repairs.
+            // 3–7. Run the configured bounded candidate count when the anchor
+            // is valid. Repair attempts remain a separate bound because an
+            // invalid anchor provides no result to vote on.
             let initial = await generateAndExecute(
               request(
                 id: "initial",
@@ -445,7 +447,7 @@ extension QueryPipeline {
             if initial.result != nil {
               trigger = "initial-validation"
               preferredCandidateIDs = [initial.id]
-              for index in 1...2 {
+              for index in 1..<configuration.selfConsistencyN {
                 let sample = await generateAndExecute(
                   request(
                     id: "consistency-\(index)",
@@ -552,11 +554,11 @@ extension QueryPipeline {
             }
 
             telemetry.generatedCount = telemetry.candidates.count
-            precondition(telemetry.generatedCount <= 3)
+            let candidateCount = voteCandidates.count
             let votingStarted = ContinuousClock.now
             telemetry.voteTrigger = trigger
             continuation.yield(.selfConsistencyStarted(
-              candidateCount: 3,
+              candidateCount: candidateCount,
               trigger: trigger))
             var agreementByDigest: [String: Int] = [:]
             for candidate in voteCandidates {
@@ -567,7 +569,12 @@ extension QueryPipeline {
               }
             }
             let majority = agreementByDigest
-              .filter { $0.value >= 2 }
+              // A lone candidate is an anchor, not corroboration. For two or
+              // more candidates require a strict majority of the actual
+              // configured count.
+              .filter {
+                candidateCount > 1 && $0.value > candidateCount / 2
+              }
               .sorted {
                 $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
               }
@@ -585,7 +592,7 @@ extension QueryPipeline {
               let outcome = VoteOutcome.consensus(
                 resultDigest: digest,
                 agreement: agreement,
-                candidateCount: 3)
+                candidateCount: candidateCount)
               telemetry.voteOutcome = outcome
               continuation.yield(.selfConsistencyFinished(outcome))
             } else {
@@ -612,7 +619,7 @@ extension QueryPipeline {
                 ? .noConsensusDeterministicAnchor : .repairSuccess
               let outcome = VoteOutcome.noConsensus(
                 anchorCandidateID: preferred.id,
-                candidateCount: 3,
+                candidateCount: candidateCount,
                 reason: reason)
               telemetry.voteOutcome = outcome
               continuation.yield(.selfConsistencyFinished(outcome))

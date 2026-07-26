@@ -84,11 +84,40 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
         / "CREGKit/Sources/CREGFeatures/ChatFeature.swift"
     ).read_text()
     assert "ProductionModelReceiptLoader.validate" in live_dependencies
-    # The diagnostics-threaded call spans lines, so assert the loader shape
-    # and the bundled-directory argument separately; the contract is that the
-    # app loads only the bundled, receipt-verified directory.
-    assert "SQLGenClient.live(" in live_dependencies
-    assert "directory: bundledModelDirectory" in live_dependencies
+    assert re.search(
+        r"SQLGenClient\.live\(\s*directory:\s*bundledModelDirectory,"
+        r"\s*diagnostics:\s*diagnostics,"
+        r"\s*useWiredMemory:\s*useWiredMemory,"
+        r"\s*useDirectPromptSuffix:\s*true,"
+        r"\s*metalCommandBufferLimitMB:"
+        r"\s*production\.metalCommandBufferLimitMB,"
+        r"\s*compiledQwen2MLPFusion:"
+        r"\s*production\.compiledQwen2MLPFusion,"
+        r"\s*compiledQwen2QKVVerificationFusion:"
+        r"\s*production\.compiledQwen2QKVVerificationFusion,"
+        r"\s*verificationMLPSkipLayers:"
+        r"\s*production\.verificationMLPSkipLayers,"
+        r"\s*verificationMLPLongBatchExtraSkipLayers:"
+        r"\s*production\.verificationMLPLongBatchExtraSkipLayers,"
+        r"\s*verificationMLPConfidenceSkip:"
+        r"\s*production\.verificationMLPConfidenceSkip,"
+        r"\s*verificationMLPAdditionalConfidenceSkips:"
+        r"\s*production\.verificationMLPAdditionalConfidenceSkips,"
+        r"\s*questionAwareOutputHead:"
+        r"\s*production\.questionAwareOutputHead,"
+        r"\s*compactQuestionAwareOutputHead:"
+        r"\s*production\.compactQuestionAwareOutputHead,"
+        r"\s*productionNGramSpeculation:"
+        r"\s*production\.sqlNGramSpeculation\s*\)",
+        live_dependencies,
+    )
+    assert '"input_preparation_mode"' in (
+        check_ci_contracts.ROOT
+        / "CREGKit/Sources/CREGEngine/SQLGenClient.swift"
+    ).read_text()
+    assert "#if DEBUG || CREG_DEVICE_BENCHMARK" in live_dependencies
+    assert 'environment["CREG_WIRED_MEMORY"] == "true"' in live_dependencies
+    assert "let useWiredMemory = false" in live_dependencies
     assert "SQLGenClient.live(model:" not in live_dependencies
     assert "#if !DEBUG" in live_dependencies
     assert "Release requires schema-v3 bounded-policy evidence" in live_dependencies

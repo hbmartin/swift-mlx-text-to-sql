@@ -661,11 +661,13 @@ import Testing
     #expect(telemetry.originalQuestion == "How many properties?")
     #expect(telemetry.standaloneQuestion == "How many properties?")
     #expect(!telemetry.rewriteApplied)
-    #expect(telemetry.candidates.map(\.id.rawValue) == [
-      "initial", "consistency-1", "consistency-2",
-    ])
-    #expect(telemetry.generatedCount == 3)
-    #expect(telemetry.confidence == .confirmed)
+    #expect(telemetry.candidates.map(\.id.rawValue) == ["initial"])
+    #expect(telemetry.generatedCount == 1)
+    #expect(telemetry.confidence == .unconfirmed)
+    #expect(telemetry.voteOutcome == .noConsensus(
+      anchorCandidateID: CandidateID(rawValue: "initial"),
+      candidateCount: 1,
+      reason: .insufficientNonEmptyEvidence))
     #expect(telemetry.candidates.first?.selected == true)
     // no rewrite events when there is no history
     #expect(!events.contains(.rewriteStarted))

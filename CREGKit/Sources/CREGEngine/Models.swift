@@ -303,10 +303,37 @@ public struct SQLGenerationRequest: Sendable, Equatable, Codable {
 }
 
 /// Output of one SQL generation.
+public struct SQLSpeculationMetrics: Sendable, Equatable, Codable {
+  public var roundCount: Int
+  public var draftTokenCount: Int
+  public var acceptedDraftTokenCount: Int
+  public var targetModelCallCount: Int
+  public var targetVerifiedTokenCount: Int
+  public var emittedTokenCount: Int
+
+  public init(
+    roundCount: Int,
+    draftTokenCount: Int,
+    acceptedDraftTokenCount: Int,
+    targetModelCallCount: Int,
+    targetVerifiedTokenCount: Int,
+    emittedTokenCount: Int
+  ) {
+    self.roundCount = roundCount
+    self.draftTokenCount = draftTokenCount
+    self.acceptedDraftTokenCount = acceptedDraftTokenCount
+    self.targetModelCallCount = targetModelCallCount
+    self.targetVerifiedTokenCount = targetVerifiedTokenCount
+    self.emittedTokenCount = emittedTokenCount
+  }
+}
+
 public struct SQLGeneration: Sendable, Equatable, Codable {
   public var sql: String
   public var tokensPerSecond: Double
   public var tokenCount: Int?
+  public var inputPreparationMicroseconds: Int64?
+  public var speculation: SQLSpeculationMetrics?
   public var elapsedMicroseconds: Int64
   public var modelName: String
 
@@ -315,12 +342,16 @@ public struct SQLGeneration: Sendable, Equatable, Codable {
     tokensPerSecond: Double,
     modelName: String,
     tokenCount: Int? = nil,
+    inputPreparationMicroseconds: Int64? = nil,
+    speculation: SQLSpeculationMetrics? = nil,
     elapsedMicroseconds: Int64 = 0
   ) {
     self.sql = sql
     self.tokensPerSecond = tokensPerSecond
     self.modelName = modelName
     self.tokenCount = tokenCount
+    self.inputPreparationMicroseconds = inputPreparationMicroseconds
+    self.speculation = speculation
     self.elapsedMicroseconds = elapsedMicroseconds
   }
 }
@@ -338,6 +369,7 @@ public struct CandidateTelemetry: Sendable, Equatable, Codable, Identifiable {
   public var sql: String?
   public var tokensPerSecond: Double?
   public var tokenCount: Int?
+  public var speculation: SQLSpeculationMetrics?
   public var generationMicroseconds: Int64?
   public var executionMicroseconds: Int64?
   public var result: QueryResult?
