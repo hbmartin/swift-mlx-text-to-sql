@@ -26,7 +26,7 @@ def fixture_rows() -> list[dict]:
             "question": f"question {index}",
             "sql": f"SELECT {index}",
         }
-        for index in range(15)
+        for index in range(16)
     ]
 
 
@@ -80,7 +80,7 @@ def test_binding_gate_requires_all_cases_to_pass_all_five_seeds(monkeypatch, tmp
     result = analyze_binding_regressions.analyze([tmp_path / name for name in runs])
 
     assert result["pass"] is True
-    assert result["checks"] == 75
+    assert result["checks"] == 80
     assert result["evaluated_artifact"] == {
         "kind": "adapter-checkpoint",
         "sha256": "a" * 64,
@@ -179,8 +179,8 @@ def test_production_finalization_requires_matching_binding_receipt():
         "gcd": "on",
         "temperature": 0,
         "seeds": [0, 1, 2, 3, 4],
-        "item_count": 15,
-        "checks": 75,
+        "item_count": 16,
+        "checks": 80,
     }
 
     validate_binding_analysis(binding, selected)

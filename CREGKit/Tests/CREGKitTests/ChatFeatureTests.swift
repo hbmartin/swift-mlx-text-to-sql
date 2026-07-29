@@ -36,24 +36,27 @@ private final class CallCounter: @unchecked Sendable {
         var telemetry = TurnTelemetry(originalQuestion: question)
         telemetry.stageTimings.totalMicroseconds = 3_000
         continuation.yield(.turnStarted(question: question))
-        continuation.yield(.questionResolved(
-          standaloneQuestion: question,
-          rewriteApplied: false,
-          usedFM: false,
-          elapsedMicroseconds: 0))
+        continuation.yield(
+          .questionResolved(
+            standaloneQuestion: question,
+            rewriteApplied: false,
+            usedFM: false,
+            elapsedMicroseconds: 0))
         continuation.yield(.gateStarted)
         continuation.yield(.narrationStarted)
-        continuation.yield(.narrationFinished(
-          narration: "One property found.",
-          usedFM: false,
-          elapsedMicroseconds: 100))
-        continuation.yield(.turnFinished(
-          outcome: .answered(
-            result: answer,
+        continuation.yield(
+          .narrationFinished(
             narration: "One property found.",
-            sql: "SELECT name FROM properties",
-            notice: nil),
-          telemetry: telemetry))
+            usedFM: false,
+            elapsedMicroseconds: 100))
+        continuation.yield(
+          .turnFinished(
+            outcome: .answered(
+              result: answer,
+              narration: "One property found.",
+              sql: "SELECT name FROM properties",
+              notice: nil),
+            telemetry: telemetry))
         continuation.finish()
       }
     }
@@ -96,6 +99,35 @@ private final class CallCounter: @unchecked Sendable {
     #expect(assistant?.devInfo?.standaloneQuestion == "Which property leads?")
   }
 
+  @Test func debugLaunchBenchmarkWaitsForReadinessAndRunsStandalone() async {
+    let oldQuestion = ChatMessage(
+      id: UUID(), role: .user, body: .text("old question"), createdAt: Date())
+    var initialState = ChatFeature.State(
+      launchBenchmarkQuestion: "Which property leads?")
+    initialState.conversationID = UUID()
+    initialState.messages.append(oldQuestion)
+    let store = TestStore(initialState: initialState) {
+      ChatFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.modelPrepared)
+    #expect(store.state.launchBenchmarkStarted)
+    #expect(store.state.composerText.isEmpty)
+    #expect(!store.state.messages.contains(oldQuestion))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.messages.count == 2)
+    #expect(store.state.isProcessing == false)
+    #expect(store.state.messages.first?.body == .text("Which property leads?"))
+  }
+
   @Test func duplicateSendWhileProcessingStartsOnlyOneTurn() async {
     let pipelineCalls = CallCounter()
     var initialState = ChatFeature.State()
@@ -108,9 +140,10 @@ private final class CallCounter: @unchecked Sendable {
         return AsyncStream { continuation in
           var telemetry = TurnTelemetry(originalQuestion: "Which property leads?")
           telemetry.terminalError = "test completion"
-          continuation.yield(.turnFinished(
-            outcome: .failed(message: "test completion"),
-            telemetry: telemetry))
+          continuation.yield(
+            .turnFinished(
+              outcome: .failed(message: "test completion"),
+              telemetry: telemetry))
           continuation.finish()
         }
       }
@@ -234,7 +267,8 @@ private final class CallCounter: @unchecked Sendable {
       ChatMessage(id: UUID(0), role: .user, body: .text("q1"), createdAt: .distantPast),
       ChatMessage(
         id: UUID(1), role: .assistant,
-        body: .answer(result: answer, narration: "a1", sql: "s", notice: nil), createdAt: .distantPast),
+        body: .answer(result: answer, narration: "a1", sql: "s", notice: nil),
+        createdAt: .distantPast),
       ChatMessage(id: UUID(2), role: .user, body: .text("q2"), createdAt: .distantPast),
       ChatMessage(id: UUID(3), role: .assistant, body: .failure("boom"), createdAt: .distantPast),
     ]
@@ -286,9 +320,10 @@ private final class CallCounter: @unchecked Sendable {
     let decoded = try JSONDecoder().decode(
       ChatMessage.self, from: encoded)
     #expect(decoded.devInfo == telemetry)
-    #expect(decoded.devInfo?.candidates.first?.result?.rows == [
-      [.integer(1)]
-    ])
+    #expect(
+      decoded.devInfo?.candidates.first?.result?.rows == [
+        [.integer(1)]
+      ])
 
     var legacyObject =
       try #require(
@@ -310,13 +345,24 @@ private final class CallCounter: @unchecked Sendable {
   }
 
   @Test func starterQuestionSendsImmediately() async {
+    let starterCalls = LockIsolated<[StarterQueryID]>([])
+    let scripted = Self.scriptedPipeline()
+    let pipeline = QueryPipeline(
+      run: { _, _ in
+        Issue.record("starter must not use the free-form pipeline entry point")
+        return AsyncStream { $0.finish() }
+      },
+      runStarter: { starter, history in
+        starterCalls.withValue { $0.append(starter) }
+        return scripted.run(starter.question, history)
+      })
     var initialState = ChatFeature.State()
     initialState.conversationID = UUID()
     initialState.modelReadiness = .ready
     let store = TestStore(initialState: initialState) {
       ChatFeature()
     } withDependencies: {
-      $0.queryPipeline = Self.scriptedPipeline()
+      $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 0))
@@ -324,7 +370,7 @@ private final class CallCounter: @unchecked Sendable {
     store.exhaustivity = .off
 
     await store.send(
-      .starterQuestionTapped("Which properties have the highest vacancy?"))
+      .starterQuestionTapped(.highestVacancyV1))
     await store.finish()
     await store.skipReceivedActions()
 
@@ -334,6 +380,7 @@ private final class CallCounter: @unchecked Sendable {
       store.state.messages.first?.body
         == .text("Which properties have the highest vacancy?"))
     #expect(store.state.isProcessing == false)
+    #expect(starterCalls.value == [.highestVacancyV1])
   }
 
   @Test func stopEndsTurnPreservingPartialTraceAndPersistingIt() async {
@@ -376,7 +423,6 @@ private final class CallCounter: @unchecked Sendable {
       .pipelineEvent(.turnStarted(question: "Which property leads?")))
     await store.send(.stopTapped)
     await store.finish()
-    await store.skipReceivedActions()
 
     #expect(store.state.isProcessing == false)
     #expect(store.state.messages.count == 2)
@@ -409,9 +455,11 @@ private final class CallCounter: @unchecked Sendable {
     }
     store.exhaustivity = .off
 
-    await store.send(.pipelineEvent(.turnFinished(
-      outcome: .failed(message: "late"),
-      telemetry: TurnTelemetry(originalQuestion: "q"))))
+    await store.send(
+      .pipelineEvent(
+        .turnFinished(
+          outcome: .failed(message: "late"),
+          telemetry: TurnTelemetry(originalQuestion: "q"))))
 
     #expect(store.state.messages.isEmpty)
     #expect(store.state.isProcessing == false)

@@ -829,6 +829,11 @@
     },
     "gcd": "on",
     "max_tokens": 512,
+    "device_runtime": {
+      "gcd": "off",
+      "max_tokens": 128,
+      "policy_version": "iphone-30-second-v1"
+    },
     "model_key": "ft-xiyansql-qwencoder-3b",
     "temperature": 0.0,
     "top_k": 0,

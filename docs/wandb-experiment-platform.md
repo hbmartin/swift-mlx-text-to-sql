@@ -323,7 +323,7 @@ counters within the batch/sequence upper bound, and a final report at the
 configured iteration. Violations leave the immutable run failed and preserve
 its log for diagnosis.
 
-After all 36 screening runs complete, run the 15 binding regressions at five
+After all 36 screening runs complete, run the 16 binding regressions at five
 seeds and create one matched multi-snapshot promotion-eligibility receipt for
 every candidate under consideration. The promotion command requires those
 receipts, and each binding receipt identifies the exact selected adapter

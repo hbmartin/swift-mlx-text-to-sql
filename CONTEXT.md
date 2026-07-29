@@ -23,6 +23,14 @@ An organization that rents space under one or more leases.
 **Lease**:
 An agreement granting a tenant a suite in a property for a term at a base rent. The lease itself carries suite, floor, and leased square footage — there is no separate unit entity.
 
+**Lease Listing**:
+A row-per-lease view that identifies the lease by its `lease_id` and shows tenant, property, suite, expiration date, and status. A lease has no name; human-readable names come from the related Tenant and Property.
+_Avoid_: lease name
+
+**Portfolio As-of Date**:
+The fixed date used to interpret relative dates in the bundled portfolio snapshot. It is versioned with the data and currently equals 2026-07-01; it is not the device clock.
+_Avoid_: today, current device date
+
 **Suite**:
 The space within a property that a lease covers.
 _Avoid_: unit, space
@@ -122,3 +130,11 @@ _Avoid_: result file, benchmark output
 **Production Generation Configuration**:
 The manifest-backed model revision, grammar mode, temperatures, sampling limits, and voting policy used by the app and parity harness.
 _Avoid_: runtime defaults, model settings
+
+**Starter Query**:
+A versioned, reviewed question-and-SQL product contract exposed on the empty chat surface. It executes its canonical SQL directly through validation, read-only execution, grounding, and narration; it is not sent to SQL generation or repair.
+_Avoid_: sample prompt, suggested prompt
+
+**Free-form Question**:
+User-authored text that enters follow-up rewriting, the Ambiguity Gate, SQL generation, validation, bounded repair, voting, grounding, and narration.
+_Avoid_: starter query

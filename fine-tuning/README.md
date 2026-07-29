@@ -103,7 +103,7 @@ Before any checkpoint can be evaluated, the runner rejects non-finite loss,
 impossible cumulative-token counters, missing validation reports, and logs
 that end before the configured iteration.
 
-After both 18-run sweeps, run all 15 binding cases at five seeds for each
+After both 18-run sweeps, run all 16 binding cases at five seeds for each
 candidate and create a `tools.analyze_promotion_eligibility` receipt against a
 matched multi-snapshot baseline. The receipt also requires paired EX
 non-inferiority, valid-SQL non-inferiority, tier-3 improvement, and a bounded

@@ -186,7 +186,7 @@ def analyze(
         baseline_metrics["wrong_table_or_join_rate"],
     )
     checks = {
-        "binding_15_by_5": True,
+        "binding_16_by_5": True,
         "ex_noninferior": lower_bound
         >= -float(thresholds["ex_noninferiority_margin"]),
         "valid_sql_noninferior": candidate_metrics["valid_sql_rate"]

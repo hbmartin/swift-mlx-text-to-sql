@@ -143,6 +143,8 @@ public enum ProductionModelBootstrap {
           "revision": configuration.model.revision,
           "quantization": configuration.model.quantization,
           "gcd": configuration.gcd.rawValue,
+          "max_tokens": String(configuration.maxTokens),
+          "runtime_policy_version": configuration.runtimePolicyVersion ?? "legacy",
         ]))
       return .success(configuration)
     } catch {

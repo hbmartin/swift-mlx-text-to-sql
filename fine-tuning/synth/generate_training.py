@@ -60,7 +60,7 @@ OUT_DIR = REPO_ROOT / "fine-tuning" / "synth" / "out"
 SEED = 424242
 TARGET = 1600
 VALID_FRACTION = 0.05
-CORPUS_VERSION = "reliability-v3"
+CORPUS_VERSION = "reliability-v4"
 REPAIR_FRACTIONS = (0.05, 0.10, 0.20)
 OCCUPYING = "('Active', 'Holdover')"
 
@@ -126,34 +126,113 @@ def sql_structure_signature(sql: str) -> str:
     return hashlib.sha256(" ".join(normalized).encode()).hexdigest()
 
 
-def repair_evidence(failed_sql: str, sqlite_error: str) -> dict[str, list[str]]:
+def repair_evidence(failed_sql: str, sqlite_error: str) -> dict[str, object]:
     """Build the same grounding evidence supplied by the runtime repair path."""
-    sources = sorted(
-        set(
-            re.findall(
-                r"(?i)\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)",
-                failed_sql,
-            )
-        )
+    source_matches = re.findall(
+        r"(?i)\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)"
+        r"(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?",
+        failed_sql,
     )
+    reserved = {
+        "where", "join", "left", "right", "inner", "outer", "cross",
+        "on", "group", "order", "having", "limit", "union",
+    }
+    aliases: dict[str, str] = {}
+    for table, alias in source_matches:
+        table = table.lower()
+        aliases[table] = table
+        if alias and alias.lower() not in reserved:
+            aliases[alias.lower()] = table
+    sources = sorted(set(aliases.values()))
     match = re.search(
-        r"(?i)(?:no such|ambiguous) column:\s*(?:\w+\.)?([A-Za-z_][A-Za-z0-9_]*)",
+        r"(?i)(?:no such|ambiguous) column:\s*"
+        r"(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)",
         sqlite_error,
     )
-    catalog = json.loads(SCHEMA_CATALOG.read_text())["tables"]
+    catalog_document = json.loads(SCHEMA_CATALOG.read_text())
+    catalog = catalog_document["tables"]
+    qualifier = match.group(1).lower() if match and match.group(1) else None
+    column = match.group(2).lower() if match else None
     owners = (
         sorted(
             table
             for table, columns in catalog.items()
-            if match.group(1).lower() in {column.lower() for column in columns}
+            if column in {candidate.lower() for candidate in columns}
         )
-        if match
+        if column
         else []
     )
+    relevant_tables = set(sources) | set(owners)
+    relevant_foreign_keys = sorted(
+        f"{fk['from_table']}.{fk['from_column']} -> "
+        f"{fk['to_table']}.{fk['to_column']}"
+        for fk in catalog_document["foreign_keys"]
+        if fk["from_table"] in relevant_tables
+        and fk["to_table"] in relevant_tables
+    )
+    invalid_reference = (
+        f"{qualifier}.{column}" if qualifier and column else column or ""
+    )
+    if qualifier and column and qualifier in aliases:
+        table = aliases[qualifier]
+        table_columns = {candidate.lower() for candidate in catalog[table]}
+        if column not in table_columns:
+            adjacent_owners = sorted(
+                owner
+                for owner in owners
+                if any(
+                    (
+                        fk["from_table"] == table
+                        and fk["to_table"] == owner
+                    )
+                    or (
+                        fk["to_table"] == table
+                        and fk["from_table"] == owner
+                    )
+                    for fk in catalog_document["foreign_keys"]
+                )
+            )
+            usable_owners = adjacent_owners or owners
+            corrective_instruction = (
+                f"Do not use {qualifier}.{column}: {qualifier} refers to "
+                f"{table}, which does not own that column. "
+                + (
+                    "Use or join the owning table: "
+                    + ", ".join(usable_owners)
+                    + "."
+                    if usable_owners
+                    else "Choose a column that belongs to a declared source."
+                )
+            )
+        else:
+            corrective_instruction = ""
+    elif "ambiguous column" in sqlite_error.lower() and column:
+        declared_owners = sorted(set(owners) & set(sources))
+        corrective_instruction = (
+            f"Qualify {column} with the intended declared source alias. "
+            "Declared owners: "
+            + (", ".join(declared_owners) if declared_owners else "none")
+            + "."
+        )
+    elif column and owners:
+        corrective_instruction = (
+            f"Reference {column} only through an owning source: "
+            + ", ".join(owners)
+            + ". Add the required join when it is not already declared."
+        )
+    else:
+        corrective_instruction = (
+            "Use only columns owned by declared FROM or JOIN sources and "
+            "return SQL different from the failed statement."
+        )
     normalized_sql = failed_sql.replace("\r\n", "\n").replace("\r", "\n").strip()
     return {
+        "invalid_reference": invalid_reference,
         "declared_sources": sources,
         "possible_column_owners": owners,
+        "source_columns": {table: catalog[table] for table in sources},
+        "relevant_foreign_keys": relevant_foreign_keys,
+        "corrective_instruction": corrective_instruction,
         "failed_fingerprints": [hashlib.sha256(normalized_sql.encode()).hexdigest()],
     }
 
@@ -1115,7 +1194,7 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
         "SELECT COUNT(*) FROM loans WHERE is_recourse = 1",
     )
 
-    # --- reliability-v3 structural coverage -----------------------------
+    # --- reliability-v4 structural coverage -----------------------------
     # This is an explicit covering matrix, not a list of entity substitutions.
     # Each row carries the semantic axes used by the split/evidence gates.
     metric_expressions = {
@@ -1393,6 +1472,35 @@ def build_candidates(rng: random.Random, e: dict) -> list[dict]:
             structure_family="binding:wrong-join-key",
         )
 
+    lease_expiry_sql = (
+        "SELECT l.lease_id, t.name AS tenant, p.name AS property, l.suite, "
+        "l.expiration_date, l.status FROM leases l "
+        "JOIN tenants t ON t.tenant_id = l.tenant_id "
+        "JOIN properties p ON p.property_id = l.property_id "
+        "WHERE p.status != 'Sold' AND l.status = 'Active' "
+        "AND l.expiration_date >= '2026-07-01' "
+        "AND l.expiration_date < '2027-07-01' "
+        "ORDER BY l.expiration_date, t.name, p.name, l.lease_id"
+    )
+    for question in (
+        "List active lease expirations over the coming twelve months with tenant and property names.",
+        "Show each current lease ending in the next year and identify its tenant and property.",
+        "Which active lease agreements expire before July 2027? Include tenant, property, and suite.",
+        "Give me the upcoming twelve-month lease expiry schedule with tenant and building context.",
+    ):
+        add_binding_pair(
+            "lease_name_wrong_table",
+            question,
+            "SELECT l.name, l.expiration_date FROM leases l "
+            "WHERE l.status = 'Active' "
+            "AND l.expiration_date >= '2026-07-01' "
+            "AND l.expiration_date < '2027-07-01'",
+            lease_expiry_sql,
+            "no such column: l.name",
+            failure_family="lease-name-on-leases",
+            structure_family="binding:lease-name-tenant-property-joins",
+        )
+
     return out
 
 
@@ -1561,9 +1669,17 @@ def training_record(item: dict, system_prompt: str) -> dict:
                         sqlite_error=item["repair"]["sqlite_error"],
                         issue_type=item["repair"]["issue_type"],
                         issue_disposition=item["repair"]["issue_disposition"],
+                        invalid_reference=item["repair"]["invalid_reference"],
                         declared_sources=item["repair"]["declared_sources"],
                         possible_column_owners=item["repair"][
                             "possible_column_owners"
+                        ],
+                        source_columns=item["repair"]["source_columns"],
+                        relevant_foreign_keys=item["repair"][
+                            "relevant_foreign_keys"
+                        ],
+                        corrective_instruction=item["repair"][
+                            "corrective_instruction"
                         ],
                         failed_fingerprints=item["repair"]["failed_fingerprints"],
                     )

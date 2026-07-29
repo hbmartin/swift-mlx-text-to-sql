@@ -37,6 +37,7 @@ let package = Package(
       name: "CREGEngine",
       dependencies: [
         .product(name: "MLX", package: "mlx-swift"),
+        .product(name: "MLXNN", package: "mlx-swift"),
         .product(name: "MLXLLM", package: "mlx-swift-lm"),
         .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
         .product(name: "HuggingFace", package: "swift-huggingface"),
@@ -53,6 +54,7 @@ let package = Package(
         .copy("Resources/canonical_result_fixtures.json"),
         .copy("Resources/sqlite_text_fixtures.json"),
         .copy("Resources/sql_cutter_fixtures.json"),
+        .copy("Resources/sql_draft_corpus.json"),
       ]
     ),
     .target(

@@ -48,9 +48,10 @@ public struct ChatView: View {
         FailureBanner(
           failure: failure,
           developerMode: store.developerMode,
-          dismiss: { store.send(.dismissFailure) })
-          .padding(.horizontal)
-          .padding(.vertical, 8)
+          dismiss: { store.send(.dismissFailure) }
+        )
+        .padding(.horizontal)
+        .padding(.vertical, 8)
       }
       readinessBanner
       composer
@@ -80,8 +81,9 @@ public struct ChatView: View {
         .font(.caption.weight(.bold))
         .textCase(.uppercase)
       Text(
-        "\(identity.baseModelKey) · iteration \(identity.selectedIteration) · run \(identity.trainingRunID.suffix(8))")
-        .font(.caption2.monospaced())
+        "\(identity.baseModelKey) · iteration \(identity.selectedIteration) · run \(identity.trainingRunID.suffix(8))"
+      )
+      .font(.caption2.monospaced())
       Text("Local Debug evidence only — not production finalized")
         .font(.caption2)
     }
@@ -93,22 +95,18 @@ public struct ChatView: View {
     .accessibilityIdentifier("experimental-model-banner")
   }
 
-  static let starterQuestions = [
-    "Which properties have the highest vacancy?",
-    "What's my rent roll by property type?",
-    "Which leases expire in the next 12 months?",
-  ]
+  static let starterQuestions = StarterQueryID.allCases
 
   private var emptyState: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Ask about your portfolio")
         .font(.headline)
-      ForEach(Self.starterQuestions, id: \.self) { question in
+      ForEach(Self.starterQuestions) { starter in
         Button {
-          store.send(.starterQuestionTapped(question))
+          store.send(.starterQuestionTapped(starter))
         } label: {
           HStack {
-            Text(question)
+            Text(starter.question)
               .font(.subheadline)
               .multilineTextAlignment(.leading)
             Spacer(minLength: 8)
@@ -171,7 +169,8 @@ public struct ChatView: View {
         .disabled(
           store.isSubmissionPending
             || store.modelReadiness != .ready
-            || store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            || store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
         .accessibilityLabel("Send")
       }
     }
@@ -263,14 +262,15 @@ struct MessageCell: View {
         if message.devInfo?.confidence == .unconfirmed {
           Label(
             unconfirmedMessage,
-            systemImage: "exclamationmark.triangle.fill")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.orange)
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-              .orange.opacity(0.12),
-              in: RoundedRectangle(cornerRadius: 10))
+            systemImage: "exclamationmark.triangle.fill"
+          )
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.orange)
+          .padding(10)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(
+            .orange.opacity(0.12),
+            in: RoundedRectangle(cornerRadius: 10))
         }
         if let summary = ConfidenceSummary(telemetry: message.devInfo) {
           ConfidenceChipView(summary: summary)
@@ -366,16 +366,18 @@ struct DevFooterView: View {
       if let devInfo {
         Text("original: \(devInfo.originalQuestion)")
         Text("standalone: \(devInfo.standaloneQuestion)")
-        Text(verbatim:
-          "rewrite applied=\(devInfo.rewriteApplied) FM=\(devInfo.rewriteUsedFM) · gate=\(devInfo.gateDecision.map { String(describing: $0) } ?? "none") FM=\(devInfo.gateUsedFM) · narration FM=\(devInfo.narrationUsedFM)"
+        Text(
+          verbatim:
+            "rewrite applied=\(devInfo.rewriteApplied) FM=\(devInfo.rewriteUsedFM) · gate=\(devInfo.gateDecision.map { String(describing: $0) } ?? "none") FM=\(devInfo.gateUsedFM) · narration FM=\(devInfo.narrationUsedFM)"
         )
         Text(
           "stages μs: rewrite \(duration(devInfo.stageTimings.rewriteMicroseconds)) · gate \(duration(devInfo.stageTimings.gateMicroseconds)) · grounding \(duration(devInfo.stageTimings.groundingMicroseconds)) · voting \(duration(devInfo.stageTimings.votingMicroseconds)) · narration \(duration(devInfo.stageTimings.narrationMicroseconds)) · total \(devInfo.stageTimings.totalMicroseconds)"
         )
         HStack(spacing: 12) {
-          Text(String(
-            format: "total %.1f ms",
-            Double(devInfo.stageTimings.totalMicroseconds) / 1_000))
+          Text(
+            String(
+              format: "total %.1f ms",
+              Double(devInfo.stageTimings.totalMicroseconds) / 1_000))
           if devInfo.repairAttempts > 0 {
             Text("repairs: \(devInfo.repairAttempts)")
           }
@@ -405,8 +407,9 @@ struct DevFooterView: View {
         ForEach(devInfo.candidates) { candidate in
           VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .top, spacing: 4) {
-              Image(systemName: candidate.selected
-                ? "checkmark.circle.fill" : "circle")
+              Image(
+                systemName: candidate.selected
+                  ? "checkmark.circle.fill" : "circle")
               Text(
                 "\(candidate.id.rawValue) · \(role(candidate.role)) · \(candidate.model.repository)@\(candidate.model.revision.prefix(8)) · GCD \(candidate.gcd.rawValue) · T=\(candidate.temperature.formatted()) · seed=\(candidate.seed.map(String.init) ?? "none")"
               )
@@ -448,6 +451,7 @@ struct DevFooterView: View {
 
   private func role(_ role: CandidateRole) -> String {
     switch role {
+    case .starter(let starter): "starter-\(starter.rawValue)"
     case .initial: "initial"
     case .repair(let attempt): "repair-\(attempt)"
     case .deterministicAnchor: "anchor"

@@ -6,6 +6,9 @@ import pytest
 
 from tools.fetch_model import (
     ArtifactError,
+    DEVICE_RUNTIME_VERIFICATION_MLP_ADDITIONAL_CONFIDENCE_SKIPS,
+    DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP,
+    DEVICE_RUNTIME_SPECULATIVE_DECODING,
     directory_digest,
     directory_inventory,
     load_manifest,
@@ -107,6 +110,384 @@ def test_manifest_rejects_unverified_production_status(tmp_path):
     path.write_text(json.dumps(manifest))
     with pytest.raises(ArtifactError, match="production_status 'verified'"):
         load_manifest(path)
+
+
+@pytest.mark.parametrize(
+    ("device_runtime", "message"),
+    [
+        (
+            {
+                "policy_version": "unknown",
+                "gcd": "off",
+                "max_tokens": 128,
+            },
+            "device_runtime policy_version",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v1",
+                "gcd": "off",
+                "max_tokens": 513,
+            },
+            "no larger than production max_tokens",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v1",
+                "gcd": "off",
+                "max_tokens": 128,
+                "speculative_decoding": {
+                    **DEVICE_RUNTIME_SPECULATIVE_DECODING,
+                    "draft_tokens": 1,
+                },
+            },
+            "speculative_decoding must exactly match",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v2",
+                "gcd": "off",
+                "max_tokens": 128,
+            },
+            "requires a 10 MB Metal command-buffer limit",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v2",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 40,
+            },
+            "requires a 10 MB Metal command-buffer limit",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v1",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+            },
+            "v1 device_runtime cannot declare",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v2",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+            },
+            "v2 device_runtime cannot declare Qwen2 MLP fusion",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v3",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": False,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v3 device_runtime requires the evaluated",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v4",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+                "question_aware_output_head": False,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v4 device_runtime requires the evaluated",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v5",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+                "compiled_qwen2_qkv_verification_fusion": False,
+                "question_aware_output_head": True,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v5 device_runtime requires the evaluated",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v6",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+                "compiled_qwen2_qkv_verification_fusion": False,
+                "question_aware_output_head": True,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v6 device_runtime requires the evaluated",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v7",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+                "compiled_qwen2_qkv_verification_fusion": True,
+                "verification_mlp_skip_layers": [8],
+                "question_aware_output_head": True,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v7 device_runtime requires the evaluated",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v8",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+                "compiled_qwen2_qkv_verification_fusion": True,
+                "verification_mlp_skip_layers": [8, 10],
+                "verification_mlp_long_batch_extra_skip_layers": [14],
+                "question_aware_output_head": True,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v8 device_runtime requires the evaluated",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v9",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+                "compiled_qwen2_qkv_verification_fusion": True,
+                "verification_mlp_skip_layers": [8, 10],
+                "verification_mlp_long_batch_extra_skip_layers": [2],
+                "verification_mlp_confidence_skip": {
+                    **DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP,
+                    "minimum_support": 256,
+                },
+                "question_aware_output_head": True,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v9 device_runtime requires the evaluated",
+        ),
+        (
+            {
+                "policy_version": "iphone-30-second-v10",
+                "gcd": "off",
+                "max_tokens": 128,
+                "metal_command_buffer_limit_mb": 10,
+                "compiled_qwen2_mlp_fusion": True,
+                "compiled_qwen2_qkv_verification_fusion": True,
+                "verification_mlp_skip_layers": [8, 10],
+                "verification_mlp_long_batch_extra_skip_layers": [2],
+                "verification_mlp_confidence_skip": (
+                    DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP
+                ),
+                "verification_mlp_additional_confidence_skips": [],
+                "question_aware_output_head": True,
+                "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+            },
+            "v10 device_runtime requires the evaluated",
+        ),
+    ],
+)
+def test_manifest_rejects_invalid_device_runtime(
+    tmp_path, device_runtime, message
+):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = device_runtime
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ArtifactError, match=message):
+        load_manifest(path)
+
+
+def test_manifest_accepts_exact_v3_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v3",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v3"
+    )
+
+
+def test_manifest_accepts_exact_v4_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v4",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "question_aware_output_head": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v4"
+    )
+
+
+def test_manifest_accepts_exact_v5_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v5",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "compiled_qwen2_qkv_verification_fusion": True,
+        "question_aware_output_head": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v5"
+    )
+
+
+def test_manifest_accepts_exact_v6_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v6",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "compiled_qwen2_qkv_verification_fusion": True,
+        "question_aware_output_head": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v6"
+    )
+
+
+def test_manifest_accepts_exact_v7_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v7",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "compiled_qwen2_qkv_verification_fusion": True,
+        "verification_mlp_skip_layers": [8, 10],
+        "question_aware_output_head": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v7"
+    )
+
+
+def test_manifest_accepts_exact_v8_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v8",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "compiled_qwen2_qkv_verification_fusion": True,
+        "verification_mlp_skip_layers": [8, 10],
+        "verification_mlp_long_batch_extra_skip_layers": [2],
+        "question_aware_output_head": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v8"
+    )
+
+
+def test_manifest_accepts_exact_v9_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v9",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "compiled_qwen2_qkv_verification_fusion": True,
+        "verification_mlp_skip_layers": [8, 10],
+        "verification_mlp_long_batch_extra_skip_layers": [2],
+        "verification_mlp_confidence_skip": (
+            DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP
+        ),
+        "question_aware_output_head": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v9"
+    )
+
+
+def test_manifest_accepts_exact_v10_device_runtime(tmp_path):
+    manifest = load_manifest(ROOT / "model-manifest.json")
+    manifest["production"]["device_runtime"] = {
+        "policy_version": "iphone-30-second-v10",
+        "gcd": "off",
+        "max_tokens": 128,
+        "metal_command_buffer_limit_mb": 10,
+        "compiled_qwen2_mlp_fusion": True,
+        "compiled_qwen2_qkv_verification_fusion": True,
+        "verification_mlp_skip_layers": [8, 10],
+        "verification_mlp_long_batch_extra_skip_layers": [2],
+        "verification_mlp_confidence_skip": (
+            DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP
+        ),
+        "verification_mlp_additional_confidence_skips": (
+            DEVICE_RUNTIME_VERIFICATION_MLP_ADDITIONAL_CONFIDENCE_SKIPS
+        ),
+        "question_aware_output_head": True,
+        "speculative_decoding": DEVICE_RUNTIME_SPECULATIVE_DECODING,
+    }
+    path = tmp_path / "model-manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    assert (
+        load_manifest(path)["production"]["device_runtime"]["policy_version"]
+        == "iphone-30-second-v10"
+    )
 
 
 def test_required_file_verification_checks_full_hash(tmp_path):

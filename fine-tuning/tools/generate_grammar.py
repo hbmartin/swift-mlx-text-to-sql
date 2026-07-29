@@ -157,9 +157,29 @@ def main() -> None:
             parts.append(entry)
         lines.append(f"{table}({', '.join(parts)})")
     schema_prompt = "\n".join(lines) + "\n"
+    foreign_keys = []
+    for table in tables:
+        for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
+            foreign_keys.append(
+                {
+                    "from_table": table,
+                    "from_column": row[3],
+                    "to_table": row[2],
+                    "to_column": row[4],
+                }
+            )
+    foreign_keys.sort(
+        key=lambda item: (
+            item["from_table"],
+            item["from_column"],
+            item["to_table"],
+            item["to_column"],
+        )
+    )
     schema_catalog = {
-        "schema_version": 1,
+        "schema_version": 2,
         "tables": {table: columns[table] for table in sorted(columns)},
+        "foreign_keys": foreign_keys,
     }
 
     RESOURCE_DIR.mkdir(parents=True, exist_ok=True)

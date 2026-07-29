@@ -76,6 +76,25 @@ rows, truncation, errors, Result Group SHA-256, and selection state.
 `TurnTelemetry` is the immutable record rendered by developer mode and
 persisted in chat history and JSONL.
 
+### On-device operational diagnostics
+
+Apple unified logging mirrors payload-free pipeline milestones under the app
+subsystem (`dev.haroldmartin.CREG`) and the `pipeline` category. Filter for
+`pipeline_turn_finished`, then use its generated `trace_id` to isolate every
+event from that turn. The compact `pipeline_candidate_generation_summary`,
+`pipeline_candidate_summary`, and `pipeline_candidate_speculation_summary`
+events record privacy-safe candidate sequence, role, model policy,
+temperature/seed, validation and execution states, row/column counts,
+repair/duplicate disposition, timings, and speculative-decoding counters.
+`pipeline_repair_input` records whether join-aware guidance was present and
+its source/owner/foreign-key counts.
+
+Questions, SQL, narration, result values and digests, filesystem paths, and
+portfolio/user identifiers are deliberately excluded from unified-log
+context. Developer mode and **Export session logs** retain the full structured
+JSONL when payload-level inspection is explicitly required; treat that export
+as portfolio data.
+
 Python EX, Swift EX, and voting share one result identity:
 
 - INTEGER and REAL share a numeric domain after four-decimal, half-even

@@ -48,6 +48,52 @@ DEFAULT_MANIFEST = REPO_ROOT / "model-manifest.json"
 DEFAULT_MODELS_DIR = REPO_ROOT / "models"
 LOCK_FILE = ".creg-artifact.json"
 PRODUCTION_RECEIPT_FILE = "production-model-receipt.json"
+LEGACY_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v1"
+DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v2"
+FUSED_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v3"
+OPTIMIZED_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v4"
+QKV_FUSED_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v5"
+COMPACT_HEAD_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v6"
+VERIFICATION_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v7"
+LONG_BATCH_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v8"
+CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v9"
+MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION = "iphone-30-second-v10"
+DEVICE_RUNTIME_GCD = "off"
+DEVICE_RUNTIME_MAX_TOKENS = 128
+DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB = 10
+DEVICE_RUNTIME_COMPILED_QWEN2_MLP_FUSION = True
+DEVICE_RUNTIME_COMPILED_QWEN2_QKV_VERIFICATION_FUSION = True
+DEVICE_RUNTIME_VERIFICATION_MLP_SKIP_LAYERS = [8, 10]
+DEVICE_RUNTIME_VERIFICATION_MLP_LONG_BATCH_EXTRA_SKIP_LAYERS = [2]
+DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP = {
+    "layer": 16,
+    "target_input_length": 3,
+    "minimum_support": 512,
+    "requires_unanimity": True,
+}
+DEVICE_RUNTIME_VERIFICATION_MLP_ADDITIONAL_CONFIDENCE_SKIPS = [
+    {
+        "layer": 35,
+        "target_input_length": 2,
+        "minimum_support": 512,
+        "requires_unanimity": True,
+    }
+]
+DEVICE_RUNTIME_QUESTION_AWARE_OUTPUT_HEAD = True
+DEVICE_RUNTIME_SPECULATIVE_DECODING = {
+    "strategy": "sql-ngram-target-verification-v3",
+    "order": 6,
+    "draft_tokens": 3,
+    "serial_prefix_tokens": 1,
+    "adaptive_draft_min_support": 8,
+    "corpus_sha256": (
+        "a7cc3c8cc3d7771353c5133c24f6516d201d31a25897949c94d048684c8244dc"
+    ),
+    "source_corpus_sha256": (
+        "3a9ad4806692cdc89e8e68c77e29c5e1eedaefac5745c3a87bd4e4fb1758021e"
+    ),
+    "statement_count": 1_353,
+}
 
 
 def artifact_files(directory: Path) -> list[Path]:
@@ -347,6 +393,257 @@ def validate_production_configuration(
         raise ArtifactError("production requires top_p 1.0 and disabled top_k")
     if not isinstance(production.get("max_tokens"), int) or production["max_tokens"] <= 0:
         raise ArtifactError("production max_tokens must be a positive integer")
+    device_runtime = production.get("device_runtime")
+    if device_runtime is not None:
+        if not isinstance(device_runtime, dict):
+            raise ArtifactError("production device_runtime must be an object")
+        runtime_policy_version = device_runtime.get("policy_version")
+        if runtime_policy_version not in {
+            LEGACY_DEVICE_RUNTIME_POLICY_VERSION,
+            DEVICE_RUNTIME_POLICY_VERSION,
+            FUSED_DEVICE_RUNTIME_POLICY_VERSION,
+            OPTIMIZED_DEVICE_RUNTIME_POLICY_VERSION,
+            QKV_FUSED_DEVICE_RUNTIME_POLICY_VERSION,
+            COMPACT_HEAD_DEVICE_RUNTIME_POLICY_VERSION,
+            VERIFICATION_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+            LONG_BATCH_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+            CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+            MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+        }:
+            raise ArtifactError(
+                "production device_runtime policy_version is unsupported"
+            )
+        metal_command_buffer_limit = device_runtime.get(
+            "metal_command_buffer_limit_mb"
+        )
+        compiled_qwen2_mlp_fusion = device_runtime.get(
+            "compiled_qwen2_mlp_fusion"
+        )
+        compiled_qwen2_qkv_verification_fusion = device_runtime.get(
+            "compiled_qwen2_qkv_verification_fusion"
+        )
+        verification_mlp_skip_layers = device_runtime.get(
+            "verification_mlp_skip_layers"
+        )
+        verification_mlp_long_batch_extra_skip_layers = device_runtime.get(
+            "verification_mlp_long_batch_extra_skip_layers"
+        )
+        verification_mlp_confidence_skip = device_runtime.get(
+            "verification_mlp_confidence_skip"
+        )
+        verification_mlp_additional_confidence_skips = device_runtime.get(
+            "verification_mlp_additional_confidence_skips"
+        )
+        question_aware_output_head = device_runtime.get(
+            "question_aware_output_head"
+        )
+        if runtime_policy_version == LEGACY_DEVICE_RUNTIME_POLICY_VERSION:
+            if (
+                metal_command_buffer_limit is not None
+                or compiled_qwen2_mlp_fusion is not None
+                or compiled_qwen2_qkv_verification_fusion is not None
+                or verification_mlp_skip_layers is not None
+                or verification_mlp_long_batch_extra_skip_layers is not None
+                or verification_mlp_confidence_skip is not None
+                or verification_mlp_additional_confidence_skips is not None
+                or question_aware_output_head is not None
+            ):
+                raise ArtifactError(
+                    "production v1 device_runtime cannot declare newer runtime "
+                    "optimizations"
+                )
+        elif runtime_policy_version == DEVICE_RUNTIME_POLICY_VERSION:
+            if (
+                metal_command_buffer_limit
+                != DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB
+            ):
+                raise ArtifactError(
+                    "production v2 device_runtime requires a 10 MB Metal "
+                    "command-buffer limit"
+                )
+            if compiled_qwen2_mlp_fusion is not None:
+                raise ArtifactError(
+                    "production v2 device_runtime cannot declare Qwen2 MLP fusion"
+                )
+            if compiled_qwen2_qkv_verification_fusion is not None:
+                raise ArtifactError(
+                    "production v2 device_runtime cannot declare Qwen2 Q/K/V "
+                    "verification fusion"
+                )
+            if verification_mlp_skip_layers is not None:
+                raise ArtifactError(
+                    "production v2 device_runtime cannot declare verification "
+                    "MLP skip layers"
+                )
+            if verification_mlp_long_batch_extra_skip_layers is not None:
+                raise ArtifactError(
+                    "production v2 device_runtime cannot declare long-batch "
+                    "verification MLP skip layers"
+                )
+            if verification_mlp_confidence_skip is not None:
+                raise ArtifactError(
+                    "production v2 device_runtime cannot declare a confidence-gated "
+                    "verification MLP skip"
+                )
+            if verification_mlp_additional_confidence_skips is not None:
+                raise ArtifactError(
+                    "production v2 device_runtime cannot declare additional "
+                    "confidence-gated verification MLP skips"
+                )
+            if question_aware_output_head is not None:
+                raise ArtifactError(
+                    "production v2 device_runtime cannot declare a question-aware "
+                    "output head"
+                )
+        elif runtime_policy_version == FUSED_DEVICE_RUNTIME_POLICY_VERSION:
+            if (
+                metal_command_buffer_limit
+                != DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB
+                or compiled_qwen2_mlp_fusion
+                is not DEVICE_RUNTIME_COMPILED_QWEN2_MLP_FUSION
+                or compiled_qwen2_qkv_verification_fusion is not None
+                or verification_mlp_skip_layers is not None
+                or verification_mlp_long_batch_extra_skip_layers is not None
+                or verification_mlp_confidence_skip is not None
+                or verification_mlp_additional_confidence_skips is not None
+                or question_aware_output_head is not None
+                or device_runtime.get("speculative_decoding")
+                != DEVICE_RUNTIME_SPECULATIVE_DECODING
+            ):
+                raise ArtifactError(
+                    "production v3 device_runtime requires the evaluated Metal, "
+                    "Qwen2 MLP fusion, and SQL n-gram settings"
+                )
+        elif runtime_policy_version == OPTIMIZED_DEVICE_RUNTIME_POLICY_VERSION:
+            if (
+                metal_command_buffer_limit
+                != DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB
+                or compiled_qwen2_mlp_fusion
+                is not DEVICE_RUNTIME_COMPILED_QWEN2_MLP_FUSION
+                or compiled_qwen2_qkv_verification_fusion is not None
+                or verification_mlp_skip_layers is not None
+                or verification_mlp_long_batch_extra_skip_layers is not None
+                or verification_mlp_confidence_skip is not None
+                or verification_mlp_additional_confidence_skips is not None
+                or question_aware_output_head
+                is not DEVICE_RUNTIME_QUESTION_AWARE_OUTPUT_HEAD
+                or device_runtime.get("speculative_decoding")
+                != DEVICE_RUNTIME_SPECULATIVE_DECODING
+            ):
+                raise ArtifactError(
+                    "production v4 device_runtime requires the evaluated Metal, "
+                    "Qwen2 MLP fusion, question-aware output head, and SQL n-gram "
+                    "settings"
+                )
+        else:
+            runtime_label = (
+                "v5"
+                if runtime_policy_version
+                == QKV_FUSED_DEVICE_RUNTIME_POLICY_VERSION
+                else (
+                    "v6"
+                    if runtime_policy_version
+                    == COMPACT_HEAD_DEVICE_RUNTIME_POLICY_VERSION
+                    else (
+                        "v7"
+                        if runtime_policy_version
+                        == VERIFICATION_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION
+                        else (
+                            "v8"
+                            if runtime_policy_version
+                            == LONG_BATCH_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION
+                            else (
+                                "v9"
+                                if runtime_policy_version
+                                == CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION
+                                else "v10"
+                            )
+                        )
+                    )
+                )
+            )
+            expected_verification_mlp_skip_layers = (
+                DEVICE_RUNTIME_VERIFICATION_MLP_SKIP_LAYERS
+                if runtime_policy_version
+                in {
+                    VERIFICATION_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                    LONG_BATCH_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                    CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                    MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                }
+                else None
+            )
+            expected_long_batch_extra_skip_layers = (
+                DEVICE_RUNTIME_VERIFICATION_MLP_LONG_BATCH_EXTRA_SKIP_LAYERS
+                if runtime_policy_version
+                in {
+                    LONG_BATCH_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                    CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                    MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                }
+                else None
+            )
+            expected_confidence_skip = (
+                DEVICE_RUNTIME_VERIFICATION_MLP_CONFIDENCE_SKIP
+                if runtime_policy_version
+                in {
+                    CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                    MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION,
+                }
+                else None
+            )
+            expected_additional_confidence_skips = (
+                DEVICE_RUNTIME_VERIFICATION_MLP_ADDITIONAL_CONFIDENCE_SKIPS
+                if runtime_policy_version
+                == MULTI_CONFIDENCE_MLP_PRUNED_DEVICE_RUNTIME_POLICY_VERSION
+                else None
+            )
+            if (
+                metal_command_buffer_limit
+                != DEVICE_RUNTIME_METAL_COMMAND_BUFFER_LIMIT_MB
+                or compiled_qwen2_mlp_fusion
+                is not DEVICE_RUNTIME_COMPILED_QWEN2_MLP_FUSION
+                or compiled_qwen2_qkv_verification_fusion
+                is not DEVICE_RUNTIME_COMPILED_QWEN2_QKV_VERIFICATION_FUSION
+                or verification_mlp_skip_layers
+                != expected_verification_mlp_skip_layers
+                or verification_mlp_long_batch_extra_skip_layers
+                != expected_long_batch_extra_skip_layers
+                or verification_mlp_confidence_skip != expected_confidence_skip
+                or verification_mlp_additional_confidence_skips
+                != expected_additional_confidence_skips
+                or question_aware_output_head
+                is not DEVICE_RUNTIME_QUESTION_AWARE_OUTPUT_HEAD
+                or device_runtime.get("speculative_decoding")
+                != DEVICE_RUNTIME_SPECULATIVE_DECODING
+            ):
+                raise ArtifactError(
+                    f"production {runtime_label} device_runtime requires the "
+                    "evaluated Metal, Qwen2 MLP fusion, verification-only Q/K/V "
+                    "fusion, verification MLP policy, question-aware output head, "
+                    "and SQL n-gram settings"
+                )
+        if device_runtime.get("gcd") not in {"on", "off"}:
+            raise ArtifactError("production device_runtime gcd must be 'on' or 'off'")
+        runtime_max_tokens = device_runtime.get("max_tokens")
+        if (
+            not isinstance(runtime_max_tokens, int)
+            or runtime_max_tokens <= 0
+            or runtime_max_tokens > production["max_tokens"]
+        ):
+            raise ArtifactError(
+                "production device_runtime max_tokens must be positive and no "
+                "larger than production max_tokens"
+            )
+        speculative_decoding = device_runtime.get("speculative_decoding")
+        if (
+            speculative_decoding is not None
+            and speculative_decoding != DEVICE_RUNTIME_SPECULATIVE_DECODING
+        ):
+            raise ArtifactError(
+                "production device_runtime speculative_decoding must exactly "
+                "match the supported SQL n-gram policy and corpus provenance"
+            )
     voting = production.get("voting")
     if not isinstance(voting, dict):
         raise ArtifactError("production voting configuration is required")

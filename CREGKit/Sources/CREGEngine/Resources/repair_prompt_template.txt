@@ -1,10 +1,15 @@
 Question: {{QUESTION}}
 
-Your previous attempt failed. Fix it.
-Previous SQL: {{FAILED_SQL}}
-SQLite error: {{SQLITE_ERROR}}
+The previous SQL failed SQLite validation.
+Failed SQL: {{FAILED_SQL}}
+Validation error: {{SQLITE_ERROR}}
 Issue type: {{ISSUE_TYPE}}
 Issue disposition: {{ISSUE_DISPOSITION}}
+Invalid reference: {{INVALID_REFERENCE}}
 Declared sources: {{DECLARED_SOURCES}}
-Possible column owners: {{POSSIBLE_COLUMN_OWNERS}}
-Prior failed fingerprints: {{FAILED_FINGERPRINTS}}
+Declared source schemas: {{SOURCE_COLUMNS}}
+Possible owning tables: {{POSSIBLE_COLUMN_OWNERS}}
+Relevant join paths: {{RELEVANT_FOREIGN_KEYS}}
+Required correction: {{CORRECTIVE_INSTRUCTION}}
+
+Return exactly one corrected SQLite SELECT statement. Use only columns owned by declared sources, add a schema-valid join when another table owns the needed value, and do not repeat the failed SQL.

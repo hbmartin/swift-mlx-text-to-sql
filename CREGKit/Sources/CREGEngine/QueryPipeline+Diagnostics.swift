@@ -15,14 +15,16 @@ extension QueryPipeline {
         var telemetry = TurnTelemetry(originalQuestion: question)
         telemetry.terminalError = "[\(diagnosticCode)] \(diagnostic)"
         continuation.yield(.turnStarted(question: question))
-        continuation.yield(.questionResolved(
-          standaloneQuestion: question,
-          rewriteApplied: false,
-          usedFM: false,
-          elapsedMicroseconds: 0))
-        continuation.yield(.turnFinished(
-          outcome: .failed(message: userMessage),
-          telemetry: telemetry))
+        continuation.yield(
+          .questionResolved(
+            standaloneQuestion: question,
+            rewriteApplied: false,
+            usedFM: false,
+            elapsedMicroseconds: 0))
+        continuation.yield(
+          .turnFinished(
+            outcome: .failed(message: userMessage),
+            telemetry: telemetry))
         continuation.finish()
       }
     }
@@ -33,12 +35,16 @@ extension QueryPipeline {
   public func reportingTerminalFailures(
     to diagnostics: DiagnosticsClient
   ) -> QueryPipeline {
-    QueryPipeline(prepare: self.prepare) { question, history in
+    @Sendable func reported(
+      question: String,
+      history: [ConversationTurn],
+      events: AsyncStream<PipelineEvent>
+    ) -> AsyncStream<PipelineEvent> {
       AsyncStream { continuation in
         let task = Task {
           var stage = PipelineDiagnosticStage.unexpected
           var didReport = false
-          for await event in self.run(question, history) {
+          for await event in events {
             guard !Task.isCancelled else { break }
             stage.observe(event)
 
@@ -60,22 +66,39 @@ extension QueryPipeline {
               question: question,
               history: history,
               telemetry: telemetry)
-            diagnostics.record(DiagnosticEvent(
-              level: .error,
-              category: failure.category,
-              code: failure.code,
-              summary: failure.summary,
-              details: logDiagnostic,
-              context: failure.context))
-            continuation.yield(.turnFinished(
-              outcome: .failed(message: failure.userMessage),
-              telemetry: telemetry))
+            diagnostics.record(
+              DiagnosticEvent(
+                level: .error,
+                category: failure.category,
+                code: failure.code,
+                summary: failure.summary,
+                details: logDiagnostic,
+                context: failure.context))
+            continuation.yield(
+              .turnFinished(
+                outcome: .failed(message: failure.userMessage),
+                telemetry: telemetry))
           }
           continuation.finish()
         }
         continuation.onTermination = { _ in task.cancel() }
       }
     }
+
+    return QueryPipeline(
+      prepare: self.prepare,
+      run: { question, history in
+        reported(
+          question: question,
+          history: history,
+          events: self.run(question, history))
+      },
+      runStarter: { starter, history in
+        reported(
+          question: starter.question,
+          history: history,
+          events: self.runStarter(starter, history))
+      })
   }
 }
 
@@ -98,8 +121,7 @@ enum PipelineDiagnosticPrivacy {
   ) -> String {
     redact(
       diagnostic,
-      conversationContent:
-      [question, telemetry.originalQuestion, telemetry.standaloneQuestion]
+      conversationContent: [question, telemetry.originalQuestion, telemetry.standaloneQuestion]
         + history.flatMap { [$0.question, $0.answerSummary] })
   }
 
@@ -211,8 +233,11 @@ private struct PipelineTerminalFailure: Sendable {
       ?? "The pipeline ended without an underlying diagnostic."
     var baseContext = [
       "stage": stage.rawValue,
+      "query_origin": telemetry.queryOrigin.rawValue,
+      "execution_path": telemetry.executionPath.rawValue,
       "candidate_count": String(telemetry.candidates.count),
       "repair_attempts": String(telemetry.repairAttempts),
+      "recovery_outcome": telemetry.recoveryOutcome?.rawValue ?? "none",
       "total_elapsed_ms": terminalMilliseconds(
         telemetry.stageTimings.totalMicroseconds),
     ]
@@ -257,8 +282,7 @@ private struct PipelineTerminalFailure: Sendable {
           "The on-device language service couldn’t finish this step. Try again.",
         diagnostic: terminalDiagnostic,
         context: baseContext)
-    } else if lastFailure?.validationReport?.issue?.kind == .databaseUnavailable
-    {
+    } else if lastFailure?.validationReport?.issue?.kind == .databaseUnavailable {
       self.init(
         category: .database,
         code: "pipeline_portfolio_database_unavailable",
@@ -299,6 +323,8 @@ private struct PipelineTerminalFailure: Sendable {
 
 private func terminalCandidateRole(_ role: CandidateRole) -> String {
   switch role {
+  case .starter(let starter):
+    "starter_\(starter.rawValue)"
   case .initial:
     "initial"
   case .repair(let attempt):

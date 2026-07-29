@@ -1,11 +1,18 @@
 import json
+import random
+import sqlite3
 from pathlib import Path
 
 import yaml
 from mlx_lm.lora import CONFIG_DEFAULTS
 
 from eval.run_artifacts import sha256_file
-from synth.generate_training import sql_structure_signature
+from synth.generate_training import (
+    build_candidates,
+    load_entities,
+    repair_evidence,
+    sql_structure_signature,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -51,16 +58,57 @@ def test_committed_corpus_matches_its_versioned_manifest():
     )
     assert declaration["generator_seed"] == 424242
     assert declaration["schema_version"] == 3
-    assert declaration["corpus_version"] == "reliability-v3"
+    assert declaration["corpus_version"] == "reliability-v4"
     assert set(declaration["variants"]) == {"repair-05", "repair-10", "repair-20"}
     assert declaration["gold_holdouts"] == [
         "eval/gold/gold_v1.jsonl",
         "eval/gold/gold_v2.jsonl",
     ]
-    assert declaration["prompt_contract"]["prompt_version"] == "reliability-v3"
+    assert declaration["prompt_contract"]["prompt_version"] == "reliability-v4"
     for variant in declaration["variants"].values():
         for file in variant["files"]:
             assert sha256_file(ROOT / file["path"]) == file["sha256"]
+
+
+def test_runtime_parity_repair_evidence_is_join_aware_for_lease_names():
+    evidence = repair_evidence(
+        "SELECT l.name, l.expiration_date FROM leases l "
+        "WHERE l.status = 'Active'",
+        "no such column: l.name",
+    )
+    assert evidence["invalid_reference"] == "l.name"
+    assert evidence["declared_sources"] == ["leases"]
+    assert "name" not in evidence["source_columns"]["leases"]
+    assert {"properties", "tenants"}.issubset(
+        evidence["possible_column_owners"]
+    )
+    assert "leases.property_id -> properties.property_id" in evidence[
+        "relevant_foreign_keys"
+    ]
+    assert "leases.tenant_id -> tenants.tenant_id" in evidence[
+        "relevant_foreign_keys"
+    ]
+    assert "Do not use l.name" in evidence["corrective_instruction"]
+
+
+def test_next_corpus_contains_lease_tenant_property_binding_repairs():
+    with sqlite3.connect(ROOT / "db" / "creg.sqlite") as connection:
+        candidates = build_candidates(
+            random.Random(424242), load_entities(connection)
+        )
+    lease_repairs = [
+        item
+        for item in candidates
+        if item.get("failure_family") == "lease-name-on-leases"
+        and "repair" in item
+    ]
+    assert len(lease_repairs) >= 4
+    assert all(
+        item["repair"]["invalid_reference"] == "l.name"
+        for item in lease_repairs
+    )
+    assert all("JOIN tenants" in item["sql"] for item in lease_repairs)
+    assert all("JOIN properties" in item["sql"] for item in lease_repairs)
 
 
 def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
@@ -92,7 +140,10 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
     }
     assert gold.isdisjoint(questions)
     assert (
-        sum("Your previous attempt failed" in message for message in user_messages)
+        sum(
+            "The previous SQL failed SQLite validation." in message
+            for message in user_messages
+        )
         >= 16
     )
     assert any("trailing 3-month NOI" in message for message in user_messages)
@@ -100,20 +151,18 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
     repair_messages = [
         message
         for message in user_messages
-        if "Your previous attempt failed" in message
+        if "The previous SQL failed SQLite validation." in message
     ]
+    assert all("Failed SQL: " in message for message in repair_messages)
+    assert all("Validation error: " in message for message in repair_messages)
+    assert all("Invalid reference: " in message for message in repair_messages)
     assert all("Declared sources: " in message for message in repair_messages)
-    assert all("Possible column owners: " in message for message in repair_messages)
+    assert all("Declared source schemas: " in message for message in repair_messages)
+    assert all("Possible owning tables: " in message for message in repair_messages)
+    assert all("Relevant join paths: " in message for message in repair_messages)
+    assert all("Required correction: " in message for message in repair_messages)
     assert all(
-        len(
-            next(
-                line.removeprefix("Prior failed fingerprints: ")
-                for line in message.splitlines()
-                if line.startswith("Prior failed fingerprints: ")
-            )
-        )
-        == 64
-        for message in repair_messages
+        "Prior failed fingerprints: " not in message for message in repair_messages
     )
     assert all(
         next(
@@ -123,7 +172,7 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
         )
         for message in repair_messages
     )
-    assert any("Possible column owners: properties" in message for message in repair_messages)
+    assert any("Possible owning tables: properties" in message for message in repair_messages)
     assert any(
         "SELECT name FROM properties WHERE status != 'Sold' "
         "ORDER BY 1 - f.occupancy_rate DESC LIMIT 5" in message
@@ -149,7 +198,7 @@ def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():
     assert lease_counts and all("COUNT(*)" in sql for sql in lease_counts)
 
 
-def test_reliability_v3_variants_hold_size_structure_and_repair_ratios_fixed():
+def test_reliability_v4_variants_hold_size_structure_and_repair_ratios_fixed():
     expected_repairs = {"repair-05": 80, "repair-10": 160, "repair-20": 320}
     manifest = json.loads(
         (ROOT / "fine-tuning/config/corpus-manifest.json").read_text()
