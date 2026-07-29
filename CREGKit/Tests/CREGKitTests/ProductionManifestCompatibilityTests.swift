@@ -53,6 +53,9 @@ import Testing
     #expect(production.sqlNGramSpeculation == nil)
     #expect(production.candidateCount == 3)
     #expect(production.sampleTemperature == 0.7)
+    #expect(
+      QueryPipeline.Configuration(production: production)
+        .repairSampleTemperature == 0.7)
     #expect(production.alwaysVote)
   }
 
@@ -211,9 +214,10 @@ import Testing
     #expect(!production.questionAwareOutputHead)
 
     for invalidLimit in [nil, 9, 40] as [Int?] {
-      let declaration = invalidLimit.map {
-        "\"metal_command_buffer_limit_mb\": \($0)"
-      } ?? ""
+      let declaration =
+        invalidLimit.map {
+          "\"metal_command_buffer_limit_mb\": \($0)"
+        } ?? ""
       let invalidManifest = manifest.replacingOccurrences(
         of: "\"metal_command_buffer_limit_mb\": 10",
         with: declaration)
@@ -286,10 +290,12 @@ import Testing
     #expect(!production.questionAwareOutputHead)
     #expect(production.sqlNGramSpeculation == .supported)
 
-    let v4Manifest = manifest
+    let v4Manifest =
+      manifest
       .replacingOccurrences(
         of: "iphone-30-second-v3",
-        with: "iphone-30-second-v4")
+        with: "iphone-30-second-v4"
+      )
       .replacingOccurrences(
         of: "\"compiled_qwen2_mlp_fusion\": true,",
         with: """
@@ -302,10 +308,12 @@ import Testing
     #expect(!v4Production.compiledQwen2QKVVerificationFusion)
     #expect(v4Production.questionAwareOutputHead)
 
-    let v5Manifest = v4Manifest
+    let v5Manifest =
+      v4Manifest
       .replacingOccurrences(
         of: "iphone-30-second-v4",
-        with: "iphone-30-second-v5")
+        with: "iphone-30-second-v5"
+      )
       .replacingOccurrences(
         of: "\"compiled_qwen2_mlp_fusion\": true,",
         with: """
@@ -328,10 +336,12 @@ import Testing
     #expect(v6Production.questionAwareOutputHead)
     #expect(v6Production.compactQuestionAwareOutputHead)
 
-    let v7Manifest = v6Manifest
+    let v7Manifest =
+      v6Manifest
       .replacingOccurrences(
         of: "iphone-30-second-v6",
-        with: "iphone-30-second-v7")
+        with: "iphone-30-second-v7"
+      )
       .replacingOccurrences(
         of: "\"compiled_qwen2_qkv_verification_fusion\": true,",
         with: """
@@ -344,10 +354,12 @@ import Testing
     #expect(v7Production.verificationMLPSkipLayers == [8, 10])
     #expect(v7Production.compactQuestionAwareOutputHead)
 
-    let v8Manifest = v7Manifest
+    let v8Manifest =
+      v7Manifest
       .replacingOccurrences(
         of: "iphone-30-second-v7",
-        with: "iphone-30-second-v8")
+        with: "iphone-30-second-v8"
+      )
       .replacingOccurrences(
         of: "\"verification_mlp_skip_layers\": [8, 10],",
         with: """
@@ -363,10 +375,12 @@ import Testing
     #expect(v8Production.compactQuestionAwareOutputHead)
 
     let confidenceSkip = VerificationMLPConfidenceSkipPolicy.supported
-    let v9Manifest = v8Manifest
+    let v9Manifest =
+      v8Manifest
       .replacingOccurrences(
         of: "iphone-30-second-v8",
-        with: "iphone-30-second-v9")
+        with: "iphone-30-second-v9"
+      )
       .replacingOccurrences(
         of: "\"verification_mlp_long_batch_extra_skip_layers\": [2],",
         with: """
@@ -389,10 +403,12 @@ import Testing
 
     let singleDraftConfidenceSkip =
       VerificationMLPConfidenceSkipPolicy.supportedSingleDraft
-    let v10Manifest = v9Manifest
+    let v10Manifest =
+      v9Manifest
       .replacingOccurrences(
         of: "iphone-30-second-v9",
-        with: "iphone-30-second-v10")
+        with: "iphone-30-second-v10"
+      )
       .replacingOccurrences(
         of: """
           "verification_mlp_confidence_skip": {

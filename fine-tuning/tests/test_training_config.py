@@ -1,11 +1,18 @@
 import json
+import random
+import sqlite3
 from pathlib import Path
 
 import yaml
 from mlx_lm.lora import CONFIG_DEFAULTS
 
 from eval.run_artifacts import sha256_file
-from synth.generate_training import sql_structure_signature
+from synth.generate_training import (
+    build_candidates,
+    load_entities,
+    repair_evidence,
+    sql_structure_signature,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -61,6 +68,47 @@ def test_committed_corpus_matches_its_versioned_manifest():
     for variant in declaration["variants"].values():
         for file in variant["files"]:
             assert sha256_file(ROOT / file["path"]) == file["sha256"]
+
+
+def test_runtime_parity_repair_evidence_is_join_aware_for_lease_names():
+    evidence = repair_evidence(
+        "SELECT l.name, l.expiration_date FROM leases l "
+        "WHERE l.status = 'Active'",
+        "no such column: l.name",
+    )
+    assert evidence["invalid_reference"] == "l.name"
+    assert evidence["declared_sources"] == ["leases"]
+    assert "name" not in evidence["source_columns"]["leases"]
+    assert {"properties", "tenants"}.issubset(
+        evidence["possible_column_owners"]
+    )
+    assert "leases.property_id -> properties.property_id" in evidence[
+        "relevant_foreign_keys"
+    ]
+    assert "leases.tenant_id -> tenants.tenant_id" in evidence[
+        "relevant_foreign_keys"
+    ]
+    assert "Do not use l.name" in evidence["corrective_instruction"]
+
+
+def test_next_corpus_contains_lease_tenant_property_binding_repairs():
+    with sqlite3.connect(ROOT / "db" / "creg.sqlite") as connection:
+        candidates = build_candidates(
+            random.Random(424242), load_entities(connection)
+        )
+    lease_repairs = [
+        item
+        for item in candidates
+        if item.get("failure_family") == "lease-name-on-leases"
+        and "repair" in item
+    ]
+    assert len(lease_repairs) >= 4
+    assert all(
+        item["repair"]["invalid_reference"] == "l.name"
+        for item in lease_repairs
+    )
+    assert all("JOIN tenants" in item["sql"] for item in lease_repairs)
+    assert all("JOIN properties" in item["sql"] for item in lease_repairs)
 
 
 def test_committed_corpus_excludes_all_gold_text_and_contains_repairs():

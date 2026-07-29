@@ -56,12 +56,12 @@ private struct HuggingFaceTokenizerLoader: MLXLMCommon.TokenizerLoader {
 /// The bundled SQL specialist: grammar-constrained SQL generation on MLX.
 public struct SQLGenClient: Sendable {
   public var prepare: @Sendable () async throws -> Void
-  public var generate:
-    @Sendable (SQLGenerationRequest) async throws -> SQLGeneration
+  public var generate: @Sendable (SQLGenerationRequest) async throws -> SQLGeneration
 
   public init(
     prepare: @escaping @Sendable () async throws -> Void = {},
-    generate: @escaping @Sendable (SQLGenerationRequest) async throws
+    generate:
+      @escaping @Sendable (SQLGenerationRequest) async throws
       -> SQLGeneration
   ) {
     self.prepare = prepare
@@ -178,9 +178,10 @@ private final class SQLQuestionOutputVocabulary: @unchecked Sendable {
     for statement in draftCorpus { include(statement) }
     var lexemes = Set<String>()
     for source in lexicalSources {
-      lexemes.formUnion(source.split { character in
-        !(character.isLetter || character.isNumber || character == "_")
-      }.map(String.init))
+      lexemes.formUnion(
+        source.split { character in
+          !(character.isLetter || character.isNumber || character == "_")
+        }.map(String.init))
     }
     lexemes.formUnion(Self.syntaxLexemes)
     for lexeme in lexemes {
@@ -211,7 +212,8 @@ private final class SQLQuestionOutputVocabulary: @unchecked Sendable {
         skipSpecialTokens: false)
       guard !decoded.isEmpty, decoded.count <= 40 else { continue }
       let core = decoded.trimmingCharacters(
-        in: Self.trimCharacters).lowercased()
+        in: Self.trimCharacters
+      ).lowercased()
       guard !core.isEmpty else { continue }
       coreTokenIDs[core, default: []].append(tokenID)
     }
@@ -330,17 +332,18 @@ extension SQLGenClient {
                 started.duration(to: .now).microseconds),
             ])
         } catch {
-          diagnostics.record(DiagnosticEvent(
-            level: .error,
-            category: .model,
-            code: "model_load_failed",
-            summary: "The bundled SQL model load failed.",
-            details: DiagnosticDetails.describe(error),
-            context: [
-              "model_key": modelKey,
-              "elapsed_ms": Self.milliseconds(
-                started.duration(to: .now).microseconds),
-            ]))
+          diagnostics.record(
+            DiagnosticEvent(
+              level: .error,
+              category: .model,
+              code: "model_load_failed",
+              summary: "The bundled SQL model load failed.",
+              details: DiagnosticDetails.describe(error),
+              context: [
+                "model_key": modelKey,
+                "elapsed_ms": Self.milliseconds(
+                  started.duration(to: .now).microseconds),
+              ]))
           throw error
         }
       },
@@ -356,8 +359,9 @@ extension SQLGenClient {
   }
 
   static func cutterFixtureData() throws -> Data {
-    guard let url = Bundle.module.url(
-      forResource: "sql_cutter_fixtures", withExtension: "json")
+    guard
+      let url = Bundle.module.url(
+        forResource: "sql_cutter_fixtures", withExtension: "json")
     else { throw CocoaError(.fileNoSuchFile) }
     return try Data(contentsOf: url)
   }
@@ -365,9 +369,10 @@ extension SQLGenClient {
   static func productionDraftCorpus(
     policy: SQLNGramSpeculationPolicy
   ) throws -> [String] {
-    guard let url = Bundle.module.url(
-      forResource: "sql_draft_corpus",
-      withExtension: "json")
+    guard
+      let url = Bundle.module.url(
+        forResource: "sql_draft_corpus",
+        withExtension: "json")
     else { throw CocoaError(.fileNoSuchFile) }
     let data = try Data(contentsOf: url)
     let digest = SHA256.hash(data: data)
@@ -384,7 +389,8 @@ extension SQLGenClient {
       resource.statementCount == resource.statements.count,
       resource.sourceSHA256 == policy.sourceCorpusSHA256,
       resource.statements.allSatisfy({ statement in
-        let normalized = statement
+        let normalized =
+          statement
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .uppercased()
         return normalized.hasPrefix("SELECT") || normalized.hasPrefix("WITH")
@@ -413,8 +419,7 @@ actor MLXSQLGenerator {
   private let compiledQwen2QKVVerificationFusion: Bool
   private let verificationMLPSkipLayers: Set<Int>
   private let verificationMLPLongBatchExtraSkipLayers: Set<Int>
-  private let verificationMLPConfidenceSkips:
-    [VerificationMLPConfidenceSkipPolicy]
+  private let verificationMLPConfidenceSkips: [VerificationMLPConfidenceSkipPolicy]
   private let questionAwareOutputHead: Bool
   private let compactQuestionAwareOutputHead: Bool
   private let productionNGramSpeculation: SQLNGramSpeculationPolicy?
@@ -476,7 +481,8 @@ actor MLXSQLGenerator {
     self.compactQuestionAwareOutputHead = compactQuestionAwareOutputHead
     self.productionNGramSpeculation = productionNGramSpeculation
     self.experimentalNGramDraftCorpus = experimentalNGramDraftCorpus
-    self.ngramDraftTokens = productionNGramSpeculation?.draftTokens
+    self.ngramDraftTokens =
+      productionNGramSpeculation?.draftTokens
       ?? experimentalNGramDraftTokens
     self.ngramSerialPrefixTokens =
       productionNGramSpeculation?.serialPrefixTokens
@@ -512,12 +518,12 @@ actor MLXSQLGenerator {
       try await preparedCompiledQwen2QKVFusion(using: container)
       let prefixCache = try await preparedPromptPrefixCache(using: container)
       let ngramDraftModel = try await preparedNGramDraftModel(using: container)
-      let questionOutputVocabulary = try await
-        preparedQuestionOutputVocabulary(using: container)
+      let questionOutputVocabulary = try await preparedQuestionOutputVocabulary(using: container)
 
-      let userContent = request.repair.map {
-        Self.repairPrompt(question: request.question, context: $0)
-      } ?? "Question: \(request.question)"
+      let userContent =
+        request.repair.map {
+          Self.repairPrompt(question: request.question, context: $0)
+        } ?? "Question: \(request.question)"
       let systemContent: String?
       if useDirectPromptSuffix,
         prefixCache?.suffixTokens != nil
@@ -597,7 +603,8 @@ actor MLXSQLGenerator {
         {
           let allowedTokenIDs = questionOutputVocabulary.allowedTokenIDs(
             for: userContent)
-          let returnsCompactLogits = compactQuestionAwareOutputHead
+          let returnsCompactLogits =
+            compactQuestionAwareOutputHead
             && ngramDraftModel != nil
             && ngramDraftTokens > 0
             && ngramSerialPrefixTokens == 1
@@ -796,15 +803,16 @@ actor MLXSQLGenerator {
       context["is_cancellation"] = String(error is CancellationError)
       context["total_elapsed_ms"] = Self.milliseconds(
         operationStarted.duration(to: .now).microseconds)
-      diagnosticClient.record(DiagnosticEvent(
-        level: .error,
-        category: .inference,
-        code: "mlx_sql_generation_failed",
-        summary: "MLX SQL generation failed during \(state.phase).",
-        details: PipelineDiagnosticPrivacy.redact(
-          DiagnosticDetails.describe(error),
-          conversationContent: [request.question]),
-        context: context))
+      diagnosticClient.record(
+        DiagnosticEvent(
+          level: .error,
+          category: .inference,
+          code: "mlx_sql_generation_failed",
+          summary: "MLX SQL generation failed during \(state.phase).",
+          details: PipelineDiagnosticPrivacy.redact(
+            DiagnosticDetails.describe(error),
+            conversationContent: [request.question]),
+          context: context))
       throw error
     }
   }
@@ -825,6 +833,8 @@ actor MLXSQLGenerator {
     _ role: CandidateRole
   ) -> String {
     switch role {
+    case .starter(let starter):
+      "starter_\(starter.rawValue)"
     case .initial:
       "initial"
     case .repair(let attempt):
@@ -868,15 +878,34 @@ actor MLXSQLGenerator {
     context: RepairContext
   ) -> String {
     let guidance = context.guidance
-    let replacements = [
+    let sourceColumns =
+      guidance?.sourceColumns
+      .sorted { $0.key < $1.key }
+      .map { "\($0.key)(\($0.value.joined(separator: ", ")))" }
+      .joined(separator: "; ") ?? ""
+    let issueType = guidance?.issue.kind.rawValue ?? "unknown"
+    let issueDisposition =
+      guidance?.issue.disposition.rawValue ?? "repairable"
+    let invalidReference = guidance?.invalidReference ?? ""
+    let declaredSources =
+      guidance?.declaredSources.joined(separator: ", ") ?? ""
+    let possibleOwners =
+      guidance?.possibleColumnOwners.joined(separator: ", ") ?? ""
+    let foreignKeys =
+      guidance?.relevantForeignKeys.joined(separator: "; ") ?? ""
+    let correctiveInstruction = guidance?.correctiveInstruction ?? ""
+    let replacements: [String: String] = [
       "{{QUESTION}}": question,
       "{{FAILED_SQL}}": context.failedSQL,
       "{{SQLITE_ERROR}}": context.errorMessage,
-      "{{ISSUE_TYPE}}": guidance?.issue.kind.rawValue ?? "unknown",
-      "{{ISSUE_DISPOSITION}}": guidance?.issue.disposition.rawValue ?? "repairable",
-      "{{DECLARED_SOURCES}}": guidance?.declaredSources.joined(separator: ", ") ?? "",
-      "{{POSSIBLE_COLUMN_OWNERS}}": guidance?.possibleColumnOwners.joined(separator: ", ") ?? "",
-      "{{FAILED_FINGERPRINTS}}": guidance?.failedFingerprints.joined(separator: ", ") ?? "",
+      "{{ISSUE_TYPE}}": issueType,
+      "{{ISSUE_DISPOSITION}}": issueDisposition,
+      "{{INVALID_REFERENCE}}": invalidReference,
+      "{{DECLARED_SOURCES}}": declaredSources,
+      "{{SOURCE_COLUMNS}}": sourceColumns,
+      "{{POSSIBLE_COLUMN_OWNERS}}": possibleOwners,
+      "{{RELEVANT_FOREIGN_KEYS}}": foreignKeys,
+      "{{CORRECTIVE_INSTRUCTION}}": correctiveInstruction,
     ]
     return renderTemplate(
       resourceText(name: "repair_prompt_template"),
@@ -890,8 +919,9 @@ actor MLXSQLGenerator {
     _ template: String,
     replacements: [String: String]
   ) -> String {
-    guard let expression = try? NSRegularExpression(
-      pattern: #"\{\{[A-Z_]+\}\}"#)
+    guard
+      let expression = try? NSRegularExpression(
+        pattern: #"\{\{[A-Z_]+\}\}"#)
     else { return template }
     let matches = expression.matches(
       in: template,
@@ -921,11 +951,12 @@ actor MLXSQLGenerator {
   private func loadedContainer() async throws -> ModelContainer {
     let source = self.source
     if let metalCommandBufferLimitMB {
-      guard setenv(
-        "MLX_MAX_MB_PER_BUFFER",
-        String(metalCommandBufferLimitMB),
-        1)
-        == 0
+      guard
+        setenv(
+          "MLX_MAX_MB_PER_BUFFER",
+          String(metalCommandBufferLimitMB),
+          1)
+          == 0
       else {
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EINVAL)
       }
@@ -940,8 +971,8 @@ actor MLXSQLGenerator {
             verificationMLPLongBatchExtraSkipLayers:
               self.verificationMLPLongBatchExtraSkipLayers
           ).loadContainer(
-              from: url,
-              using: HuggingFaceTokenizerLoader())
+            from: url,
+            using: HuggingFaceTokenizerLoader())
         }
         return try await loadModelContainer(
           from: url,
@@ -1052,12 +1083,13 @@ actor MLXSQLGenerator {
     guard ngramDraftTokens > 0 else { return nil }
     if let ngramDraftModel { return ngramDraftModel }
 
-    let corpus = if let productionNGramSpeculation {
-      try SQLGenClient.productionDraftCorpus(
-        policy: productionNGramSpeculation)
-    } else {
-      experimentalNGramDraftCorpus
-    }
+    let corpus =
+      if let productionNGramSpeculation {
+        try SQLGenClient.productionDraftCorpus(
+          policy: productionNGramSpeculation)
+      } else {
+        experimentalNGramDraftCorpus
+      }
     guard !corpus.isEmpty else { return nil }
     let built = await container.perform { context in
       let eosToken = context.tokenizer.eosTokenId
@@ -1080,17 +1112,19 @@ actor MLXSQLGenerator {
     guard questionAwareOutputHead else { return nil }
     if let questionOutputVocabulary { return questionOutputVocabulary }
 
-    let corpus = if let productionNGramSpeculation {
-      try SQLGenClient.productionDraftCorpus(
-        policy: productionNGramSpeculation)
-    } else {
-      experimentalNGramDraftCorpus
-    }
+    let corpus =
+      if let productionNGramSpeculation {
+        try SQLGenClient.productionDraftCorpus(
+          policy: productionNGramSpeculation)
+      } else {
+        experimentalNGramDraftCorpus
+      }
     guard !corpus.isEmpty else { return nil }
     let lexicalSources = [try Self.grammarEBNF(), try Self.schemaPrompt()]
     let built = await container.perform { context in
-      guard let vocabularySize = CompiledQwen2ModelFactory.vocabularySize(
-        of: context.model)
+      guard
+        let vocabularySize = CompiledQwen2ModelFactory.vocabularySize(
+          of: context.model)
       else { return nil as SQLQuestionOutputVocabulary? }
       let vocabulary = SQLQuestionOutputVocabulary(
         vocabularySize: vocabularySize,
@@ -1159,7 +1193,8 @@ actor MLXSQLGenerator {
     return (
       LMInput(tokens: MLXArray(userTokens + suffixTokens)),
       prefix.cache.map { $0.copy() },
-      prefix.tokens.count)
+      prefix.tokens.count
+    )
   }
 
   /// Returns the unchanged input when a tokenizer/model does not share the
@@ -1180,7 +1215,8 @@ actor MLXSQLGenerator {
     return (
       LMInput(tokens: MLXArray(remainder)),
       prefix.cache.map { $0.copy() },
-      prefix.tokens.count)
+      prefix.tokens.count
+    )
   }
 
   static func grammarEBNF() throws -> String {

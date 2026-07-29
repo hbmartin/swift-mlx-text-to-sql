@@ -13,8 +13,8 @@ RESOURCE_DIRECTORY = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resourc
 SYSTEM_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "system_prompt_template.txt"
 REPAIR_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "repair_prompt_template.txt"
 SCHEMA_CATALOG_PATH = RESOURCE_DIRECTORY / "schema_catalog.json"
-PROMPT_VERSION = "reliability-v3"
-POLICY_VERSION = "bounded-three-generation-v1"
+PROMPT_VERSION = "reliability-v4"
+POLICY_VERSION = "bounded-repair-state-machine-v2"
 
 
 def _template(path: Path) -> str:
@@ -55,19 +55,31 @@ def build_repair_prompt(
     sqlite_error: str,
     issue_type: str,
     issue_disposition: str,
+    invalid_reference: str = "",
     declared_sources: list[str] | tuple[str, ...] = (),
     possible_column_owners: list[str] | tuple[str, ...] = (),
+    source_columns: dict[str, list[str] | tuple[str, ...]] | None = None,
+    relevant_foreign_keys: list[str] | tuple[str, ...] = (),
+    corrective_instruction: str = "",
     failed_fingerprints: list[str] | tuple[str, ...] = (),
 ) -> str:
+    del failed_fingerprints  # Fingerprints are telemetry identity, not model guidance.
+    source_columns = source_columns or {}
     replacements = {
         "{{QUESTION}}": question,
         "{{FAILED_SQL}}": failed_sql,
         "{{SQLITE_ERROR}}": sqlite_error,
         "{{ISSUE_TYPE}}": issue_type,
         "{{ISSUE_DISPOSITION}}": issue_disposition,
+        "{{INVALID_REFERENCE}}": invalid_reference,
         "{{DECLARED_SOURCES}}": ", ".join(declared_sources),
+        "{{SOURCE_COLUMNS}}": "; ".join(
+            f"{table}({', '.join(columns)})"
+            for table, columns in sorted(source_columns.items())
+        ),
         "{{POSSIBLE_COLUMN_OWNERS}}": ", ".join(possible_column_owners),
-        "{{FAILED_FINGERPRINTS}}": ", ".join(failed_fingerprints),
+        "{{RELEVANT_FOREIGN_KEYS}}": "; ".join(relevant_foreign_keys),
+        "{{CORRECTIVE_INSTRUCTION}}": corrective_instruction,
     }
     return re.sub(
         r"\{\{[A-Z_]+\}\}",

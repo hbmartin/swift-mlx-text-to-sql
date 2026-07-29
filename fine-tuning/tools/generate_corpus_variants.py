@@ -1,4 +1,4 @@
-"""Regenerate the three canonical reliability-v3 repair-ratio corpora."""
+"""Regenerate the three canonical reliability-v4 repair-ratio corpora."""
 
 from __future__ import annotations
 

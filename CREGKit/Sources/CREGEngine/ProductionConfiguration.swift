@@ -20,10 +20,8 @@ public struct ProductionGenerationConfiguration:
   public var compiledQwen2QKVVerificationFusion: Bool = false
   public var verificationMLPSkipLayers: [Int] = []
   public var verificationMLPLongBatchExtraSkipLayers: [Int] = []
-  public var verificationMLPConfidenceSkip:
-    VerificationMLPConfidenceSkipPolicy? = nil
-  public var verificationMLPAdditionalConfidenceSkips:
-    [VerificationMLPConfidenceSkipPolicy] = []
+  public var verificationMLPConfidenceSkip: VerificationMLPConfidenceSkipPolicy? = nil
+  public var verificationMLPAdditionalConfidenceSkips: [VerificationMLPConfidenceSkipPolicy] = []
   public var questionAwareOutputHead: Bool = false
   public var compactQuestionAwareOutputHead: Bool = false
   public var sqlNGramSpeculation: SQLNGramSpeculationPolicy? = nil
@@ -206,16 +204,17 @@ public enum ProductionModelReceiptLoader {
           "elapsed_ms": milliseconds(started.duration(to: .now).microseconds),
         ])
     } catch {
-      diagnostics.record(DiagnosticEvent(
-        level: .error,
-        category: .configuration,
-        code: "production_receipt_verification_failed",
-        summary: "Production model receipt verification failed.",
-        details: DiagnosticDetails.describe(error),
-        context: [
-          "model_key": production.model.key,
-          "elapsed_ms": milliseconds(started.duration(to: .now).microseconds),
-        ]))
+      diagnostics.record(
+        DiagnosticEvent(
+          level: .error,
+          category: .configuration,
+          code: "production_receipt_verification_failed",
+          summary: "Production model receipt verification failed.",
+          details: DiagnosticDetails.describe(error),
+          context: [
+            "model_key": production.model.key,
+            "elapsed_ms": milliseconds(started.duration(to: .now).microseconds),
+          ]))
       throw error
     }
   }
@@ -227,8 +226,9 @@ public enum ProductionModelReceiptLoader {
     production: ProductionGenerationConfiguration
   ) throws -> Receipt {
     var isDirectory: ObjCBool = false
-    guard FileManager.default.fileExists(
-      atPath: modelDirectory.path, isDirectory: &isDirectory),
+    guard
+      FileManager.default.fileExists(
+        atPath: modelDirectory.path, isDirectory: &isDirectory),
       isDirectory.boolValue
     else { throw ModelManifestError.missingReceipt }
     let manifestData = try Data(contentsOf: manifestURL)
@@ -476,8 +476,9 @@ public enum ModelManifestLoader {
       throw ModelManifestError.invalidProductionConfiguration(
         "production_status must be verified when a production selection is present")
     }
-    guard let model = document.models.first(
-      where: { $0.key == production.modelKey })
+    guard
+      let model = document.models.first(
+        where: { $0.key == production.modelKey })
     else {
       throw ModelManifestError.unknownProductionModel(
         production.modelKey)
@@ -720,7 +721,7 @@ public enum ModelManifestLoader {
         production.deviceRuntime?.verificationMLPConfidenceSkip?.policy,
       verificationMLPAdditionalConfidenceSkips:
         production.deviceRuntime?.verificationMLPAdditionalConfidenceSkips?
-          .map(\.policy) ?? [],
+        .map(\.policy) ?? [],
       questionAwareOutputHead:
         production.deviceRuntime?.questionAwareOutputHead == true,
       compactQuestionAwareOutputHead:
@@ -767,6 +768,7 @@ extension QueryPipeline.Configuration {
       maxRepairAttempts: maxRepairAttempts,
       selfConsistencyN: production.candidateCount,
       sampleTemperature: production.sampleTemperature,
-      alwaysVote: production.alwaysVote)
+      alwaysVote: production.alwaysVote,
+      repairSampleTemperature: max(production.sampleTemperature, 0.3))
   }
 }

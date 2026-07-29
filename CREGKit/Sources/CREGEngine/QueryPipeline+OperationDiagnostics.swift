@@ -9,6 +9,46 @@ extension QueryPipeline {
     to diagnostics: DiagnosticsClient
   ) -> QueryPipeline {
     let source = reportingTerminalFailures(to: diagnostics)
+
+    @Sendable func observed(
+      question: String,
+      history: [ConversationTurn],
+      events: AsyncStream<PipelineEvent>
+    ) -> AsyncStream<PipelineEvent> {
+      AsyncStream { continuation in
+        let task = Task {
+          var observer = PipelineOperationObserver(
+            diagnostics: diagnostics,
+            question: question,
+            history: history)
+          diagnostics.info(
+            category: .pipeline,
+            code: "pipeline_stream_opened",
+            summary: "A pipeline event stream opened.",
+            context: [
+              "has_history": String(!history.isEmpty),
+              "history_turn_count": String(history.count),
+            ])
+          for await event in events {
+            guard !Task.isCancelled else { break }
+            observer.record(event)
+            continuation.yield(event)
+          }
+          observer.streamClosed(cancelled: Task.isCancelled)
+          continuation.finish()
+        }
+        continuation.onTermination = { termination in
+          if case .cancelled = termination {
+            diagnostics.info(
+              category: .pipeline,
+              code: "pipeline_stream_cancelled",
+              summary: "The pipeline event stream was cancelled.")
+          }
+          task.cancel()
+        }
+      }
+    }
+
     return QueryPipeline(
       prepare: {
         let started = ContinuousClock.now
@@ -42,38 +82,16 @@ extension QueryPipeline {
         }
       },
       run: { question, history in
-        AsyncStream { continuation in
-          let task = Task {
-            var observer = PipelineOperationObserver(
-              diagnostics: diagnostics,
-              question: question,
-              history: history)
-            diagnostics.info(
-              category: .pipeline,
-              code: "pipeline_stream_opened",
-              summary: "A pipeline event stream opened.",
-              context: [
-                "has_history": String(!history.isEmpty),
-                "history_turn_count": String(history.count),
-              ])
-            for await event in source.run(question, history) {
-              guard !Task.isCancelled else { break }
-              observer.record(event)
-              continuation.yield(event)
-            }
-            observer.streamClosed(cancelled: Task.isCancelled)
-            continuation.finish()
-          }
-          continuation.onTermination = { termination in
-            if case .cancelled = termination {
-              diagnostics.info(
-                category: .pipeline,
-                code: "pipeline_stream_cancelled",
-                summary: "The pipeline event stream was cancelled.")
-            }
-            task.cancel()
-          }
-        }
+        observed(
+          question: question,
+          history: history,
+          events: source.run(question, history))
+      },
+      runStarter: { starter, history in
+        observed(
+          question: starter.question,
+          history: history,
+          events: source.runStarter(starter, history))
       })
   }
 }
@@ -93,7 +111,8 @@ private struct PipelineOperationObserver {
     history: [ConversationTurn]
   ) {
     self.diagnostics = diagnostics
-    self.conversationContent = [question]
+    self.conversationContent =
+      [question]
       + history.flatMap { [$0.question, $0.answerSummary] }
   }
 
@@ -174,6 +193,17 @@ private struct PipelineOperationObserver {
         context: context)
 
     case .validationStarted(let candidateID):
+      if candidateStates[candidateID] == nil,
+        candidateID.rawValue.hasPrefix("starter-"),
+        let starter = StarterQueryID(
+          rawValue: String(candidateID.rawValue.dropFirst("starter-".count)))
+      {
+        roles[candidateID] = .starter(starter)
+        candidateStates[candidateID] = CandidateOperationState(
+          startedAt: .now,
+          stageStartedAt: .now,
+          stage: .validation)
+      }
       candidateStates[candidateID]?.stage = .validation
       candidateStates[candidateID]?.stageStartedAt = .now
       info(
@@ -240,14 +270,15 @@ private struct PipelineOperationObserver {
         context["stage_elapsed_ms"] = operationMilliseconds(
           stageStartedAt.duration(to: .now).microseconds)
       }
-      diagnostics.record(DiagnosticEvent(
-        level: .error,
-        category: .pipeline,
-        code: "pipeline_candidate_failed",
-        summary: "A SQL candidate failed during \(failureStage).",
-        details: PipelineDiagnosticPrivacy.redact(
-          message, conversationContent: conversationContent),
-        context: addingTurnElapsed(to: context)))
+      diagnostics.record(
+        DiagnosticEvent(
+          level: .error,
+          category: .pipeline,
+          code: "pipeline_candidate_failed",
+          summary: "A SQL candidate failed during \(failureStage).",
+          details: PipelineDiagnosticPrivacy.redact(
+            message, conversationContent: conversationContent),
+          context: addingTurnElapsed(to: context)))
 
     case .repairStarted(let attempt):
       info(
@@ -298,8 +329,11 @@ private struct PipelineOperationObserver {
       terminalEventSeen = true
       var context = [
         "outcome": turnOutcome(outcome),
+        "query_origin": telemetry.queryOrigin.rawValue,
+        "execution_path": telemetry.executionPath.rawValue,
         "generated_count": String(telemetry.generatedCount),
         "repair_attempts": String(telemetry.repairAttempts),
+        "recovery_outcome": telemetry.recoveryOutcome?.rawValue ?? "none",
         "failed_candidate_count": String(
           telemetry.candidates.filter { $0.error != nil }.count),
         "successful_candidate_count": String(
@@ -308,6 +342,9 @@ private struct PipelineOperationObserver {
           telemetry.stageTimings.totalMicroseconds),
       ]
       context["confidence"] = telemetry.confidence?.rawValue ?? "none"
+      context["gate_mode"] = telemetry.gateMode?.rawValue ?? "none"
+      context["repair_policy_version"] =
+        telemetry.repairPolicyVersion ?? "none"
       context["selection_reason"] = telemetry.selectionReason?.rawValue ?? "none"
       context["timeout_stage"] = timeoutStage(telemetry.timeoutStage)
       context["no_consensus_reason"] =
@@ -328,12 +365,13 @@ private struct PipelineOperationObserver {
       "terminal_event_seen": String(terminalEventSeen),
     ])
     if !cancelled && !terminalEventSeen {
-      diagnostics.record(DiagnosticEvent(
-        level: .error,
-        category: .pipeline,
-        code: "pipeline_stream_ended_without_terminal_event",
-        summary: "The pipeline event stream ended without a terminal event.",
-        context: context))
+      diagnostics.record(
+        DiagnosticEvent(
+          level: .error,
+          category: .pipeline,
+          code: "pipeline_stream_ended_without_terminal_event",
+          summary: "The pipeline event stream ended without a terminal event.",
+          context: context))
     } else {
       diagnostics.info(
         category: .pipeline,
@@ -420,6 +458,8 @@ private enum CandidateOperationStage: String {
 
 private func candidateRole(_ role: CandidateRole) -> String {
   switch role {
+  case .starter(let starter):
+    "starter_\(starter.rawValue)"
   case .initial:
     "initial"
   case .repair(let attempt):

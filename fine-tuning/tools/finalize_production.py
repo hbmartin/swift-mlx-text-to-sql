@@ -86,8 +86,8 @@ def validate_binding_analysis(
         or binding.get("schema_version") != 1
         or binding.get("pass") is not True
         or binding.get("seeds") != [0, 1, 2, 3, 4]
-        or binding.get("item_count") != 15
-        or binding.get("checks") != 75
+        or binding.get("item_count") != 16
+        or binding.get("checks") != 80
         or binding.get("model_key") != selected.get("model_key")
         or binding.get("gcd") != selected.get("gcd")
         or float(binding.get("temperature", -1))

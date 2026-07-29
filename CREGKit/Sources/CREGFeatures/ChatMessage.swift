@@ -73,10 +73,12 @@ extension PipelineEvent {
       "This one needs a quick clarification"
     case .generationStarted(let request):
       switch request.role {
+      case .starter:
+        "Running the reviewed starter query"
       case .initial:
         "Generating the initial lookup"
       case .repair(let attempt):
-        "Correcting attempt \(attempt) of 2"
+        "Correcting attempt \(attempt)"
       case .deterministicAnchor:
         "Generating the deterministic cross-check"
       case .consistencySample(let index):

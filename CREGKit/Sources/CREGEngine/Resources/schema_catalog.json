@@ -1,5 +1,43 @@
 {
-  "schema_version": 1,
+  "foreign_keys": [
+    {
+      "from_column": "property_id",
+      "from_table": "leases",
+      "to_column": "property_id",
+      "to_table": "properties"
+    },
+    {
+      "from_column": "tenant_id",
+      "from_table": "leases",
+      "to_column": "tenant_id",
+      "to_table": "tenants"
+    },
+    {
+      "from_column": "property_id",
+      "from_table": "loans",
+      "to_column": "property_id",
+      "to_table": "properties"
+    },
+    {
+      "from_column": "fund_id",
+      "from_table": "properties",
+      "to_column": "fund_id",
+      "to_table": "funds"
+    },
+    {
+      "from_column": "property_id",
+      "from_table": "property_financials",
+      "to_column": "property_id",
+      "to_table": "properties"
+    },
+    {
+      "from_column": "property_id",
+      "from_table": "valuations",
+      "to_column": "property_id",
+      "to_table": "properties"
+    }
+  ],
+  "schema_version": 2,
   "tables": {
     "funds": [
       "fund_id",

@@ -20,7 +20,8 @@ import Testing
   func productionDatabase() throws -> URL {
     var ancestor = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     for _ in 0..<8 {
-      let candidate = ancestor
+      let candidate =
+        ancestor
         .appendingPathComponent("db")
         .appendingPathComponent("creg.sqlite")
       if FileManager.default.fileExists(atPath: candidate.path) {
@@ -67,8 +68,13 @@ import Testing
 
   @Test func textPreservesNULAndReplacesInvalidUTF8() async throws {
     let client = try DatabaseClient.live(url: makeDatabase())
-    struct Fixture: Decodable { var sql: String; var expected: String }
-    struct Document: Decodable { var schemaVersion: Int; var cases: [Fixture]
+    struct Fixture: Decodable {
+      var sql: String
+      var expected: String
+    }
+    struct Document: Decodable {
+      var schemaVersion: Int
+      var cases: [Fixture]
       enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case cases
@@ -86,7 +92,8 @@ import Testing
   @Test func validationPreparesWithoutSteppingAndClassifiesFailures() async throws {
     let client = try DatabaseClient.live(url: makeDatabase())
     let valid = try await client.validate(
-      "WITH ranked AS (SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS n FROM t) SELECT MAX(n) FROM ranked")
+      "WITH ranked AS (SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS n FROM t) SELECT MAX(n) FROM ranked"
+    )
     #expect(valid.isValid)
 
     let binding = try await client.validate("SELECT missing FROM t")
@@ -98,7 +105,7 @@ import Testing
     #expect(unauthorized.issue?.kind == .authorization)
   }
 
-  @Test func validatesAllFourteenProductionBindingRegressions() async throws {
+  @Test func validatesAllFifteenProductionBindingRegressions() async throws {
     let client = try DatabaseClient.live(url: productionDatabase())
     let failures = [
       "SELECT COUNT(*) FROM tenants WHERE industry = 'Technology' AND status != 'Sold'",
@@ -115,12 +122,32 @@ import Testing
       "SELECT DISTINCT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id WHERE l.status = 'Active' AND l.year_built >= 2025",
       "SELECT name FROM properties WHERE status != 'Sold' ORDER BY net_operating_income DESC LIMIT 3",
       "SELECT name FROM properties WHERE status != 'Sold' ORDER BY net_operating_income DESC LIMIT 5",
+      "SELECT l.name, l.expiration_date FROM leases l WHERE l.status = 'Active'",
     ]
     for sql in failures {
       let report = try await client.validate(sql)
       #expect(report.issue?.kind == .binding, "expected binding failure for \(sql)")
       #expect(report.issue?.disposition == .repairable)
     }
+  }
+
+  @Test func everyStarterQueryValidatesAndExecutesAgainstProduction() async throws {
+    let client = try DatabaseClient.live(url: productionDatabase())
+    for starter in StarterQueryID.allCases {
+      let validation = try await client.validate(starter.sql)
+      #expect(validation.isValid, "\(starter.rawValue): \(String(describing: validation.issue))")
+      let result = try await client.execute(starter.sql)
+      #expect(!result.isTruncated, "\(starter.rawValue) unexpectedly truncated")
+      #expect(!result.rows.isEmpty, "\(starter.rawValue) unexpectedly returned no rows")
+    }
+
+    let leaseStarter = StarterQueryID.leaseExpirationsNextTwelveMonthsV1
+    #expect(!leaseStarter.sql.lowercased().contains("l.name"))
+    let leaseResult = try await client.execute(leaseStarter.sql)
+    #expect(
+      leaseResult.columns
+        == ["lease_id", "tenant", "property", "suite", "expiration_date", "status"])
+    #expect(leaseResult.rowCount == 33)
   }
 
   @Test func missingAndCorruptDatabasesAreTerminal() async throws {
@@ -427,6 +454,8 @@ import Testing
     #expect(production.temperature == 0.1)
     #expect(production.candidateCount == 3)
     #expect(production.alwaysVote)
+    let pipeline = QueryPipeline.Configuration(production: production)
+    #expect(pipeline.repairSampleTemperature == 0.3)
   }
 
   @Test func pendingProductionIsExplicit() throws {
@@ -498,8 +527,10 @@ import Testing
        "file_count":2,"source_manifest_sha256":"\(digest)"}
       """.utf8
     ).write(to: receipt, options: .atomic)
-    #expect(throws: ModelManifestError.receiptMismatch(
-      "model identity or source-manifest hash disagrees")) {
+    #expect(
+      throws: ModelManifestError.receiptMismatch(
+        "model identity or source-manifest hash disagrees")
+    ) {
       try ProductionModelReceiptLoader.validate(
         manifestURL: manifest,
         receiptURL: receipt,
@@ -609,6 +640,8 @@ import Testing
     selfConsistencyN: Int = 1,
     productionTemperature: Double = 0,
     sampleTemperature: Double = 0.7,
+    maxRepairAttempts: Int = 2,
+    repairSampleTemperature: Double = 0.3,
     alwaysVote: Bool = false
   ) -> QueryPipeline.Configuration {
     .init(
@@ -617,10 +650,11 @@ import Testing
       productionTemperature: productionTemperature,
       maxTokens: 512,
       gateSensitivity: 0,
-      maxRepairAttempts: 2,
+      maxRepairAttempts: maxRepairAttempts,
       selfConsistencyN: selfConsistencyN,
       sampleTemperature: sampleTemperature,
-      alwaysVote: alwaysVote)
+      alwaysVote: alwaysVote,
+      repairSampleTemperature: repairSampleTemperature)
   }
 
   static func makePipeline(
@@ -664,24 +698,30 @@ import Testing
     #expect(telemetry.candidates.map(\.id.rawValue) == ["initial"])
     #expect(telemetry.generatedCount == 1)
     #expect(telemetry.confidence == .unconfirmed)
-    #expect(telemetry.voteOutcome == .noConsensus(
-      anchorCandidateID: CandidateID(rawValue: "initial"),
-      candidateCount: 1,
-      reason: .insufficientNonEmptyEvidence))
+    #expect(
+      telemetry.voteOutcome
+        == .noConsensus(
+          anchorCandidateID: CandidateID(rawValue: "initial"),
+          candidateCount: 1,
+          reason: .insufficientNonEmptyEvidence))
     #expect(telemetry.candidates.first?.selected == true)
     // no rewrite events when there is no history
     #expect(!events.contains(.rewriteStarted))
-    #expect(events.contains {
-      if case .questionResolved("How many properties?", false, false, _) = $0 {
-        true
-      } else { false }
-    })
+    #expect(
+      events.contains {
+        if case .questionResolved("How many properties?", false, false, _) = $0 {
+          true
+        } else {
+          false
+        }
+      })
   }
 
   @Test func executionErrorTriggersRepair() async throws {
     let pipeline = Self.makePipeline(executeResults: { sql in
       if sql == "SELECT 1" {
-        throw NSError(domain: "sqlite", code: 1, userInfo: [NSLocalizedDescriptionKey: "no such column"])
+        throw NSError(
+          domain: "sqlite", code: 1, userInfo: [NSLocalizedDescriptionKey: "no such column"])
       }
       return QueryResult(columns: ["n"], rows: [[.integer(2)]])
     })
@@ -698,12 +738,149 @@ import Testing
       return
     }
     #expect(sql == "SELECT 2")
-    #expect(telemetry.repairAttempts == 2)
-    #expect(telemetry.candidates.map(\.id.rawValue) == [
-      "initial", "repair-deterministic", "repair-sampled",
-    ])
-    #expect(telemetry.selectedCandidateID?.rawValue == "repair-deterministic")
+    #expect(telemetry.repairAttempts == 1)
+    #expect(
+      telemetry.candidates.map(\.id.rawValue) == [
+        "initial", "repair-1-deterministic",
+      ])
+    #expect(telemetry.selectedCandidateID?.rawValue == "repair-1-deterministic")
+    #expect(telemetry.confidence == .unconfirmed)
+    #expect(telemetry.recoveryOutcome == .repaired)
+  }
+
+  @Test func deterministicStarterBypassesSQLGenerationAndRecordsItsPath() async {
+    actor Calls {
+      var generations = 0
+      func generated() { generations += 1 }
+    }
+    let calls = Calls()
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _ in
+        await calls.generated()
+        return SQLGeneration(
+          sql: "SELECT forbidden", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        validate: { sql in
+          #expect(sql == StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql)
+          return SQLValidationReport()
+        },
+        execute: { _ in
+          QueryResult(
+            columns: ["lease_id", "tenant"],
+            rows: [[.integer(1), .text("Tenant")]])
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.config())
+
+    let events = await Array(
+      pipeline.runStarter(
+        .leaseExpirationsNextTwelveMonthsV1, []))
+    #expect(await calls.generations == 0)
+    #expect(!events.contains { if case .generationStarted = $0 { true } else { false } })
+    guard case .turnFinished(.answered(_, _, let sql, _), let telemetry) = events.last
+    else {
+      Issue.record("expected deterministic starter answer")
+      return
+    }
+    #expect(sql == StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql)
+    #expect(telemetry.queryOrigin == .starter)
+    #expect(
+      telemetry.starterQueryID == .leaseExpirationsNextTwelveMonthsV1)
+    #expect(telemetry.executionPath == .deterministicStarter)
+    #expect(telemetry.gateMode == .bypassed)
+    #expect(telemetry.generatedCount == 0)
+    #expect(telemetry.selectionReason == .starterQuery)
     #expect(telemetry.confidence == .confirmed)
+  }
+
+  @Test func repairStateMachineSuppressesRepeatsAndDiversifiesAttemptTwo() async {
+    actor Requests {
+      var values: [SQLGenerationRequest] = []
+      func append(_ request: SQLGenerationRequest) { values.append(request) }
+    }
+    let requests = Requests()
+    let issue = SQLValidationIssue(
+      kind: .binding,
+      disposition: .repairable,
+      message: "no such column: l.name")
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { request in
+        await requests.append(request)
+        let sql =
+          request.candidateID.rawValue == "repair-2-sampled"
+          ? "SELECT l.lease_id FROM leases l"
+          : "SELECT l.name FROM leases l"
+        return SQLGeneration(sql: sql, tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        validate: { sql in
+          sql.contains("l.name")
+            ? SQLValidationReport(issue: issue)
+            : SQLValidationReport()
+        },
+        execute: { _ in
+          QueryResult(columns: ["lease_id"], rows: [[.integer(1)]])
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.config(
+        sampleTemperature: 0,
+        maxRepairAttempts: 3,
+        repairSampleTemperature: 0.35),
+      randomSeed: { 42 })
+
+    let events = await Array(pipeline.run("Which leases expire?", []))
+    guard case .turnFinished(.answered, let telemetry) = events.last else {
+      Issue.record("expected sampled repair to recover")
+      return
+    }
+    let recorded = await requests.values
+    #expect(
+      recorded.map(\.candidateID.rawValue) == [
+        "initial", "repair-1-deterministic", "repair-2-sampled",
+      ])
+    #expect(recorded.map(\.temperature) == [0, 0, 0.35])
+    #expect(recorded.last?.seed == 42)
+    #expect(recorded.last?.repair?.failedSQL == "SELECT l.name FROM leases l")
+    #expect(
+      recorded.last?.repair?.errorMessage.contains("duplicate SQL matched") == true)
+    #expect(telemetry.candidates[1].duplicateOf?.rawValue == "initial")
+    #expect(telemetry.candidates[1].duplicateSuppressed == true)
+    #expect(telemetry.repairAttempts == 2)
+    #expect(telemetry.recoveryOutcome == .repaired)
+    #expect(telemetry.repairPolicyVersion == "binding-repair-v2")
+  }
+
+  @Test func zeroRepairBudgetIsEnforced() async {
+    let issue = SQLValidationIssue(
+      kind: .binding,
+      disposition: .repairable,
+      message: "no such column")
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(
+          sql: "SELECT missing", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        validate: { _ in SQLValidationReport(issue: issue) },
+        execute: { _ in
+          Issue.record("invalid SQL must not execute")
+          return QueryResult(columns: [], rows: [])
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.config(maxRepairAttempts: 0))
+
+    let events = await Array(pipeline.run("q", []))
+    guard case .turnFinished(.failed, let telemetry) = events.last else {
+      Issue.record("expected exhausted repair budget")
+      return
+    }
+    #expect(telemetry.generatedCount == 1)
+    #expect(telemetry.repairAttempts == 0)
+    #expect(telemetry.recoveryOutcome == .exhausted)
   }
 
   @Test func emptyResultTriggersVoteAndMajorityWins() async throws {
@@ -733,11 +910,14 @@ import Testing
     for await event in pipeline.run("q", []) {
       events.append(event)
     }
-    #expect(events.contains {
-      if case .selfConsistencyStarted(3, "initial-validation") = $0 {
-        true
-      } else { false }
-    })
+    #expect(
+      events.contains {
+        if case .selfConsistencyStarted(3, "initial-validation") = $0 {
+          true
+        } else {
+          false
+        }
+      })
     guard
       case .turnFinished(
         .answered(let result, _, let sql, let notice),
@@ -858,7 +1038,8 @@ import Testing
         return QueryResult(columns: [], rows: [])
       },
       serializer: InferenceSerializer(),
-      configuration: Self.config())
+      configuration: Self.config()
+    ).reportingOperations(to: .noop)
 
     let events = await Array(pipeline.run("q", []))
     guard case .turnFinished(.failed, let telemetry) = events.last,
@@ -879,6 +1060,7 @@ import Testing
       sqlGen: SQLGenClient { request in
         let sql =
           switch request.role {
+          case .starter: "SELECT 1"
           case .initial: "SELECT 1"
           case .deterministicAnchor: "SELECT 2"
           case .consistencySample(let index): "SELECT \(index + 2)"
@@ -919,14 +1101,16 @@ import Testing
     #expect(telemetry.selectedCandidateID?.rawValue == "initial")
     #expect(
       telemetry.selectionReason == .noConsensusDeterministicAnchor)
-    guard case .noConsensus(let anchorID, 3, .some(.conflictingResults)) = telemetry.voteOutcome else {
+    guard case .noConsensus(let anchorID, 3, .some(.conflictingResults)) = telemetry.voteOutcome
+    else {
       Issue.record("expected no-consensus telemetry")
       return
     }
     #expect(anchorID.rawValue == "initial")
-    #expect(telemetry.candidates.map(\.id.rawValue) == [
-      "initial", "consistency-1", "consistency-2",
-    ])
+    #expect(
+      telemetry.candidates.map(\.id.rawValue) == [
+        "initial", "consistency-1", "consistency-2",
+      ])
     #expect(
       telemetry.candidates.filter {
         if case .consistencySample = $0.role { true } else { false }
@@ -946,6 +1130,7 @@ import Testing
       sqlGen: SQLGenClient { request in
         let sql =
           switch request.role {
+          case .starter: "SELECT 1"
           case .initial: "SELECT 1"
           case .deterministicAnchor: "SELECT anchor"
           case .consistencySample(let index): "SELECT \(index + 2)"
@@ -993,6 +1178,7 @@ import Testing
       sqlGen: SQLGenClient { request in
         let sql =
           switch request.role {
+          case .starter: "SELECT 1"
           case .initial: "SELECT 1"
           case .deterministicAnchor: "SELECT 2"
           case .consistencySample(let index): "SELECT \(index + 2)"
@@ -1063,21 +1249,22 @@ import Testing
       kind: .binding,
       disposition: .repairable,
       message: "no such column")
-    for (deterministicValid, sampledValid, expected, confidence) in [
-      (true, false, "repair-deterministic", AnswerConfidence.unconfirmed),
-      (false, true, "repair-sampled", AnswerConfidence.unconfirmed),
-      (true, true, "repair-deterministic", AnswerConfidence.unconfirmed),
+    for (deterministicValid, sampledValid, expected, generated, attempts) in [
+      (true, false, "repair-1-deterministic", 2, 1),
+      (false, true, "repair-2-sampled", 3, 2),
+      (true, true, "repair-1-deterministic", 2, 1),
     ] {
       let pipeline = QueryPipeline.live(
         fm: .fallback(),
         sqlGen: SQLGenClient { request in
-          let sql = switch request.candidateID.rawValue {
-          case "initial": "SELECT initial_bad"
-          case "repair-deterministic":
-            deterministicValid ? "SELECT 1" : "SELECT deterministic_bad"
-          default:
-            sampledValid ? "SELECT 2" : "SELECT sampled_bad"
-          }
+          let sql =
+            switch request.candidateID.rawValue {
+            case "initial": "SELECT initial_bad"
+            case "repair-1-deterministic":
+              deterministicValid ? "SELECT 1" : "SELECT deterministic_bad"
+            default:
+              sampledValid ? "SELECT 2" : "SELECT sampled_bad"
+            }
           return SQLGeneration(sql: sql, tokensPerSecond: 1, modelName: "test")
         },
         db: DatabaseClient(
@@ -1097,10 +1284,11 @@ import Testing
         Issue.record("expected repaired answer")
         continue
       }
-      #expect(telemetry.generatedCount == 3)
-      #expect(telemetry.repairAttempts == 2)
+      #expect(telemetry.generatedCount == generated)
+      #expect(telemetry.repairAttempts == attempts)
       #expect(telemetry.selectedCandidateID?.rawValue == expected)
-      #expect(telemetry.confidence == confidence)
+      #expect(telemetry.confidence == .unconfirmed)
+      #expect(telemetry.recoveryOutcome == .repaired)
     }
   }
 
@@ -1152,7 +1340,7 @@ import Testing
       serializer: InferenceSerializer(),
       configuration: .init(
         model: Self.model, gcd: .on, productionTemperature: 0, maxTokens: 64,
-        gateSensitivity: 0, maxRepairAttempts: 2, selfConsistencyN: 3,
+        gateSensitivity: 1, maxRepairAttempts: 2, selfConsistencyN: 3,
         sampleTemperature: 0.7, alwaysVote: true,
         deadlines: PipelineDeadlines(
           generationSeconds: 0.01, wholeTurnSeconds: 1)))
@@ -1214,7 +1402,7 @@ import Testing
       serializer: InferenceSerializer(),
       configuration: .init(
         model: Self.model, gcd: .on, productionTemperature: 0, maxTokens: 64,
-        gateSensitivity: 0, maxRepairAttempts: 2, selfConsistencyN: 3,
+        gateSensitivity: 1, maxRepairAttempts: 2, selfConsistencyN: 3,
         sampleTemperature: 0.7, alwaysVote: true,
         deadlines: PipelineDeadlines(
           generationSeconds: 1, wholeTurnSeconds: 0.01)))
@@ -1243,6 +1431,44 @@ import Testing
         columns: ["name"],
         rows: [[.text("Kingsley Tower")]])
     }
+  }
+
+  @Test func leaseNameBindingFailureProducesJoinAwareRepairGuidance() {
+    let issue = SQLValidationIssue(
+      kind: .binding,
+      disposition: .repairable,
+      message: "no such column: l.name")
+    let guidance = ResultHeuristics.repairGuidance(
+      issue: issue,
+      sql:
+        "SELECT l.name, l.expiration_date FROM leases l WHERE l.status = 'Active'",
+      failedFingerprints: ["private-fingerprint"])
+
+    #expect(guidance.invalidReference == "l.name")
+    #expect(guidance.invalidQualifier == "l")
+    #expect(guidance.invalidColumn == "name")
+    #expect(guidance.declaredSources == ["leases"])
+    #expect(guidance.sourceColumns["leases"]?.contains("lease_id") == true)
+    #expect(guidance.sourceColumns["leases"]?.contains("name") == false)
+    #expect(guidance.possibleColumnOwners.contains("tenants"))
+    #expect(guidance.possibleColumnOwners.contains("properties"))
+    #expect(
+      guidance.relevantForeignKeys.contains(
+        "leases.tenant_id -> tenants.tenant_id"))
+    #expect(
+      guidance.relevantForeignKeys.contains(
+        "leases.property_id -> properties.property_id"))
+    #expect(guidance.correctiveInstruction.contains("Do not use l.name"))
+
+    let prompt = MLXSQLGenerator.repairPrompt(
+      question: "Which leases expire in the next 12 months?",
+      context: RepairContext(
+        failedSQL: "SELECT l.name FROM leases l",
+        errorMessage: issue.message,
+        guidance: guidance))
+    #expect(prompt.contains("leases.tenant_id -> tenants.tenant_id"))
+    #expect(prompt.contains("Do not use l.name"))
+    #expect(!prompt.contains("private-fingerprint"))
   }
 
   actor PartialCatalogAttempts {
@@ -1300,10 +1526,13 @@ import Testing
     let findings = await heuristics.inspect(
       sql: "SELECT name FROM properties WHERE name = 'Kingsly Tower'",
       result: QueryResult(columns: ["name"], rows: []))
-    #expect(findings == [.literalNotFound(
-      column: GroundingColumn(table: "properties", column: "name"),
-      literal: "Kingsly Tower",
-      suggestion: "Kingsley Tower")])
+    #expect(
+      findings == [
+        .literalNotFound(
+          column: GroundingColumn(table: "properties", column: "name"),
+          literal: "Kingsly Tower",
+          suggestion: "Kingsley Tower")
+      ])
 
     let ok = await heuristics.inspect(
       sql: "SELECT name FROM properties WHERE name = 'Kingsley Tower'",
@@ -1331,21 +1560,26 @@ import Testing
       sql:
         "SELECT p.name FROM properties p WHERE p.name = 'Kingsly Tower'",
       result: QueryResult(columns: ["name"], rows: []))
-    #expect(aliased.checks.first?.column == GroundingColumn(
-      table: "properties", column: "name"))
-    #expect(aliased.findings.first == .literalNotFound(
-      column: GroundingColumn(table: "properties", column: "name"),
-      literal: "Kingsly Tower",
-      suggestion: "Kingsley Tower"))
+    #expect(
+      aliased.checks.first?.column
+        == GroundingColumn(
+          table: "properties", column: "name"))
+    #expect(
+      aliased.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(table: "properties", column: "name"),
+          literal: "Kingsly Tower",
+          suggestion: "Kingsley Tower"))
 
     let ambiguous = await heuristics.inspectDetailed(
       sql:
         "SELECT p.name FROM properties p JOIN tenants t ON 1=1 WHERE name = 'Acme'",
       result: QueryResult(columns: ["name"], rows: []))
     #expect(ambiguous.findings == [.emptyResult])
-    #expect(ambiguous.skipped == [
-      .unresolvedColumn(reference: "name", literal: "Acme")
-    ])
+    #expect(
+      ambiguous.skipped == [
+        .unresolvedColumn(reference: "name", literal: "Acme")
+      ])
   }
 
   @Test func validCategoricalValueAndUnsupportedPredicatesAreReported()
@@ -1373,12 +1607,13 @@ import Testing
           AND suite LIKE '%40%'
         """,
       result: QueryResult(columns: [], rows: []))
-    #expect(report.checks == [
-      GroundingCheck(
-        column: GroundingColumn(table: "leases", column: "status"),
-        literal: "Active",
-        matched: true)
-    ])
+    #expect(
+      report.checks == [
+        GroundingCheck(
+          column: GroundingColumn(table: "leases", column: "status"),
+          literal: "Active",
+          matched: true)
+      ])
     // An unexplained empty result stays visible (and keeps its voting
     // trigger) even when some literals could only be skipped.
     #expect(report.findings == [.emptyResult])
@@ -1403,10 +1638,12 @@ import Testing
     let second = await heuristics.inspectDetailed(
       sql: sql, result: empty)
     #expect(second.degradations.isEmpty)
-    #expect(second.findings.first == .literalNotFound(
-      column: GroundingColumn(table: "properties", column: "name"),
-      literal: "Kingsly Tower",
-      suggestion: "Kingsley Tower"))
+    #expect(
+      second.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(table: "properties", column: "name"),
+          literal: "Kingsly Tower",
+          suggestion: "Kingsley Tower"))
     #expect(await attempts.count == 2)
 
     _ = await heuristics.inspectDetailed(sql: sql, result: empty)
@@ -1427,10 +1664,12 @@ import Testing
 
     let second = await heuristics.inspectDetailed(sql: sql, result: empty)
     #expect(second.degradations.isEmpty)
-    #expect(second.findings.first == .literalNotFound(
-      column: GroundingColumn(table: "properties", column: "name"),
-      literal: "Kingsly Tower",
-      suggestion: "Kingsley Tower"))
+    #expect(
+      second.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(table: "properties", column: "name"),
+          literal: "Kingsly Tower",
+          suggestion: "Kingsley Tower"))
     #expect(await attempts.count == 2)
   }
 
@@ -1451,10 +1690,12 @@ import Testing
 
     let second = await heuristics.inspectDetailed(sql: sql, result: empty)
     #expect(second.degradations.isEmpty)
-    #expect(second.findings.first == .literalNotFound(
-      column: GroundingColumn(table: "properties", column: "name"),
-      literal: "Kingsly Tower",
-      suggestion: "Kingsley Tower"))
+    #expect(
+      second.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(table: "properties", column: "name"),
+          literal: "Kingsly Tower",
+          suggestion: "Kingsley Tower"))
     #expect(await attempts.count == 2)
   }
 }
@@ -1482,22 +1723,31 @@ import Testing
         errorMessage: issue.message,
         guidance: RepairGuidance(
           issue: issue,
+          invalidReference: "current_market_value",
           declaredSources: ["funds"],
           possibleColumnOwners: ["properties"],
+          sourceColumns: ["funds": ["fund_id", "name"]],
+          relevantForeignKeys: ["properties.fund_id -> funds.fund_id"],
+          correctiveInstruction:
+            "Join properties and use properties.current_market_value.",
           failedFingerprints: ["abc123"])))
     #expect(
-      prompt ==
-        """
+      prompt == """
         Question: Total fund value?
 
-        Your previous attempt failed. Fix it.
-        Previous SQL: SELECT current_market_value FROM funds
-        SQLite error: no such column: current_market_value
+        The previous SQL failed SQLite validation.
+        Failed SQL: SELECT current_market_value FROM funds
+        Validation error: no such column: current_market_value
         Issue type: binding
         Issue disposition: repairable
+        Invalid reference: current_market_value
         Declared sources: funds
-        Possible column owners: properties
-        Prior failed fingerprints: abc123
+        Declared source schemas: funds(fund_id, name)
+        Possible owning tables: properties
+        Relevant join paths: properties.fund_id -> funds.fund_id
+        Required correction: Join properties and use properties.current_market_value.
+
+        Return exactly one corrected SQLite SELECT statement. Use only columns owned by declared sources, add a schema-valid join when another table owns the needed value, and do not repeat the failed SQL.
         """)
   }
 
@@ -1513,8 +1763,8 @@ import Testing
         errorMessage: issue.message,
         guidance: RepairGuidance(issue: issue)))
     #expect(prompt.contains("Question: Why did {{FAILED_SQL}} fail?"))
-    #expect(prompt.contains("Previous SQL: SELECT {{QUESTION}}"))
-    #expect(prompt.contains("SQLite error: no such column: {{ISSUE_TYPE}}"))
+    #expect(prompt.contains("Failed SQL: SELECT {{QUESTION}}"))
+    #expect(prompt.contains("Validation error: no such column: {{ISSUE_TYPE}}"))
   }
 
   @Test func unconstrainedOutputNormalizationMatchesPythonHarness() {
@@ -1540,8 +1790,13 @@ import Testing
   }
 
   @Test func statementCutterUsesSQLLexicalStatesAndUnicodeScalars() throws {
-    struct Fixture: Decodable { var generated: String; var expected: String }
-    struct Document: Decodable { var schemaVersion: Int; var cases: [Fixture]
+    struct Fixture: Decodable {
+      var generated: String
+      var expected: String
+    }
+    struct Document: Decodable {
+      var schemaVersion: Int
+      var cases: [Fixture]
       enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case cases
@@ -1559,7 +1814,9 @@ import Testing
     let grammar = try MLXSQLGenerator.grammarEBNF()
     #expect(grammar.contains("root ::="))
     #expect(grammar.contains("\"SELECT\""))
-    for table in ["funds", "properties", "tenants", "leases", "property_financials", "loans", "valuations"] {
+    for table in [
+      "funds", "properties", "tenants", "leases", "property_financials", "loans", "valuations",
+    ] {
       #expect(grammar.contains("\"\(table)\""), "missing table \(table)")
     }
     // write statements must be unrepresentable
@@ -1571,7 +1828,10 @@ import Testing
 
   @Test func schemaPromptListsAllTables() throws {
     let prompt = try MLXSQLGenerator.schemaPrompt()
-    for table in ["funds(", "properties(", "tenants(", "leases(", "property_financials(", "loans(", "valuations("] {
+    for table in [
+      "funds(", "properties(", "tenants(", "leases(", "property_financials(", "loans(",
+      "valuations(",
+    ] {
       #expect(prompt.contains(table))
     }
   }

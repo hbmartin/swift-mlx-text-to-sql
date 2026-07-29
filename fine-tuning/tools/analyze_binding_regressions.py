@@ -48,8 +48,8 @@ def analyze(paths: list[Path]) -> dict[str, Any]:
         if line
     )
     expected_ids = {item["id"] for item in expected_items}
-    if len(expected_items) != 15 or len(expected_ids) != 15:
-        raise SelectionError("binding regression fixture must contain 15 unique items")
+    if len(expected_items) != 16 or len(expected_ids) != 16:
+        raise SelectionError("binding regression fixture must contain 16 unique items")
     runs = [load_run(path.resolve()) for path in paths]
     identities = {
         (
@@ -94,8 +94,8 @@ def analyze(paths: list[Path]) -> dict[str, Any]:
         "gcd": runs[0].summary["gcd"],
         "temperature": runs[0].summary["temperature"],
         "seeds": list(range(5)),
-        "item_count": 15,
-        "checks": 75,
+        "item_count": 16,
+        "checks": 80,
         "evaluated_artifact": dict(evaluated_artifacts.pop()),
         "regressions": {
             "path": REGRESSIONS.relative_to(REPO_ROOT).as_posix(),

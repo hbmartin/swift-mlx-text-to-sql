@@ -84,9 +84,9 @@ def fixture(tmp_path):
             "schema_version": 1,
             "analysis": "binding-regression-gate",
             "pass": True,
-            "item_count": 15,
+            "item_count": 16,
             "seeds": [0, 1, 2, 3, 4],
-            "checks": 75,
+            "checks": 80,
             "model_key": "qwen25-coder-3b",
             "gcd": "on",
             "temperature": 0.0,
@@ -104,7 +104,7 @@ def test_eligibility_uses_binding_and_matched_multi_snapshot_noninferiority(tmp_
     result = analyze(candidate, binding, baseline)
     assert result["pass"] is True
     assert result["checks"] == {
-        "binding_15_by_5": True,
+        "binding_16_by_5": True,
         "ex_noninferior": True,
         "valid_sql_noninferior": True,
         "tier3_materially_better": True,

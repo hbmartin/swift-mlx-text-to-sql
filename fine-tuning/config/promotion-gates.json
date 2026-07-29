@@ -8,9 +8,9 @@
     "temperature": 0.0
   },
   "binding": {
-    "item_count": 15,
+    "item_count": 16,
     "seeds": [0, 1, 2, 3, 4],
-    "checks": 75
+    "checks": 80
   },
   "single_shot": {
     "ex_noninferiority_margin": 0.02,

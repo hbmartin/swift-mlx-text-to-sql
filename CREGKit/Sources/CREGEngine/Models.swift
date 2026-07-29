@@ -163,19 +163,37 @@ public struct SQLValidationReport: Sendable, Equatable, Codable {
 
 public struct RepairGuidance: Sendable, Equatable, Codable {
   public var issue: SQLValidationIssue
+  public var invalidReference: String?
+  public var invalidQualifier: String?
+  public var invalidColumn: String?
   public var declaredSources: [String]
   public var possibleColumnOwners: [String]
+  public var sourceColumns: [String: [String]]
+  public var relevantForeignKeys: [String]
+  public var correctiveInstruction: String
   public var failedFingerprints: [String]
 
   public init(
     issue: SQLValidationIssue,
+    invalidReference: String? = nil,
+    invalidQualifier: String? = nil,
+    invalidColumn: String? = nil,
     declaredSources: [String] = [],
     possibleColumnOwners: [String] = [],
+    sourceColumns: [String: [String]] = [:],
+    relevantForeignKeys: [String] = [],
+    correctiveInstruction: String = "",
     failedFingerprints: [String] = []
   ) {
     self.issue = issue
+    self.invalidReference = invalidReference
+    self.invalidQualifier = invalidQualifier
+    self.invalidColumn = invalidColumn
     self.declaredSources = declaredSources
     self.possibleColumnOwners = possibleColumnOwners
+    self.sourceColumns = sourceColumns
+    self.relevantForeignKeys = relevantForeignKeys
+    self.correctiveInstruction = correctiveInstruction
     self.failedFingerprints = failedFingerprints
   }
 }
@@ -232,6 +250,7 @@ public struct CandidateID: RawRepresentable, Sendable, Equatable, Hashable, Coda
 }
 
 public enum CandidateRole: Sendable, Equatable, Hashable, Codable {
+  case starter(StarterQueryID)
   case initial
   case repair(attempt: Int)
   case deterministicAnchor
@@ -405,11 +424,35 @@ public enum VoteOutcome: Sendable, Equatable, Codable {
 }
 
 public enum CandidateSelectionReason: String, Sendable, Equatable, Codable {
+  case starterQuery
   case initialSuccess
   case repairSuccess
   case majorityVote
   case noConsensusDeterministicAnchor
   case noConsensusAnchorFailed
+}
+
+public enum QueryOrigin: String, Sendable, Equatable, Codable {
+  case freeForm
+  case starter
+}
+
+public enum QueryExecutionPath: String, Sendable, Equatable, Codable {
+  case generated
+  case deterministicStarter
+}
+
+public enum AmbiguityGateMode: String, Sendable, Equatable, Codable {
+  case foundationModel
+  case fallback
+  case bypassed
+}
+
+public enum RecoveryOutcome: String, Sendable, Equatable, Codable {
+  case notNeeded
+  case repaired
+  case exhausted
+  case terminal
 }
 
 public struct StageTimings: Sendable, Equatable, Codable {
@@ -428,19 +471,25 @@ public struct StageTimings: Sendable, Equatable, Codable {
 }
 
 public struct TurnTelemetry: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 2
+  public static let currentSchemaVersion = 3
 
   public var schemaVersion: Int
   public var originalQuestion: String
   public var standaloneQuestion: String
+  public var queryOrigin: QueryOrigin
+  public var starterQueryID: StarterQueryID?
+  public var executionPath: QueryExecutionPath
   public var rewriteApplied: Bool
   public var rewriteUsedFM: Bool
   public var gateUsedFM: Bool
   public var narrationUsedFM: Bool
   public var gateDecision: GateDecision?
+  public var gateMode: AmbiguityGateMode?
   public var stageTimings: StageTimings
   public var candidates: [CandidateTelemetry]
   public var repairAttempts: Int
+  public var repairPolicyVersion: String?
+  public var recoveryOutcome: RecoveryOutcome?
   public var voteTrigger: String?
   public var voteOutcome: VoteOutcome?
   public var selectedCandidateID: CandidateID?
@@ -456,6 +505,8 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     self.schemaVersion = Self.currentSchemaVersion
     self.originalQuestion = originalQuestion
     self.standaloneQuestion = originalQuestion
+    self.queryOrigin = .freeForm
+    self.executionPath = .generated
     self.rewriteApplied = false
     self.rewriteUsedFM = false
     self.gateUsedFM = false
@@ -470,14 +521,20 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case schemaVersion
     case originalQuestion
     case standaloneQuestion
+    case queryOrigin
+    case starterQueryID
+    case executionPath
     case rewriteApplied
     case rewriteUsedFM
     case gateUsedFM
     case narrationUsedFM
     case gateDecision
+    case gateMode
     case stageTimings
     case candidates
     case repairAttempts
+    case repairPolicyVersion
+    case recoveryOutcome
     case voteTrigger
     case voteOutcome
     case selectedCandidateID
@@ -512,13 +569,22 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
         forKey: .schemaVersion,
         in: values,
         debugDescription:
-          "Unsupported turn telemetry schema \(schemaVersion); current is \(Self.currentSchemaVersion)")
+          "Unsupported turn telemetry schema \(schemaVersion); current is \(Self.currentSchemaVersion)"
+      )
     }
     originalQuestion =
       try values.decodeIfPresent(String.self, forKey: .originalQuestion) ?? ""
     standaloneQuestion =
       try values.decodeIfPresent(String.self, forKey: .standaloneQuestion)
       ?? originalQuestion
+    queryOrigin =
+      try values.decodeIfPresent(QueryOrigin.self, forKey: .queryOrigin)
+      ?? .freeForm
+    starterQueryID =
+      try values.decodeIfPresent(StarterQueryID.self, forKey: .starterQueryID)
+    executionPath =
+      try values.decodeIfPresent(QueryExecutionPath.self, forKey: .executionPath)
+      ?? .generated
     rewriteApplied =
       try values.decodeIfPresent(Bool.self, forKey: .rewriteApplied) ?? false
     rewriteUsedFM =
@@ -529,6 +595,8 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
       try values.decodeIfPresent(Bool.self, forKey: .narrationUsedFM) ?? false
     gateDecision =
       try values.decodeIfPresent(GateDecision.self, forKey: .gateDecision)
+    gateMode =
+      try values.decodeIfPresent(AmbiguityGateMode.self, forKey: .gateMode)
     stageTimings =
       try values.decodeIfPresent(StageTimings.self, forKey: .stageTimings)
       ?? StageTimings()
@@ -537,6 +605,10 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
       ?? []
     repairAttempts =
       try values.decodeIfPresent(Int.self, forKey: .repairAttempts) ?? 0
+    repairPolicyVersion =
+      try values.decodeIfPresent(String.self, forKey: .repairPolicyVersion)
+    recoveryOutcome =
+      try values.decodeIfPresent(RecoveryOutcome.self, forKey: .recoveryOutcome)
     voteTrigger =
       try values.decodeIfPresent(String.self, forKey: .voteTrigger)
     voteOutcome =
