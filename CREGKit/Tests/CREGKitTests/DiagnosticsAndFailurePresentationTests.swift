@@ -281,7 +281,8 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
 
   @Test func unavailablePipelineSeparatesUserMessageFromDiagnostic() async throws {
     let pipeline = QueryPipeline.unavailable(
-      userMessage: "This build contains an incompatible model configuration. Rebuild and reinstall CREG.",
+      userMessage:
+        "This build contains an incompatible model configuration. Rebuild and reinstall CREG.",
       diagnosticCode: "production_manifest_incompatible",
       diagnostic: "Missing key at models[3].quantization")
 
@@ -438,15 +439,17 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         var telemetry = TurnTelemetry(originalQuestion: question)
         telemetry.terminalError = "failure code x remained; question=Q"
         continuation.yield(.turnStarted(question: question))
-        continuation.yield(.turnFinished(
-          outcome: .failed(message: "failed"),
-          telemetry: telemetry))
+        continuation.yield(
+          .turnFinished(
+            outcome: .failed(message: "failed"),
+            telemetry: telemetry))
         continuation.finish()
       }
     }
 
-    _ = await Array(source.reportingTerminalFailures(to: recorder.client)
-      .run("Q", []))
+    _ = await Array(
+      source.reportingTerminalFailures(to: recorder.client)
+        .run("Q", []))
 
     let details = recorder.events.first?.details ?? ""
     #expect(details.contains("failure code x remained"))
@@ -527,16 +530,19 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         var telemetry = TurnTelemetry(originalQuestion: question)
         telemetry.terminalError = "unexpected low-level failure"
         continuation.yield(.turnStarted(question: question))
-        continuation.yield(.turnFinished(
-          outcome: .failed(message: "unexpected low-level failure"),
-          telemetry: telemetry))
+        continuation.yield(
+          .turnFinished(
+            outcome: .failed(message: "unexpected low-level failure"),
+            telemetry: telemetry))
         continuation.finish()
       }
     }
 
-    let terminal = try #require(terminalEvent(
-      await Array(source.reportingTerminalFailures(to: recorder.client)
-        .run("question", []))))
+    let terminal = try #require(
+      terminalEvent(
+        await Array(
+          source.reportingTerminalFailures(to: recorder.client)
+            .run("question", []))))
     guard case .failed(let message) = terminal.0 else {
       Issue.record("expected failed outcome")
       return
@@ -577,23 +583,27 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         telemetry.timeoutStage = "generation"
         telemetry.terminalError = "pipeline deadline exceeded during generation"
         continuation.yield(.turnStarted(question: question))
-        continuation.yield(.generationStarted(request: SQLGenerationRequest(
-          candidateID: CandidateID(rawValue: "initial"),
-          role: .initial,
-          model: Self.model,
-          question: question,
-          gcd: .on,
-          temperature: 0,
-          seed: nil)))
-        continuation.yield(.turnFinished(
-          outcome: .failed(message: "timeout"),
-          telemetry: telemetry))
+        continuation.yield(
+          .generationStarted(
+            request: SQLGenerationRequest(
+              candidateID: CandidateID(rawValue: "initial"),
+              role: .initial,
+              model: Self.model,
+              question: question,
+              gcd: .on,
+              temperature: 0,
+              seed: nil)))
+        continuation.yield(
+          .turnFinished(
+            outcome: .failed(message: "timeout"),
+            telemetry: telemetry))
         continuation.finish()
       }
     }
 
-    _ = await Array(source.reportingTerminalFailures(to: recorder.client)
-      .run("private question", []))
+    _ = await Array(
+      source.reportingTerminalFailures(to: recorder.client)
+        .run("private question", []))
 
     #expect(recorder.events.map(\.code) == ["pipeline_deadline_exceeded"])
     #expect(recorder.events.first?.context["timeout_stage"] == "generation")
@@ -641,26 +651,31 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       AsyncStream { continuation in
         continuation.yield(.turnStarted(question: privateQuestion))
         continuation.yield(.generationStarted(request: request))
-        continuation.yield(.generationFinished(
-          candidateID: request.candidateID,
-          generation: SQLGeneration(
-            sql: privateSQL,
-            tokensPerSecond: 1,
-            modelName: "test",
-            tokenCount: 1,
-            elapsedMicroseconds: 1_000)))
-        continuation.yield(.validationStarted(
-          candidateID: request.candidateID))
-        continuation.yield(.validationFinished(
-          candidateID: request.candidateID,
-          report: report))
-        continuation.yield(.executionFailed(
-          candidateID: request.candidateID,
-          message: message,
-          attempt: 0))
-        continuation.yield(.turnFinished(
-          outcome: .failed(message: "Try again."),
-          telemetry: telemetry))
+        continuation.yield(
+          .generationFinished(
+            candidateID: request.candidateID,
+            generation: SQLGeneration(
+              sql: privateSQL,
+              tokensPerSecond: 1,
+              modelName: "test",
+              tokenCount: 1,
+              elapsedMicroseconds: 1_000)))
+        continuation.yield(
+          .validationStarted(
+            candidateID: request.candidateID))
+        continuation.yield(
+          .validationFinished(
+            candidateID: request.candidateID,
+            report: report))
+        continuation.yield(
+          .executionFailed(
+            candidateID: request.candidateID,
+            message: message,
+            attempt: 0))
+        continuation.yield(
+          .turnFinished(
+            outcome: .failed(message: "Try again."),
+            telemetry: telemetry))
         continuation.finish()
       }
     }.reportingOperations(to: recorder.client)
@@ -732,8 +747,9 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       configuration: config
     ).reportingOperations(to: recorder.client)
 
-    let terminal = try #require(terminalEvent(
-      await Array(pipeline.run("question", []))))
+    let terminal = try #require(
+      terminalEvent(
+        await Array(pipeline.run("question", []))))
     #expect(terminal.1.timeoutStage == "generation")
 
     let candidateFailure = recorder.events.first {
@@ -791,49 +807,63 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         AsyncStream { continuation in
           continuation.yield(.turnStarted(question: privateQuestion))
           continuation.yield(.generationStarted(request: request))
-          continuation.yield(.generationFinished(
-            candidateID: request.candidateID,
-            generation: SQLGeneration(
-              sql: privateSQL,
-              tokensPerSecond: 8,
-              modelName: "/private/model/path",
-              tokenCount: 4,
-              elapsedMicroseconds: 1_000)))
-          continuation.yield(.validationStarted(
-            candidateID: request.candidateID))
-          continuation.yield(.validationFinished(
-            candidateID: request.candidateID,
-            report: SQLValidationReport(elapsedMicroseconds: 500)))
-          continuation.yield(.executionStarted(
-            candidateID: request.candidateID,
-            sql: privateSQL))
-          continuation.yield(.executionFinished(
-            candidateID: request.candidateID,
-            result: result))
-          continuation.yield(.selfConsistencyFinished(.consensus(
-            resultDigest: "private-result-digest",
-            agreement: 2,
-            candidateCount: 3)))
-          continuation.yield(.narrationFinished(
-            narration: privateNarration,
-            usedFM: true,
-            elapsedMicroseconds: 3_000))
-          continuation.yield(.turnFinished(
-            outcome: .answered(
-              result: result,
+          continuation.yield(
+            .generationFinished(
+              candidateID: request.candidateID,
+              generation: SQLGeneration(
+                sql: privateSQL,
+                tokensPerSecond: 8,
+                modelName: "/private/model/path",
+                tokenCount: 4,
+                elapsedMicroseconds: 1_000)))
+          continuation.yield(
+            .validationStarted(
+              candidateID: request.candidateID))
+          continuation.yield(
+            .validationFinished(
+              candidateID: request.candidateID,
+              report: SQLValidationReport(elapsedMicroseconds: 500)))
+          continuation.yield(
+            .executionStarted(
+              candidateID: request.candidateID,
+              sql: privateSQL))
+          continuation.yield(
+            .executionFinished(
+              candidateID: request.candidateID,
+              result: result))
+          continuation.yield(
+            .selfConsistencyFinished(
+              .consensus(
+                resultDigest: "private-result-digest",
+                agreement: 2,
+                candidateCount: 3)))
+          continuation.yield(
+            .narrationFinished(
               narration: privateNarration,
-              sql: privateSQL,
-              notice: nil),
-            telemetry: telemetry))
+              usedFM: true,
+              elapsedMicroseconds: 3_000))
+          continuation.yield(
+            .turnFinished(
+              outcome: .answered(
+                result: result,
+                narration: privateNarration,
+                sql: privateSQL,
+                notice: nil),
+              telemetry: telemetry))
           continuation.finish()
         }
-      })
-      .reportingOperations(to: recorder.client)
+      }
+    )
+    .reportingOperations(to: recorder.client)
 
     try? await source.prepare()
-    _ = await Array(source.run(privateQuestion, [
-      ConversationTurn(question: "prior private question", answerSummary: "prior private answer")
-    ]))
+    _ = await Array(
+      source.run(
+        privateQuestion,
+        [
+          ConversationTurn(
+            question: "prior private question", answerSummary: "prior private answer")
+        ]))
 
     let events = recorder.events
     let rendered = events.map(String.init(describing:)).joined(separator: "\n")
@@ -855,14 +885,219 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         .context["row_count"] == "1")
   }
 
+  @Test func operationalTerminalSummariesExposeRepairStateWithoutPayloads() async {
+    let recorder = DiagnosticEventRecorder()
+    let privateQuestion = "private lease ownership question"
+    let privateSQL = "SELECT l.private_name FROM leases l"
+    let privateError = "no such column: l.private_name"
+    let issue = SQLValidationIssue(
+      kind: .binding,
+      disposition: .repairable,
+      message: privateError)
+    let guidance = RepairGuidance(
+      issue: issue,
+      invalidReference: "l.private_name",
+      invalidQualifier: "l",
+      invalidColumn: "private_name",
+      declaredSources: ["leases"],
+      possibleColumnOwners: ["tenants", "properties"],
+      sourceColumns: ["leases": ["lease_id", "tenant_id", "property_id"]],
+      relevantForeignKeys: [
+        "leases.tenant_id -> tenants.tenant_id",
+        "leases.property_id -> properties.property_id",
+      ],
+      correctiveInstruction: "Use an owning table.",
+      failedFingerprints: ["private-fingerprint"])
+    let repairContext = RepairContext(
+      failedSQL: privateSQL,
+      errorMessage: privateError,
+      guidance: guidance)
+
+    func request(
+      id: String,
+      role: CandidateRole,
+      repair: RepairContext? = nil,
+      temperature: Double = 0,
+      seed: UInt64? = nil
+    ) -> SQLGenerationRequest {
+      SQLGenerationRequest(
+        candidateID: CandidateID(rawValue: id),
+        role: role,
+        model: Self.model,
+        question: privateQuestion,
+        repair: repair,
+        gcd: .off,
+        temperature: temperature,
+        seed: seed,
+        maxTokens: 64)
+    }
+
+    let initialRequest = request(id: "private-initial-id", role: .initial)
+    var initial = CandidateTelemetry(request: initialRequest)
+    initial.sql = privateSQL
+    initial.sqlFingerprint = "private-initial-fingerprint"
+    initial.tokensPerSecond = 8
+    initial.tokenCount = 4
+    initial.speculation = SQLSpeculationMetrics(
+      roundCount: 2,
+      draftTokenCount: 4,
+      acceptedDraftTokenCount: 3,
+      targetModelCallCount: 2,
+      targetVerifiedTokenCount: 4,
+      emittedTokenCount: 5)
+    initial.generationMicroseconds = 1_000
+    initial.validationReport = SQLValidationReport(
+      issue: issue,
+      elapsedMicroseconds: 500)
+    initial.error = privateError
+
+    let duplicateRequest = request(
+      id: "private-repair-one-id",
+      role: .repair(attempt: 1),
+      repair: repairContext)
+    var duplicate = CandidateTelemetry(request: duplicateRequest)
+    duplicate.sql = privateSQL
+    duplicate.sqlFingerprint = "private-duplicate-fingerprint"
+    duplicate.validationReport = SQLValidationReport(
+      issue: issue,
+      elapsedMicroseconds: 600)
+    duplicate.error = privateError
+    duplicate.duplicateOf = initial.id
+    duplicate.duplicateSuppressed = true
+
+    let repairedRequest = request(
+      id: "private-repair-two-id",
+      role: .repair(attempt: 2),
+      repair: repairContext,
+      temperature: 0.35,
+      seed: 42)
+    var repaired = CandidateTelemetry(request: repairedRequest)
+    repaired.sql = "SELECT lease_id FROM leases"
+    repaired.sqlFingerprint = "private-repaired-fingerprint"
+    repaired.tokensPerSecond = 7
+    repaired.tokenCount = 6
+    repaired.generationMicroseconds = 2_000
+    repaired.validationReport = SQLValidationReport(elapsedMicroseconds: 700)
+    repaired.executionMicroseconds = 800
+    repaired.result = QueryResult(
+      columns: ["lease_id"],
+      rows: [[.integer(1)]],
+      elapsedMicroseconds: 800)
+    repaired.resultDigest = "private-result-digest"
+    repaired.selected = true
+
+    let telemetry: TurnTelemetry = {
+      var value = TurnTelemetry(originalQuestion: privateQuestion)
+      value.candidates = [initial, duplicate, repaired]
+      value.generatedCount = 3
+      value.repairAttempts = 2
+      value.repairPolicyVersion = "binding-repair-v2"
+      value.recoveryOutcome = .repaired
+      value.selectedCandidateID = repaired.id
+      value.selectionReason = .repairSuccess
+      value.confidence = .unconfirmed
+      value.stageTimings.totalMicroseconds = 10_000
+      return value
+    }()
+    let repairedResult = repaired.result!
+    let repairedSQL = repaired.sql!
+    let source = QueryPipeline { _, _ in
+      AsyncStream { continuation in
+        continuation.yield(.turnStarted(question: privateQuestion))
+        continuation.yield(.generationStarted(request: initialRequest))
+        continuation.yield(.generationStarted(request: duplicateRequest))
+        continuation.yield(.generationStarted(request: repairedRequest))
+        continuation.yield(
+          .turnFinished(
+            outcome: .answered(
+              result: repairedResult,
+              narration: "private narration",
+              sql: repairedSQL,
+              notice: nil),
+            telemetry: telemetry))
+        continuation.finish()
+      }
+    }.reportingOperations(to: recorder.client)
+
+    _ = await Array(source.run(privateQuestion, []))
+
+    let events = recorder.events
+    let summaries = events.filter {
+      $0.code == "pipeline_candidate_summary"
+    }
+    let generationSummaries = events.filter {
+      $0.code == "pipeline_candidate_generation_summary"
+    }
+    let speculationSummaries = events.filter {
+      $0.code == "pipeline_candidate_speculation_summary"
+    }
+    #expect(summaries.count == 3)
+    #expect(generationSummaries.count == 3)
+    #expect(speculationSummaries.count == 1)
+    #expect(Set(events.compactMap { $0.context["trace_id"] }).count == 1)
+    #expect(events.allSatisfy { $0.context["query_origin"] == "freeForm" })
+    #expect(summaries.map { $0.context["candidate_sequence"] } == ["1", "2", "3"])
+    let repairInputs = events.filter { $0.code == "pipeline_repair_input" }
+    #expect(repairInputs.count == 2)
+    #expect(repairInputs.allSatisfy {
+      $0.context["guidance_present"] == "true"
+    })
+    #expect(repairInputs.allSatisfy {
+      $0.context["possible_owner_count"] == "2"
+    })
+    #expect(repairInputs.allSatisfy {
+      $0.context["relevant_foreign_key_count"] == "2"
+    })
+
+    let initialSummary = summaries[0].context
+    #expect(initialSummary["validation_state"] == "invalid")
+    #expect(initialSummary["issue_kind"] == "binding")
+    #expect(initialSummary["execution_state"] == "not_started")
+    #expect(initialSummary["error_present"] == "true")
+    #expect(
+      speculationSummaries[0].context["speculation_acceptance_percent"]
+        == "75.0")
+
+    let duplicateSummary = summaries[1].context
+    #expect(duplicateSummary["duplicate_suppressed"] == "true")
+    #expect(duplicateSummary["duplicate_of_sequence"] == "1")
+    #expect(generationSummaries[1].context["repair_guidance_present"] == "true")
+    #expect(
+      generationSummaries[1].context["repair_failed_fingerprint_count"] == "1")
+
+    let repairedSummary = summaries[2].context
+    #expect(generationSummaries[2].context["temperature"] == "0.350")
+    #expect(generationSummaries[2].context["seed"] == "42")
+    #expect(repairedSummary["validation_state"] == "valid")
+    #expect(repairedSummary["execution_state"] == "succeeded")
+    #expect(repairedSummary["row_count"] == "1")
+    #expect(repairedSummary["selected"] == "true")
+
+    let turn = events.first { $0.code == "pipeline_turn_finished" }
+    #expect(turn?.context["candidate_count"] == "3")
+    #expect(turn?.context["selected_candidate_sequence"] == "3")
+    #expect(turn?.context["repair_policy_version"] == "binding-repair-v2")
+    #expect(turn?.context["recovery_outcome"] == "repaired")
+
+    let rendered = events.map(String.init(describing:)).joined(separator: "\n")
+    for privateValue in [
+      privateQuestion, privateSQL, privateError,
+      "private_name", "private-fingerprint", "private-result-digest",
+      "private-initial-id", "private-repair-one-id", "private-repair-two-id",
+    ] {
+      #expect(!rendered.contains(privateValue))
+    }
+  }
+
   @Test func modelLoadLoggingHasStableSuccessAndFailureEvents() async {
     let recorder = DiagnosticEventRecorder()
     let success = SQLGenClient(
       prepare: {},
       generate: { _ in
         SQLGeneration(sql: "", tokensPerSecond: 0, modelName: "test")
-      })
-      .reportingModelLoad(to: recorder.client, modelKey: "test-model")
+      }
+    )
+    .reportingModelLoad(to: recorder.client, modelKey: "test-model")
     try? await success.prepare()
 
     let failure = SQLGenClient(
@@ -872,16 +1107,18 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       },
       generate: { _ in
         SQLGeneration(sql: "", tokensPerSecond: 0, modelName: "test")
-      })
-      .reportingModelLoad(to: recorder.client, modelKey: "test-model")
+      }
+    )
+    .reportingModelLoad(to: recorder.client, modelKey: "test-model")
     await #expect(throws: (any Error).self) {
       try await failure.prepare()
     }
 
-    #expect(recorder.events.map(\.code) == [
-      "model_load_started", "model_load_finished",
-      "model_load_started", "model_load_failed",
-    ])
+    #expect(
+      recorder.events.map(\.code) == [
+        "model_load_started", "model_load_finished",
+        "model_load_started", "model_load_failed",
+      ])
     #expect(
       recorder.events.last?.details?.contains(
         "weights unavailable at <redacted path>") == true)
@@ -898,9 +1135,10 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     let value = try await serializer.run(operation: .gate) { 42 }
 
     #expect(value == 42)
-    #expect(recorder.events.map(\.code) == [
-      "inference_started", "inference_finished",
-    ])
+    #expect(
+      recorder.events.map(\.code) == [
+        "inference_started", "inference_finished",
+      ])
     #expect(recorder.events.allSatisfy { $0.category == .inference })
     #expect(recorder.events.allSatisfy { $0.context["operation"] == "gate" })
     #expect(recorder.events.first?.context["wait_ms"] != nil)
@@ -913,10 +1151,11 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     let serializer = InferenceSerializer(diagnostics: recorder.client)
 
     await #expect(throws: (any Error).self) {
-      _ = try await serializer.run(operation: .sqlGeneration) {
-        throw DiagnosticsTestError.failed(
-          "decoder weights unavailable at /private/model/weights.safetensors")
-      } as Int
+      _ =
+        try await serializer.run(operation: .sqlGeneration) {
+          throw DiagnosticsTestError.failed(
+            "decoder weights unavailable at /private/model/weights.safetensors")
+        } as Int
     }
 
     let failure = recorder.events.last
@@ -1016,9 +1255,10 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         AsyncStream { continuation in
           var telemetry = TurnTelemetry(originalQuestion: question)
           telemetry.standaloneQuestion = question
-          continuation.yield(.turnFinished(
-            outcome: .failed(message: "Please try again."),
-            telemetry: telemetry))
+          continuation.yield(
+            .turnFinished(
+              outcome: .failed(message: "Please try again."),
+              telemetry: telemetry))
           continuation.finish()
         }
       }
@@ -1075,9 +1315,10 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         AsyncStream { continuation in
           var telemetry = TurnTelemetry(originalQuestion: receivedQuestion)
           telemetry.generatedCount = 1
-          continuation.yield(.turnFinished(
-            outcome: .failed(message: "Try again."),
-            telemetry: telemetry))
+          continuation.yield(
+            .turnFinished(
+              outcome: .failed(message: "Try again."),
+              telemetry: telemetry))
           continuation.finish()
         }
       }

@@ -4,7 +4,9 @@ extension QueryPipeline {
   /// Mirrors useful on-device lifecycle boundaries to unified logging while
   /// forwarding the original event stream byte-for-byte. Payload-bearing
   /// values (question text, SQL, rows, narration, result digests, paths, and
-  /// identifiers) are intentionally never copied into diagnostic events.
+  /// portfolio/user identifiers) are intentionally never copied into
+  /// diagnostic events. Generated trace tokens and per-turn candidate
+  /// sequence numbers make the payload-free events correlatable.
   public func reportingOperations(
     to diagnostics: DiagnosticsClient
   ) -> QueryPipeline {
@@ -13,22 +15,21 @@ extension QueryPipeline {
     @Sendable func observed(
       question: String,
       history: [ConversationTurn],
+      queryOrigin: QueryOrigin,
+      starterQueryID: StarterQueryID?,
       events: AsyncStream<PipelineEvent>
     ) -> AsyncStream<PipelineEvent> {
       AsyncStream { continuation in
+        let traceID = UUID().uuidString.lowercased()
         let task = Task {
           var observer = PipelineOperationObserver(
             diagnostics: diagnostics,
             question: question,
-            history: history)
-          diagnostics.info(
-            category: .pipeline,
-            code: "pipeline_stream_opened",
-            summary: "A pipeline event stream opened.",
-            context: [
-              "has_history": String(!history.isEmpty),
-              "history_turn_count": String(history.count),
-            ])
+            history: history,
+            traceID: traceID,
+            queryOrigin: queryOrigin,
+            starterQueryID: starterQueryID)
+          observer.streamOpened(historyTurnCount: history.count)
           for await event in events {
             guard !Task.isCancelled else { break }
             observer.record(event)
@@ -42,7 +43,12 @@ extension QueryPipeline {
             diagnostics.info(
               category: .pipeline,
               code: "pipeline_stream_cancelled",
-              summary: "The pipeline event stream was cancelled.")
+              summary: "The pipeline event stream was cancelled.",
+              context: [
+                "trace_id": traceID,
+                "query_origin": queryOrigin.rawValue,
+                "starter_query_id": starterQueryID?.rawValue ?? "none",
+              ])
           }
           task.cancel()
         }
@@ -85,12 +91,16 @@ extension QueryPipeline {
         observed(
           question: question,
           history: history,
+          queryOrigin: .freeForm,
+          starterQueryID: nil,
           events: source.run(question, history))
       },
       runStarter: { starter, history in
         observed(
           question: starter.question,
           history: history,
+          queryOrigin: .starter,
+          starterQueryID: starter,
           events: source.runStarter(starter, history))
       })
   }
@@ -104,16 +114,37 @@ private struct PipelineOperationObserver {
   private var terminalEventSeen = false
   private var turnStartedAt: ContinuousClock.Instant?
   private var conversationContent: [String]
+  private let traceID: String
+  private let queryOrigin: QueryOrigin
+  private let starterQueryID: StarterQueryID?
+  private var candidateSequenceByID: [CandidateID: Int] = [:]
+  private var nextCandidateSequence = 1
 
   init(
     diagnostics: DiagnosticsClient,
     question: String,
-    history: [ConversationTurn]
+    history: [ConversationTurn],
+    traceID: String,
+    queryOrigin: QueryOrigin,
+    starterQueryID: StarterQueryID?
   ) {
     self.diagnostics = diagnostics
+    self.traceID = traceID
+    self.queryOrigin = queryOrigin
+    self.starterQueryID = starterQueryID
     self.conversationContent =
       [question]
       + history.flatMap { [$0.question, $0.answerSummary] }
+  }
+
+  mutating func streamOpened(historyTurnCount: Int) {
+    info(
+      "pipeline_stream_opened",
+      "A pipeline event stream opened.",
+      context: [
+        "has_history": String(historyTurnCount > 0),
+        "history_turn_count": String(historyTurnCount),
+      ])
   }
 
   mutating func record(_ event: PipelineEvent) {
@@ -121,7 +152,12 @@ private struct PipelineOperationObserver {
     switch event {
     case .turnStarted:
       turnStartedAt = .now
-      info("pipeline_turn_started", "Pipeline turn started.")
+      info(
+        "pipeline_turn_started",
+        "Pipeline turn started.",
+        context: [
+          "has_starter_query": String(starterQueryID != nil)
+        ])
 
     case .rewriteStarted:
       info("pipeline_rewrite_started", "Question rewrite started.")
@@ -151,6 +187,7 @@ private struct PipelineOperationObserver {
         ])
 
     case .generationStarted(let request):
+      _ = registerCandidate(request.candidateID)
       roles[request.candidateID] = request.role
       conversationContent.append(request.question)
       candidateStates[request.candidateID] = CandidateOperationState(
@@ -165,7 +202,15 @@ private struct PipelineOperationObserver {
           "gcd": request.gcd.rawValue,
           "is_repair": String(request.repair != nil),
           "max_tokens": String(request.maxTokens),
+          "model_key": request.model.key,
+          "model_revision_prefix": String(request.model.revision.prefix(12)),
+          "quantization": request.model.quantization,
+          "seed": request.seed.map(String.init) ?? "none",
+          "temperature": String(format: "%.3f", request.temperature),
         ])
+      if let repair = request.repair {
+        logRepairInput(repair, candidateID: request.candidateID)
+      }
 
     case .generationFinished(let candidateID, let generation):
       candidateStates[candidateID]?.generationMicroseconds =
@@ -186,6 +231,12 @@ private struct PipelineOperationObserver {
           speculation.acceptedDraftTokenCount)
         context["speculation_target_call_count"] = String(
           speculation.targetModelCallCount)
+        context["speculation_target_verified_token_count"] = String(
+          speculation.targetVerifiedTokenCount)
+        context["speculation_emitted_token_count"] = String(
+          speculation.emittedTokenCount)
+        context["speculation_acceptance_percent"] = speculationAcceptancePercent(
+          speculation)
       }
       info(
         "pipeline_generation_finished",
@@ -193,6 +244,7 @@ private struct PipelineOperationObserver {
         context: context)
 
     case .validationStarted(let candidateID):
+      _ = registerCandidate(candidateID)
       if candidateStates[candidateID] == nil,
         candidateID.rawValue.hasPrefix("starter-"),
         let starter = StarterQueryID(
@@ -227,6 +279,7 @@ private struct PipelineOperationObserver {
       context["is_valid"] = String(report.isValid)
       context["issue_kind"] = report.issue?.kind.rawValue ?? "none"
       context["disposition"] = report.issue?.disposition.rawValue ?? "none"
+      context["issue_message_present"] = String(report.issue != nil)
       info(
         "pipeline_validation_finished",
         "SQL candidate validation finished.",
@@ -327,10 +380,15 @@ private struct PipelineOperationObserver {
 
     case .turnFinished(let outcome, let telemetry):
       terminalEventSeen = true
+      for candidate in telemetry.candidates {
+        logCandidateSummary(candidate)
+      }
       var context = [
         "outcome": turnOutcome(outcome),
         "query_origin": telemetry.queryOrigin.rawValue,
         "execution_path": telemetry.executionPath.rawValue,
+        "starter_query_id": telemetry.starterQueryID?.rawValue ?? "none",
+        "candidate_count": String(telemetry.candidates.count),
         "generated_count": String(telemetry.generatedCount),
         "repair_attempts": String(telemetry.repairAttempts),
         "recovery_outcome": telemetry.recoveryOutcome?.rawValue ?? "none",
@@ -342,6 +400,10 @@ private struct PipelineOperationObserver {
           telemetry.stageTimings.totalMicroseconds),
       ]
       context["confidence"] = telemetry.confidence?.rawValue ?? "none"
+      context["rewrite_applied"] = String(telemetry.rewriteApplied)
+      context["rewrite_used_fm"] = String(telemetry.rewriteUsedFM)
+      context["gate_used_fm"] = String(telemetry.gateUsedFM)
+      context["narration_used_fm"] = String(telemetry.narrationUsedFM)
       context["gate_mode"] = telemetry.gateMode?.rawValue ?? "none"
       context["repair_policy_version"] =
         telemetry.repairPolicyVersion ?? "none"
@@ -350,6 +412,22 @@ private struct PipelineOperationObserver {
       context["no_consensus_reason"] =
         telemetry.noConsensusReason?.rawValue ?? "none"
       context["terminal_error_present"] = String(telemetry.terminalError != nil)
+      context["selected_candidate_sequence"] = selectedCandidateSequence(
+        telemetry.selectedCandidateID)
+      context["vote_trigger"] = telemetry.voteTrigger.map(voteTrigger) ?? "none"
+      context["grounding_check_count"] = String(
+        telemetry.grounding?.checks.count ?? 0)
+      context["grounding_skipped_count"] = String(
+        telemetry.grounding?.skipped.count ?? 0)
+      context["grounding_finding_count"] = String(
+        telemetry.grounding?.findings.count ?? 0)
+      context["grounding_degradation_count"] = String(
+        telemetry.grounding?.degradations.count ?? 0)
+      if let voteOutcome = telemetry.voteOutcome {
+        for (key, value) in voteContext(voteOutcome) {
+          context["vote_\(key)"] = value
+        }
+      }
       addTimingContext(telemetry.stageTimings, to: &context)
       info(
         "pipeline_turn_finished",
@@ -381,9 +459,10 @@ private struct PipelineOperationObserver {
     }
   }
 
-  private func candidateContext(_ id: CandidateID) -> [String: String] {
+  private mutating func candidateContext(_ id: CandidateID) -> [String: String] {
     var context = [
-      "candidate_role": roles[id].map(candidateRole) ?? "unknown"
+      "candidate_sequence": String(registerCandidate(id)),
+      "candidate_role": roles[id].map(candidateRole) ?? "unknown",
     ]
     if let generationMicroseconds = candidateStates[id]?.generationMicroseconds {
       context["generation_elapsed_ms"] = operationMilliseconds(
@@ -394,6 +473,146 @@ private struct PipelineOperationObserver {
         validationMicroseconds)
     }
     return context
+  }
+
+  private mutating func registerCandidate(_ id: CandidateID) -> Int {
+    if let sequence = candidateSequenceByID[id] { return sequence }
+    let sequence = nextCandidateSequence
+    nextCandidateSequence += 1
+    candidateSequenceByID[id] = sequence
+    return sequence
+  }
+
+  private mutating func selectedCandidateSequence(
+    _ id: CandidateID?
+  ) -> String {
+    guard let id else { return "none" }
+    return String(registerCandidate(id))
+  }
+
+  private mutating func logRepairInput(
+    _ repair: RepairContext,
+    candidateID: CandidateID
+  ) {
+    var context = candidateContext(candidateID)
+    context["failed_sql_present"] = String(!repair.failedSQL.isEmpty)
+    context["error_message_present"] = String(!repair.errorMessage.isEmpty)
+    guard let guidance = repair.guidance else {
+      context["guidance_present"] = "false"
+      info(
+        "pipeline_repair_input",
+        "SQL repair input was prepared.",
+        context: context)
+      return
+    }
+    context["guidance_present"] = "true"
+    context["invalid_reference_present"] = String(
+      guidance.invalidReference != nil)
+    context["invalid_qualifier_present"] = String(
+      guidance.invalidQualifier != nil)
+    context["invalid_column_present"] = String(guidance.invalidColumn != nil)
+    context["declared_source_count"] = String(guidance.declaredSources.count)
+    context["possible_owner_count"] = String(
+      guidance.possibleColumnOwners.count)
+    context["source_schema_count"] = String(guidance.sourceColumns.count)
+    context["source_column_count"] = String(
+      guidance.sourceColumns.values.reduce(0) { $0 + $1.count })
+    context["relevant_foreign_key_count"] = String(
+      guidance.relevantForeignKeys.count)
+    context["failed_fingerprint_count"] = String(
+      guidance.failedFingerprints.count)
+    context["corrective_instruction_present"] = String(
+      !guidance.correctiveInstruction.isEmpty)
+    info(
+      "pipeline_repair_input",
+      "SQL repair input was prepared.",
+      context: context)
+  }
+
+  private mutating func logCandidateSummary(_ candidate: CandidateTelemetry) {
+    roles[candidate.id] = candidate.role
+    var generationContext = candidateContext(candidate.id)
+    generationContext["model_key"] = candidate.model.key
+    generationContext["model_revision_prefix"] = String(
+      candidate.model.revision.prefix(12))
+    generationContext["quantization"] = candidate.model.quantization
+    generationContext["gcd"] = candidate.gcd.rawValue
+    generationContext["temperature"] = String(
+      format: "%.3f", candidate.temperature)
+    generationContext["seed"] = candidate.seed.map(String.init) ?? "none"
+    generationContext["max_tokens"] = String(candidate.maxTokens)
+    generationContext["sql_present"] = String(candidate.sql != nil)
+    generationContext["sql_fingerprint_present"] = String(
+      candidate.sqlFingerprint != nil)
+    generationContext["generation_elapsed_ms"] = optionalMilliseconds(
+      candidate.generationMicroseconds)
+    generationContext["tokens_per_second"] =
+      candidate.tokensPerSecond.map {
+        String(format: "%.1f", $0)
+      } ?? "unknown"
+    generationContext["token_count"] =
+      candidate.tokenCount.map(String.init) ?? "unknown"
+    if let repair = candidate.repairContext {
+      generationContext["repair_context_present"] = "true"
+      generationContext["repair_guidance_present"] = String(
+        repair.guidance != nil)
+      generationContext["repair_failed_fingerprint_count"] = String(
+        repair.guidance?.failedFingerprints.count ?? 0)
+    } else {
+      generationContext["repair_context_present"] = "false"
+      generationContext["repair_guidance_present"] = "false"
+      generationContext["repair_failed_fingerprint_count"] = "0"
+    }
+    info(
+      "pipeline_candidate_generation_summary",
+      "SQL candidate generation metadata reached a terminal turn state.",
+      context: generationContext)
+
+    var context = candidateContext(candidate.id)
+    context["validation_state"] = candidateValidationState(candidate)
+    context["issue_kind"] =
+      candidate.validationReport?.issue?.kind.rawValue ?? "none"
+    context["disposition"] =
+      candidate.validationReport?.issue?.disposition.rawValue ?? "none"
+    context["execution_state"] = candidateExecutionState(candidate)
+    context["execution_elapsed_ms"] = optionalMilliseconds(
+      candidate.executionMicroseconds)
+    context["column_count"] = String(candidate.result?.columns.count ?? 0)
+    context["row_count"] = String(candidate.result?.rowCount ?? 0)
+    context["is_empty"] = String(candidate.result?.rows.isEmpty ?? true)
+    context["is_truncated"] = String(candidate.result?.isTruncated ?? false)
+    context["result_digest_present"] = String(candidate.resultDigest != nil)
+    context["error_present"] = String(candidate.error != nil)
+    context["duplicate_suppressed"] = String(
+      candidate.duplicateSuppressed ?? false)
+    context["duplicate_of_sequence"] = selectedCandidateSequence(
+      candidate.duplicateOf)
+    context["selected"] = String(candidate.selected)
+    if let speculation = candidate.speculation {
+      var speculationContext = candidateContext(candidate.id)
+      speculationContext["speculation_round_count"] = String(
+        speculation.roundCount)
+      speculationContext["speculation_draft_token_count"] = String(
+        speculation.draftTokenCount)
+      speculationContext["speculation_accepted_token_count"] = String(
+        speculation.acceptedDraftTokenCount)
+      speculationContext["speculation_target_call_count"] = String(
+        speculation.targetModelCallCount)
+      speculationContext["speculation_target_verified_token_count"] = String(
+        speculation.targetVerifiedTokenCount)
+      speculationContext["speculation_emitted_token_count"] = String(
+        speculation.emittedTokenCount)
+      speculationContext["speculation_acceptance_percent"] =
+        speculationAcceptancePercent(speculation)
+      info(
+        "pipeline_candidate_speculation_summary",
+        "SQL candidate speculation metadata reached a terminal turn state.",
+        context: speculationContext)
+    }
+    info(
+      "pipeline_candidate_summary",
+      "SQL candidate reached a terminal turn state.",
+      context: context)
   }
 
   private func info(
@@ -411,10 +630,18 @@ private struct PipelineOperationObserver {
   private func addingTurnElapsed(
     to context: [String: String]
   ) -> [String: String] {
-    guard let turnStartedAt else { return context }
     var context = context
-    context["turn_elapsed_ms"] = operationMilliseconds(
-      turnStartedAt.duration(to: .now).microseconds)
+    context["trace_id"] = traceID
+    if context["query_origin"] == nil {
+      context["query_origin"] = queryOrigin.rawValue
+    }
+    if context["starter_query_id"] == nil {
+      context["starter_query_id"] = starterQueryID?.rawValue ?? "none"
+    }
+    if let turnStartedAt {
+      context["turn_elapsed_ms"] = operationMilliseconds(
+        turnStartedAt.duration(to: .now).microseconds)
+    }
     return context
   }
 
@@ -521,6 +748,33 @@ private func turnOutcome(_ outcome: TurnOutcome) -> String {
   case .needsClarification: "needs_clarification"
   case .failed: "failed"
   }
+}
+
+private func candidateValidationState(
+  _ candidate: CandidateTelemetry
+) -> String {
+  guard let report = candidate.validationReport else { return "not_started" }
+  return report.isValid ? "valid" : "invalid"
+}
+
+private func candidateExecutionState(
+  _ candidate: CandidateTelemetry
+) -> String {
+  if candidate.result != nil { return "succeeded" }
+  if candidate.validationReport?.isValid == true && candidate.error != nil {
+    return "failed"
+  }
+  return "not_started"
+}
+
+private func speculationAcceptancePercent(
+  _ speculation: SQLSpeculationMetrics
+) -> String {
+  guard speculation.draftTokenCount > 0 else { return "0.0" }
+  return String(
+    format: "%.1f",
+    100 * Double(speculation.acceptedDraftTokenCount)
+      / Double(speculation.draftTokenCount))
 }
 
 private func operationMilliseconds(_ microseconds: Int64) -> String {
