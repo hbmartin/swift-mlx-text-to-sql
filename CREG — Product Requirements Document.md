@@ -81,6 +81,10 @@ Each user turn flows through a strictly **sequential** pipeline. Two models are 
 
 A single **serializer** — implemented as a Swift `actor` (or a serial dispatch queue) — owns **every** model call, FM and bundled alike. It guarantees no two inferences ever overlap. Because the pipeline is sequential by nature, this mostly means the serializer never dispatches an FM call while an MLX generation is in flight, and vice versa.
 
+The serializer is global across all Conversations. One query may be active and is never preempted; later submissions become visible, cancellable Queued Questions. When the active query finishes, the oldest Queued Question in the currently visible Conversation runs first; if that Conversation has none, the globally oldest Queued Question runs. A Queued Question receives its Conversation's latest completed history when it starts, not when it was submitted.
+
+The user may browse and submit in other Conversations while inference continues. Switching Conversations never moves or cancels the active query, and completion never switches the visible Conversation. The queue is process-only and is not restored after termination. If the process ends during an active turn, that turn appears as **Interrupted** on next launch with an **Ask Again** action and never resumes automatically.
+
 - **Memory consequence:** since the two paths never execute concurrently, active-inference peak memory is `max(FM, bundled)`, not the sum — comfortably within budget on an 8 GB iPhone 15 Pro with a ≤4B bundled model.
 - **Residency:** keep the bundled MLX model resident between turns (reloading is slow); sequence FM calls around it. Apple's FM is OS-managed, so its lifecycle is partly outside app control — frame the guarantee precisely as *"our two inference paths never overlap,"* which is what protects the memory/thermal budget.
 
@@ -175,25 +179,72 @@ Because this is **read-only exploration, the cost of a wrong answer is one more 
 
 ## 11. Chat UX
 
-- **Chat interface:** message bubbles; result tables rendered inline; multi-turn.
-- **Result display:** table only (v1). Paging: whichever is simplest — auto-`LIMIT` with "show more," or a virtualized scroll. Charts in v2.
-- **History:** persisted conversation history.
-- **"Thinking"-style step trace:** a collapsible, per-message disclosure showing the pipeline in **plain English, never SQL** — e.g., "Understanding your question," "Rephrasing your follow-up," "Looking at leases and properties," "Running the numbers," "Double-checking the result," "Fixing a hiccup and retrying," "Summarizing what I found." Collapsed by default.
-- **Empty/error/clarification states:** graceful; a clarifying question from the ambiguity gate appears as a normal assistant turn.
+CREG is a multi-conversation, iPhone-only experience. It should feel calm, precise, and executive: system typography, neutral content surfaces, and the existing CREG turquoise/blue used sparingly for meaningful selection, send, progress, and feedback states.
+
+### Conversation browser and navigation
+
+- The top-left chat button and a left-edge swipe reveal the **Conversation Browser behind the chat**. The foreground chat tracks the gesture one-to-one as it shifts right, rounds its leading corners, and dims slightly. The gesture is velocity-aware, interruptible, and reversible.
+- Tapping the exposed chat, swiping it back, or selecting a Conversation closes the browser. Reduce Motion and Reduce Transparency receive clear, functionally equivalent treatments.
+- The browser contains exactly: **CREG** header, Search, New Chat, Recents, and Settings. There are no projects, folders, pinned items, or plus button.
+- Recents show the title, a one-line latest-message preview, relative activity time, and a blue unread dot when a background answer completes. Search covers titles, user questions, and assistant narrations, but not result values, SQL, or developer details.
+- A Conversation title is generated from its first user question and may be renamed. Each Conversation persists its own unsent draft.
+- Deleting a Conversation is immediate in the interface with a five-second Undo window. An active query is stopped; its queued work is held only for the Undo window and is permanently purged with the Conversation afterward.
+- Background completion never changes the visible Conversation. It produces a brief in-app **Answer ready** banner, a light haptic, and the Recents unread dot.
+
+### Chat header, transcript, and scrolling
+
+- The header has the browser button at leading, the current Conversation title centered (**New Chat** before the first question), and New Chat plus More at trailing. More contains Rename, export for the current Conversation, and Delete.
+- User questions use trailing CREG turquoise/blue bubbles with white text. Assistant narration is full-width and open, without a bubble. Structured results, warnings, and errors use cards.
+- While processing, the transcript shows the latest compact status; tapping it opens the live plain-English timeline. After completion it collapses to **How I answered** with elapsed time. The trace never shows SQL outside Developer Mode.
+- If the user is reading older messages, new content does not force-scroll. A glass **Jump to latest** control shows the number of unseen messages. Auto-follow occurs only when the user is already near the bottom.
+- Queued Questions remain visible in their Conversation with position/status and a cancel action. Clarification, empty, interrupted, warning, and error states appear as understandable assistant content; **Interrupted** includes Ask Again.
+
+### Empty state and starter queries
+
+A new Conversation centers the CREG mark, **Ask about your portfolio**, and **Private and fully on-device**, followed by these five reviewed Starter Queries:
+
+1. Which properties have the highest vacancy?
+2. What's my rent roll by property type?
+3. Which leases expire in the next 12 months?
+4. What's the current market value of the portfolio by fund?
+5. Which properties have loans maturing in the next 24 months?
+
+Starter Queries follow the typed deterministic path in ADR 0006. They are reviewed product contracts, not editable prompt-fill shortcuts.
+
+### Composer
+
+- The composer is a floating, expanding Liquid Glass control with text and send/stop only. It has no plus button, attachment control, custom microphone, voice mode, or model selector; speech input relies on system keyboard dictation.
+- Return inserts a new line. Send is the explicit commit, dismisses the keyboard, and may enqueue the question while the global inference pipeline is occupied. During an active query in this Conversation, a non-empty composer offers Send for the next Queued Question; an empty composer offers Stop for the active query.
+
+### Results and answer actions
+
+- A result card shows narration and a compact inline preview of the first four rows. Opening it presents a full-screen Result Viewer with frozen column headers, two-axis scrolling, local search, and local sorting.
+- The engine returns at most 500 rows. A capped result is explicitly labeled **First 500+ rows** and never triggers a hidden unbounded rerun.
+- The Result Viewer can copy, share, or export the full returned table as CSV or Markdown. Charts remain deferred to v2.
+- Answer actions include: copy the complete answer as Markdown (narration plus returned table); Read Aloud for narration only using on-device speech with play, pause, and stop; and share the combined answer. The table menu separately handles CSV and full-table export.
+- **Helpful** and **Not right** are reversible, local feedback attached to a completed answer. Not right opens correction context in the composer tied to that answer but does not send automatically. Feedback is included in the Support Bundle.
+
+### Visual design and verification
+
+- iOS 26 is the minimum deployment target. Use native Liquid Glass for the elevated control layer—navigation controls, composer, transient banners, and jump controls—rather than making content, messages, and every card glass.
+- Support light and dark appearance, Dynamic Type, VoiceOver, Increase Contrast, Reduce Transparency, Reduce Motion, and differentiated-without-color states.
+- Static visual work follows the repository's `swiftui-preview-design` workflow and is checked preview-first with deterministic, named SwiftUI `#Preview` states for empty, populated, queued, processing, result, error, browser-open, dark-mode, and accessibility variants. Do not launch the full app for simple visual comparisons; use a full runtime only for gestures, focus/keyboard, navigation, persistence/migration, and inference integration.
 
 ### Developer mode (visible in app settings)
 
-A settings toggle (not hidden) that surfaces per-message internals for accuracy work:
+A settings toggle (not hidden) surfaces per-message internals for accuracy work. When enabled, Developer Mode remains **fully expanded inline** in the transcript; it is not moved to a separate inspector or collapsed behind per-message disclosure. Reorganize hierarchy for legibility while preserving complete visibility:
 
 - The FM-rewritten standalone question and the ambiguity-gate decision.
 - The generated SQL, plus all candidate SQLs and their self-consistency votes.
 - Validation results, execution metadata (row count, ms), execution errors and each self-repair attempt.
 - Per-stage latency and tokens/sec, and which model + quantization + GCD engine ran each stage.
 
-### Structured logs + export
+### Settings, structured logs, and support export
 
 - The **same structured event stream** that drives the thinking trace is written to disk (JSONL) for the eval harness — one event stream, two consumers. Build it as structured events from the start, not display strings.
-- **"Mail logs to developer"** — an export action (e.g., `MFMailComposeViewController`, or the share sheet) that attaches the JSONL session logs, so real-usage traces can be gathered for offline analysis.
+- Settings contains Developer Mode, model and build information, privacy/about, and **Email Complete Support Bundle**.
+- The Support Bundle is a ZIP containing all Conversations, drafts, messages, returned result rows, Answer Feedback, per-turn JSONL, sanitized diagnostics, applicable queued/running-state records, and build/model provenance. It excludes multi-gigabyte model weights and the bundled portfolio database; manifests, hashes, and receipts identify those excluded artifacts instead.
+- Before creation, warn clearly that the bundle contains questions, results, SQL, drafts, and diagnostics. Nothing is transmitted automatically: the user explicitly sends it to `harold.martin@gmail.com` through the system mail composer. If Mail is unavailable, fall back to the system share sheet.
 
 ------
 
@@ -258,7 +309,7 @@ Run on-device and on a Mac harness; note device-vs-Mac differences. Reuse the st
 
 ## 14. Privacy & Positioning
 
-Fully offline; the bundled model means nothing is downloaded and nothing is transmitted. **"Your data never leaves the device"** is an explicit positioning pillar, backed by architecture: no network entitlement is required for core function.
+Core use is fully offline; the bundled model means nothing is downloaded and no portfolio content is transmitted during questioning or inference. **"Your data stays on this device unless you explicitly export it"** is the positioning pillar, backed by architecture: no network entitlement is required for core function. The Support Bundle leaves the device only when the user reviews the warning and deliberately sends or shares it.
 
 ------
 

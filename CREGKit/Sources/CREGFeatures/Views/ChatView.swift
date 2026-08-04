@@ -2,136 +2,244 @@ import CREGEngine
 import ComposableArchitecture
 import SwiftUI
 
-public struct ChatView: View {
+/// App-level context the chat surface renders but does not own.
+struct ChatChrome {
+  var modelReadiness: AppFeature.ModelReadiness
+  var developerMode: Bool
+  var hasUnreadElsewhere: Bool
+  var debugModelIdentity: DebugModelIdentity?
+  var presentedFailure: FailurePresentation?
+  var dismissFailure: () -> Void
+  var retryPreparation: () -> Void
+}
+
+/// The Messages-style chat surface: floating glass header, open transcript,
+/// and floating glass composer. Liquid Glass stays on the floating
+/// interactive layer; the transcript itself is plain content.
+struct ChatView: View {
   @Bindable var store: StoreOf<ChatFeature>
+  let chrome: ChatChrome
   @FocusState private var composerIsFocused: Bool
+  @State private var isNearBottom = true
+  @State private var unseenMessageCount = 0
+  @State private var isDeleteConfirmationPresented = false
+  @Namespace private var glassNamespace
 
-  public init(store: StoreOf<ChatFeature>) {
-    self.store = store
-  }
-
-  public var body: some View {
-    VStack(spacing: 0) {
-      if let identity = store.debugModelIdentity {
-        experimentalModelBanner(identity)
-      }
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 12) {
-            if store.messages.isEmpty && !store.isProcessing {
-              emptyState
-            }
-            ForEach(store.messages) { message in
-              MessageCell(message: message, developerMode: store.developerMode)
-                .id(message.id)
-            }
-            if store.isProcessing {
-              ThinkingCell(trace: store.currentTrace)
-                .id("thinking")
-            }
+  var body: some View {
+    ScrollViewReader { proxy in
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 14) {
+          if let identity = chrome.debugModelIdentity {
+            ExperimentalModelBanner(identity: identity)
           }
-          .padding(.horizontal)
-          .padding(.top, 8)
+          if store.messages.isEmpty && store.queued.isEmpty && !store.isProcessing {
+            EmptyChatState(
+              isEnabled: chrome.modelReadiness == .ready,
+              submit: { store.send(.starterQuestionTapped($0)) })
+          }
+          ForEach(store.messages) { message in
+            MessageCell(
+              message: message,
+              feedback: store.feedback[message.id],
+              readAloud: store.readAloud,
+              developerMode: chrome.developerMode,
+              store: store)
+            .id(message.id)
+          }
+          ForEach(store.queued) { queued in
+            QueuedQuestionCell(
+              queued: queued,
+              cancel: { store.send(.cancelQueuedTapped(queued.id)) })
+          }
+          if let processing = store.processing {
+            ProcessingStatusRow(
+              processing: processing,
+              toggleExpansion: { store.send(.timelineExpansionToggled) })
+            .id("processing")
+          }
         }
-        .onChange(of: store.messages.count) {
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+      }
+      .scrollDismissesKeyboard(.interactively)
+      .onScrollGeometryChange(for: Bool.self) { geometry in
+        geometry.contentOffset.y + geometry.containerSize.height
+          >= geometry.contentSize.height - 120
+      } action: { _, nearBottom in
+        isNearBottom = nearBottom
+        if nearBottom { unseenMessageCount = 0 }
+      }
+      .onChange(of: store.messages.count) { oldCount, newCount in
+        // Preserve position while reading older messages; only follow the
+        // transcript when the user is already at the latest content.
+        if isNearBottom {
           if let last = store.messages.last?.id {
             withAnimation { proxy.scrollTo(last, anchor: .bottom) }
           }
-        }
-        .onChange(of: store.currentTrace.count) {
-          if store.isProcessing {
-            withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
-          }
+        } else if newCount > oldCount {
+          unseenMessageCount += newCount - oldCount
         }
       }
-      if let failure = store.presentedFailure {
+      .onChange(of: store.processing?.trace.count ?? 0) {
+        if store.isProcessing, isNearBottom {
+          withAnimation { proxy.scrollTo("processing", anchor: .bottom) }
+        }
+      }
+      .overlay(alignment: .bottomTrailing) {
+        jumpToLatest(proxy: proxy)
+      }
+    }
+    .safeAreaInset(edge: .top, spacing: 0) { header }
+    .safeAreaInset(edge: .bottom, spacing: 0) { bottomStack }
+    .alert("Rename Conversation", isPresented: $store.isRenamePresented) {
+      TextField("Title", text: $store.renameDraft)
+      Button("Save") { store.send(.renameCommitted) }
+      Button("Cancel", role: .cancel) {}
+    }
+    .confirmationDialog(
+      "Delete this conversation?",
+      isPresented: $isDeleteConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      Button("Delete", role: .destructive) {
+        store.send(.delegate(.deleteRequested))
+      }
+    }
+    .sheet(item: exportItem) { item in
+      ExportShareSheet(url: item.url)
+    }
+    .resultViewerPresentation(store: store)
+  }
+
+  private var exportItem: Binding<ExportedFile?> {
+    Binding(
+      get: { store.exportURL.map(ExportedFile.init(url:)) },
+      set: { if $0 == nil { store.exportURL = nil } })
+  }
+
+  // MARK: Header
+
+  private var header: some View {
+    HStack(spacing: 10) {
+      CREGGlassContainer(spacing: 10) {
+        Button {
+          store.send(.delegate(.openBrowser))
+        } label: {
+          Image(systemName: "sidebar.leading")
+            .font(.body.weight(.medium))
+            .frame(width: 44, height: 44)
+            .overlay(alignment: .topTrailing) {
+              if chrome.hasUnreadElsewhere {
+                Circle()
+                  .fill(CREGBrand.turquoise)
+                  .frame(width: 8, height: 8)
+                  .offset(x: -8, y: 9)
+              }
+            }
+        }
+        .cregGlassCapsule(interactive: true)
+        .accessibilityLabel(
+          chrome.hasUnreadElsewhere
+            ? "Conversations, unread answers available" : "Conversations")
+      }
+
+      Spacer(minLength: 0)
+
+      Text(store.displayTitle)
+        .font(.headline)
+        .lineLimit(1)
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+        .cregGlassCapsule()
+        .layoutPriority(1)
+
+      Spacer(minLength: 0)
+
+      CREGGlassContainer(spacing: 10) {
+        Button {
+          store.send(.delegate(.newChatRequested))
+        } label: {
+          Image(systemName: "square.and.pencil")
+            .font(.body.weight(.medium))
+            .frame(width: 44, height: 44)
+        }
+        .cregGlassCapsule(interactive: true)
+        .accessibilityLabel("New chat")
+      }
+
+      // The overflow Menu stays outside morphing glass containers to avoid
+      // the iOS 26.1 Menu-in-container morph break.
+      Menu {
+        Button {
+          store.send(.renameTapped)
+        } label: {
+          Label("Rename", systemImage: "pencil")
+        }
+        Button {
+          store.send(.exportTapped)
+        } label: {
+          Label("Export JSONL", systemImage: "square.and.arrow.up")
+        }
+        Button(role: .destructive) {
+          isDeleteConfirmationPresented = true
+        } label: {
+          Label("Delete", systemImage: "trash")
+        }
+      } label: {
+        Image(systemName: "ellipsis")
+          .font(.body.weight(.medium))
+          .frame(width: 44, height: 44)
+          .cregGlassCapsule(interactive: true)
+      }
+      .accessibilityLabel("More")
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+  }
+
+  // MARK: Bottom stack
+
+  @ViewBuilder
+  private var bottomStack: some View {
+    VStack(spacing: 8) {
+      if let failure = chrome.presentedFailure {
         FailureBanner(
           failure: failure,
-          developerMode: store.developerMode,
-          dismiss: { store.send(.dismissFailure) }
-        )
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+          developerMode: chrome.developerMode,
+          dismiss: chrome.dismissFailure)
       }
       readinessBanner
+      if let interrupted = store.interruptedTurn {
+        InterruptedTurnBanner(
+          interrupted: interrupted,
+          askAgain: { store.send(.askAgainTapped) },
+          dismiss: { store.send(.interruptedDismissed) })
+      }
+      if let context = store.correctionContext {
+        CorrectionContextBanner(
+          context: context,
+          dismiss: { store.send(.correctionDismissed) })
+      }
       composer
     }
-    .navigationTitle("CREG")
-    .inlineNavigationTitle()
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button {
-          store.isSettingsPresented = true
-        } label: {
-          Image(systemName: "gearshape")
-        }
-      }
-    }
-    .sheet(isPresented: $store.isSettingsPresented) {
-      SettingsView(store: store)
-    }
-    .onAppear { store.send(.onAppear) }
-  }
-
-  private func experimentalModelBanner(
-    _ identity: DebugModelIdentity
-  ) -> some View {
-    VStack(alignment: .leading, spacing: 3) {
-      Label("Experimental SQL model", systemImage: "testtube.2")
-        .font(.caption.weight(.bold))
-        .textCase(.uppercase)
-      Text(
-        "\(identity.baseModelKey) · iteration \(identity.selectedIteration) · run \(identity.trainingRunID.suffix(8))"
-      )
-      .font(.caption2.monospaced())
-      Text("Local Debug evidence only — not production finalized")
-        .font(.caption2)
-    }
-    .foregroundStyle(.orange)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal)
-    .padding(.vertical, 8)
-    .background(.orange.opacity(0.12))
-    .accessibilityIdentifier("experimental-model-banner")
-  }
-
-  static let starterQuestions = StarterQueryID.allCases
-
-  private var emptyState: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Ask about your portfolio")
-        .font(.headline)
-      ForEach(Self.starterQuestions) { starter in
-        Button {
-          store.send(.starterQuestionTapped(starter))
-        } label: {
-          HStack {
-            Text(starter.question)
-              .font(.subheadline)
-              .multilineTextAlignment(.leading)
-            Spacer(minLength: 8)
-            Image(systemName: "arrow.up.right")
-              .font(.caption)
-              .foregroundStyle(.tertiary)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
-        }
-        .buttonStyle(.plain)
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.top, 24)
+    .padding(.horizontal, 12)
+    .padding(.bottom, 6)
   }
 
   private var composer: some View {
-    HStack(spacing: 8) {
-      TextField("Ask about your portfolio…", text: $store.composerText, axis: .vertical)
-        .textFieldStyle(.roundedBorder)
-        .lineLimit(1...4)
-        .disabled(store.modelReadiness != .ready)
+    CREGGlassContainer(spacing: 16) {
+      HStack(alignment: .bottom, spacing: 8) {
+        TextField(
+          "Ask about your portfolio…",
+          text: $store.composerText,
+          axis: .vertical
+        )
+        .lineLimit(1...5)
+        .textFieldStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .disabled(chrome.modelReadiness != .ready)
         .focused($composerIsFocused)
         .onSubmit { requestSend() }
         .onChange(of: composerIsFocused) {
@@ -151,37 +259,49 @@ public struct ChatView: View {
             store.send(.submissionFocusSettled)
           }
         }
-      if store.isProcessing {
-        Button {
-          store.send(.stopTapped)
-        } label: {
-          Image(systemName: "stop.circle.fill")
-            .font(.title2)
+        .cregGlassRounded(cornerRadius: 24)
+        .cregGlassID("composer-field", in: glassNamespace)
+
+        if store.isProcessing {
+          Button {
+            store.send(.stopTapped)
+          } label: {
+            Image(systemName: "stop.fill")
+              .font(.body.weight(.semibold))
+              .foregroundStyle(.white)
+              .frame(width: 44, height: 44)
+          }
+          .cregGlassProminent(tint: .red)
+          .cregGlassID("composer-primary", in: glassNamespace)
+          .accessibilityLabel("Stop answering")
+        } else {
+          Button {
+            requestSend()
+          } label: {
+            Image(systemName: "arrow.up")
+              .font(.body.weight(.semibold))
+              .foregroundStyle(.white)
+              .frame(width: 44, height: 44)
+          }
+          .cregGlassProminent(tint: CREGBrand.blue)
+          .cregGlassID("composer-primary", in: glassNamespace)
+          .disabled(
+            store.isSubmissionPending
+              || chrome.modelReadiness != .ready
+              || store.composerText.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ).isEmpty
+          )
+          .accessibilityLabel("Send")
         }
-        .accessibilityLabel("Stop answering")
-      } else {
-        Button {
-          requestSend()
-        } label: {
-          Image(systemName: "arrow.up.circle.fill")
-            .font(.title2)
-        }
-        .disabled(
-          store.isSubmissionPending
-            || store.modelReadiness != .ready
-            || store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        )
-        .accessibilityLabel("Send")
       }
     }
-    .padding(.horizontal)
-    .padding(.vertical, 8)
-    .background(.bar)
+    .animation(.snappy(duration: 0.3), value: store.isProcessing)
   }
 
   @ViewBuilder
   private var readinessBanner: some View {
-    switch store.modelReadiness {
+    switch chrome.modelReadiness {
     case .ready:
       EmptyView()
     case .preparing:
@@ -190,31 +310,65 @@ public struct ChatView: View {
         Text("Preparing the SQL model…")
           .font(.callout)
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal)
+      .padding(.horizontal, 14)
       .padding(.vertical, 8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .cregGlassRounded(cornerRadius: 16)
     case .failed(let message):
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         Label(message, systemImage: "exclamationmark.triangle.fill")
           .font(.callout)
           .foregroundStyle(.orange)
         Spacer()
-        Button("Retry") { store.send(.retryPreparation) }
+        Button("Retry") { chrome.retryPreparation() }
       }
-      .padding(.horizontal)
+      .padding(.horizontal, 14)
       .padding(.vertical, 8)
+      .cregGlassRounded(cornerRadius: 16)
+    }
+  }
+
+  @ViewBuilder
+  private func jumpToLatest(proxy: ScrollViewProxy) -> some View {
+    if !isNearBottom, !store.messages.isEmpty {
+      Button {
+        unseenMessageCount = 0
+        if let last = store.messages.last?.id {
+          withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+        }
+      } label: {
+        HStack(spacing: 5) {
+          if unseenMessageCount > 0 {
+            Text("\(unseenMessageCount)")
+              .font(.caption.weight(.bold))
+          }
+          Image(systemName: "chevron.down")
+            .font(.caption.weight(.bold))
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .cregGlassCapsule(interactive: true)
+      }
+      .buttonStyle(.plain)
+      .padding(.trailing, 16)
+      .padding(.bottom, 8)
+      .transition(.scale.combined(with: .opacity))
+      .accessibilityLabel(
+        unseenMessageCount > 0
+          ? "Jump to latest, \(unseenMessageCount) new" : "Jump to latest")
     }
   }
 
   private func requestSend() {
     guard
       !store.isSubmissionPending,
-      !store.isProcessing,
       !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else { return }
 
     store.send(.submissionRequested)
     if composerIsFocused {
+      // Dismiss the keyboard after a focus-safe send; the reducer commits
+      // once focus resignation settles.
       composerIsFocused = false
     } else {
       store.send(.submissionFocusSettled)
@@ -222,296 +376,252 @@ public struct ChatView: View {
   }
 }
 
-struct MessageCell: View {
-  let message: ChatMessage
-  let developerMode: Bool
+// MARK: - Supporting cells
+
+struct ExportedFile: Identifiable {
+  var url: URL
+  var id: URL { url }
+}
+
+private struct ExportShareSheet: View {
+  let url: URL
+  @Environment(\.dismiss) private var dismiss
 
   var body: some View {
-    switch message.role {
-    case .user:
-      userBubble
-    case .assistant:
-      assistantCell
-    }
-  }
-
-  private var userBubble: some View {
-    HStack {
-      Spacer(minLength: 48)
-      Text(text)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .background(.tint, in: RoundedRectangle(cornerRadius: 18))
-        .foregroundStyle(.white)
-    }
-  }
-
-  @ViewBuilder
-  private var assistantCell: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      switch message.body {
-      case .text(let body), .clarification(let body):
-        assistantBubble(body)
-      case .failure(let body):
-        FailureMessageView(
-          message: body,
-          diagnostic: message.devInfo?.terminalError,
-          developerMode: developerMode)
-      case .answer(let result, let narration, let sql, let notice):
-        assistantBubble(narration)
-        if message.devInfo?.confidence == .unconfirmed {
-          Label(
-            unconfirmedMessage,
-            systemImage: "exclamationmark.triangle.fill"
-          )
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.orange)
-          .padding(10)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .background(
-            .orange.opacity(0.12),
-            in: RoundedRectangle(cornerRadius: 10))
-        }
-        if let summary = ConfidenceSummary(telemetry: message.devInfo) {
-          ConfidenceChipView(summary: summary)
-        }
-        if let notice {
-          Label(notice, systemImage: "lightbulb")
-            .font(.caption)
-            .foregroundStyle(.orange)
-        }
-        ResultTableView(result: result)
-        if developerMode {
-          DevFooterView(sql: sql, devInfo: message.devInfo)
-        }
+    VStack(spacing: 16) {
+      Text("Conversation events exported")
+        .font(.headline)
+      Text(
+        "Structured JSONL for offline accuracy analysis. Exports include questions, generated SQL, errors, and full result rows; treat them as portfolio data."
+      )
+      .font(.footnote)
+      .foregroundStyle(.secondary)
+      ShareLink(item: url) {
+        Label("Share JSONL", systemImage: "square.and.arrow.up")
+          .frame(maxWidth: .infinity)
       }
-      if !message.traceSteps.isEmpty {
-        TraceView(steps: message.traceSteps)
+      .buttonStyle(.borderedProminent)
+      Button("Done") { dismiss() }
+    }
+    .padding(24)
+    .presentationDetents([.medium])
+  }
+}
+
+struct ExperimentalModelBanner: View {
+  let identity: DebugModelIdentity
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Label("Experimental SQL model", systemImage: "testtube.2")
+        .font(.caption.weight(.bold))
+        .textCase(.uppercase)
+      Text(
+        "\(identity.baseModelKey) · iteration \(identity.selectedIteration) · run \(identity.trainingRunID.suffix(8))"
+      )
+      .font(.caption2.monospaced())
+      Text("Local Debug evidence only — not production finalized")
+        .font(.caption2)
+    }
+    .foregroundStyle(.orange)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(10)
+    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+    .accessibilityIdentifier("experimental-model-banner")
+  }
+}
+
+struct EmptyChatState: View {
+  let isEnabled: Bool
+  let submit: (StarterQueryID) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Ask about your portfolio")
+        .font(.title3.weight(.semibold))
+        .padding(.top, 24)
+      ForEach(StarterQueryID.allCases) { starter in
+        Button {
+          submit(starter)
+        } label: {
+          HStack {
+            Text(starter.question)
+              .font(.subheadline)
+              .multilineTextAlignment(.leading)
+            Spacer(minLength: 8)
+            Image(systemName: "arrow.up.right")
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 12)
+          .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
-
-  private func assistantBubble(_ body: String) -> some View {
-    Text(body)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 9)
-      .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
-  }
-
-  private var unconfirmedMessage: String {
-    switch message.devInfo?.noConsensusReason {
-    case .insufficientNonEmptyEvidence:
-      "The corrected query ran, but there wasn’t enough matching non-empty evidence to confirm it."
-    case .conflictingResults, .none:
-      "The corrected query ran, but another valid candidate did not independently confirm it."
-    }
-  }
-
-  private var text: String {
-    switch message.body {
-    case .text(let body), .clarification(let body), .failure(let body): body
-    case .answer(_, let narration, _, _): narration
-    }
-  }
 }
 
-/// One line of plain-English trust context under an answer: agreement,
-/// verification caveats, and latency from the turn's telemetry. Never SQL,
-/// and never rendered when the unconfirmed banner already carries the
-/// warning.
-struct ConfidenceChipView: View {
-  let summary: ConfidenceSummary
+/// A submitted question waiting behind active work: styled like a user
+/// bubble, visibly queued, and cancellable (ADR 0008).
+struct QueuedQuestionCell: View {
+  let queued: QueuedQuestion
+  let cancel: () -> Void
 
   var body: some View {
-    HStack(spacing: 4) {
-      Image(systemName: summary.symbolName)
-        .foregroundStyle(iconColor)
-      Text(summary.label)
-        .foregroundStyle(.secondary)
+    HStack(alignment: .center, spacing: 8) {
+      Spacer(minLength: 48)
+      VStack(alignment: .trailing, spacing: 4) {
+        Text(queued.question)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 9)
+          .background(
+            CREGBrand.bubbleGradient.opacity(0.45),
+            in: RoundedRectangle(cornerRadius: 18))
+          .foregroundStyle(.white)
+        HStack(spacing: 6) {
+          Text("Queued")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+          Button(action: cancel) {
+            Image(systemName: "xmark.circle.fill")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Cancel queued question")
+        }
+      }
     }
-    .font(.caption2)
-  }
-
-  private var iconColor: Color {
-    switch summary.tone {
-    case .agreement: .green
-    case .caution: .orange
-    case .neutral: .secondary
-    }
+    .accessibilityElement(children: .combine)
   }
 }
 
-/// Developer-mode internals under an answer: SQL, per-stage stats, and
-/// self-consistency candidates with their votes (PRD §11).
-struct DevFooterView: View {
-  let sql: String
-  let devInfo: TurnTelemetry?
+/// Compact live status row with an expandable plain-English timeline; the
+/// disclosure keeps SQL out per PRD §11.
+struct ProcessingStatusRow: View {
+  let processing: ChatFeature.ProcessingState
+  let toggleExpansion: () -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .top, spacing: 8) {
-        Text(sql)
-          .font(.caption.monospaced())
-          .textSelection(.enabled)
-        Spacer(minLength: 0)
-        Button {
-          Pasteboard.copy(sql)
-        } label: {
-          Image(systemName: "doc.on.doc")
+      Button(action: toggleExpansion) {
+        HStack(spacing: 8) {
+          ProgressView()
+          Text(processing.trace.last ?? "Thinking…")
+            .foregroundStyle(.secondary)
+            .contentTransition(.opacity)
+            .lineLimit(1)
+          Spacer(minLength: 4)
+          ElapsedTimeText(since: processing.startedAt)
+          Image(systemName: "chevron.down")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .rotationEffect(
+              .degrees(processing.isTimelineExpanded ? 180 : 0))
         }
-        .buttonStyle(.borderless)
-        .accessibilityLabel("Copy SQL")
+        .font(.subheadline)
+        .contentShape(Rectangle())
       }
-      if let devInfo {
-        Text("original: \(devInfo.originalQuestion)")
-        Text("standalone: \(devInfo.standaloneQuestion)")
-        Text(
-          verbatim:
-            "rewrite applied=\(devInfo.rewriteApplied) FM=\(devInfo.rewriteUsedFM) · gate=\(devInfo.gateDecision.map { String(describing: $0) } ?? "none") FM=\(devInfo.gateUsedFM) · narration FM=\(devInfo.narrationUsedFM)"
-        )
-        Text(
-          "stages μs: rewrite \(duration(devInfo.stageTimings.rewriteMicroseconds)) · gate \(duration(devInfo.stageTimings.gateMicroseconds)) · grounding \(duration(devInfo.stageTimings.groundingMicroseconds)) · voting \(duration(devInfo.stageTimings.votingMicroseconds)) · narration \(duration(devInfo.stageTimings.narrationMicroseconds)) · total \(devInfo.stageTimings.totalMicroseconds)"
-        )
-        HStack(spacing: 12) {
-          Text(
-            String(
-              format: "total %.1f ms",
-              Double(devInfo.stageTimings.totalMicroseconds) / 1_000))
-          if devInfo.repairAttempts > 0 {
-            Text("repairs: \(devInfo.repairAttempts)")
-          }
-          if let trigger = devInfo.voteTrigger {
-            Text("vote: \(trigger)")
+      .buttonStyle(.plain)
+      .accessibilityLabel(
+        "Working: \(processing.trace.last ?? "thinking"). \(processing.isTimelineExpanded ? "Collapse" : "Expand") timeline")
+
+      if processing.isTimelineExpanded {
+        VStack(alignment: .leading, spacing: 4) {
+          ForEach(Array(processing.trace.enumerated()), id: \.offset) { entry in
+            Label(entry.element, systemImage: "checkmark")
+              .font(.caption)
+              .foregroundStyle(.secondary)
           }
         }
-        if let outcome = devInfo.voteOutcome {
-          Text("outcome: \(String(describing: outcome))")
-        }
-        if let reason = devInfo.selectionReason {
-          Text(
-            "selected: \(devInfo.selectedCandidateID?.rawValue ?? "none") · reason: \(reason.rawValue)"
-          )
-        }
-        if let grounding = devInfo.grounding {
-          Text(
-            "grounding: \(grounding.checks.count) checks, \(grounding.skipped.count) skips, \(grounding.degradations.count) degradations"
-          )
-          ForEach(
-            Array(grounding.degradations.enumerated()), id: \.offset
-          ) { entry in
-            Text(
-              "grounding degradation: \(String(describing: entry.element))")
-          }
-        }
-        ForEach(devInfo.candidates) { candidate in
-          VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .top, spacing: 4) {
-              Image(
-                systemName: candidate.selected
-                  ? "checkmark.circle.fill" : "circle")
-              Text(
-                "\(candidate.id.rawValue) · \(role(candidate.role)) · \(candidate.model.repository)@\(candidate.model.revision.prefix(8)) · GCD \(candidate.gcd.rawValue) · T=\(candidate.temperature.formatted()) · seed=\(candidate.seed.map(String.init) ?? "none")"
-              )
-            }
-            if let generated = candidate.generationMicroseconds {
-              Text(
-                String(
-                  format: "generation %.1f ms · %.1f tok/s · %@ tokens",
-                  Double(generated) / 1_000,
-                  candidate.tokensPerSecond ?? 0,
-                  candidate.tokenCount.map(String.init) ?? "unknown"))
-            }
-            if let result = candidate.result {
-              Text(
-                String(
-                  format: "execution %.1f ms · %d rows%@ · group %@",
-                  Double(candidate.executionMicroseconds ?? 0) / 1_000,
-                  result.rowCount,
-                  result.isTruncated ? " (truncated)" : "",
-                  candidate.resultDigest ?? "none"))
-            }
-            if let error = candidate.error {
-              Text("error: \(error)")
-            }
-            if let candidateSQL = candidate.sql {
-              Text(candidateSQL)
-                .lineLimit(3)
-            }
-          }
-        }
+        .padding(.leading, 26)
+        .transition(.opacity)
       }
-    }
-    .font(.caption2)
-    .foregroundStyle(.secondary)
-    .padding(8)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-  }
-
-  private func role(_ role: CandidateRole) -> String {
-    switch role {
-    case .starter(let starter): "starter-\(starter.rawValue)"
-    case .initial: "initial"
-    case .repair(let attempt): "repair-\(attempt)"
-    case .deterministicAnchor: "anchor"
-    case .consistencySample(let index): "sample-\(index)"
-    }
-  }
-
-  private func duration(_ microseconds: Int64?) -> String {
-    microseconds.map(String.init) ?? "n/a"
-  }
-}
-
-struct ThinkingCell: View {
-  let trace: [String]
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 8) {
-        ProgressView()
-        Text(trace.last ?? "Thinking…")
-          .foregroundStyle(.secondary)
-          .contentTransition(.opacity)
-      }
-      .font(.subheadline)
     }
     .padding(.vertical, 4)
+    .animation(.default, value: processing.isTimelineExpanded)
   }
 }
 
-extension View {
-  /// iOS-only inline title mode; no-op on macOS (the package also builds for
-  /// macOS so `swift test` can run the feature tests).
-  @ViewBuilder
-  func inlineNavigationTitle() -> some View {
-    #if os(iOS)
-      self.navigationBarTitleDisplayMode(.inline)
-    #else
-      self
-    #endif
-  }
-}
-
-struct TraceView: View {
-  let steps: [String]
+/// Live elapsed readout for the in-flight turn.
+struct ElapsedTimeText: View {
+  let since: Date
 
   var body: some View {
-    DisclosureGroup {
-      VStack(alignment: .leading, spacing: 4) {
-        ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-          Label(step, systemImage: "checkmark")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.top, 4)
-    } label: {
-      Text("How I answered")
-        .font(.caption)
+    TimelineView(.periodic(from: since, by: 1)) { context in
+      let seconds = max(0, Int(context.date.timeIntervalSince(since)))
+      Text("\(seconds)s")
+        .font(.caption.monospacedDigit())
         .foregroundStyle(.tertiary)
     }
+  }
+}
+
+struct InterruptedTurnBanner: View {
+  let interrupted: InterruptedTurn
+  let askAgain: () -> Void
+  let dismiss: () -> Void
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Interrupted before it finished")
+          .font(.footnote.weight(.semibold))
+        Text(interrupted.question)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+      }
+      Spacer(minLength: 4)
+      Button("Ask Again", action: askAgain)
+        .font(.footnote.weight(.semibold))
+      Button(action: dismiss) {
+        Image(systemName: "xmark")
+          .font(.caption.bold())
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Dismiss interrupted question")
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .cregGlassRounded(cornerRadius: 16)
+  }
+}
+
+struct CorrectionContextBanner: View {
+  let context: ChatFeature.CorrectionContext
+  let dismiss: () -> Void
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      Image(systemName: "arrow.uturn.backward.circle")
+        .foregroundStyle(.orange)
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Tell CREG what was wrong")
+          .font(.footnote.weight(.semibold))
+        Text(context.answerNarration)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+      }
+      Spacer(minLength: 4)
+      Button(action: dismiss) {
+        Image(systemName: "xmark")
+          .font(.caption.bold())
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Dismiss correction")
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .cregGlassRounded(cornerRadius: 16)
   }
 }

@@ -7,195 +7,540 @@ import Testing
 
 private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")]])
 
-private enum ChatTestError: Error {
-  case preparationFailed
-}
-
-private final class CallCounter: @unchecked Sendable {
+final class CallRecorder: @unchecked Sendable {
   private let lock = NSLock()
-  private var value = 0
+  private var values: [String] = []
 
-  func increment() {
+  func record(_ value: String) {
     lock.lock()
-    value += 1
+    values.append(value)
     lock.unlock()
   }
 
-  var count: Int {
+  var recorded: [String] {
     lock.lock()
     defer { lock.unlock() }
-    return value
+    return values
   }
+
+  var count: Int { recorded.count }
 }
 
 @MainActor
-@Suite struct ChatFeatureTests {
-  static func scriptedPipeline() -> QueryPipeline {
-    QueryPipeline { question, _ in
-      AsyncStream { continuation in
-        var telemetry = TurnTelemetry(originalQuestion: question)
-        telemetry.stageTimings.totalMicroseconds = 3_000
-        continuation.yield(.turnStarted(question: question))
-        continuation.yield(
-          .questionResolved(
-            standaloneQuestion: question,
-            rewriteApplied: false,
-            usedFM: false,
-            elapsedMicroseconds: 0))
-        continuation.yield(.gateStarted)
-        continuation.yield(.narrationStarted)
-        continuation.yield(
-          .narrationFinished(
-            narration: "One property found.",
-            usedFM: false,
-            elapsedMicroseconds: 100))
-        continuation.yield(
-          .turnFinished(
-            outcome: .answered(
-              result: answer,
-              narration: "One property found.",
-              sql: "SELECT name FROM properties",
-              notice: nil),
-            telemetry: telemetry))
-        continuation.finish()
-      }
-    }
+@Suite struct AppFeatureSchedulerTests {
+  static let conversationA = UUID(10)
+  static let conversationB = UUID(11)
+
+  static func scriptedPipeline(
+    runs: CallRecorder = CallRecorder(),
+    starterRuns: CallRecorder = CallRecorder()
+  ) -> QueryPipeline {
+    QueryPipeline(
+      run: { question, _ in
+        runs.record(question)
+        return AsyncStream { continuation in
+          var telemetry = TurnTelemetry(originalQuestion: question)
+          telemetry.stageTimings.totalMicroseconds = 3_000
+          continuation.yield(.turnStarted(question: question))
+          continuation.yield(
+            .turnFinished(
+              outcome: .answered(
+                result: answer,
+                narration: "One property found.",
+                sql: "SELECT name FROM properties",
+                notice: nil),
+              telemetry: telemetry))
+          continuation.finish()
+        }
+      },
+      runStarter: { starter, _ in
+        starterRuns.record(starter.rawValue)
+        return AsyncStream { continuation in
+          var telemetry = TurnTelemetry(originalQuestion: starter.question)
+          continuation.yield(
+            .turnFinished(
+              outcome: .answered(
+                result: answer,
+                narration: "Starter answered.",
+                sql: starter.sql,
+                notice: nil),
+              telemetry: telemetry))
+          continuation.finish()
+        }
+      })
   }
 
-  @Test func sendProducesAnswerMessage() async {
-    var initialState = ChatFeature.State()
-    initialState.conversationID = UUID()
-    initialState.modelReadiness = .ready
-    let store = TestStore(initialState: initialState) {
-      ChatFeature()
+  /// A pipeline whose stream stays open until cancelled, so the global
+  /// active turn persists across assertions.
+  static func hangingPipeline() -> QueryPipeline {
+    QueryPipeline { _, _ in AsyncStream { _ in } }
+  }
+
+  static func appState(selected: UUID = conversationA) -> AppFeature.State {
+    var state = AppFeature.State(
+      debugModelIdentity: nil, launchBenchmarkQuestion: nil)
+    state.launchBenchmarkQuestion = nil
+    state.modelReadiness = .ready
+    state.chat = ChatFeature.State(conversationID: selected)
+    state.conversations = [
+      ConversationSummary(
+        id: conversationA, title: "",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 20)),
+      ConversationSummary(
+        id: conversationB, title: "Lease expirations",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 10)),
+    ]
+    return state
+  }
+
+  static func finishedEvent(question: String = "done") -> PipelineEvent {
+    var telemetry = TurnTelemetry(originalQuestion: question)
+    telemetry.generatedCount = 1
+    return .turnFinished(
+      outcome: .answered(
+        result: answer,
+        narration: "One property found.",
+        sql: "SELECT name FROM properties",
+        notice: nil),
+      telemetry: telemetry)
+  }
+
+  @Test func sendDispatchesAndRendersAnswer() async {
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
     } withDependencies: {
       $0.queryPipeline = Self.scriptedPipeline()
       $0.historyClient = .noop()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
-    await store.send(.binding(.set(\.composerText, "Which property leads?")))
-    await store.send(.sendTapped)
-    #expect(store.state.composerText.isEmpty)
+    await store.send(.chat(.binding(.set(\.composerText, "Which property leads?"))))
+    await store.send(.chat(.sendTapped))
+    #expect(store.state.chat?.composerText.isEmpty == true)
     await store.finish()
     await store.skipReceivedActions()
 
-    #expect(store.state.messages.count == 2)
-    #expect(store.state.isProcessing == false)
-    let assistant = store.state.messages.last
-    guard case .answer(let result, let narration, let sql, _)? = assistant?.body else {
-      Issue.record("expected an answer message, got \(String(describing: assistant?.body))")
+    #expect(store.state.chat?.messages.count == 2)
+    #expect(store.state.activeTurn == nil)
+    let assistant = store.state.chat?.messages.last
+    guard case .answer(let result, let narration, let sql, _)? = assistant?.body
+    else {
+      Issue.record("expected an answer, got \(String(describing: assistant?.body))")
       return
     }
     #expect(result == answer)
     #expect(narration == "One property found.")
     #expect(sql == "SELECT name FROM properties")
-    #expect(assistant?.traceSteps.isEmpty == false)
-    // trace lines never contain SQL
-    #expect(assistant?.traceSteps.allSatisfy { !$0.contains("SELECT") } == true)
-    #expect(assistant?.devInfo?.originalQuestion == "Which property leads?")
-    #expect(assistant?.devInfo?.standaloneQuestion == "Which property leads?")
+    // First question becomes the title.
+    #expect(store.state.chat?.title == "Which property leads?")
+    #expect(
+      store.state.conversations[id: Self.conversationA]?.title
+        == "Which property leads?")
+    #expect(
+      store.state.conversations[id: Self.conversationA]?.latestMessagePreview
+        == "One property found.")
   }
 
-  @Test func debugLaunchBenchmarkWaitsForReadinessAndRunsStandalone() async {
-    let oldQuestion = ChatMessage(
-      id: UUID(), role: .user, body: .text("old question"), createdAt: Date())
-    var initialState = ChatFeature.State(
-      launchBenchmarkQuestion: "Which property leads?")
-    initialState.conversationID = UUID()
-    initialState.messages.append(oldQuestion)
-    let store = TestStore(initialState: initialState) {
-      ChatFeature()
+  @Test func submitWhileActiveBecomesCancellableQueuedQuestion() async {
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.binding(.set(\.composerText, "first question"))))
+    await store.send(.chat(.sendTapped))
+    await store.receive(
+      .chat(.delegate(.submitQuestion(question: "first question", starter: nil))))
+    #expect(store.state.activeTurn?.question == "first question")
+
+    await store.send(.chat(.binding(.set(\.composerText, "second question"))))
+    await store.send(.chat(.sendTapped))
+    await store.receive(
+      .chat(.delegate(.submitQuestion(question: "second question", starter: nil))))
+    #expect(store.state.queue.count == 1)
+    #expect(store.state.queue.first?.question == "second question")
+    #expect(store.state.chat?.queued.count == 1)
+
+    guard let queuedID = store.state.queue.first?.id else {
+      Issue.record("expected a queued question")
+      return
+    }
+    await store.send(.chat(.cancelQueuedTapped(queuedID)))
+    await store.receive(.chat(.delegate(.cancelQueued(queuedID))))
+    #expect(store.state.queue.isEmpty)
+    #expect(store.state.chat?.queued.isEmpty == true)
+
+    // Stop ends the hanging active turn without dispatching anything else.
+    await store.send(.chat(.stopTapped))
+    await store.receive(.chat(.delegate(.stopActiveTurn)))
+    #expect(store.state.activeTurn == nil)
+    #expect(
+      store.state.chat?.messages.last?.body
+        == .text("Stopped — ask again whenever you're ready."))
+    await store.finish()
+  }
+
+  @Test func completionPrefersVisibleConversationQueuedQuestion() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let activeID = UUID(90)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationB,
+      question: "running elsewhere",
+      startedAt: Date(timeIntervalSince1970: 0))
+    // The globally oldest item belongs to B, but A is visible: A wins.
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(91), conversationID: Self.conversationB,
+        question: "older question in B",
+        submittedAt: Date(timeIntervalSince1970: 1)),
+      QueuedQuestion(
+        id: UUID(92), conversationID: Self.conversationA,
+        question: "newer question in visible A",
+        submittedAt: Date(timeIntervalSince1970: 2)),
+    ]
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationB,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+
+    #expect(store.state.activeTurn?.question == "newer question in visible A")
+    #expect(store.state.activeTurn?.conversationID == Self.conversationA)
+    #expect(store.state.queue.map(\.question) == ["older question in B"])
+
+    await store.send(.chat(.stopTapped))
+    await store.skipInFlightEffects()
+    await store.skipReceivedActions()
+  }
+
+  @Test func backgroundCompletionMarksUnreadWithoutChangingSelection() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let activeID = UUID(90)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationB,
+      question: "running elsewhere",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let haptics = CallRecorder()
+    let unreadWrites = CallRecorder()
+    var history = HistoryClient.noop()
+    history.setUnread = { id, isUnread in
+      unreadWrites.record("\(id.uuidString):\(isUnread)")
+    }
+    let clock = TestClock()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = clock
+      $0.haptics = HapticsClient(answerReady: { haptics.record("haptic") })
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationB,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+
+    #expect(store.state.chat?.conversationID == Self.conversationA)
+    #expect(store.state.chat?.messages.isEmpty == true)
+    #expect(store.state.conversations[id: Self.conversationB]?.isUnread == true)
+    #expect(store.state.answerReadyBanner?.conversationID == Self.conversationB)
+
+    await clock.advance(by: .seconds(4))
+    await store.skipReceivedActions()
+    #expect(store.state.answerReadyBanner == nil)
+    #expect(haptics.count == 1)
+    #expect(unreadWrites.recorded.contains(
+      "\(Self.conversationB.uuidString):true"))
+    await store.finish()
+  }
+
+  @Test func selectingUnreadConversationClearsUnread() async {
+    var state = Self.appState(selected: Self.conversationA)
+    state.conversations[id: Self.conversationB]?.isUnread = true
+    let unreadWrites = CallRecorder()
+    var history = HistoryClient.noop()
+    history.loadConversation = { id in
+      ConversationSnapshot(
+        summary: ConversationSummary(
+          id: id, title: "Lease expirations",
+          startedAt: Date(timeIntervalSince1970: 0),
+          lastActivityAt: Date(timeIntervalSince1970: 10),
+          isUnread: true))
+    }
+    history.setUnread = { id, isUnread in
+      unreadWrites.record("\(id.uuidString):\(isUnread)")
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.conversationSelected(Self.conversationB))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.chat?.conversationID == Self.conversationB)
+    #expect(store.state.conversations[id: Self.conversationB]?.isUnread == false)
+    #expect(unreadWrites.recorded.contains(
+      "\(Self.conversationB.uuidString):false"))
+    #expect(store.state.isBrowserRevealed == false)
+  }
+
+  @Test func deleteThenUndoRestoresConversation() async {
+    let deletes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.deleteConversation = { id in deletes.record(id.uuidString) }
+    let clock = TestClock()
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(Self.conversationB))
+    #expect(store.state.conversations[id: Self.conversationB] == nil)
+    #expect(store.state.pendingDeletion?.summary.id == Self.conversationB)
+
+    await store.send(.undoDeleteTapped)
+    #expect(store.state.conversations[id: Self.conversationB] != nil)
+    #expect(store.state.pendingDeletion == nil)
+
+    await store.finish()
+    #expect(deletes.count == 0)
+  }
+
+  @Test func deleteCommitsAfterFiveSecondUndoWindow() async {
+    let deletes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.deleteConversation = { id in deletes.record(id.uuidString) }
+    let clock = TestClock()
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(Self.conversationB))
+    await clock.advance(by: .seconds(5))
+    await store.skipReceivedActions()
+
+    #expect(store.state.pendingDeletion == nil)
+    #expect(deletes.recorded == [Self.conversationB.uuidString])
+    await store.finish()
+  }
+
+  @Test func deletingSelectedConversationSelectsMostRecentRemaining() async {
+    var history = HistoryClient.noop()
+    history.loadConversation = { id in
+      ConversationSnapshot(
+        summary: ConversationSummary(
+          id: id, title: "Lease expirations",
+          startedAt: Date(timeIntervalSince1970: 0),
+          lastActivityAt: Date(timeIntervalSince1970: 10)))
+    }
+    let clock = TestClock()
+    let store = TestStore(initialState: Self.appState(selected: Self.conversationA)) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(Self.conversationA))
+    await store.skipReceivedActions()
+    #expect(store.state.chat?.conversationID == Self.conversationB)
+
+    await clock.advance(by: .seconds(5))
+    await store.skipReceivedActions()
+    await store.finish()
+  }
+
+  @Test func renameUpdatesSummariesAndPersists() async {
+    let renames = CallRecorder()
+    var history = HistoryClient.noop()
+    history.renameConversation = { _, title in renames.record(title) }
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.renameTapped))
+    await store.send(.chat(.binding(.set(\.renameDraft, "Q3 valuations"))))
+    await store.send(.chat(.renameCommitted))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.chat?.title == "Q3 valuations")
+    #expect(store.state.chat?.isManuallyTitled == true)
+    #expect(
+      store.state.conversations[id: Self.conversationA]?.title == "Q3 valuations")
+    #expect(
+      store.state.conversations[id: Self.conversationA]?.isManuallyTitled == true)
+    #expect(renames.recorded == ["Q3 valuations"])
+  }
+
+  @Test func manualTitleIsNotOverwrittenByFirstQuestion() async {
+    var state = Self.appState()
+    state.chat?.title = "My analysis"
+    state.chat?.isManuallyTitled = true
+    state.conversations[id: Self.conversationA]?.title = "My analysis"
+    state.conversations[id: Self.conversationA]?.isManuallyTitled = true
+    let store = TestStore(initialState: state) {
+      AppFeature()
     } withDependencies: {
       $0.queryPipeline = Self.scriptedPipeline()
       $0.historyClient = .noop()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.binding(.set(\.composerText, "new question"))))
+    await store.send(.chat(.sendTapped))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.chat?.title == "My analysis")
+    #expect(
+      store.state.conversations[id: Self.conversationA]?.title == "My analysis")
+  }
+
+  @Test func queuedStarterKeepsDeterministicExecutionPath() async {
+    var state = Self.appState()
+    let activeID = UUID(90)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(91), conversationID: Self.conversationA,
+        question: StarterQueryID.portfolioValueByFundV1.question,
+        starter: .portfolioValueByFundV1,
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    let starterRuns = CallRecorder()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline(starterRuns: starterRuns)
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(starterRuns.recorded == [StarterQueryID.portfolioValueByFundV1.rawValue])
+    #expect(store.state.queue.isEmpty)
+  }
+
+  @Test func debugLaunchBenchmarkWaitsForReadinessAndRunsStandalone() async {
+    var state = Self.appState()
+    state.modelReadiness = .preparing
+    state.launchBenchmarkQuestion = "Which property leads?"
+    state.chat?.messages.append(
+      ChatMessage(
+        id: UUID(50), role: .user, body: .text("old question"),
+        createdAt: Date(timeIntervalSince1970: 0)))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
     await store.send(.modelPrepared)
     #expect(store.state.launchBenchmarkStarted)
-    #expect(store.state.composerText.isEmpty)
-    #expect(!store.state.messages.contains(oldQuestion))
     await store.finish()
     await store.skipReceivedActions()
 
-    #expect(store.state.messages.count == 2)
-    #expect(store.state.isProcessing == false)
-    #expect(store.state.messages.first?.body == .text("Which property leads?"))
+    #expect(store.state.chat?.messages.count == 2)
+    #expect(store.state.chat?.messages.first?.body == .text("Which property leads?"))
+  }
+}
+
+@MainActor
+@Suite struct ChatFeatureConversationTests {
+  static let conversationID = UUID(10)
+
+  static func chatState() -> ChatFeature.State {
+    ChatFeature.State(conversationID: conversationID)
   }
 
-  @Test func duplicateSendWhileProcessingStartsOnlyOneTurn() async {
-    let pipelineCalls = CallCounter()
-    var initialState = ChatFeature.State()
-    initialState.modelReadiness = .ready
-    let store = TestStore(initialState: initialState) {
+  static func answerMessage(id: UUID) -> ChatMessage {
+    ChatMessage(
+      id: id, role: .assistant,
+      body: .answer(
+        result: answer,
+        narration: "One property found.",
+        sql: "SELECT name FROM properties",
+        notice: nil),
+      createdAt: Date(timeIntervalSince1970: 0))
+  }
+
+  @Test func keyboardRefocusCancelsPendingSubmission() async {
+    var state = Self.chatState()
+    state.composerText = "question"
+    let store = TestStore(initialState: state) {
       ChatFeature()
-    } withDependencies: {
-      $0.queryPipeline = QueryPipeline { _, _ in
-        pipelineCalls.increment()
-        return AsyncStream { continuation in
-          var telemetry = TurnTelemetry(originalQuestion: "Which property leads?")
-          telemetry.terminalError = "test completion"
-          continuation.yield(
-            .turnFinished(
-              outcome: .failed(message: "test completion"),
-              telemetry: telemetry))
-          continuation.finish()
-        }
-      }
-      $0.historyClient = .noop()
-      $0.uuid = .incrementing
-      $0.date = .constant(Date(timeIntervalSince1970: 0))
     }
     store.exhaustivity = .off
-
-    await store.send(.binding(.set(\.composerText, "Which property leads?")))
-    await store.send(.sendTapped)
-    await store.send(.sendTapped)
-    await store.finish()
-
-    #expect(store.state.composerText.isEmpty)
-    #expect(!store.state.isProcessing)
-    #expect(store.state.messages.count == 2)
-    #expect(pipelineCalls.count == 1)
-  }
-
-  @Test func submissionLatchCommitsOnlyAfterFocusSettles() async {
-    var initialState = ChatFeature.State()
-    initialState.modelReadiness = .ready
-    let store = TestStore(initialState: initialState) {
-      ChatFeature()
-    } withDependencies: {
-      $0.uuid = .incrementing
-      $0.date = .constant(Date(timeIntervalSince1970: 0))
-      $0.historyClient = .noop()
-    }
-    store.exhaustivity = .off
-
-    await store.send(.binding(.set(\.composerText, "question")))
-    await store.send(.submissionRequested)
-    #expect(store.state.isSubmissionPending)
-    #expect(!store.state.isProcessing)
-
-    await store.send(.submissionFocusSettled)
-    #expect(!store.state.isSubmissionPending)
-    #expect(store.state.isProcessing)
-    #expect(store.state.composerText.isEmpty)
-    await store.finish()
-  }
-
-  @Test func refocusCancelsPendingSubmissionWithoutWedge() async {
-    var initialState = ChatFeature.State()
-    initialState.conversationID = UUID(0)
-    initialState.composerText = "question"
-    initialState.modelReadiness = .ready
-    let store = TestStore(initialState: initialState) {
-      ChatFeature()
-    }
 
     await store.send(.submissionRequested) {
       $0.isSubmissionPending = true
@@ -203,301 +548,191 @@ private final class CallCounter: @unchecked Sendable {
     await store.send(.submissionRefocused) {
       $0.isSubmissionPending = false
     }
-    await store.send(.submissionRequested) {
-      $0.isSubmissionPending = true
-    }
+    // Nothing was committed, so the composer keeps its text.
     #expect(store.state.composerText == "question")
   }
 
-  @Test func readinessFailureCanRetryAndSubmissionIsGated() async {
-    let attempts = LockIsolated(0)
-    let pipeline = QueryPipeline(
-      prepare: {
-        let attempt = attempts.withValue {
-          $0 += 1
-          return $0
-        }
-        if attempt == 1 { throw ChatTestError.preparationFailed }
-      },
-      run: { _, _ in AsyncStream { $0.finish() } })
-    var initialState = ChatFeature.State()
-    initialState.composerText = "question"
-    let store = TestStore(initialState: initialState) {
-      ChatFeature()
-    } withDependencies: {
-      $0.queryPipeline = pipeline
-      $0.historyClient = .noop()
+  @Test func feedbackIsReversibleAndSwitchable() async {
+    let saved = CallRecorder()
+    let cleared = CallRecorder()
+    var history = HistoryClient.noop()
+    history.saveFeedback = { _, feedback in
+      saved.record(feedback.verdict.rawValue)
     }
-    store.exhaustivity = .off
-
-    #expect(store.state.modelReadiness == .preparing)
-    await store.send(.onAppear)
-    await store.receive(\.modelPreparationFailed)
-    guard case .failed = store.state.modelReadiness else {
-      Issue.record("expected failed readiness")
-      return
+    history.clearFeedback = { _, messageID in
+      cleared.record(messageID.uuidString)
     }
-    await store.send(.submissionRequested)
-    #expect(!store.state.isSubmissionPending)
-    #expect(store.state.composerText == "question")
-
-    await store.send(.retryPreparation)
-    await store.receive(\.modelPrepared)
-    await store.finish()
-    #expect(store.state.modelReadiness == .ready)
-    #expect(attempts.value == 2)
-  }
-
-  @Test func emptySendIsIgnored() async {
-    var initialState = ChatFeature.State()
-    initialState.composerText = "  \n  "
-    let store = TestStore(initialState: initialState) {
+    let messageID = UUID(70)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: messageID))
+    let store = TestStore(initialState: state) {
       ChatFeature()
-    }
-
-    await store.send(.sendTapped)
-
-    #expect(store.state.composerText == "  \n  ")
-    #expect(store.state.messages.isEmpty)
-    #expect(!store.state.isProcessing)
-  }
-
-  @Test func conversationTurnsPairQuestionsWithAnswers() {
-    let messages: IdentifiedArrayOf<ChatMessage> = [
-      ChatMessage(id: UUID(0), role: .user, body: .text("q1"), createdAt: .distantPast),
-      ChatMessage(
-        id: UUID(1), role: .assistant,
-        body: .answer(result: answer, narration: "a1", sql: "s", notice: nil),
-        createdAt: .distantPast),
-      ChatMessage(id: UUID(2), role: .user, body: .text("q2"), createdAt: .distantPast),
-      ChatMessage(id: UUID(3), role: .assistant, body: .failure("boom"), createdAt: .distantPast),
-    ]
-    let turns = ChatFeature.conversationTurns(from: messages)
-    #expect(turns == [ConversationTurn(question: "q1", answerSummary: "a1")])
-  }
-
-  @Test func fullTelemetryPersistsAndLegacyDeveloperInfoStillLoads()
-    throws
-  {
-    let model = ModelReference(
-      key: "test",
-      repository: "test/model",
-      revision: String(repeating: "a", count: 40))
-    let request = SQLGenerationRequest(
-      candidateID: CandidateID(rawValue: "initial"),
-      role: .initial,
-      model: model,
-      question: "q",
-      gcd: .on,
-      temperature: 0,
-      seed: nil)
-    var candidate = CandidateTelemetry(request: request)
-    candidate.sql = "SELECT 1"
-    candidate.result = QueryResult(
-      columns: ["n"],
-      rows: [[.integer(1)]],
-      elapsedMicroseconds: 77)
-    candidate.resultDigest =
-      CanonicalSQLResult(candidate.result!).digest
-    candidate.selected = true
-    var telemetry = TurnTelemetry(originalQuestion: "q")
-    telemetry.candidates = [candidate]
-    telemetry.selectedCandidateID = candidate.id
-    telemetry.selectionReason = .initialSuccess
-    telemetry.stageTimings.totalMicroseconds = 123
-
-    let message = ChatMessage(
-      id: UUID(0),
-      role: .assistant,
-      body: .answer(
-        result: candidate.result!,
-        narration: "one",
-        sql: "SELECT 1",
-        notice: nil),
-      createdAt: Date(timeIntervalSince1970: 0),
-      devInfo: telemetry)
-    let encoded = try JSONEncoder().encode(message)
-    let decoded = try JSONDecoder().decode(
-      ChatMessage.self, from: encoded)
-    #expect(decoded.devInfo == telemetry)
-    #expect(
-      decoded.devInfo?.candidates.first?.result?.rows == [
-        [.integer(1)]
-      ])
-
-    var legacyObject =
-      try #require(
-        JSONSerialization.jsonObject(with: encoded)
-          as? [String: Any])
-    legacyObject["devInfo"] = [
-      "standaloneQuestion": "old q",
-      "tokensPerSecond": 12.0,
-      "executionMilliseconds": 3.0,
-      "repairAttempts": 0,
-      "candidates": [],
-    ]
-    let legacyData = try JSONSerialization.data(
-      withJSONObject: legacyObject)
-    let legacy = try JSONDecoder().decode(
-      ChatMessage.self, from: legacyData)
-    #expect(legacy.body == message.body)
-    #expect(legacy.devInfo == nil)
-  }
-
-  @Test func starterQuestionSendsImmediately() async {
-    let starterCalls = LockIsolated<[StarterQueryID]>([])
-    let scripted = Self.scriptedPipeline()
-    let pipeline = QueryPipeline(
-      run: { _, _ in
-        Issue.record("starter must not use the free-form pipeline entry point")
-        return AsyncStream { $0.finish() }
-      },
-      runStarter: { starter, history in
-        starterCalls.withValue { $0.append(starter) }
-        return scripted.run(starter.question, history)
-      })
-    var initialState = ChatFeature.State()
-    initialState.conversationID = UUID()
-    initialState.modelReadiness = .ready
-    let store = TestStore(initialState: initialState) {
-      ChatFeature()
-    } withDependencies: {
-      $0.queryPipeline = pipeline
-      $0.historyClient = .noop()
-      $0.uuid = .incrementing
+    } withDependencies: { [history] in
+      $0.historyClient = history
       $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
+    await store.send(.feedbackHelpfulTapped(messageID: messageID))
+    #expect(store.state.feedback[messageID]?.verdict == .helpful)
+    #expect(store.state.correctionContext == nil)
+
+    // Switching verdicts opens the correction context above the composer.
+    await store.send(.feedbackNotRightTapped(messageID: messageID))
+    #expect(store.state.feedback[messageID]?.verdict == .notRight)
+    #expect(store.state.correctionContext?.messageID == messageID)
+
+    // Tapping the active verdict reverses it.
+    await store.send(.feedbackNotRightTapped(messageID: messageID))
+    #expect(store.state.feedback[messageID] == nil)
+    #expect(store.state.correctionContext == nil)
+
+    await store.finish()
+    #expect(saved.recorded == ["helpful", "not_right"])
+    #expect(cleared.recorded == [messageID.uuidString])
+  }
+
+  @Test func nextSubmissionRecordsTheCorrection() async {
+    let corrections = CallRecorder()
+    var history = HistoryClient.noop()
+    history.saveFeedback = { _, feedback in
+      corrections.record(feedback.correction ?? "none")
+    }
+    let messageID = UUID(70)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: messageID))
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.feedbackNotRightTapped(messageID: messageID))
     await store.send(
-      .starterQuestionTapped(.highestVacancyV1))
+      .binding(.set(\.composerText, "No — only include held properties")))
+    await store.send(.sendTapped)
     await store.finish()
     await store.skipReceivedActions()
 
-    #expect(store.state.composerText.isEmpty)
-    #expect(store.state.messages.count == 2)
+    #expect(store.state.correctionContext == nil)
     #expect(
-      store.state.messages.first?.body
-        == .text("Which properties have the highest vacancy?"))
-    #expect(store.state.isProcessing == false)
-    #expect(starterCalls.value == [.highestVacancyV1])
+      store.state.feedback[messageID]?.correction
+        == "No — only include held properties")
+    #expect(corrections.recorded.contains("No — only include held properties"))
   }
 
-  @Test func stopEndsTurnPreservingPartialTraceAndPersistingIt() async {
-    // Held open so the turn only ends via Stop; the test injects its partial
-    // event directly so the preserved trace is deterministic.
-    let openContinuation = LockIsolated<AsyncStream<PipelineEvent>.Continuation?>(nil)
-    let hangingPipeline = QueryPipeline { _, _ in
-      AsyncStream { continuation in
-        openContinuation.setValue(continuation)
-      }
-    }
-    let savedMessages = LockIsolated<[ChatMessage]>([])
-    let savedEventBatches = LockIsolated<[[String]]>([])
-    let recordingHistory = HistoryClient(
-      loadCurrentConversation: { (UUID(0), []) },
-      appendMessage: { _, message in
-        savedMessages.withValue { $0.append(message) }
-      },
-      appendEvents: { _, _, lines in
-        savedEventBatches.withValue { $0.append(lines) }
-      },
-      exportJSONL: { _ in FileManager.default.temporaryDirectory })
-
-    var initialState = ChatFeature.State()
-    initialState.conversationID = UUID(0)
-    initialState.modelReadiness = .ready
-    let store = TestStore(initialState: initialState) {
+  @Test func askAgainResubmitsInterruptedTurnAndClearsJournal() async {
+    let journalEnds = CallRecorder()
+    var history = HistoryClient.noop()
+    history.endTurnJournal = { id in journalEnds.record(id.uuidString) }
+    var state = Self.chatState()
+    state.interruptedTurn = InterruptedTurn(
+      question: "Which leases expire soonest?",
+      interruptedAt: Date(timeIntervalSince1970: 0))
+    let store = TestStore(initialState: state) {
       ChatFeature()
-    } withDependencies: {
-      $0.queryPipeline = hangingPipeline
-      $0.historyClient = recordingHistory
-      $0.uuid = .incrementing
-      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.date = .constant(Date(timeIntervalSince1970: 1))
+      $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
-    await store.send(.binding(.set(\.composerText, "Which property leads?")))
-    await store.send(.sendTapped)
-    await store.send(
-      .pipelineEvent(.turnStarted(question: "Which property leads?")))
-    await store.send(.stopTapped)
+    await store.send(.askAgainTapped)
+    await store.receive(
+      .delegate(
+        .submitQuestion(question: "Which leases expire soonest?", starter: nil)))
     await store.finish()
 
-    #expect(store.state.isProcessing == false)
-    #expect(store.state.messages.count == 2)
-    let stopped = store.state.messages.last
-    #expect(stopped?.role == .assistant)
-    guard case .text(let text)? = stopped?.body else {
-      Issue.record(
-        "expected a stopped text message, got \(String(describing: stopped?.body))")
-      return
-    }
-    #expect(text.contains("Stopped"))
-    // The partial trace survives on the stopped message…
-    #expect(stopped?.traceSteps == ["Understanding your question"])
-    // …and both writes persist in transcript order with the partial log.
-    #expect(savedMessages.value.map(\.role) == [.user, .assistant])
-    #expect(savedEventBatches.value.count == 1)
-    #expect(
-      savedEventBatches.value.first?.first?.contains("turnStarted") == true)
-    openContinuation.withValue { $0 = nil }
+    #expect(store.state.interruptedTurn == nil)
+    #expect(store.state.composerText.isEmpty)
+    #expect(journalEnds.recorded == [Self.conversationID.uuidString])
   }
 
-  @Test func turnFinishedWhileIdleIsIgnored() async {
-    let store = TestStore(initialState: ChatFeature.State()) {
+  @Test func readAloudLifecyclePlaysPausesResumesStops() async {
+    let messageID = UUID(70)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: messageID))
+    let store = TestStore(initialState: state) {
       ChatFeature()
     } withDependencies: {
-      $0.queryPipeline = Self.scriptedPipeline()
+      $0.readAloud = .noop
       $0.historyClient = .noop()
-      $0.uuid = .incrementing
-      $0.date = .constant(Date(timeIntervalSince1970: 0))
     }
     store.exhaustivity = .off
 
-    await store.send(
-      .pipelineEvent(
-        .turnFinished(
-          outcome: .failed(message: "late"),
-          telemetry: TurnTelemetry(originalQuestion: "q"))))
+    await store.send(.readAloudTapped(messageID: messageID))
+    #expect(store.state.readAloud?.messageID == messageID)
+    #expect(store.state.readAloud?.phase == .playing)
 
-    #expect(store.state.messages.isEmpty)
-    #expect(store.state.isProcessing == false)
+    await store.send(.readAloudPauseTapped)
+    #expect(store.state.readAloud?.phase == .paused)
+
+    await store.send(.readAloudResumeTapped)
+    #expect(store.state.readAloud?.phase == .playing)
+
+    await store.send(.readAloudStopTapped)
+    #expect(store.state.readAloud == nil)
+    await store.finish()
   }
 
-  @Test func legacyMillisecondQueryResultDecodesToMicroseconds() throws {
-    // Obtain the compiler's enum representation while preserving an old
-    // timing key, rather than depending on a hand-authored SQLValue shape.
-    let current = QueryResult(
-      columns: ["n"],
-      rows: [[.integer(1)]],
-      elapsedMicroseconds: 2_500)
-    var object =
-      try #require(
-        JSONSerialization.jsonObject(
-          with: JSONEncoder().encode(current)) as? [String: Any])
-    object.removeValue(forKey: "elapsedMicroseconds")
-    object["elapsedMilliseconds"] = 2.5
-    let decoded = try JSONDecoder().decode(
-      QueryResult.self,
-      from: JSONSerialization.data(withJSONObject: object))
-    #expect(decoded.elapsedMicroseconds == 2_500)
+  @Test func draftSavesAfterDebounce() async {
+    let drafts = CallRecorder()
+    var history = HistoryClient.noop()
+    history.saveDraft = { _, draft in drafts.record(draft) }
+    let clock = TestClock()
+    let store = TestStore(initialState: Self.chatState()) {
+      ChatFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.binding(.set(\.composerText, "unsent draft")))
+    #expect(drafts.count == 0)
+    await clock.advance(by: .milliseconds(500))
+    await store.finish()
+    #expect(drafts.recorded == ["unsent draft"])
   }
 
-  @Test func legacyNoConsensusTelemetryMigratesToUnconfirmed() throws {
-    var telemetry = TurnTelemetry(originalQuestion: "q")
-    telemetry.schemaVersion = 1
-    telemetry.voteOutcome = .noConsensus(
-      anchorCandidateID: CandidateID(rawValue: "initial"),
-      candidateCount: 3,
-      reason: nil)
-    telemetry.confidence = nil
-    telemetry.noConsensusReason = nil
+  @Test func conversationTurnsPairsQuestionsWithAnswerSummaries() {
+    let messages: [ChatMessage] = [
+      ChatMessage(
+        id: UUID(1), role: .user, body: .text("first question"),
+        createdAt: Date(timeIntervalSince1970: 0)),
+      ChatMessage(
+        id: UUID(2), role: .assistant,
+        body: .answer(
+          result: answer, narration: "first summary", sql: "SELECT 1",
+          notice: nil),
+        createdAt: Date(timeIntervalSince1970: 1)),
+      ChatMessage(
+        id: UUID(3), role: .user, body: .text("clarifying question"),
+        createdAt: Date(timeIntervalSince1970: 2)),
+      ChatMessage(
+        id: UUID(4), role: .assistant, body: .clarification("which fund?"),
+        createdAt: Date(timeIntervalSince1970: 3)),
+      ChatMessage(
+        id: UUID(5), role: .user, body: .text("second question"),
+        createdAt: Date(timeIntervalSince1970: 4)),
+      ChatMessage(
+        id: UUID(6), role: .assistant,
+        body: .answer(
+          result: answer, narration: "second summary", sql: "SELECT 2",
+          notice: nil),
+        createdAt: Date(timeIntervalSince1970: 5)),
+    ]
 
-    let decoded = try JSONDecoder().decode(
-      TurnTelemetry.self,
-      from: JSONEncoder().encode(telemetry))
-    #expect(decoded.confidence == .unconfirmed)
-    #expect(decoded.noConsensusReason == .conflictingResults)
+    let turns = ChatFeature.conversationTurns(from: messages)
+
+    #expect(turns == [
+      ConversationTurn(question: "first question", answerSummary: "first summary"),
+      ConversationTurn(question: "second question", answerSummary: "second summary"),
+    ])
   }
 }

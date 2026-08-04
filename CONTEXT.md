@@ -72,6 +72,28 @@ A historical appraisal event for a property (date, method, value, cap rate). Ans
 **Loan**:
 Mortgage debt secured by a property (lender, balances, rate, maturity, LTV, DSCR).
 
+### Conversation experience
+
+**Conversation**:
+A persisted, user-visible thread of portfolio questions and CREG responses, with its own title and unsent draft.
+_Avoid_: session
+
+**Conversation Browser**:
+The user-visible collection of Conversations used to search, create, and return to portfolio explorations.
+_Avoid_: history screen, chat list
+
+**Queued Question**:
+A submitted question accepted into a Conversation but waiting for CREG to finish earlier inference work before answering it.
+_Avoid_: pending message
+
+**Answer Feedback**:
+A user's Helpful or Not right judgment attached to one completed CREG answer, optionally followed by correction context.
+_Avoid_: rating
+
+**Support Bundle**:
+An explicit developer-support export containing Conversations, drafts, results, Answer Feedback, diagnostics, and model and build provenance. It excludes model weights and the bundled portfolio database itself.
+_Avoid_: log export, telemetry dump
+
 ### Query pipeline
 
 **Standalone Question**:
