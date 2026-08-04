@@ -2,92 +2,184 @@ import CREGEngine
 import ComposableArchitecture
 import Foundation
 
+/// The Conversation reducer: one persisted, user-visible thread of portfolio
+/// questions and CREG responses, with its own title and unsent draft
+/// (CONTEXT.md "Conversation"). Global concerns — the single inference
+/// pipeline, the cross-conversation queue, model readiness, and the
+/// Conversation Browser — belong to ``AppFeature``.
 @Reducer
 public struct ChatFeature: Sendable {
-  public enum ModelReadiness: Sendable, Equatable {
-    case preparing
-    case ready
-    case failed(message: String)
+  /// The in-flight turn this conversation is showing: a compact live status
+  /// row with an expandable plain-English timeline.
+  public struct ProcessingState: Equatable, Sendable {
+    public var questionID: UUID
+    public var question: String
+    public var startedAt: Date
+    public var trace: [String]
+    public var isTimelineExpanded: Bool
+
+    public init(
+      questionID: UUID,
+      question: String,
+      startedAt: Date,
+      trace: [String] = [],
+      isTimelineExpanded: Bool = false
+    ) {
+      self.questionID = questionID
+      self.question = question
+      self.startedAt = startedAt
+      self.trace = trace
+      self.isTimelineExpanded = isTimelineExpanded
+    }
+  }
+
+  /// Correction context shown above the composer after a Not right judgment;
+  /// the next submitted question records as that answer's correction.
+  public struct CorrectionContext: Equatable, Sendable {
+    public var messageID: UUID
+    public var answerNarration: String
+
+    public init(messageID: UUID, answerNarration: String) {
+      self.messageID = messageID
+      self.answerNarration = answerNarration
+    }
+  }
+
+  /// Narration-only Read Aloud playback for one answer.
+  public struct ReadAloudState: Equatable, Sendable {
+    public enum Phase: Equatable, Sendable {
+      case playing
+      case paused
+    }
+
+    public var messageID: UUID
+    public var phase: Phase
+
+    public init(messageID: UUID, phase: Phase = .playing) {
+      self.messageID = messageID
+      self.phase = phase
+    }
   }
 
   @ObservableState
   public struct State: Equatable {
-    public var messages: IdentifiedArrayOf<ChatMessage> = []
-    public var composerText = ""
-    public var isProcessing = false
+    public var conversationID: UUID
+    public var title: String
+    public var isManuallyTitled: Bool
+    public var messages: IdentifiedArrayOf<ChatMessage>
+    public var feedback: [UUID: AnswerFeedback]
+    public var composerText: String
     /// Keyboard-candidate protection owned by the reducer so every cancel and
     /// commit path is deterministic and testable.
     public var isSubmissionPending = false
-    public var modelReadiness: ModelReadiness = .preparing
-    /// Trace lines accumulating for the in-flight turn.
-    public var currentTrace: [String] = []
-    /// JSONL lines accumulating for the in-flight turn.
-    public var currentEventLines: [String] = []
-    public var developerMode = false
-    public var isSettingsPresented = false
-    public var conversationID: UUID?
-    /// Set after a successful export, consumed by the share sheet.
+    public var interruptedTurn: InterruptedTurn?
+    public var correctionContext: CorrectionContext?
+    public var readAloud: ReadAloudState?
+    /// Maintained by ``AppFeature``: the active turn when it belongs to this
+    /// conversation, and this conversation's Queued Questions.
+    public var processing: ProcessingState?
+    public var queued: [QueuedQuestion] = []
+    /// Full-screen Result Viewer presentation (the message whose result is
+    /// being inspected).
+    public var resultViewerMessageID: UUID?
+    public var isRenamePresented = false
+    public var renameDraft = ""
+    /// Set after a successful JSONL export, consumed by the share sheet.
     public var exportURL: URL?
-    public var presentedFailure: FailurePresentation?
-    public var debugModelIdentity: DebugModelIdentity?
-    /// Experimental physical-device benchmark input supplied at process
-    /// launch. Ordinary Release builds always leave this nil.
-    public var launchBenchmarkQuestion: String?
-    public var launchBenchmarkStarted = false
 
     public init(
-      debugModelIdentity: DebugModelIdentity? = nil,
-      launchBenchmarkQuestion: String? = nil
+      conversationID: UUID,
+      title: String = "",
+      isManuallyTitled: Bool = false,
+      messages: IdentifiedArrayOf<ChatMessage> = [],
+      feedback: [UUID: AnswerFeedback] = [:],
+      composerText: String = "",
+      interruptedTurn: InterruptedTurn? = nil
     ) {
-      #if DEBUG || CREG_DEVICE_BENCHMARK
-        self.debugModelIdentity = debugModelIdentity ?? Self.bundledDebugModelIdentity()
-        self.launchBenchmarkQuestion =
-          launchBenchmarkQuestion
-          ?? ProcessInfo.processInfo.environment["CREG_BENCHMARK_QUESTION"]
-      #else
-        self.debugModelIdentity = nil
-        self.launchBenchmarkQuestion = nil
-      #endif
+      self.conversationID = conversationID
+      self.title = title
+      self.isManuallyTitled = isManuallyTitled
+      self.messages = messages
+      self.feedback = feedback
+      self.composerText = composerText
+      self.interruptedTurn = interruptedTurn
     }
 
-    private static func bundledDebugModelIdentity() -> DebugModelIdentity? {
-      guard
-        let url = Bundle.main.url(
-          forResource: "model-manifest", withExtension: "json")
-      else { return nil }
-      return try? ModelManifestLoader.production(
-        url: url,
-        allowDebugCandidate: true
-      ).debugModelIdentity
+    public init(snapshot: ConversationSnapshot) {
+      self.init(
+        conversationID: snapshot.summary.id,
+        title: snapshot.summary.title,
+        isManuallyTitled: snapshot.summary.isManuallyTitled,
+        messages: IdentifiedArray(uniqueElements: snapshot.messages),
+        feedback: snapshot.feedback,
+        composerText: snapshot.draft,
+        interruptedTurn: snapshot.interruptedTurn)
     }
+
+    public var displayTitle: String {
+      title.isEmpty ? "New Chat" : title
+    }
+
+    /// The composer shows Stop while this conversation owns the active turn.
+    public var isProcessing: Bool { processing != nil }
   }
 
   public enum Action: BindableAction, Sendable, Equatable {
     case binding(BindingAction<State>)
-    case onAppear
-    case retryPreparation
-    case modelPrepared
-    case modelPreparationFailed(String)
-    case historyLoaded(conversationID: UUID, messages: [ChatMessage])
+    case draftSaveDebounced
     case submissionRequested
     case submissionFocusSettled
     case submissionRefocused
     case sendTapped
     case starterQuestionTapped(StarterQueryID)
     case stopTapped
-    case pipelineEvent(PipelineEvent)
+    case cancelQueuedTapped(UUID)
+    case askAgainTapped
+    case interruptedDismissed
+    case timelineExpansionToggled
+    case feedbackHelpfulTapped(messageID: UUID)
+    case feedbackNotRightTapped(messageID: UUID)
+    case correctionDismissed
+    case readAloudTapped(messageID: UUID)
+    case readAloudPauseTapped
+    case readAloudResumeTapped
+    case readAloudStopTapped
+    case readAloudFinished
+    case resultViewerPresented(messageID: UUID)
+    case resultViewerDismissed
+    case renameTapped
+    case renameCommitted
     case exportTapped
     case exportReady(URL)
     case operationFailed(FailurePresentation)
-    case dismissFailure
+    case delegate(Delegate)
+
+    /// Global work only ``AppFeature`` can perform.
+    public enum Delegate: Sendable, Equatable {
+      case submitQuestion(question: String, starter: StarterQueryID?)
+      case stopActiveTurn
+      case cancelQueued(UUID)
+      case openBrowser
+      case newChatRequested
+      case deleteRequested
+      case renamed(String)
+    }
   }
 
-  private enum CancelID { case pipeline }
+  private enum CancelID {
+    case readAloud
+  }
 
-  @Dependency(\.queryPipeline) var pipeline
+  /// Conversation-scoped so switching conversations cannot cancel another
+  /// conversation's pending draft write.
+  private struct DraftSaveID: Hashable {
+    let conversationID: UUID
+  }
+
   @Dependency(\.historyClient) var history
-  @Dependency(\.uuid) var uuid
+  @Dependency(\.readAloud) var readAloud
   @Dependency(\.date.now) var now
+  @Dependency(\.continuousClock) var clock
   @Dependency(\.diagnostics) var diagnostics
 
   public init() {}
@@ -96,77 +188,25 @@ public struct ChatFeature: Sendable {
     BindingReducer()
     Reduce { state, action in
       switch action {
+      case .binding(\.composerText):
+        let conversationID = state.conversationID
+        let draft = state.composerText
+        return .run { _ in
+          try await clock.sleep(for: .milliseconds(500))
+          try await history.saveDraft(conversationID, draft)
+        }
+        .cancellable(
+          id: DraftSaveID(conversationID: conversationID), cancelInFlight: true)
+
       case .binding:
         return .none
 
-      case .onAppear:
-        diagnostics.info(
-          category: .submission,
-          code: "chat_appeared",
-          summary: "The chat surface appeared.",
-          context: [
-            "has_conversation": String(state.conversationID != nil),
-            "message_count": String(state.messages.count),
-          ])
-        state.modelReadiness = .preparing
-        let prepare = preparationEffect()
-        guard state.conversationID == nil else { return prepare }
-        return .merge(
-          prepare,
-          .run { send in
-            let (id, messages) = try await history.loadCurrentConversation()
-            await send(.historyLoaded(conversationID: id, messages: messages))
-          } catch: { error, send in
-            await send(
-              .operationFailed(
-                .history(
-                  operation: .load, error: error)))
-          })
-
-      case .retryPreparation:
-        diagnostics.info(
-          category: .submission,
-          code: "model_preparation_retry_requested",
-          summary: "The user requested another model preparation attempt.")
-        state.modelReadiness = .preparing
-        return preparationEffect()
-
-      case .modelPrepared:
-        state.modelReadiness = .ready
-        diagnostics.info(
-          category: .submission,
-          code: "chat_model_ready",
-          summary: "Chat submission is enabled because the SQL model is ready.")
-        return startLaunchBenchmarkIfReady(state: &state)
-
-      case .modelPreparationFailed(let diagnostic):
-        state.modelReadiness = .failed(
-          message: "The SQL model couldn’t be prepared. Check storage and try again.")
-        state.isSubmissionPending = false
-        diagnostics.record(
-          DiagnosticEvent(
-            level: .error,
-            category: .configuration,
-            code: "model_preparation_failed",
-            summary: "The SQL model could not be prepared.",
-            details: diagnostic))
+      case .draftSaveDebounced:
         return .none
-
-      case .historyLoaded(let conversationID, let messages):
-        state.conversationID = conversationID
-        state.messages = IdentifiedArray(uniqueElements: messages)
-        diagnostics.info(
-          category: .history,
-          code: "history_loaded",
-          summary: "Conversation history loaded.",
-          context: ["message_count": String(messages.count)])
-        return startLaunchBenchmarkIfReady(state: &state)
 
       case .submissionRequested:
         guard
           !state.isSubmissionPending,
-          !state.isProcessing,
-          state.modelReadiness == .ready,
           !state.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
           diagnostics.info(
@@ -179,8 +219,6 @@ public struct ChatFeature: Sendable {
                   in: .whitespacesAndNewlines
                 ).isEmpty),
               "is_pending": String(state.isSubmissionPending),
-              "is_processing": String(state.isProcessing),
-              "readiness": readiness(state.modelReadiness),
             ])
           return .none
         }
@@ -214,7 +252,7 @@ public struct ChatFeature: Sendable {
           category: .submission,
           code: "chat_submission_focus_settled",
           summary: "Focus resigned and the pending submission will commit.")
-        return startSubmission(state: &state)
+        return commitSubmission(state: &state)
 
       case .sendTapped:
         state.isSubmissionPending = false
@@ -222,13 +260,11 @@ public struct ChatFeature: Sendable {
           category: .submission,
           code: "chat_send_tapped",
           summary: "The send action was invoked.")
-        return startSubmission(state: &state)
+        return commitSubmission(state: &state)
 
       case .starterQuestionTapped(let starter):
         // Starter chips carry no typed keyboard candidates, so they bypass
-        // the focus-settling latch and submit directly. If the model is not
-        // ready yet the question simply stays in the composer.
-        guard !state.isProcessing else { return .none }
+        // the focus-settling latch and submit directly.
         state.composerText = starter.question
         state.isSubmissionPending = false
         diagnostics.info(
@@ -236,112 +272,113 @@ public struct ChatFeature: Sendable {
           code: "chat_starter_question_tapped",
           summary: "A starter-query chip submitted its reviewed query.",
           context: ["starter_query_id": starter.rawValue])
-        return startSubmission(state: &state, starter: starter)
+        return commitSubmission(state: &state, starter: starter)
 
       case .stopTapped:
         guard state.isProcessing else { return .none }
-        state.isProcessing = false
-        let stoppedMessage = ChatMessage(
-          id: uuid(), role: .assistant,
-          body: .text("Stopped — ask again whenever you're ready."),
-          traceSteps: state.currentTrace, createdAt: now)
-        state.messages.append(stoppedMessage)
-        state.currentTrace = []
-        let lines = state.currentEventLines
-        state.currentEventLines = []
+        return .send(.delegate(.stopActiveTurn))
+
+      case .cancelQueuedTapped(let id):
+        return .send(.delegate(.cancelQueued(id)))
+
+      case .askAgainTapped:
+        guard let interrupted = state.interruptedTurn else { return .none }
+        state.interruptedTurn = nil
+        state.composerText = interrupted.question
+        let conversationID = state.conversationID
         diagnostics.info(
           category: .submission,
-          code: "chat_turn_stopped",
-          summary: "The user stopped the in-flight turn.",
-          context: ["partial_event_count": String(lines.count)])
-        guard let conversationID = state.conversationID else {
-          return .cancel(id: CancelID.pipeline)
-        }
+          code: "chat_interrupted_turn_resubmitted",
+          summary: "An interrupted turn was resubmitted with Ask Again.")
         return .merge(
-          .cancel(id: CancelID.pipeline),
-          .run { send in
-            do {
-              try await history.appendMessage(conversationID, stoppedMessage)
-              try await history.appendEvents(
-                conversationID, stoppedMessage.id, lines)
-            } catch {
-              await send(
-                .operationFailed(
-                  .history(
-                    operation: .messageSave, error: error)))
-            }
-          }
-        )
+          .run { _ in try? await history.endTurnJournal(conversationID) },
+          commitSubmission(state: &state))
 
-      case .pipelineEvent(let event):
-        // A late event racing a stop must not resurrect the turn.
-        guard state.isProcessing else { return .none }
-        if let line = event.traceLine {
-          state.currentTrace.append(line)
-        }
-        if let json = try? event.jsonLine() {
-          state.currentEventLines.append(json)
-        }
-        guard case .turnFinished(let outcome, let telemetry) = event
+      case .interruptedDismissed:
+        state.interruptedTurn = nil
+        let conversationID = state.conversationID
+        return .run { _ in try? await history.endTurnJournal(conversationID) }
+
+      case .timelineExpansionToggled:
+        state.processing?.isTimelineExpanded.toggle()
+        return .none
+
+      case .feedbackHelpfulTapped(let messageID):
+        return toggleFeedback(state: &state, messageID: messageID, verdict: .helpful)
+
+      case .feedbackNotRightTapped(let messageID):
+        return toggleFeedback(state: &state, messageID: messageID, verdict: .notRight)
+
+      case .correctionDismissed:
+        state.correctionContext = nil
+        return .none
+
+      case .readAloudTapped(let messageID):
+        guard case .answer(_, let narration, _, _)? = state.messages[id: messageID]?.body
         else { return .none }
-
-        let body: ChatMessage.Body =
-          switch outcome {
-          case .answered(let result, let narration, let sql, let notice):
-            .answer(result: result, narration: narration, sql: sql, notice: notice)
-          case .needsClarification(let question):
-            .clarification(question)
-          case .failed(let message):
-            .failure(message)
-          }
-        let assistantMessage = ChatMessage(
-          id: uuid(), role: .assistant, body: body,
-          traceSteps: state.currentTrace, createdAt: now,
-          devInfo: telemetry)
-        state.messages.append(assistantMessage)
-        state.isProcessing = false
-        diagnostics.info(
-          category: .submission,
-          code: "chat_turn_rendered",
-          summary: "The terminal pipeline outcome was rendered in chat.",
-          context: [
-            "outcome": outcomeName(outcome),
-            "query_origin": telemetry.queryOrigin.rawValue,
-            "execution_path": telemetry.executionPath.rawValue,
-            "confidence": telemetry.confidence?.rawValue ?? "none",
-            "generated_count": String(telemetry.generatedCount),
-            "repair_attempts": String(telemetry.repairAttempts),
-            "recovery_outcome": telemetry.recoveryOutcome?.rawValue ?? "none",
-            "timeout_stage": timeoutStage(telemetry.timeoutStage),
-          ])
-
-        guard let conversationID = state.conversationID else { return .none }
-        let lines = state.currentEventLines
-        return .merge(
-          .run { send in
-            do {
-              try await history.appendMessage(conversationID, assistantMessage)
-            } catch {
-              await send(
-                .operationFailed(
-                  .history(
-                    operation: .messageSave, error: error)))
+        state.readAloud = ReadAloudState(messageID: messageID)
+        return .run { send in
+          for await event in readAloud.speak(narration) {
+            if event == .finished {
+              await send(.readAloudFinished)
             }
-          },
+          }
+        }
+        .cancellable(id: CancelID.readAloud, cancelInFlight: true)
+
+      case .readAloudPauseTapped:
+        guard state.readAloud?.phase == .playing else { return .none }
+        state.readAloud?.phase = .paused
+        return .run { _ in await readAloud.pause() }
+
+      case .readAloudResumeTapped:
+        guard state.readAloud?.phase == .paused else { return .none }
+        state.readAloud?.phase = .playing
+        return .run { _ in await readAloud.resume() }
+
+      case .readAloudStopTapped:
+        state.readAloud = nil
+        return .merge(
+          .cancel(id: CancelID.readAloud),
+          .run { _ in await readAloud.stop() })
+
+      case .readAloudFinished:
+        state.readAloud = nil
+        return .none
+
+      case .resultViewerPresented(let messageID):
+        state.resultViewerMessageID = messageID
+        return .none
+
+      case .resultViewerDismissed:
+        state.resultViewerMessageID = nil
+        return .none
+
+      case .renameTapped:
+        state.renameDraft = state.title
+        state.isRenamePresented = true
+        return .none
+
+      case .renameCommitted:
+        let title = state.renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.isRenamePresented = false
+        guard !title.isEmpty else { return .none }
+        state.title = title
+        state.isManuallyTitled = true
+        let conversationID = state.conversationID
+        return .merge(
+          .send(.delegate(.renamed(title))),
           .run { send in
             do {
-              try await history.appendEvents(
-                conversationID, assistantMessage.id, lines)
+              try await history.renameConversation(conversationID, title)
             } catch {
               await send(
-                .operationFailed(
-                  .history(
-                    operation: .eventSave, error: error)))
+                .operationFailed(.history(operation: .rename, error: error)))
             }
           })
 
       case .exportTapped:
-        guard let conversationID = state.conversationID else { return .none }
+        let conversationID = state.conversationID
         diagnostics.info(
           category: .history,
           code: "history_export_started",
@@ -351,9 +388,7 @@ public struct ChatFeature: Sendable {
           await send(.exportReady(url))
         } catch: { error, send in
           await send(
-            .operationFailed(
-              .history(
-                operation: .export, error: error)))
+            .operationFailed(.history(operation: .export, error: error)))
         }
 
       case .exportReady(let url):
@@ -364,155 +399,117 @@ public struct ChatFeature: Sendable {
           summary: "Conversation export finished.")
         return .none
 
-      case .operationFailed(let failure):
-        state.presentedFailure = failure
-        diagnostics.record(
-          DiagnosticEvent(
-            level: .error,
-            category: .history,
-            code: failure.code,
-            summary: failure.title,
-            details: failure.diagnostic))
+      case .operationFailed:
+        // Presented by AppFeature, which owns the failure surface.
         return .none
 
-      case .dismissFailure:
-        let code = state.presentedFailure?.code ?? "none"
-        state.presentedFailure = nil
-        diagnostics.info(
-          category: .submission,
-          code: "failure_presentation_dismissed",
-          summary: "A failure presentation was dismissed.",
-          context: ["failure_code": code])
+      case .delegate:
         return .none
       }
     }
   }
 
-  /// Starts a turn from the composer text; shared by the send path and the
-  /// starter-question chips. The pipeline effect is cancellable so Stop can
-  /// end the turn (the stream's onTermination cancels the underlying task).
-  private func startSubmission(
+  /// Commits the composer text as a submission; shared by the send path, the
+  /// starter chips, and Ask Again. The parent decides whether it dispatches
+  /// immediately or becomes a Queued Question.
+  private func commitSubmission(
     state: inout State,
     starter: StarterQueryID? = nil
   ) -> Effect<Action> {
     let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard
-      !question.isEmpty,
-      !state.isProcessing,
-      state.modelReadiness == .ready
-    else { return .none }
+    guard !question.isEmpty else { return .none }
     state.composerText = ""
-    state.isProcessing = true
-    state.currentTrace = []
-    state.currentEventLines = []
-
-    let userMessage = ChatMessage(
-      id: uuid(), role: .user, body: .text(question), createdAt: now)
-    state.messages.append(userMessage)
     let conversationID = state.conversationID
-    let turns = Self.conversationTurns(from: state.messages)
-    diagnostics.info(
-      category: .submission,
-      code: "chat_submission_committed",
-      summary: "A chat submission started a pipeline turn.",
-      context: [
-        "history_turn_count": String(turns.count),
-        "message_count": String(state.messages.count),
-        "query_origin": starter == nil ? "free_form" : "starter",
-      ])
-    return .run { send in
-      if let conversationID {
-        // Unstructured so a Stop cancellation cannot abort the user-message
-        // write; the pipeline starts only after the write settles so turn
-        // records land in transcript order.
-        let userWrite = Task {
-          try await history.appendMessage(conversationID, userMessage)
-        }
+
+    var effects: [Effect<Action>] = [
+      .cancel(id: DraftSaveID(conversationID: conversationID)),
+      .run { _ in try? await history.saveDraft(conversationID, "") },
+      .send(.delegate(.submitQuestion(question: question, starter: starter))),
+    ]
+
+    // A pending Not right correction records the question that follows it.
+    if let context = state.correctionContext,
+      var existing = state.feedback[context.messageID]
+    {
+      existing.correction = question
+      existing.updatedAt = now
+      state.feedback[context.messageID] = existing
+      state.correctionContext = nil
+      let feedback = existing
+      effects.append(
+        .run { send in
+          do {
+            try await history.saveFeedback(conversationID, feedback)
+          } catch {
+            await send(
+              .operationFailed(
+                .history(operation: .feedbackSave, error: error)))
+          }
+        })
+    }
+    return .merge(effects)
+  }
+
+  /// Helpful and Not right are reversible: tapping the active verdict clears
+  /// it, switching verdicts replaces it.
+  private func toggleFeedback(
+    state: inout State,
+    messageID: UUID,
+    verdict: AnswerFeedback.Verdict
+  ) -> Effect<Action> {
+    let conversationID = state.conversationID
+    if state.feedback[messageID]?.verdict == verdict {
+      state.feedback[messageID] = nil
+      if state.correctionContext?.messageID == messageID {
+        state.correctionContext = nil
+      }
+      diagnostics.info(
+        category: .history,
+        code: "answer_feedback_cleared",
+        summary: "An answer feedback judgment was reversed.")
+      return .run { send in
         do {
-          try await userWrite.value
+          try await history.clearFeedback(conversationID, messageID)
         } catch {
           await send(
-            .operationFailed(
-              .history(
-                operation: .messageSave, error: error)))
+            .operationFailed(.history(operation: .feedbackSave, error: error)))
         }
       }
-      guard !Task.isCancelled else { return }
-      let events =
-        starter.map { pipeline.runStarter($0, turns) }
-        ?? pipeline.run(question, turns)
-      for await event in events {
-        await send(.pipelineEvent(event))
+    }
+
+    let feedback = AnswerFeedback(
+      messageID: messageID, verdict: verdict, updatedAt: now)
+    state.feedback[messageID] = feedback
+    switch verdict {
+    case .helpful:
+      if state.correctionContext?.messageID == messageID {
+        state.correctionContext = nil
+      }
+    case .notRight:
+      if case .answer(_, let narration, _, _)? = state.messages[id: messageID]?.body {
+        state.correctionContext = CorrectionContext(
+          messageID: messageID, answerNarration: narration)
       }
     }
-    .cancellable(id: CancelID.pipeline, cancelInFlight: true)
-  }
-
-  private func startLaunchBenchmarkIfReady(
-    state: inout State
-  ) -> Effect<Action> {
-    guard
-      let question = state.launchBenchmarkQuestion?
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-      !question.isEmpty,
-      !state.launchBenchmarkStarted,
-      state.modelReadiness == .ready,
-      state.conversationID != nil,
-      !state.isProcessing
-    else { return .none }
-
-    // A launch benchmark is a standalone turn. Do not let a prior installed
-    // build's conversation trigger Foundation Models rewrite work or alter the
-    // SQL prompt being timed.
-    state.messages.removeAll()
-    state.launchBenchmarkStarted = true
-    state.composerText = question
     diagnostics.info(
-      category: .submission,
-      code: "launch_benchmark_started",
-      summary: "The Debug launch benchmark started.")
-    return startSubmission(state: &state)
-  }
-
-  private func preparationEffect() -> Effect<Action> {
-    .run { send in
-      try await pipeline.prepare()
-      await send(.modelPrepared)
-    } catch: { error, send in
-      await send(.modelPreparationFailed(DiagnosticDetails.describe(error)))
-    }
-  }
-
-  private func readiness(_ readiness: ModelReadiness) -> String {
-    switch readiness {
-    case .preparing: "preparing"
-    case .ready: "ready"
-    case .failed: "failed"
-    }
-  }
-
-  private func outcomeName(_ outcome: TurnOutcome) -> String {
-    switch outcome {
-    case .answered: "answered"
-    case .needsClarification: "needs_clarification"
-    case .failed: "failed"
-    }
-  }
-
-  private func timeoutStage(_ stage: String?) -> String {
-    guard let stage else { return "none" }
-    return switch stage {
-    case "turn", "generation", "validation", "execution", "grounding",
-      "rewrite", "gate", "narration", "cancelled":
-      stage
-    default:
-      "unknown"
+      category: .history,
+      code: "answer_feedback_recorded",
+      summary: "An answer feedback judgment was recorded.",
+      context: ["verdict": verdict.rawValue])
+    return .run { send in
+      do {
+        try await history.saveFeedback(conversationID, feedback)
+      } catch {
+        await send(
+          .operationFailed(.history(operation: .feedbackSave, error: error)))
+      }
     }
   }
 
   /// Prior answered exchanges, oldest first, for the FM follow-up rewrite.
-  static func conversationTurns(from messages: IdentifiedArrayOf<ChatMessage>) -> [ConversationTurn]
-  {
+  public static func conversationTurns(
+    from messages: some Sequence<ChatMessage>
+  ) -> [ConversationTurn] {
     var turns: [ConversationTurn] = []
     var pendingQuestion: String?
     for message in messages {
@@ -530,233 +527,4 @@ public struct ChatFeature: Sendable {
     }
     return turns
   }
-}
-
-// MARK: - Dependencies
-
-extension QueryPipeline: DependencyKey {
-  public static var testValue: QueryPipeline {
-    QueryPipeline { _, _ in AsyncStream { $0.finish() } }
-  }
-
-  public static var liveValue: QueryPipeline { LiveDependencies.pipeline }
-}
-
-extension HistoryClient: DependencyKey {
-  public static var testValue: HistoryClient { .noop() }
-  public static var liveValue: HistoryClient { LiveDependencies.history }
-}
-
-extension DependencyValues {
-  public var queryPipeline: QueryPipeline {
-    get { self[QueryPipeline.self] }
-    set { self[QueryPipeline.self] = newValue }
-  }
-
-  public var historyClient: HistoryClient {
-    get { self[HistoryClient.self] }
-    set { self[HistoryClient.self] = newValue }
-  }
-}
-
-/// Builds the live dependency graph exactly once. The single
-/// ``InferenceSerializer`` shared by FM and MLX calls is the PRD §7.1
-/// "never overlap" guarantee.
-private enum LiveDependencies {
-  static let diagnostics = DiagnosticsClient.live
-  static let serializer = InferenceSerializer(diagnostics: diagnostics)
-
-  static let pipeline: QueryPipeline = {
-    let bundle = Bundle.main
-    let bundledManifest = bundle.url(
-      forResource: "model-manifest", withExtension: "json")
-    let bundledReceipt = bundle.url(
-      forResource: "production-model-receipt", withExtension: "json")
-    let bundledModelDirectory = bundle.url(
-      forResource: "SQLModel", withExtension: nil)
-    diagnostics.info(
-      category: .configuration,
-      code: "application_bootstrap_started",
-      summary: "The on-device SQL runtime bootstrap started.",
-      context: [
-        "has_manifest": String(bundledManifest != nil),
-        "has_model_directory": String(bundledModelDirectory != nil),
-        "has_receipt": String(bundledReceipt != nil),
-      ])
-    let production: ProductionGenerationConfiguration
-    let productionResult = ProductionModelBootstrap.load(
-      diagnostics: diagnostics
-    ) {
-      guard let bundledManifest else { throw ModelManifestError.missing }
-      #if DEBUG || CREG_DEVICE_BENCHMARK
-        let configuration = try ModelManifestLoader.production(
-          url: bundledManifest,
-          allowDebugCandidate: true)
-      #else
-        let configuration = try ModelManifestLoader.production(
-          url: bundledManifest)
-      #endif
-      guard let bundledReceipt, let bundledModelDirectory else {
-        throw ModelManifestError.missingReceipt
-      }
-      #if !DEBUG && !CREG_DEVICE_BENCHMARK
-        guard configuration.debugModelIdentity == nil else {
-          throw ModelManifestError.invalidProductionConfiguration(
-            "Release refuses Debug candidate model identities")
-        }
-        guard configuration.policyVersion == "bounded-three-generation-v1" else {
-          throw ModelManifestError.invalidProductionConfiguration(
-            "Release requires schema-v3 bounded-policy evidence")
-        }
-      #endif
-      try ProductionModelReceiptLoader.validate(
-        manifestURL: bundledManifest,
-        receiptURL: bundledReceipt,
-        modelDirectory: bundledModelDirectory,
-        production: configuration,
-        diagnostics: diagnostics)
-      return configuration
-    }
-    switch productionResult {
-    case .success(let configuration):
-      production = configuration
-    case .failure(let failure):
-      diagnostics.info(
-        category: .configuration,
-        code: "application_bootstrap_blocked",
-        summary: "The on-device SQL runtime bootstrap was blocked.",
-        context: ["failure_code": failure.code])
-      return .unavailable(
-        userMessage: failure.message,
-        diagnosticCode: failure.code,
-        diagnostic: failure.diagnostic)
-    }
-    guard let bundledModelDirectory else {
-      return .unavailable(
-        userMessage: "This build is missing its verified SQL model.",
-        diagnosticCode: "production_receipt_missing",
-        diagnostic: ModelManifestError.missingReceipt.localizedDescription)
-    }
-    #if DEBUG || CREG_DEVICE_BENCHMARK
-      let useWiredMemory =
-        ProcessInfo.processInfo.environment["CREG_WIRED_MEMORY"] == "true"
-    #else
-      let useWiredMemory = false
-    #endif
-    let sqlGen = SQLGenClient.live(
-      directory: bundledModelDirectory,
-      diagnostics: diagnostics,
-      useWiredMemory: useWiredMemory,
-      useDirectPromptSuffix: true,
-      metalCommandBufferLimitMB: production.metalCommandBufferLimitMB,
-      compiledQwen2MLPFusion: production.compiledQwen2MLPFusion,
-      compiledQwen2QKVVerificationFusion:
-        production.compiledQwen2QKVVerificationFusion,
-      verificationMLPSkipLayers: production.verificationMLPSkipLayers,
-      verificationMLPLongBatchExtraSkipLayers:
-        production.verificationMLPLongBatchExtraSkipLayers,
-      verificationMLPConfidenceSkip:
-        production.verificationMLPConfidenceSkip,
-      verificationMLPAdditionalConfidenceSkips:
-        production.verificationMLPAdditionalConfidenceSkips,
-      questionAwareOutputHead: production.questionAwareOutputHead,
-      compactQuestionAwareOutputHead:
-        production.compactQuestionAwareOutputHead,
-      productionNGramSpeculation: production.sqlNGramSpeculation
-    )
-    .reportingModelLoad(
-      to: diagnostics,
-      modelKey: production.model.key)
-
-    let db: DatabaseClient
-    let databaseReady: Bool
-    diagnostics.info(
-      category: .database,
-      code: "portfolio_database_open_started",
-      summary: "The bundled portfolio database open started.")
-    if let url = Bundle.main.url(forResource: "creg", withExtension: "sqlite") {
-      do {
-        db = try DatabaseClient.live(url: url)
-        databaseReady = true
-        diagnostics.info(
-          category: .database,
-          code: "portfolio_database_open_finished",
-          summary: "The bundled portfolio database opened read-only.",
-          context: ["row_cap": String(DatabaseClient.defaultRowCap)])
-      } catch {
-        databaseReady = false
-        diagnostics.record(
-          DiagnosticEvent(
-            level: .error,
-            category: .database,
-            code: "portfolio_database_open_failed",
-            summary: "The bundled portfolio database could not be opened.",
-            details: DiagnosticDetails.describe(error)))
-        db = .unavailableBundledPortfolioDatabase(
-          diagnostic: DiagnosticDetails.describe(error))
-      }
-    } else {
-      databaseReady = false
-      diagnostics.record(
-        DiagnosticEvent(
-          level: .error,
-          category: .database,
-          code: "portfolio_database_missing",
-          summary: "The bundled portfolio database resource is missing."))
-      db = .unavailableBundledPortfolioDatabase(
-        diagnostic: "The bundled portfolio database resource is missing.")
-    }
-    diagnostics.info(
-      category: .configuration,
-      code: databaseReady
-        ? "application_bootstrap_finished" : "application_bootstrap_degraded",
-      summary: databaseReady
-        ? "The on-device SQL runtime bootstrap finished."
-        : "The on-device SQL runtime bootstrap finished without a usable database.",
-      context: [
-        "database_ready": String(databaseReady),
-        "model_key": production.model.key,
-        "policy_version": production.policyVersion ?? "legacy",
-        "runtime_policy_version": production.runtimePolicyVersion ?? "legacy",
-        "debug_training_run": production.debugModelIdentity?.trainingRunID ?? "none",
-      ])
-    return QueryPipeline.live(
-      fm: .live(),
-      sqlGen: sqlGen,
-      db: db,
-      serializer: serializer,
-      configuration: .init(
-        production: production,
-        gateSensitivity: 0,
-        maxRepairAttempts: 2)
-    ).reportingOperations(to: diagnostics)
-  }()
-
-  static let history: HistoryClient = {
-    let url = URL.applicationSupportDirectory
-      .appendingPathComponent("CREG", isDirectory: true)
-      .appendingPathComponent("history.sqlite")
-    diagnostics.info(
-      category: .history,
-      code: "history_store_open_started",
-      summary: "The local conversation history store open started.")
-    do {
-      let client = try HistoryClient.live(databaseURL: url)
-      diagnostics.info(
-        category: .history,
-        code: "history_store_open_finished",
-        summary: "The local conversation history store opened.")
-      return client
-    } catch {
-      diagnostics.record(
-        DiagnosticEvent(
-          level: .error,
-          category: .history,
-          code: "history_store_open_failed",
-          summary: "The local conversation history store could not be opened.",
-          details: DiagnosticDetails.describe(error)))
-      return .unavailable(
-        diagnostic: DiagnosticDetails.describe(error))
-    }
-  }()
 }

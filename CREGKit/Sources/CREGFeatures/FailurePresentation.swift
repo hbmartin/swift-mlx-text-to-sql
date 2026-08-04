@@ -93,14 +93,32 @@ extension FailurePresentation {
     case .load:
       title = "History unavailable"
       message =
-        "CREG couldn’t load your saved conversation. You can continue, but this session may not be saved."
+        "CREG couldn’t load your saved conversation. You can continue, but this conversation may not be saved."
     case .messageSave, .eventSave:
       title = "Conversation not saved"
       message =
         "Your conversation is still visible, but CREG couldn’t save it. Try again after restarting the app."
     case .export:
       title = "Export failed"
-      message = "CREG couldn’t export this session. Please try again."
+      message = "CREG couldn’t export this conversation. Please try again."
+    case .conversationCreate:
+      title = "New chat failed"
+      message = "CREG couldn’t create a new conversation. Please try again."
+    case .rename:
+      title = "Rename not saved"
+      message = "CREG couldn’t save the new conversation title. Please try again."
+    case .delete:
+      title = "Delete failed"
+      message = "CREG couldn’t delete that conversation. Please try again."
+    case .search:
+      title = "Search unavailable"
+      message = "CREG couldn’t search your conversations. Please try again."
+    case .feedbackSave:
+      title = "Feedback not saved"
+      message = "CREG couldn’t save your answer feedback. Please try again."
+    case .supportBundle:
+      title = "Support bundle failed"
+      message = "CREG couldn’t assemble the support bundle. Please try again."
     }
     return FailurePresentation(
       code: operation.code,
@@ -115,6 +133,12 @@ enum HistoryFailureOperation: String, Sendable {
   case messageSave
   case eventSave
   case export
+  case conversationCreate
+  case rename
+  case delete
+  case search
+  case feedbackSave
+  case supportBundle
 
   var code: String {
     switch self {
@@ -122,6 +146,12 @@ enum HistoryFailureOperation: String, Sendable {
     case .messageSave: "history_message_save_failed"
     case .eventSave: "history_event_save_failed"
     case .export: "history_export_failed"
+    case .conversationCreate: "history_conversation_create_failed"
+    case .rename: "history_rename_failed"
+    case .delete: "history_delete_failed"
+    case .search: "history_search_failed"
+    case .feedbackSave: "history_feedback_save_failed"
+    case .supportBundle: "support_bundle_failed"
     }
   }
 }

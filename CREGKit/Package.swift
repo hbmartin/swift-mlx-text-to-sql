@@ -26,6 +26,8 @@ let package = Package(
       revision: "747fe3117311e3de1e43fcbc5f8cb164227bd1f3"),
     .package(url: "https://github.com/groue/GRDB.swift", from: "7.11.1"),
     .package(url: "https://github.com/pointfreeco/swift-composable-architecture", from: "1.26.0"),
+    // Interoperable ZIP creation for the Support Bundle export.
+    .package(url: "https://github.com/weichsel/ZIPFoundation", from: "0.9.20"),
     // Concrete Hub and tokenizer adapters avoid compiler-plugin loading in
     // application builds while preserving the pinned MLXLM loading contract.
     .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
@@ -62,6 +64,7 @@ let package = Package(
       dependencies: [
         "CREGEngine",
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
+        .product(name: "ZIPFoundation", package: "ZIPFoundation"),
       ]
     ),
     .executableTarget(

@@ -5,6 +5,7 @@ import Foundation
 public enum PortfolioSnapshot {
   public static let asOfDate = "2026-07-01"
   public static let nextTwelveMonthsEndExclusive = "2027-07-01"
+  public static let nextTwentyFourMonthsEndExclusive = "2028-07-01"
 }
 
 /// A reviewed, versioned product query shown on the empty chat surface.
@@ -18,6 +19,9 @@ public enum StarterQueryID: String, CaseIterable, Sendable, Equatable, Hashable,
   case rentRollByPropertyTypeV1 = "rent-roll-by-property-type-v1"
   case leaseExpirationsNextTwelveMonthsV1 =
     "lease-expirations-next-twelve-months-v1"
+  case portfolioValueByFundV1 = "portfolio-value-by-fund-v1"
+  case loanMaturitiesNextTwentyFourMonthsV1 =
+    "loan-maturities-next-twenty-four-months-v1"
 
   public var id: String { rawValue }
 
@@ -29,6 +33,10 @@ public enum StarterQueryID: String, CaseIterable, Sendable, Equatable, Hashable,
       "What's my rent roll by property type?"
     case .leaseExpirationsNextTwelveMonthsV1:
       "Which leases expire in the next 12 months?"
+    case .portfolioValueByFundV1:
+      "What's the current market value of the portfolio by fund?"
+    case .loanMaturitiesNextTwentyFourMonthsV1:
+      "Which properties have loans maturing in the next 24 months?"
     }
   }
 
@@ -41,6 +49,10 @@ public enum StarterQueryID: String, CaseIterable, Sendable, Equatable, Hashable,
       "Annual base rent from Active or Holdover leases at held properties, grouped by property type."
     case .leaseExpirationsNextTwelveMonthsV1:
       "Active leases at held properties expiring on or after \(PortfolioSnapshot.asOfDate) and before \(PortfolioSnapshot.nextTwelveMonthsEndExclusive), listed with tenant and property identity."
+    case .portfolioValueByFundV1:
+      "The sum of current market value for held properties, grouped by fund."
+    case .loanMaturitiesNextTwentyFourMonthsV1:
+      "Loans secured by held properties maturing on or after \(PortfolioSnapshot.asOfDate) and before \(PortfolioSnapshot.nextTwentyFourMonthsEndExclusive), with property, lender, current balance, and maturity date."
     }
   }
 
@@ -82,6 +94,26 @@ public enum StarterQueryID: String, CaseIterable, Sendable, Equatable, Hashable,
         AND l.expiration_date >= '\(PortfolioSnapshot.asOfDate)'
         AND l.expiration_date < '\(PortfolioSnapshot.nextTwelveMonthsEndExclusive)'
       ORDER BY l.expiration_date, t.name, p.name, l.lease_id
+      """
+    case .portfolioValueByFundV1:
+      """
+      SELECT f.name AS fund,
+             SUM(p.current_market_value) AS current_market_value
+      FROM properties p
+      JOIN funds f ON f.fund_id = p.fund_id
+      WHERE p.status != 'Sold'
+      GROUP BY f.name
+      ORDER BY current_market_value DESC, f.name
+      """
+    case .loanMaturitiesNextTwentyFourMonthsV1:
+      """
+      SELECT p.name AS property, ln.lender, ln.current_balance, ln.maturity_date
+      FROM loans ln
+      JOIN properties p ON p.property_id = ln.property_id
+      WHERE p.status != 'Sold'
+        AND ln.maturity_date >= '\(PortfolioSnapshot.asOfDate)'
+        AND ln.maturity_date < '\(PortfolioSnapshot.nextTwentyFourMonthsEndExclusive)'
+      ORDER BY ln.maturity_date, p.name, ln.lender
       """
     }
   }

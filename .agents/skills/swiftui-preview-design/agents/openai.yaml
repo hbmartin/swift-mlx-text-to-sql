@@ -1,0 +1,4 @@
+interface:
+  display_name: "SwiftUI Preview Design"
+  short_description: "Preview-first visual comparison for SwiftUI changes"
+  default_prompt: "Use $swiftui-preview-design to implement or review this SwiftUI design change with deterministic named previews, rendered visual comparison, and full-app Simulator escalation only when a preview cannot provide the required evidence."

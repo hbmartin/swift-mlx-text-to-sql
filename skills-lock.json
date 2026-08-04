@@ -19,6 +19,12 @@
       "skillPath": "skills/productivity/grilling/SKILL.md",
       "computedHash": "368d3dd7251247c69f3656d93dc83c8f1577792eacac2111f1e7981db2ece49b"
     },
+    "ios26-liquid-glass": {
+      "source": "tryhuset/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ios26-liquid-glass/SKILL.md",
+      "computedHash": "05015650adda67331afa9144cf7af31862e396d95732e442cdd39e3666881519"
+    },
     "wandb-primary": {
       "source": "wandb/skills",
       "sourceType": "github",
