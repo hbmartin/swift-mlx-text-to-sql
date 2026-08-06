@@ -149,6 +149,102 @@ extension HapticsClient: DependencyKey {
   public static var liveValue: HapticsClient { .live() }
 }
 
+// MARK: - App icon
+
+/// The three shipped app icons. Raw values are the `.icon` document names wired
+/// into `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES`; the primary is
+/// addressed as `nil` because that is what UIKit expects.
+public enum AppIconVariant: String, CaseIterable, Sendable, Equatable {
+  case midnight = "AppIconMidnight"
+  case indigo = "AppIconIndigo"
+  case midnightGold = "AppIconMidnightGold"
+
+  public var isPrimary: Bool { self == .midnight }
+
+  /// `nil` restores the primary icon.
+  public var alternateName: String? { isPrimary ? nil : rawValue }
+
+  public var title: String {
+    switch self {
+    case .midnight: "Midnight"
+    case .indigo: "Indigo"
+    case .midnightGold: "Midnight Gold"
+    }
+  }
+
+  public init(alternateName: String?) {
+    self = AppIconVariant(rawValue: alternateName ?? "") ?? .midnight
+  }
+}
+
+/// Reads and switches the home-screen icon.
+///
+/// Switching always surfaces a system alert that cannot be suppressed, so this
+/// is only ever driven by an explicit tap in Settings.
+public struct AppIconClient: Sendable {
+  public var current: @Sendable () async -> AppIconVariant
+  public var select: @Sendable (AppIconVariant) async throws -> Void
+  /// False when the platform or the built Info.plist has no alternates, which
+  /// makes it a useful canary for the asset-catalog wiring.
+  public var supportsAlternates: @Sendable () async -> Bool
+
+  public init(
+    current: @escaping @Sendable () async -> AppIconVariant,
+    select: @escaping @Sendable (AppIconVariant) async throws -> Void,
+    supportsAlternates: @escaping @Sendable () async -> Bool
+  ) {
+    self.current = current
+    self.select = select
+    self.supportsAlternates = supportsAlternates
+  }
+}
+
+extension AppIconClient {
+  public static let noop = AppIconClient(
+    current: { .midnight },
+    select: { _ in },
+    supportsAlternates: { false })
+
+  public static func live() -> AppIconClient {
+    AppIconClient(
+      current: {
+        #if canImport(UIKit)
+          await MainActor.run {
+            AppIconVariant(alternateName: UIApplication.shared.alternateIconName)
+          }
+        #else
+          .midnight
+        #endif
+      },
+      select: { variant in
+        #if canImport(UIKit)
+          try await applyAlternateIcon(variant.alternateName)
+        #endif
+      },
+      supportsAlternates: {
+        #if canImport(UIKit)
+          await MainActor.run { UIApplication.shared.supportsAlternateIcons }
+        #else
+          false
+        #endif
+      })
+  }
+}
+
+extension AppIconClient: DependencyKey {
+  public static var testValue: AppIconClient { .noop }
+  public static var liveValue: AppIconClient { .live() }
+}
+
+#if canImport(UIKit)
+  /// `UIApplication` is main-actor isolated and not `Sendable`, so the hop has
+  /// to happen around the call rather than around the instance.
+  @MainActor
+  private func applyAlternateIcon(_ name: String?) async throws {
+    try await UIApplication.shared.setAlternateIconName(name)
+  }
+#endif
+
 // MARK: - Dependency registrations
 
 extension QueryPipeline: DependencyKey {
@@ -194,6 +290,11 @@ extension DependencyValues {
     get { self[SupportBundleClient.self] }
     set { self[SupportBundleClient.self] = newValue }
   }
+
+  public var appIcon: AppIconClient {
+    get { self[AppIconClient.self] }
+    set { self[AppIconClient.self] = newValue }
+  }
 }
 
 #if canImport(UIKit)
@@ -209,6 +310,23 @@ enum LiveDependencies {
   static let readAloud = ReadAloudClient.live()
 
   static let pipeline: QueryPipeline = {
+    // ``RootView`` already walls off unsupported hardware before the store is
+    // built, so reaching here means a future entry point bypassed it. Refuse
+    // rather than load 1.75 GB of weights onto a device that will jetsam.
+    guard DeviceCapability.isCurrentDeviceSupported else {
+      diagnostics.info(
+        category: .configuration,
+        code: "application_bootstrap_blocked",
+        summary: "The device is below the supported hardware floor.",
+        context: ["failure_code": "unsupported_device"])
+      return .unavailable(
+        userMessage: DeviceCapability.requirementMessage,
+        diagnosticCode: "unsupported_device",
+        diagnostic: """
+          The device identifier \(DeviceCapability.currentIdentifier) is below \
+          the iPhone 15 floor required by the bundled model.
+          """)
+    }
     let bundle = Bundle.main
     let bundledManifest = bundle.url(
       forResource: "model-manifest", withExtension: "json")
@@ -230,7 +348,7 @@ enum LiveDependencies {
       diagnostics: diagnostics
     ) {
       guard let bundledManifest else { throw ModelManifestError.missing }
-      #if DEBUG || CREG_DEVICE_BENCHMARK
+      #if DEBUG || CREG_DEVICE_BENCHMARK || CREG_EXPERIMENTAL_MODEL
         let configuration = try ModelManifestLoader.production(
           url: bundledManifest,
           allowDebugCandidate: true)
@@ -241,7 +359,7 @@ enum LiveDependencies {
       guard let bundledReceipt, let bundledModelDirectory else {
         throw ModelManifestError.missingReceipt
       }
-      #if !DEBUG && !CREG_DEVICE_BENCHMARK
+      #if !DEBUG && !CREG_DEVICE_BENCHMARK && !CREG_EXPERIMENTAL_MODEL
         guard configuration.debugModelIdentity == nil else {
           throw ModelManifestError.invalidProductionConfiguration(
             "Release refuses Debug candidate model identities")

@@ -131,7 +131,8 @@ def test_xcode_app_is_iphone_only():
         / "CREG/Assets.xcassets/AppIcon.appiconset/Contents.json"
     ).read_text()
 
-    assert project.count("TARGETED_DEVICE_FAMILY = 1;") == 2
+    # Debug, Beta, and Release must each stay iPhone-only.
+    assert project.count("TARGETED_DEVICE_FAMILY = 1;") == 3
     assert 'TARGETED_DEVICE_FAMILY = "1,2";' not in project
     assert "UISupportedInterfaceOrientations_iPad" not in project
     assert '"idiom" : "ipad"' not in app_icons

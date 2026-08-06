@@ -1,4 +1,30 @@
+import CREGEngine
 import SwiftUI
+
+/// The terminal screen shown instead of the app on hardware below the
+/// ``DeviceCapability`` floor. It replaces the whole shell rather than
+/// degrading the chat surface, because no part of the product works without
+/// the on-device model.
+struct UnsupportedDeviceView: View {
+  var body: some View {
+    VStack(spacing: 16) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .font(.system(size: 44))
+        .foregroundStyle(.orange)
+      Text("Unsupported iPhone")
+        .font(.title2.weight(.semibold))
+      Text(DeviceCapability.requirementMessage)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+    }
+    .padding(32)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(CREGBrand.chatSurface.ignoresSafeArea())
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("unsupported-device-wall")
+  }
+}
 
 struct FailureBanner: View {
   let failure: FailurePresentation

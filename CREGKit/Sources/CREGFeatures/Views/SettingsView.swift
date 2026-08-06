@@ -31,6 +31,10 @@ struct SettingsView: View {
           )
         }
 
+        if store.supportsAlternateIcons {
+          AppIconSection(store: store)
+        }
+
         Section("Model & build") {
           LabeledContent("App version", value: Self.appVersion)
           LabeledContent("Build", value: Self.buildNumber)
