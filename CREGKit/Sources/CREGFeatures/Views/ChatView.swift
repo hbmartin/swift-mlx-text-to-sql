@@ -20,6 +20,12 @@ struct ChatView: View {
   @Bindable var store: StoreOf<ChatFeature>
   let chrome: ChatChrome
   @FocusState private var composerIsFocused: Bool
+  /// Sentinel at the end of the transcript, outside the `LazyVStack` so it is
+  /// always realized. Scrolling to it lands exactly at the bottom no matter
+  /// which cells the lazy stack has built, and — unlike a `ScrollPosition`
+  /// value, which stops applying once it already equals the target edge — an
+  /// imperative scroll runs on every tap.
+  private static let bottomAnchor = "transcript-bottom"
   @State private var isNearBottom = true
   @State private var unseenMessageCount = 0
   @State private var isDeleteConfirmationPresented = false
@@ -27,7 +33,13 @@ struct ChatView: View {
 
   var body: some View {
     ScrollViewReader { proxy in
-      ScrollView {
+      transcript(proxy: proxy)
+    }
+  }
+
+  private func transcript(proxy: ScrollViewProxy) -> some View {
+    ScrollView {
+      VStack(spacing: 0) {
         LazyVStack(alignment: .leading, spacing: 14) {
           if let identity = chrome.debugModelIdentity {
             ExperimentalModelBanner(identity: identity)
@@ -55,43 +67,44 @@ struct ChatView: View {
             ProcessingStatusRow(
               processing: processing,
               toggleExpansion: { store.send(.timelineExpansionToggled) })
-            .id("processing")
           }
         }
         .padding(.horizontal)
         .padding(.top, 8)
         .padding(.bottom, 12)
+
+        Color.clear
+          .frame(height: 1)
+          .id(Self.bottomAnchor)
       }
-      .scrollDismissesKeyboard(.interactively)
-      .onScrollGeometryChange(for: Bool.self) { geometry in
-        geometry.contentOffset.y + geometry.containerSize.height
-          >= geometry.contentSize.height - 120
-      } action: { _, nearBottom in
-        isNearBottom = nearBottom
-        if nearBottom { unseenMessageCount = 0 }
+    }
+    .scrollDismissesKeyboard(.interactively)
+    .onScrollGeometryChange(for: Bool.self) { geometry in
+      // `visibleRect` already accounts for the header and composer content
+      // insets, so this is the true distance to the end of the transcript —
+      // composing `containerSize` with `contentInsets` by hand double-counts
+      // the composer and leaves the pill showing at the bottom.
+      geometry.contentSize.height - geometry.visibleRect.maxY < 80
+    } action: { _, nearBottom in
+      withAnimation(.snappy(duration: 0.25)) { isNearBottom = nearBottom }
+      if nearBottom { unseenMessageCount = 0 }
+    }
+    .onChange(of: store.messages.count) { oldCount, newCount in
+      // Preserve position while reading older messages; only follow the
+      // transcript when the user is already at the latest content.
+      if isNearBottom {
+        scrollToLatest(proxy: proxy)
+      } else if newCount > oldCount {
+        unseenMessageCount += newCount - oldCount
       }
-      .onChange(of: store.messages.count) { oldCount, newCount in
-        // Preserve position while reading older messages; only follow the
-        // transcript when the user is already at the latest content.
-        if isNearBottom {
-          if let last = store.messages.last?.id {
-            withAnimation { proxy.scrollTo(last, anchor: .bottom) }
-          }
-        } else if newCount > oldCount {
-          unseenMessageCount += newCount - oldCount
-        }
-      }
-      .onChange(of: store.processing?.trace.count ?? 0) {
-        if store.isProcessing, isNearBottom {
-          withAnimation { proxy.scrollTo("processing", anchor: .bottom) }
-        }
-      }
-      .overlay(alignment: .bottomTrailing) {
-        jumpToLatest(proxy: proxy)
+    }
+    .onChange(of: store.processing?.trace.count ?? 0) {
+      if store.isProcessing, isNearBottom {
+        scrollToLatest(proxy: proxy)
       }
     }
     .safeAreaInset(edge: .top, spacing: 0) { header }
-    .safeAreaInset(edge: .bottom, spacing: 0) { bottomStack }
+    .safeAreaInset(edge: .bottom, spacing: 0) { bottomStack(proxy: proxy) }
     .alert("Rename Conversation", isPresented: $store.isRenamePresented) {
       TextField("Title", text: $store.renameDraft)
       Button("Save") { store.send(.renameCommitted) }
@@ -201,8 +214,12 @@ struct ChatView: View {
   // MARK: Bottom stack
 
   @ViewBuilder
-  private var bottomStack: some View {
+  private func bottomStack(proxy: ScrollViewProxy) -> some View {
     VStack(spacing: 8) {
+      // In the stack's normal flow rather than an overlay: `safeAreaInset`
+      // insets the transcript's safe area but not its frame, so a floating
+      // pill anchored to the scroll view lands beneath this stack.
+      jumpToLatest(proxy: proxy)
       if let failure = chrome.presentedFailure {
         FailureBanner(
           failure: failure,
@@ -223,13 +240,16 @@ struct ChatView: View {
       }
       composer
     }
-    .padding(.horizontal, 12)
-    .padding(.bottom, 6)
+    .padding(.horizontal, 16)
+    .padding(.bottom, 12)
   }
 
   private var composer: some View {
-    CREGGlassContainer(spacing: 16) {
-      HStack(alignment: .bottom, spacing: 8) {
+    // The container's spacing is the glass merge radius: keep it below the
+    // stack's gap so the field and the Send control read as two controls
+    // rather than blending into one blob.
+    CREGGlassContainer(spacing: 6) {
+      HStack(alignment: .bottom, spacing: 14) {
         TextField(
           "Ask about your portfolio…",
           text: $store.composerText,
@@ -331,32 +351,41 @@ struct ChatView: View {
   @ViewBuilder
   private func jumpToLatest(proxy: ScrollViewProxy) -> some View {
     if !isNearBottom, !store.messages.isEmpty {
-      Button {
-        unseenMessageCount = 0
-        if let last = store.messages.last?.id {
-          withAnimation { proxy.scrollTo(last, anchor: .bottom) }
-        }
-      } label: {
-        HStack(spacing: 5) {
-          if unseenMessageCount > 0 {
-            Text("\(unseenMessageCount)")
+      // Interactive glass needs a `GlassEffectContainer` around it — every
+      // other glass control here has one, and outside a container the effect
+      // swallows the touch instead of forwarding it to the button. The
+      // explicit content shape keeps the whole capsule tappable rather than
+      // just the chevron glyph.
+      CREGGlassContainer(spacing: 0) {
+        Button {
+          unseenMessageCount = 0
+          scrollToLatest(proxy: proxy)
+        } label: {
+          HStack(spacing: 5) {
+            if unseenMessageCount > 0 {
+              Text("\(unseenMessageCount)")
+                .font(.caption.weight(.bold))
+            }
+            Image(systemName: "chevron.down")
               .font(.caption.weight(.bold))
           }
-          Image(systemName: "chevron.down")
-            .font(.caption.weight(.bold))
+          .padding(.horizontal, 12)
+          .frame(height: 36)
+          .contentShape(.capsule)
+          .cregGlassCapsule(interactive: true)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
-        .cregGlassCapsule(interactive: true)
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
       }
-      .buttonStyle(.plain)
-      .padding(.trailing, 16)
-      .padding(.bottom, 8)
       .transition(.scale.combined(with: .opacity))
       .accessibilityLabel(
         unseenMessageCount > 0
           ? "Jump to latest, \(unseenMessageCount) new" : "Jump to latest")
     }
+  }
+
+  private func scrollToLatest(proxy: ScrollViewProxy) {
+    withAnimation { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
   }
 
   private func requestSend() {
@@ -481,9 +510,9 @@ struct QueuedQuestionCell: View {
           .padding(.horizontal, 14)
           .padding(.vertical, 9)
           .background(
-            CREGBrand.bubbleGradient.opacity(0.45),
+            CREGBrand.userBubble.opacity(0.6),
             in: RoundedRectangle(cornerRadius: 18))
-          .foregroundStyle(.white)
+          .foregroundStyle(CREGBrand.userBubbleText)
         HStack(spacing: 6) {
           Text("Queued")
             .font(.caption2.weight(.semibold))

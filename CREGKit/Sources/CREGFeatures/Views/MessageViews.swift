@@ -27,8 +27,8 @@ struct MessageCell: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .background(
-          CREGBrand.bubbleGradient, in: RoundedRectangle(cornerRadius: 18))
-        .foregroundStyle(.white)
+          CREGBrand.userBubble, in: RoundedRectangle(cornerRadius: 18))
+        .foregroundStyle(CREGBrand.userBubbleText)
     }
   }
 
