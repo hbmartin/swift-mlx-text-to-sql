@@ -19,11 +19,15 @@ private struct AppIconRecorder {
     supportsAlternates: Bool = true,
     failure: (any Error)? = nil
   ) -> AppIconClient {
-    AppIconClient(
-      current: { current },
+    // Mirror the system: after a successful selection, `current` reports the
+    // applied variant, so the reducer's confirming re-read sees it.
+    let currentIcon = LockIsolated(current)
+    return AppIconClient(
+      current: { currentIcon.value },
       select: { variant in
         if let failure { throw failure }
         storage.withValue { $0.append(variant) }
+        currentIcon.setValue(variant)
       },
       supportsAlternates: { supportsAlternates })
   }
@@ -55,8 +59,9 @@ private enum AppIconTestError: Error {
 
     await store.send(.appIconSelected(.indigo))
     await store.finish()
-    // A successful change sends nothing back, so there is deliberately no
-    // `skipReceivedActions()` here -- it would report "nothing to skip".
+    // A successful change re-reads the system icon, so the confirming
+    // `appIconLoaded` must land without disturbing the applied selection.
+    await store.skipReceivedActions()
 
     #expect(store.state.appIcon == .indigo)
     #expect(recorder.selections == [.indigo])
@@ -117,5 +122,43 @@ private enum AppIconTestError: Error {
 
     #expect(store.state.appIcon == .midnightGold)
     #expect(store.state.supportsAlternateIcons)
+  }
+
+  @Test func selectingAnIconDropsAStaleAppearanceRead() async {
+    let recorder = AppIconRecorder()
+    let base = recorder.client()
+    // The appearance read captures the pre-change icon, then parks while no
+    // selection has landed, so the user's tap always races ahead of it. Only
+    // the reducer cancelling that read keeps the stale value from reverting
+    // the selection; the confirming re-read sees a selection and falls
+    // through immediately.
+    let client = AppIconClient(
+      current: {
+        let captured = await base.current()
+        if recorder.selections.isEmpty {
+          try? await Task.sleep(for: .seconds(5))
+        }
+        return captured
+      },
+      select: base.select,
+      supportsAlternates: base.supportsAlternates)
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.appIcon = client
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.onAppear)
+    await store.send(.appIconSelected(.indigo))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.appIcon == .indigo)
+    #expect(recorder.selections == [.indigo])
   }
 }

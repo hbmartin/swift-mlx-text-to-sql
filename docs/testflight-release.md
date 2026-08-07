@@ -51,7 +51,7 @@ target-level condition never reaches them.
 
 `CREG_EXPERIMENTAL_TRAINING_RUN` in the Beta target configuration pins:
 
-```
+```text
 qwen25-coder-3b-73cb7525c61bc76c76d880076d56d39e0f25cd1675f21a01c28ae2b560838500-seed-424242-wb-0qvg7e4k
 ```
 
@@ -105,10 +105,12 @@ xcodebuild -project CREG.xcodeproj -scheme CREG \
 ## Build numbers
 
 `CFBundleVersion` is stamped by the **Stamp Distribution Build Number** phase
-as a UTC `YYYYMMDDHHMM` value, matching the convention recorded in earlier
-install notes (for example `202607291033`). App Store Connect rejects a
-repeated build number, so every archive gets a fresh one automatically. Debug
-keeps `$(CURRENT_PROJECT_VERSION)` so incremental builds do not churn.
+as a UTC `YYYYMMDDHHMMSS` value; seconds precision keeps back-to-back archives
+from ever sharing a build number. (Earlier install notes recorded the
+minute-precision predecessor, for example `202607291033`.) App Store Connect
+rejects a repeated build number, so every archive gets a fresh one
+automatically. Debug keeps `$(CURRENT_PROJECT_VERSION)` so incremental builds
+do not churn.
 
 `CFBundleShortVersionString` comes from `MARKETING_VERSION` and is bumped by
 hand.

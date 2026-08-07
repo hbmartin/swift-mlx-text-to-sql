@@ -194,7 +194,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\n\n# App Store Connect rejects a repeated CFBundleVersion, so every archive gets\n# a fresh monotonic UTC stamp. Debug keeps CURRENT_PROJECT_VERSION so\n# incremental builds do not churn the bundle on every compile.\nif [[ \"$CONFIGURATION\" == \"Debug\" ]]; then\n  exit 0\nfi\n\nPLIST=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nif [[ ! -f \"$PLIST\" ]]; then\n  echo \"error: processed Info.plist is missing at $PLIST\"\n  exit 1\nfi\n\nBUILD_NUMBER=\"$(date -u +%Y%m%d%H%M)\"\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $BUILD_NUMBER\" \"$PLIST\"\necho \"note: stamped CFBundleVersion $BUILD_NUMBER\"\n";
+			shellScript = "set -euo pipefail\n\n# App Store Connect rejects a repeated CFBundleVersion, so every archive gets\n# a fresh monotonic UTC stamp. Debug keeps CURRENT_PROJECT_VERSION so\n# incremental builds do not churn the bundle on every compile.\nif [[ \"$CONFIGURATION\" == \"Debug\" ]]; then\n  exit 0\nfi\n\nPLIST=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nif [[ ! -f \"$PLIST\" ]]; then\n  echo \"error: processed Info.plist is missing at $PLIST\"\n  exit 1\nfi\n\nBUILD_NUMBER=\"$(date -u +%Y%m%d%H%M%S)\"\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $BUILD_NUMBER\" \"$PLIST\"\necho \"note: stamped CFBundleVersion $BUILD_NUMBER\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */

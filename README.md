@@ -189,7 +189,8 @@ environment and writes the exact bundled manifest into the app.
   to an empty value to use the historical manifest-selected Debug model.
 - Beta is the TestFlight configuration: Release-level optimization, but it
   bundles the checkpoint pinned by `CREG_EXPERIMENTAL_TRAINING_RUN` through the
-  same receipt-verified materialization path as Debug, and shows the same
+  same bundle-receipt-verified materialization path as Debug (neither
+  configuration requires a W&B receipt), and shows the same
   experimental-model banner. It pins one immutable run rather than resolving
   `latest-local-v3`, ignores the launch-benchmark and wired-memory hooks, and
   still refuses to run without a receipt that matches the bundled bytes. See
