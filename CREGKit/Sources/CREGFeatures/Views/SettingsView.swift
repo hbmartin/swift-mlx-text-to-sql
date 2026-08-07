@@ -31,6 +31,8 @@ struct SettingsView: View {
           )
         }
 
+        appearanceSection
+
         if store.supportsAlternateIcons {
           AppIconSection(store: store)
         }
@@ -98,6 +100,31 @@ struct SettingsView: View {
       ) { export in
         SupportBundleSendView(export: export)
       }
+    }
+  }
+
+  /// The theme override. `.system` is the default and the app ships no
+  /// `UIUserInterfaceStyle`, so leaving this alone means CREG follows iOS.
+  private var appearanceSection: some View {
+    Section {
+      Picker(
+        "Theme",
+        selection: Binding(
+          get: { store.appearance },
+          set: { store.send(.appearanceSelected($0)) })
+      ) {
+        ForEach(AppearancePreference.allCases, id: \.self) { preference in
+          Text(preference.title).tag(preference)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+    } header: {
+      Text("Appearance")
+    } footer: {
+      Text(
+        "System follows your iPhone’s Light/Dark setting, including its automatic schedule. Light and Dark pin CREG to that theme instead."
+      )
     }
   }
 

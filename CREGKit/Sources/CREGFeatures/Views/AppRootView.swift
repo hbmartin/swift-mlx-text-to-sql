@@ -37,6 +37,9 @@ struct AppRootView: View {
   /// In-flight gesture translation, composed with the settled reveal state.
   @State private var dragTranslation: CGFloat = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The scheme actually in force. With no override applied this is the
+  /// device's own setting, which is what `.system` needs to hand a sheet.
+  @Environment(\.colorScheme) private var systemColorScheme
 
   /// The browser reveals ~80% of the width, capped near 340 points.
   static func revealWidth(for containerWidth: CGFloat) -> CGFloat {
@@ -69,10 +72,21 @@ struct AppRootView: View {
       .overlay(alignment: .top) { answerReadyBanner }
       .overlay(alignment: .bottom) { undoDeletionToast }
       .sheet(isPresented: $store.isSettingsPresented) {
+        // The Appearance picker lives in this sheet, so it has to restyle
+        // itself. A sheet is its own presentation: the root's preference
+        // reaches it when it resolves to a scheme, but clearing that
+        // preference back to nil leaves the presented sheet on the old
+        // override, so it states the resolved scheme itself.
         SettingsView(store: store)
+          .preferredColorScheme(
+            store.appearance.colorScheme ?? systemColorScheme)
       }
       .onAppear { store.send(.onAppear) }
     }
+    // Applied at the root rather than per-surface so the override reaches the
+    // Settings sheet and the browser drawer too. `.system` resolves to nil,
+    // which leaves the device's own setting in charge.
+    .preferredColorScheme(store.appearance.colorScheme)
   }
 
   private func currentOffset(revealWidth: CGFloat) -> CGFloat {

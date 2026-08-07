@@ -96,6 +96,11 @@ public struct AppFeature: Sendable {
     public var answerReadyBanner: AnswerReadyBanner?
     public var isSettingsPresented = false
     public var developerMode = false
+    /// The theme override. Unlike the app icon, nothing in the system holds
+    /// this for us, so it is persisted in user defaults and hydrated from
+    /// there when state is constructed.
+    @Shared(.appStorage(AppearancePreference.storageKey))
+    public var appearance: AppearancePreference = .system
     /// Mirrors the home-screen icon the system currently shows. Persistence is
     /// the system's job, so this is hydrated from it rather than stored.
     public var appIcon: AppIconVariant = .midnight
@@ -173,6 +178,7 @@ public struct AppFeature: Sendable {
     case supportBundleDismissed
     case appIconLoaded(AppIconVariant, supportsAlternates: Bool)
     case appIconSelected(AppIconVariant)
+    case appearanceSelected(AppearancePreference)
     case operationFailed(FailurePresentation)
     case dismissFailure
   }
@@ -501,6 +507,16 @@ public struct AppFeature: Sendable {
                 message: "CREG couldn't change its icon. Please try again.",
                 diagnostic: String(describing: error))))
         }
+
+      case .appearanceSelected(let preference):
+        guard state.appearance != preference else { return .none }
+        state.$appearance.withLock { $0 = preference }
+        diagnostics.info(
+          category: .configuration,
+          code: "appearance_preference_changed",
+          summary: "The appearance override changed.",
+          context: ["appearance": preference.rawValue])
+        return .none
 
       case .operationFailed(let failure):
         state.presentedFailure = failure
