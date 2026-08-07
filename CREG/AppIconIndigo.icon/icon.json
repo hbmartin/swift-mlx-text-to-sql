@@ -1,0 +1,48 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "extended-srgb:0.22745,0.22745,0.50196,1.00000",
+      "extended-srgb:0.10196,0.10196,0.27059,1.00000"
+    ]
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "towers.svg",
+          "name": "Towers"
+        },
+        {
+          "image-name": "chevron.svg",
+          "name": "Chevron"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "image-name": "query.svg",
+          "name": "Query"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "specular": true
+    }
+  ],
+  "supported-platforms": {
+    "circles": [
+      "watchOS"
+    ],
+    "squares": [
+      "macOS"
+    ]
+  }
+}

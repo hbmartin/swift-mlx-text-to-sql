@@ -96,6 +96,15 @@ public struct AppFeature: Sendable {
     public var answerReadyBanner: AnswerReadyBanner?
     public var isSettingsPresented = false
     public var developerMode = false
+    /// The theme override. Unlike the app icon, nothing in the system holds
+    /// this for us, so it is persisted in user defaults and hydrated from
+    /// there when state is constructed.
+    @Shared(.appStorage(AppearancePreference.storageKey))
+    public var appearance: AppearancePreference = .system
+    /// Mirrors the home-screen icon the system currently shows. Persistence is
+    /// the system's job, so this is hydrated from it rather than stored.
+    public var appIcon: AppIconVariant = .midnight
+    public var supportsAlternateIcons = false
     public var isBuildingSupportBundle = false
     public var supportBundleExport: SupportBundleExport?
     public var presentedFailure: FailurePresentation?
@@ -109,13 +118,19 @@ public struct AppFeature: Sendable {
       debugModelIdentity: DebugModelIdentity? = nil,
       launchBenchmarkQuestion: String? = nil
     ) {
-      #if DEBUG || CREG_DEVICE_BENCHMARK
+      // The experimental-model banner and the benchmark hook are deliberately
+      // decoupled: a Beta build bundles an unfinalized candidate and must say
+      // so, but must never auto-submit a question at launch.
+      #if DEBUG || CREG_DEVICE_BENCHMARK || CREG_EXPERIMENTAL_MODEL
         self.debugModelIdentity = debugModelIdentity ?? Self.bundledDebugModelIdentity()
+      #else
+        self.debugModelIdentity = nil
+      #endif
+      #if DEBUG || CREG_DEVICE_BENCHMARK
         self.launchBenchmarkQuestion =
           launchBenchmarkQuestion
           ?? ProcessInfo.processInfo.environment["CREG_BENCHMARK_QUESTION"]
       #else
-        self.debugModelIdentity = nil
         self.launchBenchmarkQuestion = nil
       #endif
     }
@@ -161,6 +176,9 @@ public struct AppFeature: Sendable {
     case supportBundleExportTapped
     case supportBundleReady(SupportBundleExport)
     case supportBundleDismissed
+    case appIconLoaded(AppIconVariant, supportsAlternates: Bool)
+    case appIconSelected(AppIconVariant)
+    case appearanceSelected(AppearancePreference)
     case operationFailed(FailurePresentation)
     case dismissFailure
   }
@@ -176,6 +194,7 @@ public struct AppFeature: Sendable {
   @Dependency(\.historyClient) var history
   @Dependency(\.supportBundle) var supportBundle
   @Dependency(\.haptics) var haptics
+  @Dependency(\.appIcon) var appIconClient
   @Dependency(\.uuid) var uuid
   @Dependency(\.date.now) var now
   @Dependency(\.continuousClock) var clock
@@ -215,9 +234,18 @@ public struct AppFeature: Sendable {
           context: ["has_selection": String(state.chat != nil)])
         state.modelReadiness = .preparing
         let prepare = preparationEffect()
-        guard state.chat == nil else { return prepare }
+        // The system owns which icon is showing, so read it back on every
+        // appearance rather than trusting stored state.
+        let readIcon = Effect<Action>.run { send in
+          await send(
+            .appIconLoaded(
+              appIconClient.current(),
+              supportsAlternates: appIconClient.supportsAlternates()))
+        }
+        guard state.chat == nil else { return .merge(prepare, readIcon) }
         return .merge(
           prepare,
+          readIcon,
           .run { send in
             let summaries = try await history.bootstrap()
             await send(.bootstrapFinished(summaries))
@@ -447,6 +475,47 @@ public struct AppFeature: Sendable {
 
       case .supportBundleDismissed:
         state.supportBundleExport = nil
+        return .none
+
+      case .appIconLoaded(let variant, let supportsAlternates):
+        state.appIcon = variant
+        state.supportsAlternateIcons = supportsAlternates
+        return .none
+
+      case .appIconSelected(let variant):
+        guard state.appIcon != variant else { return .none }
+        // Reflect the tap immediately; the system alert that follows makes a
+        // spinner look broken, and a failure puts the old value back.
+        let previous = state.appIcon
+        let supportsAlternates = state.supportsAlternateIcons
+        state.appIcon = variant
+        diagnostics.info(
+          category: .configuration,
+          code: "app_icon_selected",
+          summary: "An app icon change was requested.",
+          context: ["icon": variant.rawValue])
+        return .run { _ in
+          try await appIconClient.select(variant)
+        } catch: { error, send in
+          await send(
+            .appIconLoaded(previous, supportsAlternates: supportsAlternates))
+          await send(
+            .operationFailed(
+              FailurePresentation(
+                code: "app_icon_change_failed",
+                title: "Icon not changed",
+                message: "CREG couldn't change its icon. Please try again.",
+                diagnostic: String(describing: error))))
+        }
+
+      case .appearanceSelected(let preference):
+        guard state.appearance != preference else { return .none }
+        state.$appearance.withLock { $0 = preference }
+        diagnostics.info(
+          category: .configuration,
+          code: "appearance_preference_changed",
+          summary: "The appearance override changed.",
+          context: ["appearance": preference.rawValue])
         return .none
 
       case .operationFailed(let failure):

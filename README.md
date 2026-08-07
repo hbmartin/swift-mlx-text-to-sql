@@ -187,11 +187,22 @@ environment and writes the exact bundled manifest into the app.
   generation, and displays a permanent experimental-model banner. Set the
   build setting to an immutable run ID/path to pin a particular run, or set it
   to an empty value to use the historical manifest-selected Debug model.
+- Beta is the TestFlight configuration: Release-level optimization, but it
+  bundles the checkpoint pinned by `CREG_EXPERIMENTAL_TRAINING_RUN` through the
+  same receipt-verified materialization path as Debug, and shows the same
+  experimental-model banner. It pins one immutable run rather than resolving
+  `latest-local-v3`, ignores the launch-benchmark and wired-memory hooks, and
+  still refuses to run without a receipt that matches the bundled bytes. See
+  [`docs/testflight-release.md`](./docs/testflight-release.md).
 - Release requires a newly finalized bounded-policy selection, downloads or
   reuses cache, transactionally verifies the complete snapshot, and bundles
   it as `SQLModel` with `production-model-receipt.json`. Historical policy,
   Debug candidate override, network, selection, receipt, or integrity failure
-  stops the build. Neither configuration has a runtime Hub fallback.
+  stops the build. No configuration has a runtime Hub fallback.
+
+Beta is not a relaxed Release. Release stays strict, and remains blocked until
+a campaign clears finalization; retire Beta at that point rather than promoting
+it.
 
 ```sh
 xcodebuild -project CREG.xcodeproj -scheme CREG \
@@ -203,6 +214,12 @@ xcodebuild -project CREG.xcodeproj -scheme CREG \
 xcodebuild -project CREG.xcodeproj -scheme CREG \
   -configuration Debug -destination 'generic/platform=iOS' \
   CREG_DEBUG_TRAINING_RUN='<run-id-or-directory>' build
+
+# TestFlight. Product > Archive uses this configuration.
+xcodebuild -project CREG.xcodeproj -scheme CREG \
+  -configuration Beta -destination 'generic/platform=iOS' \
+  -skipPackagePluginValidation -skipMacroValidation \
+  CODE_SIGNING_ALLOWED=NO build
 
 xcodebuild -project CREG.xcodeproj -scheme CREG \
   -configuration Release -destination 'generic/platform=iOS' \

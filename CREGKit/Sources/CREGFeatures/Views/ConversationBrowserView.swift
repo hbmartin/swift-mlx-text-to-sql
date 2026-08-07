@@ -53,7 +53,6 @@ struct ConversationBrowserView: View {
       .padding(.horizontal, 8)
       .padding(.bottom, 8)
     }
-    .foregroundStyle(.white)
     .frame(maxHeight: .infinity, alignment: .top)
   }
 
@@ -81,7 +80,7 @@ struct ConversationBrowserView: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 8)
-    .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+    .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
     .padding(.horizontal, 16)
   }
 
@@ -175,8 +174,7 @@ struct ConversationRow: View {
                 .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(
-                  .white.opacity(0.15), in: Capsule())
+                .background(.quaternary, in: Capsule())
                 .accessibilityLabel("\(queuedCount) queued")
             }
           }
@@ -204,7 +202,7 @@ struct ConversationRow: View {
       .padding(.vertical, 8)
       .frame(minHeight: 44)
       .background(
-        isSelected ? Color.white.opacity(0.10) : .clear,
+        isSelected ? CREGBrand.blue.opacity(0.12) : .clear,
         in: RoundedRectangle(cornerRadius: 12))
       .contentShape(Rectangle())
     }

@@ -1,5 +1,11 @@
 import SwiftUI
 
+#if canImport(UIKit)
+  import UIKit
+#elseif canImport(AppKit)
+  import AppKit
+#endif
+
 /// CREG's Liquid Glass vocabulary. Glass belongs to the floating interactive
 /// layer — header, composer, menus, and high-value controls — never to the
 /// transcript or the browser underneath (ADR 0007).
@@ -7,15 +13,59 @@ import SwiftUI
 /// The package's older macOS host-test target renders a material fallback;
 /// iOS always uses the native iOS 26 glass APIs.
 enum CREGBrand {
-  /// Branded turquoise-to-blue used by trailing user bubbles and accents.
+  /// Branded turquoise and blue used by accents, unread dots, and the Send
+  /// control's tint.
   static let turquoise = Color(red: 0.20, green: 0.71, blue: 0.82)
   static let blue = Color(red: 0.12, green: 0.44, blue: 0.93)
 
-  static var bubbleGradient: LinearGradient {
-    LinearGradient(
-      colors: [turquoise, blue],
-      startPoint: .topLeading,
-      endPoint: .bottomTrailing)
+  /// The chat surface, painted edge to edge so the status-bar strip matches
+  /// the transcript in both color schemes.
+  static let chatSurface: Color = {
+    #if canImport(UIKit)
+      Color(uiColor: .systemBackground)
+    #else
+      Color(nsColor: .textBackgroundColor)
+    #endif
+  }()
+
+  /// The recessed drawer the Conversation Browser sits on, one step behind
+  /// the chat so the reveal reads as depth.
+  static let browserPanel: Color = {
+    #if canImport(UIKit)
+      Color(uiColor: .secondarySystemBackground)
+    #else
+      Color(nsColor: .windowBackgroundColor)
+    #endif
+  }()
+
+  /// Trailing user bubbles: a flat tonal blue — pale in light mode, deep in
+  /// dark mode — never a gradient.
+  static let userBubble = dynamic(
+    light: Color(red: 0.847, green: 0.914, blue: 1.0),
+    dark: Color(red: 0.118, green: 0.227, blue: 0.373))
+
+  /// The matching bubble label color; `.primary` would invert against the
+  /// deep dark-mode fill, so dark mode pins white.
+  static let userBubbleText = dynamic(light: .black, dark: .white)
+
+  /// Resolves per color scheme so a single `Color` constant adapts without
+  /// threading `\.colorScheme` through every call site.
+  static func dynamic(light: Color, dark: Color) -> Color {
+    #if canImport(UIKit)
+      Color(
+        uiColor: UIColor { traits in
+          traits.userInterfaceStyle == .dark
+            ? UIColor(dark) : UIColor(light)
+        })
+    #elseif canImport(AppKit)
+      Color(
+        nsColor: NSColor(name: nil) { appearance in
+          appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(dark) : NSColor(light)
+        })
+    #else
+      light
+    #endif
   }
 }
 

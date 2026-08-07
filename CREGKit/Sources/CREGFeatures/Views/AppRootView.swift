@@ -1,11 +1,6 @@
+import CREGEngine
 import ComposableArchitecture
 import SwiftUI
-
-#if canImport(UIKit)
-  import UIKit
-#elseif canImport(AppKit)
-  import AppKit
-#endif
 
 /// The app's single entry point; owns the root store so the app shell
 /// needs no TCA import.
@@ -17,8 +12,16 @@ public struct RootView: View {
 
   public init() {}
 
+  /// Hardware below the ``DeviceCapability`` floor never reaches
+  /// ``AppRootView``. `store` is a `static let`, so leaving it unreferenced on
+  /// this path means the reducer, `LiveDependencies`, and the 1.75 GB model
+  /// load are never constructed at all.
   public var body: some View {
-    AppRootView(store: Self.store)
+    if DeviceCapability.isCurrentDeviceSupported {
+      AppRootView(store: Self.store)
+    } else {
+      UnsupportedDeviceView()
+    }
   }
 }
 
@@ -34,6 +37,9 @@ struct AppRootView: View {
   /// In-flight gesture translation, composed with the settled reveal state.
   @State private var dragTranslation: CGFloat = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The scheme actually in force. With no override applied this is the
+  /// device's own setting, which is what `.system` needs to hand a sheet.
+  @Environment(\.colorScheme) private var systemColorScheme
 
   /// The browser reveals ~80% of the width, capped near 340 points.
   static func revealWidth(for containerWidth: CGFloat) -> CGFloat {
@@ -51,6 +57,9 @@ struct AppRootView: View {
           .frame(width: revealWidth)
           .frame(maxHeight: .infinity)
           .opacity(0.35 + 0.65 * progress)
+          // Behind the fade so the drawer itself stays solid while its
+          // contents ease in with the reveal.
+          .background(CREGBrand.browserPanel.ignoresSafeArea())
           .accessibilityHidden(progress < 0.99)
 
         chatLayer(progress: progress)
@@ -58,15 +67,26 @@ struct AppRootView: View {
           .accessibilityHidden(progress > 0.01 && store.isBrowserRevealed)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(Color(white: 0.06).ignoresSafeArea())
+      .background(CREGBrand.browserPanel.ignoresSafeArea())
       .gesture(revealGesture(revealWidth: revealWidth))
       .overlay(alignment: .top) { answerReadyBanner }
       .overlay(alignment: .bottom) { undoDeletionToast }
       .sheet(isPresented: $store.isSettingsPresented) {
+        // The Appearance picker lives in this sheet, so it has to restyle
+        // itself. A sheet is its own presentation: the root's preference
+        // reaches it when it resolves to a scheme, but clearing that
+        // preference back to nil leaves the presented sheet on the old
+        // override, so it states the resolved scheme itself.
         SettingsView(store: store)
+          .preferredColorScheme(
+            store.appearance.colorScheme ?? systemColorScheme)
       }
       .onAppear { store.send(.onAppear) }
     }
+    // Applied at the root rather than per-surface so the override reaches the
+    // Settings sheet and the browser drawer too. `.system` resolves to nil,
+    // which leaves the device's own setting in charge.
+    .preferredColorScheme(store.appearance.colorScheme)
   }
 
   private func currentOffset(revealWidth: CGFloat) -> CGFloat {
@@ -76,7 +96,13 @@ struct AppRootView: View {
 
   @ViewBuilder
   private func chatLayer(progress: CGFloat) -> some View {
-    let cornerRadius = 34 * progress
+    // The chat lays out inside the safe area — its header and composer depend
+    // on the real insets — while its surface, dim, and shadow are painted
+    // edge to edge behind it, so no backdrop shows through at the status bar
+    // and the keyboard still lifts the composer.
+    let shape = UnevenRoundedRectangle(
+      topLeadingRadius: 34 * progress,
+      bottomLeadingRadius: 34 * progress)
     ZStack {
       if let chatStore = store.scope(state: \.chat, action: \.chat) {
         ChatView(
@@ -94,36 +120,25 @@ struct AppRootView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
-    .background(Color(uiColorBackground).ignoresSafeArea())
-    .clipShape(
-      UnevenRoundedRectangle(
-        topLeadingRadius: cornerRadius,
-        bottomLeadingRadius: cornerRadius))
+    .background {
+      shape
+        .fill(CREGBrand.chatSurface)
+        .shadow(
+          color: .black.opacity(0.25 * progress), radius: 18, x: -4, y: 0)
+        .ignoresSafeArea()
+    }
     .overlay {
       // Subtle dim over the translated chat; a tap or left swipe closes
       // along the same spatial path.
-      UnevenRoundedRectangle(
-        topLeadingRadius: cornerRadius,
-        bottomLeadingRadius: cornerRadius
-      )
-      .fill(Color.black.opacity(0.18 * progress))
-      .allowsHitTesting(store.isBrowserRevealed)
-      .onTapGesture { setRevealed(false) }
-      .accessibilityLabel("Close conversation browser")
-      .accessibilityAddTraits(.isButton)
-      .accessibilityHidden(!store.isBrowserRevealed)
+      shape
+        .fill(Color.black.opacity(0.18 * progress))
+        .ignoresSafeArea()
+        .allowsHitTesting(store.isBrowserRevealed)
+        .onTapGesture { setRevealed(false) }
+        .accessibilityLabel("Close conversation browser")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHidden(!store.isBrowserRevealed)
     }
-    .shadow(
-      color: .black.opacity(0.25 * progress), radius: 18, x: -4, y: 0)
-    .ignoresSafeArea(edges: .bottom)
-  }
-
-  private var uiColorBackground: Color {
-    #if canImport(UIKit)
-      Color(uiColor: .systemBackground)
-    #else
-      Color(nsColor: .windowBackgroundColor)
-    #endif
   }
 
   /// Tracks the gesture one-to-one and projects release velocity to decide

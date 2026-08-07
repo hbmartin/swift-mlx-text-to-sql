@@ -200,6 +200,20 @@ enum PreviewFixtures {
     return state
   }
 
+  /// Settings with the icon picker visible. `supportsAlternateIcons` is false
+  /// by default because the system answers it, and the preview store never
+  /// runs the effect that would.
+  static func settingsState(
+    icon: AppIconVariant = .midnight
+  ) -> AppFeature.State {
+    var state = AppFeature.State(
+      debugModelIdentity: nil, launchBenchmarkQuestion: nil)
+    state.isSettingsPresented = true
+    state.supportsAlternateIcons = true
+    state.appIcon = icon
+    return state
+  }
+
   static var chrome: ChatChrome {
     ChatChrome(
       modelReadiness: .ready,
@@ -240,6 +254,19 @@ enum PreviewFixtures {
         messages: PreviewFixtures.conversationMessages,
         title: "Current market value by fund")),
     chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Chat — Conversation — Dark") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.chatState(
+        messages: PreviewFixtures.conversationMessages,
+        title: "Current market value by fund")),
+    chrome: PreviewFixtures.chrome)
+    // The chat surface is painted by AppRootView, so previews of ChatView
+    // alone supply it to judge bubble contrast against the real background.
+    .background(CREGBrand.chatSurface.ignoresSafeArea())
+    .preferredColorScheme(.dark)
 }
 
 #Preview("Chat — Processing and Queue") {
@@ -295,12 +322,33 @@ enum PreviewFixtures {
     now: PreviewFixtures.now)
 }
 
+#Preview("Conversation Browser — Revealed — Dark") {
+  AppRootView(
+    store: PreviewFixtures.appStore(
+      PreviewFixtures.appState(
+        revealed: true,
+        chat: PreviewFixtures.chatState(
+          messages: PreviewFixtures.conversationMessages,
+          title: "Current market value by fund"))),
+    now: PreviewFixtures.now)
+    .preferredColorScheme(.dark)
+}
+
 #Preview("Result Viewer — Populated") {
   ResultViewerView(result: PreviewFixtures.leaseListingResult)
 }
 
 #Preview("Result Viewer — Truncated — Dark") {
   ResultViewerView(result: PreviewFixtures.truncatedResult)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Settings — App Icon Picker") {
+  SettingsView(store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
+}
+
+#Preview("Settings — App Icon Picker — Dark") {
+  SettingsView(store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
     .preferredColorScheme(.dark)
 }
 

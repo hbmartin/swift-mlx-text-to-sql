@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The bundled 4-bit 3B SQLModel is ~1.75 GB resident once loaded, which
+	     is close to the default foreground jetsam limit on a 6 GB iPhone.
+	     MLX.Memory.cacheLimit caps the allocator cache, not the weights. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>
