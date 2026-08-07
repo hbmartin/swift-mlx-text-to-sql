@@ -188,6 +188,7 @@ public struct AppFeature: Sendable {
     case search
     case deleteCountdown
     case bannerTimeout
+    case iconRead
   }
 
   @Dependency(\.queryPipeline) var pipeline
@@ -242,6 +243,7 @@ public struct AppFeature: Sendable {
               appIconClient.current(),
               supportsAlternates: appIconClient.supportsAlternates()))
         }
+        .cancellable(id: CancelID.iconRead, cancelInFlight: true)
         guard state.chat == nil else { return .merge(prepare, readIcon) }
         return .merge(
           prepare,
@@ -494,8 +496,15 @@ public struct AppFeature: Sendable {
           code: "app_icon_selected",
           summary: "An app icon change was requested.",
           context: ["icon": variant.rawValue])
-        return .run { _ in
+        // A still-in-flight appearance read captured the pre-change icon and
+        // would revert the selection if it landed after `select` succeeds, so
+        // drop it and confirm from the system once the change applies.
+        let select = Effect<Action>.run { send in
           try await appIconClient.select(variant)
+          await send(
+            .appIconLoaded(
+              appIconClient.current(),
+              supportsAlternates: appIconClient.supportsAlternates()))
         } catch: { error, send in
           await send(
             .appIconLoaded(previous, supportsAlternates: supportsAlternates))
@@ -507,6 +516,7 @@ public struct AppFeature: Sendable {
                 message: "CREG couldn't change its icon. Please try again.",
                 diagnostic: String(describing: error))))
         }
+        return .merge(.cancel(id: CancelID.iconRead), select)
 
       case .appearanceSelected(let preference):
         guard state.appearance != preference else { return .none }

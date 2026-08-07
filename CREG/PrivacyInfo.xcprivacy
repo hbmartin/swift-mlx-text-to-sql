@@ -11,11 +11,23 @@
 	     Support Bundle. -->
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array/>
-	<!-- First-party code uses no required-reason APIs: no UserDefaults, file
-	     timestamps, disk space, system boot time, or active keyboard access.
-	     Dependencies that do (GRDB, ComposableArchitecture, Sharing, Crypto)
-	     declare their own manifests in their resource bundles. -->
+	<!-- First-party code persists the appearance preference through
+	     UserDefaults (Sharing's appStorage), declared below with CA92.1:
+	     app-private storage only. No other required-reason APIs are used
+	     directly -- no file timestamps, disk space, system boot time, or
+	     active keyboard access. Dependencies that use them (GRDB,
+	     ComposableArchitecture, Sharing, Crypto) declare their own manifests
+	     in their resource bundles. -->
 	<key>NSPrivacyAccessedAPITypes</key>
-	<array/>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
