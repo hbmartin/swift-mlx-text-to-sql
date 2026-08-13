@@ -14,10 +14,11 @@ import subprocess
 import sys
 import uuid
 import xml.etree.ElementTree as ET
+import zipfile
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Sequence
-
+from typing import Any
 
 PROJECT = "CREG.xcodeproj"
 SCHEME = "CREG"
@@ -228,6 +229,15 @@ def load_json(path: Path, description: str) -> dict[str, Any]:
     return value
 
 
+def require_object(
+    container: dict[str, Any], key: str, description: str
+) -> dict[str, Any]:
+    value = container.get(key)
+    if not isinstance(value, dict):
+        raise ReleaseError(f"{description} must be an object")
+    return value
+
+
 def archive_configuration(scheme_path: Path) -> str:
     try:
         root = ET.parse(scheme_path).getroot()
@@ -285,13 +295,23 @@ def verify_model_inputs(repo: Path, training_run: str) -> dict[str, str]:
             f"{training_run!r} vs {training_manifest.get('run_id')!r}"
         )
 
-    adapter_value = training_manifest.get("outputs", {}).get("adapter")
-    checkpoint_value = (
-        training_manifest.get("checkpoint_evaluation", {})
-        .get("selected", {})
-        .get("checkpoint_path")
+    outputs = require_object(training_manifest, "outputs", "Training manifest outputs")
+    checkpoint_evaluation = require_object(
+        training_manifest,
+        "checkpoint_evaluation",
+        "Training manifest checkpoint_evaluation",
     )
-    model_key = training_manifest.get("experiment", {}).get("model_key")
+    selected = require_object(
+        checkpoint_evaluation,
+        "selected",
+        "Training manifest checkpoint_evaluation.selected",
+    )
+    experiment = require_object(
+        training_manifest, "experiment", "Training manifest experiment"
+    )
+    adapter_value = outputs.get("adapter")
+    checkpoint_value = selected.get("checkpoint_path")
+    model_key = experiment.get("model_key")
     identity_values = (adapter_value, checkpoint_value, model_key)
     if not all(isinstance(value, str) and value for value in identity_values):
         raise ReleaseError(
@@ -569,6 +589,48 @@ def sole_ipa(export_directory: Path) -> Path:
     return candidates[0]
 
 
+def ipa_info(ipa: Path) -> dict[str, str]:
+    try:
+        with zipfile.ZipFile(ipa) as archive:
+            info_paths = [
+                name
+                for name in archive.namelist()
+                if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", name)
+            ]
+            if len(info_paths) != 1:
+                raise ReleaseError(
+                    f"IPA must contain exactly one Payload/*.app/Info.plist: {ipa}"
+                )
+            info = plistlib.loads(archive.read(info_paths[0]))
+    except (OSError, plistlib.InvalidFileException, zipfile.BadZipFile) as error:
+        raise ReleaseError(f"Cannot parse IPA Info.plist: {error}") from error
+    if not isinstance(info, dict):
+        raise ReleaseError(f"IPA Info.plist must contain a dictionary: {ipa}")
+    return {
+        "bundle_identifier": str(info.get("CFBundleIdentifier", "")),
+        "marketing_version": str(info.get("CFBundleShortVersionString", "")),
+        "build_number": str(info.get("CFBundleVersion", "")),
+    }
+
+
+def require_matching_distribution_identity(
+    actual: dict[str, str], expected: dict[str, str], description: str
+) -> None:
+    identity_fields = {
+        "bundle_identifier": "CFBundleIdentifier",
+        "marketing_version": "CFBundleShortVersionString",
+        "build_number": "CFBundleVersion",
+    }
+    for key, plist_key in identity_fields.items():
+        value = actual.get(key, "")
+        if not value:
+            raise ReleaseError(f"{description} {plist_key} is missing")
+        if value != expected.get(key):
+            raise ReleaseError(
+                f"{description} {plist_key} does not match the archived app"
+            )
+
+
 def parse_json_output(output: str, description: str) -> dict[str, Any]:
     try:
         value = json.loads(output)
@@ -603,9 +665,19 @@ def require_inspector_report(
             raise ReleaseError("Verified artifact has an unexpected bundle identifier")
         if artifact.get("build_channel") != BUILD_CHANNEL:
             raise ReleaseError("Verified artifact is not a Beta build")
+        build_number = artifact.get("build_number")
+        if not isinstance(build_number, str) or not build_number:
+            raise ReleaseError("Verified artifact build number is missing")
         candidate = artifact.get("debug_candidate")
-        if not isinstance(candidate, dict) or candidate.get("training_run_id") != training_run:
+        if (
+            not isinstance(candidate, dict)
+            or not candidate
+            or candidate.get("training_run_id") != training_run
+        ):
             raise ReleaseError("Verified artifact has the wrong pinned training run")
+        metal = artifact.get("metal")
+        if not isinstance(metal, dict) or not metal:
+            raise ReleaseError("Verified artifact is missing Metal resource verification")
     if archive.get("build_number") != ipa.get("build_number"):
         raise ReleaseError("Archive and IPA build numbers do not match")
     if archive.get("debug_candidate") != ipa.get("debug_candidate"):
@@ -622,6 +694,21 @@ def require_inspector_report(
     ipa_model = ipa.get("model")
     if not isinstance(archive_model, dict) or not isinstance(ipa_model, dict):
         raise ReleaseError("Artifact inspector report is missing model verification")
+    for model in (archive_model, ipa_model):
+        missing_model_keys = [
+            key
+            for key in model_keys
+            if (
+                isinstance(model.get(key), bool)
+                or not isinstance(model.get(key), (str, int))
+                or not model.get(key)
+            )
+        ]
+        if missing_model_keys:
+            raise ReleaseError(
+                "Artifact inspector report has missing model verification fields: "
+                + ", ".join(missing_model_keys)
+            )
     if any(archive_model.get(key) != ipa_model.get(key) for key in model_keys):
         raise ReleaseError("Archive and IPA verified model identities do not match")
     if archive_model.get("verified_directory_sha256") != archive_model.get(
@@ -633,10 +720,10 @@ def require_inspector_report(
     if archive.get("metal") != ipa.get("metal"):
         raise ReleaseError("Archive and IPA Metal resource verification does not match")
     return {
-        "build_number": str(archive["build_number"]),
+        "build_number": archive["build_number"],
         "debug_candidate": archive["debug_candidate"],
-        "model": {key: archive_model.get(key) for key in model_keys},
-        "metal": archive.get("metal"),
+        "model": {key: archive_model[key] for key in model_keys},
+        "metal": archive["metal"],
     }
 
 
@@ -789,10 +876,15 @@ def main() -> int:
             cwd=repo,
             log_path=attempt / "logs/upload.log",
         )
+        upload_ipa = sole_ipa(attempt / "upload-export")
+        state["artifacts"]["upload_ipa"] = str(upload_ipa)
+        uploaded = ipa_info(upload_ipa)
+        require_matching_distribution_identity(uploaded, archived, "Upload-export IPA")
         state["upload"] = {
             "status": "accepted",
             "accepted_at": datetime.now(UTC).isoformat(),
             "internal_only": True,
+            "artifact": uploaded,
         }
         state["app_store_connect"] = {
             "status": "verification_required",
@@ -807,7 +899,7 @@ def main() -> int:
         print(json.dumps(state, indent=2, sort_keys=True))
         print(f"Release state: {release_path}")
         return 0
-    except (OSError, ReleaseError) as error:
+    except Exception as error:  # noqa: BLE001 - every release failure must persist state
         state["status"] = "failed"
         state["failed_at"] = datetime.now(UTC).isoformat()
         state["error"] = sanitize_text(str(error))
