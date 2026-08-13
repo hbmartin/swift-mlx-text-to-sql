@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish CREG to TestFlight"
+  short_description: "Verify and publish CREG internal beta builds"
+  default_prompt: "Use $publish-creg-testflight to publish the current clean CREG commit to internal TestFlight and verify it becomes ready to test."
