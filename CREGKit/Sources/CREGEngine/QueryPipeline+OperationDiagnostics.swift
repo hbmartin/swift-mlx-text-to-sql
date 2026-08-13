@@ -20,7 +20,7 @@ extension QueryPipeline {
       events: AsyncStream<PipelineEvent>
     ) -> AsyncStream<PipelineEvent> {
       AsyncStream { continuation in
-        let traceID = UUID().uuidString.lowercased()
+        let traceID = operationTraceID()
         let task = Task {
           var observer = PipelineOperationObserver(
             diagnostics: diagnostics,
@@ -56,18 +56,21 @@ extension QueryPipeline {
     }
 
     @Sendable func observedPreparation(
-      context: FollowUpSuggestionContext,
       events: AsyncStream<FollowUpPreparationEvent>
     ) -> AsyncStream<FollowUpPreparationEvent> {
       AsyncStream { continuation in
+        let traceID = operationTraceID()
+        let baseContext = ["trace_id": traceID]
         let task = Task {
           let started = ContinuousClock.now
           var accepted = 0
           var firstPrepared = false
+          var finishedSeen = false
           diagnostics.info(
             category: .pipeline,
             code: "follow_up_preparation_started",
-            summary: "Prepared follow-up generation started.")
+            summary: "Prepared follow-up generation started.",
+            context: baseContext)
           for await event in events {
             guard !Task.isCancelled else { break }
             switch event {
@@ -76,7 +79,19 @@ extension QueryPipeline {
                 category: .pipeline,
                 code: "follow_up_candidates_proposed",
                 summary: "Follow-up candidates were proposed.",
-                context: ["candidate_count": String(candidateCount)])
+                context: baseContext.merging([
+                  "candidate_count": String(candidateCount)
+                ]) { current, _ in current })
+            case .proposalFailed(let reason):
+              diagnostics.record(
+                DiagnosticEvent(
+                  level: .error,
+                  category: .pipeline,
+                  code: "follow_up_proposal_failed",
+                  summary: "Follow-up candidate proposal generation failed.",
+                  context: baseContext.merging([
+                    "reason": reason.rawValue
+                  ]) { current, _ in current }))
             case .prepared(let prepared):
               accepted += 1
               var eventContext = [
@@ -92,28 +107,42 @@ extension QueryPipeline {
                 category: .pipeline,
                 code: "follow_up_candidate_prepared",
                 summary: "A follow-up candidate passed preparation.",
-                context: eventContext)
+                context: baseContext.merging(eventContext) { current, _ in
+                  current
+                })
             case .rejected(let rank, let reason):
               diagnostics.info(
                 category: .pipeline,
                 code: "follow_up_candidate_rejected",
                 summary: "A follow-up candidate did not pass preparation.",
-                context: [
+                context: baseContext.merging([
                   "rank": String(rank),
                   "reason": reason.rawValue,
-                ])
+                ]) { current, _ in current })
             case .finished:
+              finishedSeen = true
               diagnostics.info(
                 category: .pipeline,
                 code: "follow_up_preparation_finished",
                 summary: "Prepared follow-up generation finished.",
-                context: [
+                context: baseContext.merging([
                   "accepted_count": String(accepted),
                   "elapsed_ms": operationMilliseconds(
                     started.duration(to: .now).microseconds),
-                ])
+                ]) { current, _ in current })
             }
             continuation.yield(event)
+          }
+          if Task.isCancelled, !finishedSeen {
+            diagnostics.info(
+              category: .pipeline,
+              code: "follow_up_preparation_cancelled",
+              summary: "Prepared follow-up generation was cancelled.",
+              context: baseContext.merging([
+                "accepted_count": String(accepted),
+                "elapsed_ms": operationMilliseconds(
+                  started.duration(to: .now).microseconds),
+              ]) { current, _ in current })
           }
           continuation.finish()
         }
@@ -175,7 +204,6 @@ extension QueryPipeline {
       },
       prepareFollowUps: { context in
         observedPreparation(
-          context: context,
           events: source.prepareFollowUps(context))
       },
       runPrepared: { prepared, history in
@@ -187,6 +215,12 @@ extension QueryPipeline {
           events: source.runPrepared(prepared, history))
       })
   }
+}
+
+private func operationTraceID() -> String {
+  UUID().uuidString
+    .replacingOccurrences(of: "-", with: "")
+    .lowercased()
 }
 
 private struct PipelineOperationObserver {
@@ -397,7 +431,7 @@ private struct PipelineOperationObserver {
         "prepared_follow_up_cache_hit",
         "A prepared follow-up result became visible without SQL execution.",
         context: [
-          "tap_to_result_ms": operationMilliseconds(elapsedMicroseconds)
+          "stream_to_result_ms": operationMilliseconds(elapsedMicroseconds)
         ])
 
     case .executionFailed(let candidateID, let message, let attempt):
@@ -476,7 +510,11 @@ private struct PipelineOperationObserver {
       if queryOrigin == .preparedFollowUp, !preparedResultSeen {
         info(
           "prepared_follow_up_cache_miss",
-          "A prepared follow-up fell back to the standard query pipeline.")
+          "A prepared follow-up fell back to the standard query pipeline.",
+          context: [
+            "miss_reason": telemetry.preparedCacheMissReason?.rawValue
+              ?? "unknown"
+          ])
       }
       for candidate in telemetry.candidates {
         logCandidateSummary(candidate)

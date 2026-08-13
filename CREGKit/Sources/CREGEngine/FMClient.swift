@@ -162,9 +162,7 @@ extension FMClient {
       rewrite: { question, _ in question },
       gate: { _, _ in .proceed },
       narrate: { _, result in
-        result.rowCount == 0
-          ? "I didn't find any matching rows."
-          : "Here's what I found — \(result.rowCount) row\(result.rowCount == 1 ? "" : "s")\(result.isTruncated ? " (showing the first \(result.rowCount))" : "")."
+        PreparedAnswerFallback.narration(for: result)
       },
       suggestFollowUps: { _, _ in [] }
     )

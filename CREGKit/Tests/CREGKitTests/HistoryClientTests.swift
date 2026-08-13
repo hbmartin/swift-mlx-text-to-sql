@@ -340,11 +340,15 @@ import Testing
     try await client.saveFollowUpBatch(conversationID, batch)
     let loaded = try await client.loadConversation(conversationID).followUpBatch
     #expect(loaded == batch)
-    let supportPayload = String(
-      decoding: try await client.supportBundleSource().followUpsJSON,
-      as: UTF8.self)
-    #expect(supportPayload.contains("test-database"))
-    #expect(supportPayload.contains("prepared-follow-up-v1"))
+    let exported = try JSONDecoder().decode(
+      [PreparedFollowUpBatch].self,
+      from: try await client.supportBundleSource().followUpsJSON)
+    let provenance = try #require(
+      exported.first?.suggestions.first?.provenance)
+    #expect(provenance.databaseFingerprint == "test-database")
+    #expect(
+      provenance.preparationPolicyVersion
+        == "prepared-follow-up-v1|binding-repair-v2")
 
     try await client.clearFollowUpBatch(conversationID)
     #expect(

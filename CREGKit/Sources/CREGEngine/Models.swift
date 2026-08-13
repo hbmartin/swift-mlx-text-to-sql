@@ -446,6 +446,18 @@ public enum QueryExecutionPath: String, Sendable, Equatable, Codable {
   case preparedFollowUp = "prepared_follow_up"
 }
 
+public enum PreparedCacheMissReason: String, Sendable, Equatable, Codable {
+  case schemaVersion = "schema_version"
+  case modelKey = "model_key"
+  case modelRevision = "model_revision"
+  case runtimeMode = "runtime_mode"
+  case preparationPolicyVersion = "preparation_policy_version"
+  case databaseFingerprint = "database_fingerprint"
+  case sqlFingerprint = "sql_fingerprint"
+  case resultFingerprint = "result_fingerprint"
+  case validationFailed = "validation_failed"
+}
+
 public enum AmbiguityGateMode: String, Sendable, Equatable, Codable {
   case foundationModel
   case fallback
@@ -475,7 +487,7 @@ public struct StageTimings: Sendable, Equatable, Codable {
 }
 
 public struct TurnTelemetry: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 5
+  public static let currentSchemaVersion = 6
 
   public var schemaVersion: Int
   public var originalQuestion: String
@@ -485,6 +497,7 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
   public var preparedFollowUpID: UUID?
   public var sourceAnswerMessageID: UUID?
   public var preparedCacheHit: Bool?
+  public var preparedCacheMissReason: PreparedCacheMissReason?
   public var executionPath: QueryExecutionPath
   public var rewriteApplied: Bool
   public var rewriteUsedFM: Bool
@@ -521,6 +534,7 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     self.preparedFollowUpID = nil
     self.sourceAnswerMessageID = nil
     self.preparedCacheHit = nil
+    self.preparedCacheMissReason = nil
     self.executionPath = .generated
     self.rewriteApplied = false
     self.rewriteUsedFM = false
@@ -543,6 +557,7 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case preparedFollowUpID
     case sourceAnswerMessageID
     case preparedCacheHit
+    case preparedCacheMissReason
     case executionPath
     case rewriteApplied
     case rewriteUsedFM
@@ -610,6 +625,10 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
       try values.decodeIfPresent(UUID.self, forKey: .sourceAnswerMessageID)
     preparedCacheHit =
       try values.decodeIfPresent(Bool.self, forKey: .preparedCacheHit)
+    preparedCacheMissReason =
+      try values.decodeIfPresent(
+        PreparedCacheMissReason.self,
+        forKey: .preparedCacheMissReason)
     executionPath =
       try values.decodeIfPresent(QueryExecutionPath.self, forKey: .executionPath)
       ?? .generated

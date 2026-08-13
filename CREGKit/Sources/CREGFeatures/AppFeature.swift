@@ -1211,7 +1211,7 @@ public struct AppFeature: Sendable {
       preparation.eventLines.append(line)
     }
     switch event {
-    case .started, .rejected:
+    case .started, .proposalFailed, .rejected:
       state.followUpPreparation = preparation
       return .none
 

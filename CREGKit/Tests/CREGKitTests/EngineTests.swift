@@ -668,7 +668,9 @@ import Testing
           sql: request.repair == nil ? "SELECT 1" : "SELECT 2",
           tokensPerSecond: 42, modelName: "test")
       },
-      db: DatabaseClient(execute: executeResults),
+      db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
+        execute: executeResults),
       serializer: InferenceSerializer(),
       configuration: configuration
     )
@@ -762,6 +764,7 @@ import Testing
           sql: "SELECT forbidden", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
         validate: { sql in
           #expect(sql == StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql)
           return SQLValidationReport()
@@ -816,6 +819,7 @@ import Testing
         return SQLGeneration(sql: sql, tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
         validate: { sql in
           sql.contains("l.name")
             ? SQLValidationReport(issue: issue)
@@ -865,6 +869,7 @@ import Testing
           sql: "SELECT missing", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
         validate: { _ in SQLValidationReport(issue: issue) },
         execute: { _ in
           Issue.record("invalid SQL must not execute")
@@ -1271,6 +1276,7 @@ import Testing
           return SQLGeneration(sql: sql, tokensPerSecond: 1, modelName: "test")
         },
         db: DatabaseClient(
+          fingerprint: "test-portfolio-database",
           validate: { sql in
             sql.contains("bad")
               ? SQLValidationReport(issue: repairable)
@@ -1314,6 +1320,7 @@ import Testing
         return SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
         validate: { _ in SQLValidationReport(issue: terminal) },
         execute: { _ in
           await calls.executed()
@@ -1367,6 +1374,7 @@ import Testing
           sql: "SELECT missing", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
         validate: { _ in SQLValidationReport(issue: repairIssue) },
         execute: { _ in
           Issue.record("invalid SQL must not execute")
