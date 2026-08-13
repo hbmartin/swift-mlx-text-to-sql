@@ -22,7 +22,9 @@ private actor FollowUpCalls {
     revision: "0123456789abcdef",
     quantization: "4-bit")
 
-  private static func configuration() -> QueryPipeline.Configuration {
+  private static func configuration(
+    deadlines: PipelineDeadlines = PipelineDeadlines()
+  ) -> QueryPipeline.Configuration {
     .init(
       model: model,
       gcd: .on,
@@ -32,7 +34,8 @@ private actor FollowUpCalls {
       maxRepairAttempts: 2,
       selfConsistencyN: 1,
       sampleTemperature: 0,
-      alwaysVote: false)
+      alwaysVote: false,
+      deadlines: deadlines)
   }
 
   private static let result = QueryResult(
@@ -47,6 +50,34 @@ private actor FollowUpCalls {
       standaloneQuestion: "What is portfolio value by fund?",
       narration: "Core Fund leads at $42M.",
       result: result)
+  }
+
+  private static func prepared(
+    question: String,
+    rank: Int,
+    runtimeMode: ModelRuntimeMode = .evaluated
+  ) -> PreparedFollowUp {
+    let sql = "SELECT 1"
+    let telemetry = TurnTelemetry(
+      originalQuestion: question,
+      runtimeMode: runtimeMode)
+    return PreparedFollowUp(
+      id: UUID(),
+      sourceAssistantMessageID: UUID(1),
+      rank: rank,
+      question: question,
+      sql: sql,
+      result: result,
+      preparationTelemetry: telemetry,
+      provenance: PreparedQueryProvenance(
+        modelKey: model.key,
+        modelRevision: model.revision,
+        runtimeMode: runtimeMode,
+        preparationPolicyVersion: "prepared-follow-up-v1|binding-repair-v2",
+        databaseFingerprint: "snapshot-v1",
+        sqlFingerprint: PreparedFollowUpIntegrity.fingerprint(sql: sql),
+        resultFingerprint: PreparedFollowUpIntegrity.fingerprint(result: result)),
+      createdAt: Date(timeIntervalSince1970: TimeInterval(rank)))
   }
 
   private static func fm(
@@ -80,11 +111,53 @@ private actor FollowUpCalls {
       ],
       excluding: ["What is portfolio value by fund?"])
 
-    #expect(questions == [
-      "What is debt by fund?",
-      "Which properties lead?",
-      "How do values compare?",
-    ])
+    #expect(
+      questions == [
+        "What is debt by fund?",
+        "Which properties lead?",
+        "How do values compare?",
+      ])
+  }
+
+  @Test func resumedBatchesStayCappedWithUniqueRanksAndQuestions() {
+    var batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: UUID(1),
+      suggestions: [
+        Self.prepared(question: "First?", rank: 1),
+        Self.prepared(question: "Different first?", rank: 1),
+        Self.prepared(question: "Second?", rank: 2),
+        Self.prepared(question: "Third?", rank: 3),
+        Self.prepared(question: "Fourth?", rank: 4),
+      ],
+      updatedAt: Date(timeIntervalSince1970: 1))
+
+    #expect(batch.suggestions.map(\.rank) == [1, 2, 3])
+    #expect(batch.suggestions.map(\.question) == ["First?", "Second?", "Third?"])
+    let appended = batch.appendIfEligible(
+      Self.prepared(question: "Another?", rank: 4))
+    #expect(!appended)
+    #expect(batch.suggestions.count == PreparedFollowUpBatch.maximumSuggestionCount)
+  }
+
+  @Test func integrityFingerprintsAreTotalAndSQLIsCanonicalized() {
+    let positiveInfinity = QueryResult(
+      columns: ["value"], rows: [[.real(.infinity)]])
+    let negativeInfinity = QueryResult(
+      columns: ["value"], rows: [[.real(-.infinity)]])
+
+    #expect(
+      PreparedFollowUpIntegrity.fingerprint(result: positiveInfinity)
+        != PreparedFollowUpIntegrity.fingerprint(result: negativeInfinity))
+    #expect(
+      PreparedFollowUpIntegrity.fingerprint(sql: "  SELECT 1\r\n")
+        == PreparedFollowUpIntegrity.fingerprint(sql: "SELECT 1\n"))
+  }
+
+  @Test func followUpEventsUseCanonicalJSONL() throws {
+    let line = try FollowUpPreparationEvent.rejected(
+      rank: 2, reason: .validationFailed
+    ).jsonLine()
+    #expect(line == #"{"rejected":{"rank":2,"reason":"validationFailed"}}"#)
   }
 
   @Test func preparationEmitsProgressiveValidatedExecutedSubset() async {
@@ -234,6 +307,46 @@ private actor FollowUpCalls {
     #expect(finalTelemetry.queryOrigin == .preparedFollowUp)
   }
 
+  @Test func cachedNarrationDeadlineFinalizesWithFallback() async {
+    let prepared = Self.prepared(question: "Prepared?", rank: 1)
+    let slowFM = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in
+        try await Task.sleep(for: .seconds(5))
+        return "Too late"
+      })
+    let pipeline = QueryPipeline.live(
+      fm: slowFM,
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration(
+        deadlines: PipelineDeadlines(
+          generationSeconds: 0.05,
+          wholeTurnSeconds: 0.05)))
+
+    let events = await Array(pipeline.runPrepared(prepared, []))
+
+    guard case .turnFinished(let outcome, let telemetry) = events.last else {
+      Issue.record("Expected cached answer to finalize after narration timeout")
+      return
+    }
+    guard case .answered(_, let narration, _, _) = outcome else {
+      Issue.record("Expected fallback narration answer")
+      return
+    }
+    #expect(narration == PreparedAnswerFallback.narration(for: prepared.result))
+    #expect(telemetry.timeoutStage == "narration")
+    #expect(telemetry.narrationUsedFM == false)
+  }
+
   @Test func tamperedCacheFallsBackToFreeFormGeneration() async {
     let calls = FollowUpCalls()
     let prepared = PreparedFollowUp(
@@ -276,9 +389,10 @@ private actor FollowUpCalls {
     }
     #expect(await calls.generations == 1)
     #expect(await calls.executions == 1)
-    #expect(!events.contains {
-      if case .preparedResultReady = $0 { true } else { false }
-    })
+    #expect(
+      !events.contains {
+        if case .preparedResultReady = $0 { true } else { false }
+      })
     guard case .turnFinished(_, let telemetry) = events.last else {
       Issue.record("Expected a free-form fallback outcome")
       return

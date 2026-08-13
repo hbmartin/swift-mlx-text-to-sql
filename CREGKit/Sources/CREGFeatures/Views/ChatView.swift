@@ -61,17 +61,17 @@ func chatTranscriptScrollDecision(
   to current: ChatTranscriptSnapshot,
   isNearBottom: Bool
 ) -> ChatTranscriptScrollDecision {
-  guard
-    previous.conversationID == current.conversationID,
-    current.contentCount > previous.contentCount
-  else { return .none }
+  guard previous.conversationID == current.conversationID else { return .none }
 
-  if current.assistantMessageCount > previous.assistantMessageCount
-    || isNearBottom
-  {
+  if current.assistantMessageCount > previous.assistantMessageCount {
     return .scrollToBottom
   }
-  return .incrementUnseen(by: current.contentCount - previous.contentCount)
+  let newMessages = max(0, current.messageCount - previous.messageCount)
+  let newSuggestions = max(0, current.suggestionCount - previous.suggestionCount)
+  let addedContent = newMessages + newSuggestions
+  guard addedContent > 0 else { return .none }
+  if isNearBottom { return .scrollToBottom }
+  return .incrementUnseen(by: addedContent)
 }
 
 /// The Messages-style chat surface: floating glass header, open transcript,
@@ -124,7 +124,8 @@ struct ChatView: View {
               feedback: store.feedback[message.id],
               readAloud: store.readAloud,
               developerMode: chrome.developerMode,
-              store: store)
+              store: store
+            )
             .id(message.id)
           }
           ForEach(store.queued) { queued in
@@ -258,7 +259,8 @@ struct ChatView: View {
       .cregGlassCapsule(interactive: true)
       .accessibilityLabel(
         chrome.hasUnreadElsewhere
-          ? "Conversations, unread answers available" : "Conversations")
+          ? "Conversations, unread answers available" : "Conversations"
+      )
       .cregLargeContentViewer(
         "Conversations", systemImage: "sidebar.leading")
     }
@@ -429,15 +431,17 @@ struct ChatView: View {
     switch chrome.modelReadiness {
     case .ready:
       if chrome.modelPreparationReport?.mode == .compatibility {
-        let warningLayout = dynamicTypeSize.isAccessibilitySize
+        let warningLayout =
+          dynamicTypeSize.isAccessibilitySize
           ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
           : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
         warningLayout {
           Label(
             "Compatibility mode — unevaluated results",
-            systemImage: "wrench.and.screwdriver.fill")
-            .font(.callout)
-            .foregroundStyle(.orange)
+            systemImage: "wrench.and.screwdriver.fill"
+          )
+          .font(.callout)
+          .foregroundStyle(.orange)
           if !dynamicTypeSize.isAccessibilitySize {
             Spacer()
           }
@@ -501,7 +505,8 @@ struct ChatView: View {
       .transition(.scale.combined(with: .opacity))
       .accessibilityLabel(
         unseenMessageCount > 0
-          ? "Jump to latest, \(unseenMessageCount) new" : "Jump to latest")
+          ? "Jump to latest, \(unseenMessageCount) new" : "Jump to latest"
+      )
       .cregLargeContentViewer("Jump to latest", systemImage: "chevron.down")
     }
   }
@@ -633,7 +638,8 @@ struct QueuedQuestionCell: View {
           .padding(.vertical, 9)
           .background(
             CREGBrand.userBubble.opacity(0.6),
-            in: RoundedRectangle(cornerRadius: 18))
+            in: RoundedRectangle(cornerRadius: 18)
+          )
           .foregroundStyle(CREGBrand.userBubbleText)
         HStack(spacing: 6) {
           Text("Queued")
@@ -668,11 +674,12 @@ struct ProcessingStatusRow: View {
         statusLabel
           .font(.subheadline)
           .frame(minHeight: 44)
-        .contentShape(Rectangle())
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .accessibilityLabel(
-        "Working: \(processing.trace.last ?? "thinking"). \(processing.isTimelineExpanded ? "Collapse" : "Expand") timeline")
+        "Working: \(processing.trace.last ?? "thinking"). \(processing.isTimelineExpanded ? "Collapse" : "Expand") timeline"
+      )
 
       if processing.isTimelineExpanded {
         VStack(alignment: .leading, spacing: 4) {
@@ -749,7 +756,8 @@ struct InterruptedTurnBanner: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
-    let bannerLayout = dynamicTypeSize.isAccessibilitySize
+    let bannerLayout =
+      dynamicTypeSize.isAccessibilitySize
       ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
       : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
     bannerLayout {
@@ -791,7 +799,8 @@ struct CorrectionContextBanner: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
-    let bannerLayout = dynamicTypeSize.isAccessibilitySize
+    let bannerLayout =
+      dynamicTypeSize.isAccessibilitySize
       ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
       : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
     bannerLayout {

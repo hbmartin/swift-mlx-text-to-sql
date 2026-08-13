@@ -19,7 +19,8 @@ import Testing
       id: UUID(
         uuid: (
           0, 0, 0, 0, 0, 0, 0, 0,
-          0, 0, 0, 0, 0, 0, 0, id)),
+          0, 0, 0, 0, 0, 0, 0, id
+        )),
       role: role,
       body: body,
       createdAt: Date(timeIntervalSince1970: TimeInterval(id)))
@@ -125,6 +126,35 @@ import Testing
       conversationID: conversationA,
       messages: [answer],
       suggestionCount: 2)
+
+    #expect(
+      chatTranscriptScrollDecision(
+        from: previous, to: current, isNearBottom: isNearBottom)
+        == (isNearBottom ? .scrollToBottom : .incrementUnseen(by: 1)))
+  }
+
+  @Test(arguments: [true, false])
+  func submittingWhileSuggestionsRetireStillTracksTheNewMessage(
+    isNearBottom: Bool
+  ) {
+    let answer = message(
+      id: 1,
+      role: .assistant,
+      body: .answer(
+        result: result,
+        narration: "One property found.",
+        sql: "SELECT name FROM properties",
+        notice: nil))
+    let question = message(
+      id: 2, role: .user, body: .text("What is its value?"))
+    let previous = ChatTranscriptSnapshot(
+      conversationID: conversationA,
+      messages: [answer],
+      suggestionCount: 3)
+    let current = ChatTranscriptSnapshot(
+      conversationID: conversationA,
+      messages: [answer, question],
+      suggestionCount: 0)
 
     #expect(
       chatTranscriptScrollDecision(

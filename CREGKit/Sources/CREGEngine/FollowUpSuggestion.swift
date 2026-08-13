@@ -29,7 +29,7 @@ public struct FollowUpSuggestionContext: Sendable, Equatable, Codable {
 /// Versioned evidence that a prepared question, SQL statement, and cached
 /// result were produced by the currently bundled model and portfolio data.
 public struct PreparedQueryProvenance: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 1
+  public static let currentSchemaVersion = 2
 
   public var schemaVersion: Int
   public var modelKey: String
@@ -100,6 +100,8 @@ public struct PreparedFollowUp: Identifiable, Sendable, Equatable, Codable {
 
 /// The latest answer's persisted, progressively populated suggestion batch.
 public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
+  public static let maximumSuggestionCount = 3
+
   public enum Status: String, Sendable, Equatable, Codable {
     case preparing
     case completed
@@ -121,8 +123,82 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
     self.sourceAssistantMessageID = sourceAssistantMessageID
     self.context = context
     self.status = status
-    self.suggestions = suggestions.sorted { $0.rank < $1.rank }
+    self.suggestions = Self.normalized(suggestions)
     self.updatedAt = updatedAt
+  }
+
+  /// Adds a progressively prepared suggestion while preserving the product
+  /// contract: at most three distinct questions with one suggestion per rank.
+  @discardableResult
+  public mutating func appendIfEligible(_ suggestion: PreparedFollowUp) -> Bool {
+    suggestions = Self.normalized(suggestions)
+    guard suggestions.count < Self.maximumSuggestionCount else { return false }
+    let identity = Self.questionIdentity(suggestion.question)
+    guard
+      !suggestions.contains(where: { $0.rank == suggestion.rank }),
+      !suggestions.contains(where: {
+        Self.questionIdentity($0.question) == identity
+      })
+    else { return false }
+    suggestions.append(suggestion)
+    suggestions = Self.normalized(suggestions)
+    return suggestions.contains(where: { $0.id == suggestion.id })
+  }
+
+  private static func normalized(
+    _ suggestions: [PreparedFollowUp]
+  ) -> [PreparedFollowUp] {
+    var ranks = Set<Int>()
+    var questions = Set<String>()
+    var result: [PreparedFollowUp] = []
+    let ordered = suggestions.enumerated().sorted { lhs, rhs in
+      lhs.element.rank == rhs.element.rank
+        ? lhs.offset < rhs.offset
+        : lhs.element.rank < rhs.element.rank
+    }
+    for entry in ordered {
+      let suggestion = entry.element
+      let identity = questionIdentity(suggestion.question)
+      guard
+        ranks.insert(suggestion.rank).inserted,
+        questions.insert(identity).inserted
+      else { continue }
+      result.append(suggestion)
+      if result.count == maximumSuggestionCount { break }
+    }
+    return result
+  }
+
+  private static func questionIdentity(_ question: String) -> String {
+    question
+      .lowercased()
+      .filter { $0.isLetter || $0.isNumber }
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case sourceAssistantMessageID, context, status, suggestions, updatedAt
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      sourceAssistantMessageID: try values.decode(
+        UUID.self, forKey: .sourceAssistantMessageID),
+      context: try values.decodeIfPresent(
+        FollowUpSuggestionContext.self, forKey: .context),
+      status: try values.decode(Status.self, forKey: .status),
+      suggestions: try values.decode(
+        [PreparedFollowUp].self, forKey: .suggestions),
+      updatedAt: try values.decode(Date.self, forKey: .updatedAt))
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(sourceAssistantMessageID, forKey: .sourceAssistantMessageID)
+    try values.encodeIfPresent(context, forKey: .context)
+    try values.encode(status, forKey: .status)
+    try values.encode(Self.normalized(suggestions), forKey: .suggestions)
+    try values.encode(updatedAt, forKey: .updatedAt)
   }
 }
 
@@ -145,21 +221,83 @@ public enum FollowUpPreparationEvent: Sendable, Equatable, Codable {
   case finished
 }
 
+extension FollowUpPreparationEvent {
+  /// Uses the same canonical JSONL representation as user-turn events.
+  public func jsonLine(
+    encoder: JSONEncoder = PipelineEvent.jsonlEncoder
+  ) throws -> String {
+    String(decoding: try encoder.encode(self), as: UTF8.self)
+  }
+}
+
 public enum PreparedFollowUpIntegrity {
   public static func fingerprint(sql: String) -> String {
-    sha256(Data(sql.utf8))
+    sha256(Data(normalizedSQL(sql).utf8))
   }
 
   public static func fingerprint(result: QueryResult) -> String {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-    let data = (try? encoder.encode(result)) ?? Data()
+    var data = Data("CREG.PreparedResult.v2\0".utf8)
+    append(result.columns.count, to: &data)
+    for column in result.columns { append(column, to: &data) }
+    append(result.rows.count, to: &data)
+    for row in result.rows {
+      append(row.count, to: &data)
+      for value in row {
+        switch value {
+        case .null:
+          data.append(0)
+        case .integer(let value):
+          data.append(1)
+          append(value, to: &data)
+        case .real(let value):
+          data.append(2)
+          append(value.bitPattern, to: &data)
+        case .text(let value):
+          data.append(3)
+          append(value, to: &data)
+        case .blob(let value):
+          data.append(4)
+          append(value, to: &data)
+        }
+      }
+    }
+    data.append(result.isTruncated ? 1 : 0)
+    append(result.elapsedMicroseconds, to: &data)
     return sha256(data)
+  }
+
+  public static func normalizedSQL(_ sql: String) -> String {
+    sql
+      .replacingOccurrences(of: "\r\n", with: "\n")
+      .replacingOccurrences(of: "\r", with: "\n")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   public static func sha256(_ data: Data) -> String {
     SHA256.hash(data: data)
       .map { String(format: "%02x", $0) }
       .joined()
+  }
+
+  private static func append(_ value: Int, to data: inout Data) {
+    append(UInt64(value), to: &data)
+  }
+
+  private static func append(_ value: Int64, to data: inout Data) {
+    append(UInt64(bitPattern: value), to: &data)
+  }
+
+  private static func append(_ value: UInt64, to data: inout Data) {
+    var bigEndian = value.bigEndian
+    Swift.withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
+  }
+
+  private static func append(_ value: String, to data: inout Data) {
+    append(Data(value.utf8), to: &data)
+  }
+
+  private static func append(_ value: Data, to data: inout Data) {
+    append(value.count, to: &data)
+    data.append(value)
   }
 }

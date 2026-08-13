@@ -2,23 +2,92 @@ import Foundation
 
 private struct FollowUpDeadlineExceeded: Error, Sendable {}
 
+private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
+  private typealias Continuation = CheckedContinuation<Value, any Error>
+
+  private let lock = NSLock()
+  private var continuation: Continuation?
+  private var result: Result<Value, any Error>?
+  private var tasks: [Task<Void, Never>] = []
+
+  func wait(
+    seconds: Double,
+    operation: @escaping @Sendable () async throws -> Value
+  ) async throws -> Value {
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        install(continuation)
+        let operationTask = Task {
+          do {
+            resolve(.success(try await operation()))
+          } catch {
+            resolve(.failure(error))
+          }
+        }
+        let deadlineTask = Task {
+          do {
+            try await Task.sleep(for: .seconds(seconds))
+            resolve(.failure(FollowUpDeadlineExceeded()))
+          } catch is CancellationError {
+            return
+          } catch {
+            resolve(.failure(error))
+          }
+        }
+        install(tasks: [operationTask, deadlineTask])
+      }
+    } onCancel: {
+      resolve(.failure(CancellationError()))
+    }
+  }
+
+  private func install(_ continuation: Continuation) {
+    lock.lock()
+    if let result {
+      lock.unlock()
+      continuation.resume(with: result)
+    } else {
+      self.continuation = continuation
+      lock.unlock()
+    }
+  }
+
+  private func install(tasks: [Task<Void, Never>]) {
+    lock.lock()
+    if result == nil {
+      self.tasks = tasks
+      lock.unlock()
+    } else {
+      lock.unlock()
+      tasks.forEach { $0.cancel() }
+    }
+  }
+
+  private func resolve(_ result: Result<Value, any Error>) {
+    lock.lock()
+    guard self.result == nil else {
+      lock.unlock()
+      return
+    }
+    self.result = result
+    let continuation = self.continuation
+    self.continuation = nil
+    let tasks = self.tasks
+    self.tasks = []
+    lock.unlock()
+    tasks.forEach { $0.cancel() }
+    continuation?.resume(with: result)
+  }
+}
+
 private func withFollowUpDeadline<Value: Sendable>(
   seconds: Double,
   operation: @escaping @Sendable () async throws -> Value
 ) async throws -> Value {
   guard seconds > 0 else { throw FollowUpDeadlineExceeded() }
-  return try await withThrowingTaskGroup(of: Value.self) { group in
-    group.addTask { try await operation() }
-    group.addTask {
-      try await Task.sleep(for: .seconds(seconds))
-      throw FollowUpDeadlineExceeded()
-    }
-    defer { group.cancelAll() }
-    guard let value = try await group.next() else {
-      throw FollowUpDeadlineExceeded()
-    }
-    return value
-  }
+  return try await FollowUpDeadlineRace<Value>().wait(
+    seconds: seconds,
+    operation: operation)
 }
 
 private enum PreparedCandidateOutcome {
@@ -100,7 +169,8 @@ func normalizedFollowUpQuestions(
   var seen = Set<String>()
   var result: [String] = []
   for raw in questions {
-    var question = raw
+    var question =
+      raw
       .split(whereSeparator: \Character.isWhitespace)
       .joined(separator: " ")
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -314,8 +384,8 @@ private func prepareFollowUpCandidate(
       ? .generationFailed : .validationFailed)
 }
 
-private extension GroundingReport {
-  var isUnhelpfulPreparedFollowUp: Bool {
+extension GroundingReport {
+  fileprivate var isUnhelpfulPreparedFollowUp: Bool {
     findings.contains { finding in
       switch finding {
       case .emptyResult, .nullScalar, .literalNotFound:
@@ -334,7 +404,8 @@ func preparedAnswerStream(
   heuristics: ResultHeuristics,
   configuration: QueryPipeline.Configuration,
   runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode,
-  fallback: @escaping @Sendable (String, [ConversationTurn])
+  fallback:
+    @escaping @Sendable (String, [ConversationTurn])
     -> AsyncStream<PipelineEvent>
 ) -> AsyncStream<PipelineEvent> {
   AsyncStream { continuation in
@@ -355,8 +426,9 @@ func preparedAnswerStream(
         }
         continuation.finish()
       }
-      guard prepared.provenance.schemaVersion
-        == PreparedQueryProvenance.currentSchemaVersion,
+      guard
+        prepared.provenance.schemaVersion
+          == PreparedQueryProvenance.currentSchemaVersion,
         prepared.provenance.modelKey == configuration.model.key,
         prepared.provenance.modelRevision == configuration.model.revision,
         prepared.provenance.runtimeMode == mode,
@@ -441,9 +513,24 @@ func preparedAnswerStream(
           elapsedMicroseconds: started.duration(to: .now).microseconds))
 
       let groundingStarted = ContinuousClock.now
-      let grounding = await heuristics.inspectDetailed(
-        sql: prepared.sql,
-        result: prepared.result)
+      let grounding: GroundingReport
+      do {
+        grounding = try await withFollowUpDeadline(
+          seconds: remainingPreparedAnswerSeconds(
+            since: started,
+            limit: configuration.deadlines.wholeTurnSeconds)
+        ) {
+          await heuristics.inspectDetailed(
+            sql: prepared.sql,
+            result: prepared.result)
+        }
+      } catch is CancellationError {
+        continuation.finish()
+        return
+      } catch {
+        telemetry.timeoutStage = "grounding"
+        grounding = GroundingReport()
+      }
       let groundingElapsed = groundingStarted.duration(to: .now).microseconds
       telemetry.grounding = grounding
       telemetry.stageTimings.groundingMicroseconds = groundingElapsed
@@ -456,28 +543,41 @@ func preparedAnswerStream(
       let narrationStarted = ContinuousClock.now
       let fmAvailable = fm.availability() == .available
       let narration: String
+      let narrationUsedFM: Bool
       do {
         let activeFM = fmAvailable ? fm : .fallback()
-        narration = try await serializer.run(operation: .narration) {
-          try await activeFM.narrate(prepared.question, prepared.result)
+        narration = try await withFollowUpDeadline(
+          seconds: remainingPreparedAnswerSeconds(
+            since: started,
+            limit: configuration.deadlines.wholeTurnSeconds)
+        ) {
+          try await serializer.run(operation: .narration) {
+            try await activeFM.narrate(prepared.question, prepared.result)
+          }
         }
+        narrationUsedFM = fmAvailable
       } catch is CancellationError {
         continuation.finish()
         return
       } catch {
-        narration = (try? await FMClient.fallback().narrate(
-          prepared.question, prepared.result))
+        if error is FollowUpDeadlineExceeded {
+          telemetry.timeoutStage = "narration"
+        }
+        narration =
+          (try? await FMClient.fallback().narrate(
+            prepared.question, prepared.result))
           ?? PreparedAnswerFallback.narration(for: prepared.result)
+        narrationUsedFM = false
       }
       let narrationElapsed = narrationStarted.duration(to: .now).microseconds
-      telemetry.narrationUsedFM = fmAvailable
+      telemetry.narrationUsedFM = narrationUsedFM
       telemetry.stageTimings.narrationMicroseconds = narrationElapsed
       telemetry.stageTimings.totalMicroseconds =
         started.duration(to: .now).microseconds
       continuation.yield(
         .narrationFinished(
           narration: narration,
-          usedFM: fmAvailable,
+          usedFM: narrationUsedFM,
           elapsedMicroseconds: narrationElapsed))
       let notice = grounding.findings.first?.userNotice
       continuation.yield(
@@ -492,6 +592,13 @@ func preparedAnswerStream(
     }
     continuation.onTermination = { _ in task.cancel() }
   }
+}
+
+private func remainingPreparedAnswerSeconds(
+  since started: ContinuousClock.Instant,
+  limit: Double
+) -> Double {
+  limit - Double(started.duration(to: .now).microseconds) / 1_000_000
 }
 
 public enum PreparedAnswerFallback {

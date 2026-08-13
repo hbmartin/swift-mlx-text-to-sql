@@ -51,9 +51,10 @@ import Testing
       result: result,
       sort: ResultViewerLogic.SortState(column: 0, ascending: true),
       searchText: "")
-    #expect(rows.map { $0[0] } == [
-      .null, .text("atlas yard"), .text("Béa Café"), .text("Harbor Point"),
-    ])
+    #expect(
+      rows.map { $0[0] } == [
+        .null, .text("atlas yard"), .text("Béa Café"), .text("Harbor Point"),
+      ])
   }
 
   @Test func equalCellsKeepOriginalRowOrder() {
@@ -111,6 +112,17 @@ import Testing
     #expect(ResultViewerLogic.rowCountLabel(for: result) == "4 rows")
     let single = QueryResult(columns: ["a"], rows: [[.integer(1)]])
     #expect(ResultViewerLogic.rowCountLabel(for: single) == "1 row")
+  }
+
+  @Test func searchingTruncatedResultsPreservesTheTruncationWarning() {
+    var truncated = result
+    truncated.isTruncated = true
+    #expect(
+      ResultViewerLogic.rowStatusLabel(
+        for: truncated,
+        displayedRowCount: 2,
+        searchIsActive: true)
+        == "First 4+ rows · 2 matching returned rows")
   }
 
   // MARK: Pinch interaction
@@ -189,6 +201,39 @@ import Testing
     let csv = result.csvString(runtimeMode: .compatibility)
     #expect(csv.contains("__creg_runtime_mode,__creg_evaluated"))
     #expect(csv.contains(",compatibility,false"))
+  }
+
+  @Test func provisionalPreparedResultUsesItsPersistedRuntimeMode() {
+    let sql = "SELECT 1"
+    var telemetry = TurnTelemetry(
+      originalQuestion: "Prepared?",
+      runtimeMode: .compatibility)
+    telemetry.queryOrigin = .preparedFollowUp
+    let prepared = PreparedFollowUp(
+      id: UUID(),
+      sourceAssistantMessageID: UUID(),
+      rank: 1,
+      question: "Prepared?",
+      sql: sql,
+      result: result,
+      preparationTelemetry: telemetry,
+      provenance: PreparedQueryProvenance(
+        modelKey: "test-model",
+        modelRevision: "test-revision",
+        runtimeMode: .compatibility,
+        preparationPolicyVersion: "prepared-follow-up-v1|binding-repair-v2",
+        databaseFingerprint: "test-database",
+        sqlFingerprint: PreparedFollowUpIntegrity.fingerprint(sql: sql),
+        resultFingerprint: PreparedFollowUpIntegrity.fingerprint(result: result)),
+      createdAt: Date(timeIntervalSince1970: 1))
+    let message = ChatMessage(
+      id: UUID(),
+      role: .assistant,
+      body: .preparedAnswer(prepared),
+      createdAt: Date(timeIntervalSince1970: 2),
+      devInfo: nil)
+
+    #expect(ResultViewerLogic.runtimeMode(for: message) == .compatibility)
   }
 }
 

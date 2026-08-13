@@ -144,15 +144,25 @@ import Testing
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("creg-preparation-test-\(UUID().uuidString)")
     let url = directory.appendingPathComponent("model-preparation.json")
-    let store = ModelPreparationJournalStore(url: url)
+    let store = ModelPreparationJournalStore(
+      url: url,
+      processSessionID: UUID(1))
 
     try await store.begin(mode: .evaluated, environment: ["build": "test"])
     try await store.stageStarted(.promptCache, mode: .evaluated)
-    #expect(await store.unfinishedAttempt()?.stage == .promptCache)
+    // A live attempt owned by this process is not crash recovery input.
+    #expect(await store.unfinishedAttempt() == nil)
+    let relaunched = ModelPreparationJournalStore(
+      url: url,
+      processSessionID: UUID(2))
+    #expect(await relaunched.unfinishedAttempt()?.stage == .promptCache)
 
     try await store.complete(
       ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 1))
-    #expect(await store.unfinishedAttempt() == nil)
+    let completedRelaunch = ModelPreparationJournalStore(
+      url: url,
+      processSessionID: UUID(3))
+    #expect(await completedRelaunch.unfinishedAttempt() == nil)
     #expect(await store.exportData() != nil)
   }
 }
@@ -181,13 +191,16 @@ import Testing
       run: { _, _ in AsyncStream { $0.finish() } })
     var state = AppFeature.State()
     state.$developerMode.withLock { $0 = true }
-    state.modelReadiness = .failed(ModelPreparationFailure(
-      code: "model_prompt_cache_failed",
-      stage: .promptCache,
-      mode: .evaluated,
-      userMessage: "failed",
-      diagnostic: "safe"))
-    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+    state.modelReadiness = .failed(
+      ModelPreparationFailure(
+        code: "model_prompt_cache_failed",
+        stage: .promptCache,
+        mode: .evaluated,
+        userMessage: "failed",
+        diagnostic: "safe"))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
       $0.queryPipeline = pipeline
       $0.modelPreparationJournal = .noop
     }
@@ -203,6 +216,99 @@ import Testing
     #expect(store.state.modelReadiness == .ready)
   }
 
+  @Test func repeatedAppearanceDoesNotRestartLivePreparation() async {
+    let inspections = LockIsolated(0)
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    var journal = ModelPreparationJournalClient.noop
+    journal.unfinishedAttempt = {
+      inspections.withValue { $0 += 1 }
+      return nil
+    }
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = AppFeature.State()
+    state.chat = ChatFeature.State(conversationID: UUID(9))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = journal
+    }
+    store.exhaustivity = .off
+
+    await store.send(.onAppear)
+    await store.finish()
+    await store.skipReceivedActions()
+    await store.send(.onAppear)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(inspections.value == 1)
+    #expect(modes.value == [.evaluated])
+    #expect(store.state.modelReadiness == .ready)
+  }
+
+  @Test func retriesAreRejectedWhileTurnsOrQueuesOwnTheRuntime() async {
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .compatibility },
+      run: { _, _ in AsyncStream { $0.finish() } })
+
+    var queuedState = AppFeature.State()
+    queuedState.modelReadiness = .ready
+    queuedState.modelPreparationReport = ModelPreparationReport(
+      mode: .compatibility, elapsedMilliseconds: 0)
+    queuedState.queue = [
+      QueuedQuestion(
+        id: UUID(1),
+        conversationID: UUID(2),
+        question: "Queued",
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    let queuedStore = TestStore(initialState: queuedState) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = pipeline
+    }
+    queuedStore.exhaustivity = .off
+    await queuedStore.send(.retryPreparation)
+    await queuedStore.finish()
+
+    var activeState = AppFeature.State()
+    activeState.$developerMode.withLock { $0 = true }
+    activeState.modelReadiness = .failed(
+      ModelPreparationFailure(
+        code: "model_prompt_cache_failed",
+        stage: .promptCache,
+        mode: .evaluated,
+        userMessage: "failed",
+        diagnostic: "safe"))
+    activeState.activeTurn = AppFeature.ActiveTurn(
+      questionID: UUID(3),
+      conversationID: UUID(2),
+      question: "Running",
+      startedAt: Date(timeIntervalSince1970: 1))
+    let activeStore = TestStore(initialState: activeState) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = pipeline
+    }
+    activeStore.exhaustivity = .off
+    await activeStore.send(.retryCompatibilityPreparation)
+    await activeStore.finish()
+
+    #expect(modes.value.isEmpty)
+  }
+
   @Test func compatibilityIsNotOfferedForBuildPolicyFailures() async {
     let modes = LockIsolated<[ModelRuntimeMode]>([])
     let pipeline = QueryPipeline(
@@ -214,13 +320,16 @@ import Testing
       run: { _, _ in AsyncStream { $0.finish() } })
     var state = AppFeature.State()
     state.$developerMode.withLock { $0 = true }
-    state.modelReadiness = .failed(ModelPreparationFailure(
-      code: "build_channel_invalid",
-      stage: .buildPolicy,
-      mode: .evaluated,
-      userMessage: "failed",
-      diagnostic: "safe"))
-    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+    state.modelReadiness = .failed(
+      ModelPreparationFailure(
+        code: "build_channel_invalid",
+        stage: .buildPolicy,
+        mode: .evaluated,
+        userMessage: "failed",
+        diagnostic: "safe"))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
       $0.queryPipeline = pipeline
     }
     store.exhaustivity = .off

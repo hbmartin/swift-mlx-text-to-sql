@@ -380,6 +380,35 @@ import Testing
     #expect(try await client.search("compare by fund").count == 1)
   }
 
+  @Test func preparedAnswerFinalUpdateCanWinTheProvisionalInsertRace() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    let prepared = preparedFollowUp(sourceMessageID: UUID())
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    try await client.appendMessage(
+      conversationID, userMessage(prepared.question, at: 10))
+    let provisional = ChatMessage(
+      id: UUID(), role: .assistant, body: .preparedAnswer(prepared),
+      createdAt: Date(timeIntervalSince1970: 11))
+    var final = provisional
+    final.body = .answer(
+      result: prepared.result,
+      narration: "The final narration won.",
+      sql: prepared.sql,
+      notice: nil)
+
+    // Reproduce the reducer ordering where finalization reaches SQLite before
+    // the independently scheduled provisional append.
+    try await client.updateMessage(conversationID, final)
+    try await client.appendMessage(conversationID, provisional)
+
+    let messages = try await client.loadConversation(conversationID).messages
+    #expect(messages.count == 2)
+    #expect(messages.last == final)
+    #expect(try await client.search("final narration").count == 1)
+  }
+
   @Test func preparedSuggestionTextAndProvisionalResultsAreNotSearchable() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()
@@ -435,7 +464,8 @@ import Testing
     #expect(
       try JSONDecoder().decode(
         [PreparedFollowUpBatch].self,
-        from: source.followUpsJSON).isEmpty)
+        from: source.followUpsJSON
+      ).isEmpty)
   }
 
   @Test func supportBundleInventoryIncludesCoreFilesAndExclusions() {
@@ -502,7 +532,8 @@ import Testing
       scratchDirectory: scratch)
 
     #expect(FileManager.default.fileExists(atPath: export.url.path))
-    let size = try FileManager.default
+    let size =
+      try FileManager.default
       .attributesOfItem(atPath: export.url.path)[.size] as? Int ?? 0
     #expect(size > 0)
     #expect(export.manifest.appVersion == "2.0")
@@ -514,9 +545,49 @@ import Testing
     let entryPaths = export.manifest.entries.map(\.path)
     #expect(entryPaths.contains("history-snapshot.sqlite"))
     #expect(entryPaths.contains("conversations.json"))
-    #expect(export.manifest.exclusions.map(\.name)
-      == ["model-weights", "portfolio-database"])
+    #expect(
+      export.manifest.exclusions.map(\.name)
+        == ["model-weights", "portfolio-database"])
     #expect(export.manifest.entries.allSatisfy { $0.sha256.count == 64 })
+  }
+
+  @Test func failedSupportBundleBuildRemovesTheHistorySnapshot() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "creg-bundle-failure-test-\(UUID().uuidString)",
+        isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: directory, withIntermediateDirectories: true)
+    let snapshot = directory.appendingPathComponent("history.sqlite")
+    try Data("private conversation history".utf8).write(to: snapshot)
+    let invalidScratch = directory.appendingPathComponent("not-a-directory")
+    try Data("file".utf8).write(to: invalidScratch)
+    let source = SupportBundleSource(
+      databaseSnapshotURL: snapshot,
+      conversationsJSON: Data("[]".utf8),
+      messagesJSON: Data("[]".utf8),
+      eventsJSONL: Data(),
+      feedbackJSON: Data("[]".utf8),
+      conversationCount: 0,
+      messageCount: 0,
+      eventLineCount: 0,
+      feedbackCount: 0)
+
+    #expect(throws: (any Error).self) {
+      try SupportBundleBuilder.build(
+        source: source,
+        context: SupportBundleBuilder.Context(
+          appVersion: "2.0",
+          buildNumber: "42",
+          modelIdentity: (key: "test", revision: "test"),
+          createdAt: Date(timeIntervalSince1970: 1)),
+        bundledModelManifest: nil,
+        bundledModelReceipt: nil,
+        bundledPortfolioDatabase: nil,
+        diagnosticsText: "",
+        scratchDirectory: invalidScratch)
+    }
+    #expect(!FileManager.default.fileExists(atPath: snapshot.path))
   }
 
   // MARK: Title normalization

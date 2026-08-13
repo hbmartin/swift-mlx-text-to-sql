@@ -152,6 +152,11 @@ public struct AppFeature: Sendable {
     public var supportBundleExport: SupportBundleExport?
     public var presentedFailure: FailurePresentation?
     public var modelPreparationReport: ModelPreparationReport?
+    /// Appearance can re-fire while the root store remains alive. These
+    /// session-only flags keep journal inspection and preparation once-only.
+    public var didRequestPreparationJournalInspection = false
+    public var didHandlePreparationJournalInspection = false
+    public var modelPreparationInFlight = false
     public var debugModelIdentity: DebugModelIdentity?
     /// Experimental physical-device benchmark input supplied at process
     /// launch. Ordinary Release builds always leave this nil.
@@ -244,6 +249,7 @@ public struct AppFeature: Sendable {
     case deleteCountdown
     case bannerTimeout
     case iconRead
+    case modelPreparation
   }
 
   @Dependency(\.queryPipeline) var pipeline
@@ -289,11 +295,16 @@ public struct AppFeature: Sendable {
           code: "app_appeared",
           summary: "The app surface appeared.",
           context: ["has_selection": String(state.chat != nil)])
-        state.modelReadiness = .preparing
-        let inspectPreparationJournal = Effect<Action>.run { send in
-          await send(
-            .preparationJournalLoaded(
-              await preparationJournal.unfinishedAttempt()))
+        var effects: [Effect<Action>] = []
+        if !state.didRequestPreparationJournalInspection {
+          state.didRequestPreparationJournalInspection = true
+          state.modelReadiness = .preparing
+          effects.append(
+            .run { send in
+              await send(
+                .preparationJournalLoaded(
+                  await preparationJournal.unfinishedAttempt()))
+            })
         }
         // The system owns which icon is showing, so read it back on every
         // appearance rather than trusting stored state.
@@ -304,19 +315,18 @@ public struct AppFeature: Sendable {
               supportsAlternates: appIconClient.supportsAlternates()))
         }
         .cancellable(id: CancelID.iconRead, cancelInFlight: true)
-        guard state.chat == nil else {
-          return .merge(inspectPreparationJournal, readIcon)
+        effects.append(readIcon)
+        if state.chat == nil {
+          effects.append(
+            .run { send in
+              let summaries = try await history.bootstrap()
+              await send(.bootstrapFinished(summaries))
+            } catch: { error, send in
+              await send(
+                .operationFailed(.history(operation: .load, error: error)))
+            })
         }
-        return .merge(
-          inspectPreparationJournal,
-          readIcon,
-          .run { send in
-            let summaries = try await history.bootstrap()
-            await send(.bootstrapFinished(summaries))
-          } catch: { error, send in
-            await send(
-              .operationFailed(.history(operation: .load, error: error)))
-          })
+        return .merge(effects)
 
       case .appBecameActive:
         return resumeFollowUpPreparationIfIdle(state: &state)
@@ -339,6 +349,11 @@ public struct AppFeature: Sendable {
           .merge(followOnEffects))
 
       case .preparationJournalLoaded(let previous):
+        guard
+          state.didRequestPreparationJournalInspection,
+          !state.didHandlePreparationJournalInspection
+        else { return .none }
+        state.didHandlePreparationJournalInspection = true
         if let previous {
           let failure = ModelPreparationFailure(
             code: "previous_preparation_interrupted",
@@ -347,34 +362,49 @@ public struct AppFeature: Sendable {
             userMessage:
               "The previous SQL model preparation stopped unexpectedly. Review Developer Mode details, then retry.",
             diagnostic:
-              "The prior process ended during \(previous.stage.rawValue) in \(previous.mode.rawValue) mode.")
+              "The prior process ended during \(previous.stage.rawValue) in \(previous.mode.rawValue) mode."
+          )
           state.modelReadiness = .failed(failure)
           state.modelPreparationReport = nil
-          diagnostics.record(DiagnosticEvent(
-            level: .error,
-            category: .model,
-            code: failure.code,
-            summary: "The previous model preparation attempt was interrupted.",
-            context: [
-              "stage": failure.stage.rawValue,
-              "runtime_mode": failure.mode.rawValue,
-            ]))
+          diagnostics.record(
+            DiagnosticEvent(
+              level: .error,
+              category: .model,
+              code: failure.code,
+              summary: "The previous model preparation attempt was interrupted.",
+              context: [
+                "stage": failure.stage.rawValue,
+                "runtime_mode": failure.mode.rawValue,
+              ]))
           return .none
         }
         state.modelReadiness = .preparing
+        state.modelPreparationInFlight = true
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
+        guard canStartModelPreparation(state: state) else { return .none }
+        switch state.modelReadiness {
+        case .failed:
+          break
+        case .ready:
+          guard state.modelPreparationReport?.mode == .compatibility
+          else { return .none }
+        case .preparing:
+          return .none
+        }
         diagnostics.info(
           category: .submission,
           code: "model_preparation_retry_requested",
           summary: "The user requested another model preparation attempt.")
         state.modelReadiness = .preparing
         state.modelPreparationReport = nil
+        state.modelPreparationInFlight = true
         return preparationEffect(mode: .evaluated)
 
       case .retryCompatibilityPreparation:
         guard
+          canStartModelPreparation(state: state),
           state.developerMode,
           case .failed(let failure) = state.modelReadiness,
           failure.allowsCompatibilityRetry
@@ -386,9 +416,11 @@ public struct AppFeature: Sendable {
           context: ["failed_stage": failure.stage.rawValue])
         state.modelReadiness = .preparing
         state.modelPreparationReport = nil
+        state.modelPreparationInFlight = true
         return preparationEffect(mode: .compatibility)
 
       case .modelPrepared(let report):
+        state.modelPreparationInFlight = false
         state.modelReadiness = .ready
         state.modelPreparationReport = report
         diagnostics.info(
@@ -401,9 +433,11 @@ public struct AppFeature: Sendable {
           ])
         return .merge(
           startLaunchBenchmarkIfReady(state: &state),
-          resumeFollowUpPreparationIfIdle(state: &state))
+          resumeFollowUpPreparationIfIdle(state: &state),
+          dispatchNextIfIdle(state: &state))
 
       case .modelPreparationFailed(let failure):
+        state.modelPreparationInFlight = false
         state.modelReadiness = .failed(failure)
         state.modelPreparationReport = nil
         diagnostics.record(
@@ -441,12 +475,23 @@ public struct AppFeature: Sendable {
         return startLaunchBenchmarkIfReady(state: &state)
 
       case .conversationLoaded(let snapshot):
-        state.chat = ChatFeature.State(snapshot: snapshot)
+        let conversationOwnsActiveTurn =
+          state.activeTurn?.conversationID == snapshot.summary.id
+        let activePreparedAnswerID =
+          conversationOwnsActiveTurn
+          ? state.activeTurn?.provisionalAssistantMessageID
+          : nil
+        state.chat = ChatFeature.State(
+          snapshot: snapshot,
+          preservingActiveTurn: conversationOwnsActiveTurn,
+          preservingPreparedAnswerID: activePreparedAnswerID)
         syncSchedulerProjection(into: &state)
         state.isBrowserRevealed = false
         var effects: [Effect<Action>] = []
-        let recovered = snapshot.messages.compactMap(
-          \.finalizedInterruptedPreparedAnswer)
+        let recovered = snapshot.messages.compactMap { message -> ChatMessage? in
+          guard message.id != activePreparedAnswerID else { return nil }
+          return message.finalizedInterruptedPreparedAnswer
+        }
         if !recovered.isEmpty {
           let conversationID = snapshot.summary.id
           if let latest = recovered.last {
@@ -458,7 +503,9 @@ public struct AppFeature: Sendable {
               for message in recovered {
                 try? await history.updateMessage(conversationID, message)
               }
-              try? await history.endTurnJournal(conversationID)
+              if !conversationOwnsActiveTurn {
+                try? await history.endTurnJournal(conversationID)
+              }
             })
         }
         if snapshot.summary.isUnread {
@@ -890,7 +937,8 @@ public struct AppFeature: Sendable {
       traceSteps: active.trace, createdAt: now)
     state.chat?.messages.append(stoppedMessage)
     state.chat?.processing = nil
-    updateSummaryAfterMessage(state: &state, conversationID: active.conversationID, message: stoppedMessage)
+    updateSummaryAfterMessage(
+      state: &state, conversationID: active.conversationID, message: stoppedMessage)
     diagnostics.info(
       category: .submission,
       code: "chat_turn_stopped",
@@ -1159,8 +1207,8 @@ public struct AppFeature: Sendable {
       state.queue.isEmpty
     else { return .none }
 
-    if let data = try? JSONEncoder().encode(event) {
-      preparation.eventLines.append(String(decoding: data, as: UTF8.self))
+    if let line = try? event.jsonLine() {
+      preparation.eventLines.append(line)
     }
     switch event {
     case .started, .rejected:
@@ -1168,17 +1216,7 @@ public struct AppFeature: Sendable {
       return .none
 
     case .prepared(let prepared):
-      let identity = prepared.question
-        .lowercased()
-        .filter { $0.isLetter || $0.isNumber }
-      let exists = preparation.batch.suggestions.contains {
-        $0.question.lowercased().filter { $0.isLetter || $0.isNumber }
-          == identity
-      }
-      if !exists {
-        preparation.batch.suggestions.append(prepared)
-        preparation.batch.suggestions.sort { $0.rank < $1.rank }
-      }
+      _ = preparation.batch.appendIfEligible(prepared)
       preparation.batch.updatedAt = now
       state.followUpPreparation = preparation
       if state.chat?.conversationID == conversationID {
@@ -1381,6 +1419,14 @@ public struct AppFeature: Sendable {
         await send(.modelPreparationFailed(failure))
       }
     }
+    .cancellable(id: CancelID.modelPreparation, cancelInFlight: true)
+  }
+
+  private func canStartModelPreparation(state: State) -> Bool {
+    !state.modelPreparationInFlight
+      && state.activeTurn == nil
+      && state.queue.isEmpty
+      && state.followUpPreparation == nil
   }
 
   private func outcomeName(_ outcome: TurnOutcome) -> String {
@@ -1403,8 +1449,8 @@ public struct AppFeature: Sendable {
   }
 }
 
-private extension QuestionSubmissionSource {
-  var queryOrigin: QueryOrigin {
+extension QuestionSubmissionSource {
+  fileprivate var queryOrigin: QueryOrigin {
     switch self {
     case .freeForm: .freeForm
     case .starter: .starter

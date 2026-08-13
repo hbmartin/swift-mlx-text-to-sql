@@ -186,15 +186,19 @@ final class CallRecorder: @unchecked Sendable {
     await store.send(.chat(.binding(.set(\.composerText, "first question"))))
     await store.send(.chat(.sendTapped))
     await store.receive(
-      .chat(.delegate(.submitQuestion(
-        QuestionSubmission(question: "first question")))))
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: "first question")))))
     #expect(store.state.activeTurn?.question == "first question")
 
     await store.send(.chat(.binding(.set(\.composerText, "second question"))))
     await store.send(.chat(.sendTapped))
     await store.receive(
-      .chat(.delegate(.submitQuestion(
-        QuestionSubmission(question: "second question")))))
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: "second question")))))
     #expect(store.state.queue.count == 1)
     #expect(store.state.queue.first?.question == "second question")
     #expect(store.state.chat?.queued.count == 1)
@@ -257,17 +261,20 @@ final class CallRecorder: @unchecked Sendable {
     store.exhaustivity = .off
 
     await store.send(
-      .chat(.delegate(.submitQuestion(
-        QuestionSubmission(
-          question: prepared.question,
-          source: .preparedFollowUp(prepared))))))
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(
+              question: prepared.question,
+              source: .preparedFollowUp(prepared))))))
     await store.finish()
 
     #expect(store.state.followUpPreparation == nil)
     #expect(store.state.chat?.followUpBatch == nil)
     #expect(store.state.queue.count == 1)
-    guard case .preparedFollowUp(let queued)? =
-      store.state.queue.first?.submission.source
+    guard
+      case .preparedFollowUp(let queued)? =
+        store.state.queue.first?.submission.source
     else {
       Issue.record("Expected the cached prepared payload to stay in the queue")
       return
@@ -297,13 +304,14 @@ final class CallRecorder: @unchecked Sendable {
     let writes = CallRecorder()
     var history = HistoryClient.noop()
     history.appendMessage = { _, message in
-      let kind = if case .preparedAnswer = message.body {
-        "provisional"
-      } else if message.role == .user {
-        "user"
-      } else {
-        "assistant"
-      }
+      let kind =
+        if case .preparedAnswer = message.body {
+          "provisional"
+        } else if message.role == .user {
+          "user"
+        } else {
+          "assistant"
+        }
       writes.record("append:\(kind):\(message.id.uuidString)")
     }
     history.updateMessage = { _, message in
@@ -355,8 +363,9 @@ final class CallRecorder: @unchecked Sendable {
     await store.skipReceivedActions()
 
     #expect(store.state.chat?.messages.count == 3)
-    guard case .answer(_, let narration, _, _)? =
-      store.state.chat?.messages.last?.body
+    guard
+      case .answer(_, let narration, _, _)? =
+        store.state.chat?.messages.last?.body
     else {
       Issue.record("Expected the provisional answer to be finalized in place")
       return
@@ -551,8 +560,9 @@ final class CallRecorder: @unchecked Sendable {
     await store.skipReceivedActions()
     #expect(store.state.answerReadyBanner == nil)
     #expect(haptics.count == 1)
-    #expect(unreadWrites.recorded.contains(
-      "\(Self.conversationB.uuidString):true"))
+    #expect(
+      unreadWrites.recorded.contains(
+        "\(Self.conversationB.uuidString):true"))
     await store.finish()
   }
 
@@ -586,9 +596,55 @@ final class CallRecorder: @unchecked Sendable {
 
     #expect(store.state.chat?.conversationID == Self.conversationB)
     #expect(store.state.conversations[id: Self.conversationB]?.isUnread == false)
-    #expect(unreadWrites.recorded.contains(
-      "\(Self.conversationB.uuidString):false"))
+    #expect(
+      unreadWrites.recorded.contains(
+        "\(Self.conversationB.uuidString):false"))
     #expect(store.state.isBrowserRevealed == false)
+  }
+
+  @Test func switchingBackDoesNotRecoverThisProcessesLivePreparedAnswer() async {
+    let prepared = Self.preparedFollowUp()
+    let provisionalID = UUID(88)
+    var state = Self.appState(selected: Self.conversationB)
+    var active = AppFeature.ActiveTurn(
+      questionID: UUID(90),
+      conversationID: Self.conversationA,
+      submission: QuestionSubmission(
+        question: prepared.question,
+        source: .preparedFollowUp(prepared)),
+      startedAt: Date(timeIntervalSince1970: 1))
+    active.provisionalAssistantMessageID = provisionalID
+    state.activeTurn = active
+    let snapshot = ConversationSnapshot(
+      summary: state.conversations[id: Self.conversationA]!,
+      messages: [
+        ChatMessage(
+          id: provisionalID,
+          role: .assistant,
+          body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2))
+      ])
+    let recoveryWrites = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, _ in recoveryWrites.record("update") }
+    history.endTurnJournal = { _ in recoveryWrites.record("end") }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.conversationLoaded(snapshot))
+    await store.finish()
+
+    guard case .preparedAnswer? = store.state.chat?.messages.first?.body else {
+      Issue.record("Expected the live provisional answer to remain provisional")
+      return
+    }
+    #expect(store.state.chat?.processing?.questionID == active.questionID)
+    #expect(recoveryWrites.recorded.isEmpty)
   }
 
   @Test func deleteThenUndoRestoresConversation() async {
@@ -832,8 +888,9 @@ final class CallRecorder: @unchecked Sendable {
 
     #expect(state.messages.count == 1)
     #expect(state.messages.first?.id == messageID)
-    guard case .answer(let result, let narration, let sql, _)? =
-      state.messages.first?.body
+    guard
+      case .answer(let result, let narration, let sql, _)? =
+        state.messages.first?.body
     else {
       Issue.record("Expected deterministic prepared-answer recovery")
       return
@@ -860,6 +917,33 @@ final class CallRecorder: @unchecked Sendable {
     }
     // Nothing was committed, so the composer keeps its text.
     #expect(store.state.composerText == "question")
+  }
+
+  @Test func preparedFollowUpTapPreservesTheTypedDraft() async {
+    let prepared = AppFeatureSchedulerTests.preparedFollowUp()
+    var state = Self.chatState()
+    state.composerText = "Keep this draft for later"
+    state.followUpBatch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    let drafts = CallRecorder()
+    var history = HistoryClient.noop()
+    history.saveDraft = { _, draft in drafts.record(draft) }
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+    }
+    store.exhaustivity = .off
+
+    await store.send(.preparedFollowUpTapped(prepared.id))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.composerText == "Keep this draft for later")
+    #expect(store.state.followUpBatch == nil)
+    #expect(drafts.recorded.isEmpty)
   }
 
   @Test func feedbackIsReversibleAndSwitchable() async {
@@ -1041,9 +1125,10 @@ final class CallRecorder: @unchecked Sendable {
 
     let turns = ChatFeature.conversationTurns(from: messages)
 
-    #expect(turns == [
-      ConversationTurn(question: "first question", answerSummary: "first summary"),
-      ConversationTurn(question: "second question", answerSummary: "second summary"),
-    ])
+    #expect(
+      turns == [
+        ConversationTurn(question: "first question", answerSummary: "first summary"),
+        ConversationTurn(question: "second question", answerSummary: "second summary"),
+      ])
   }
 }

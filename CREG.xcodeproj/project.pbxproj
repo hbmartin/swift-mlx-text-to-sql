@@ -519,7 +519,7 @@
 				C4E600000000000000000015 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Beta;
+			defaultConfigurationName = Release;
 		};
 		C4E600000000000000000016 /* Build configuration list for PBXNativeTarget "CREG" */ = {
 			isa = XCConfigurationList;
@@ -529,7 +529,7 @@
 				C4E600000000000000000018 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Beta;
+			defaultConfigurationName = Release;
 		};
 		C4E60000000000000000003A /* Build configuration list for PBXNativeTarget "CREGUITests" */ = {
 			isa = XCConfigurationList;

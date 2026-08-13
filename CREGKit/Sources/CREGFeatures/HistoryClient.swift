@@ -29,19 +29,20 @@ public struct HistoryClient: Sendable {
   public var endTurnJournal: @Sendable (_ conversationID: UUID) async throws -> Void
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
-  /// Replaces an existing payload without changing transcript position.
+  /// Replaces an existing payload without changing transcript position, or
+  /// inserts it when finalization beats its provisional append to the store.
   public var updateMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   public var appendEvents:
-    @Sendable (_ conversationID: UUID, _ messageID: UUID, _ jsonLines: [String]) async throws -> Void
+    @Sendable (_ conversationID: UUID, _ messageID: UUID, _ jsonLines: [String]) async throws ->
+      Void
   /// Writes the conversation's full JSONL event log to a temp file for export.
   public var exportJSONL: @Sendable (_ conversationID: UUID) async throws -> URL
   /// Gathers everything the Support Bundle includes from the history store.
   public var supportBundleSource: @Sendable () async throws -> SupportBundleSource
   public var saveFollowUpBatch:
     @Sendable (_ conversationID: UUID, _ batch: PreparedFollowUpBatch) async throws -> Void
-  public var clearFollowUpBatch:
-    @Sendable (_ conversationID: UUID) async throws -> Void
+  public var clearFollowUpBatch: @Sendable (_ conversationID: UUID) async throws -> Void
 }
 
 /// History-store contribution to a Support Bundle: a database snapshot plus
@@ -403,9 +404,10 @@ final class HistoryStore: Sendable {
         try? Self.decoder.decode(
           PreparedFollowUpBatch.self, from: Data($0.utf8))
       }
-      let messageCount = try Int.fetchOne(
-        db, sql: "SELECT COUNT(*) FROM message WHERE conversation_id = ?",
-        arguments: [id.uuidString]) ?? 0
+      let messageCount =
+        try Int.fetchOne(
+          db, sql: "SELECT COUNT(*) FROM message WHERE conversation_id = ?",
+          arguments: [id.uuidString]) ?? 0
       let summary = ConversationSummary(
         id: id,
         title: row["title"],
@@ -519,7 +521,8 @@ final class HistoryStore: Sendable {
   /// Converts free text into a safe FTS5 MATCH expression: every token is
   /// quoted, and the final token matches as a prefix while the user types.
   static func ftsMatchExpression(from query: String) -> String? {
-    let tokens = query
+    let tokens =
+      query
       .components(separatedBy: CharacterSet.alphanumerics.inverted)
       .filter { !$0.isEmpty }
     guard !tokens.isEmpty else { return nil }
@@ -657,8 +660,36 @@ final class HistoryStore: Sendable {
         arguments: [
           payload, message.id.uuidString, conversationID.uuidString,
         ])
-      guard db.changesCount == 1 else {
-        throw HistoryStoreError.messageNotFound
+      if db.changesCount != 1 {
+        // A prepared-result preview and its final narration are emitted by
+        // separate reducer effects. If finalization reaches the store first,
+        // insert the final message directly; the late provisional append is
+        // INSERT OR IGNORE and therefore cannot regress it.
+        let position =
+          try Int.fetchOne(
+            db,
+            sql: """
+              SELECT COALESCE(MAX(position), 0) + 1 FROM message
+              WHERE conversation_id = ?
+              """,
+            arguments: [conversationID.uuidString]) ?? 1
+        try db.execute(
+          sql: """
+            INSERT OR IGNORE INTO message (id, conversation_id, position, payload)
+            VALUES (?, ?, ?, ?)
+            """,
+          arguments: [
+            message.id.uuidString, conversationID.uuidString, position, payload,
+          ])
+        guard db.changesCount == 1 else {
+          throw HistoryStoreError.messageNotFound
+        }
+        try db.execute(
+          sql: "UPDATE conversation SET last_activity_at = ? WHERE id = ?",
+          arguments: [
+            message.createdAt.timeIntervalSince1970,
+            conversationID.uuidString,
+          ])
       }
       try db.execute(
         sql: "DELETE FROM search_index WHERE conversation_id = ? AND message_id = ?",
@@ -750,12 +781,18 @@ final class HistoryStore: Sendable {
     let snapshotURL = FileManager.default.temporaryDirectory
       .appendingPathComponent(
         "creg-history-snapshot-\(UUID().uuidString).sqlite")
+    var transfersSnapshotOwnership = false
+    defer {
+      if !transfersSnapshotOwnership {
+        try? FileManager.default.removeItem(at: snapshotURL)
+      }
+    }
     // VACUUM cannot run inside a transaction, so the snapshot copy happens
     // outside the transactional read below.
     try await queue.writeWithoutTransaction { db in
       try db.execute(sql: "VACUUM INTO ?", arguments: [snapshotURL.path])
     }
-    return try await queue.read { db in
+    let source = try await queue.read { db in
       struct NormalizedConversation: Encodable {
         var id: String
         var title: String
@@ -847,6 +884,8 @@ final class HistoryStore: Sendable {
         eventLineCount: eventLines.count,
         feedbackCount: feedback.count)
     }
+    transfersSnapshotOwnership = true
+    return source
   }
 
   // MARK: Shared helpers

@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// The strictly sequential per-turn pipeline:
@@ -61,8 +60,7 @@ public struct QueryPipeline: Sendable {
     }
   }
 
-  private var prepareMode:
-    @Sendable (ModelRuntimeMode) async throws -> ModelPreparationReport
+  private var prepareMode: @Sendable (ModelRuntimeMode) async throws -> ModelPreparationReport
   private var readRuntimeMode: @Sendable () async -> ModelRuntimeMode
   public var run:
     @Sendable (_ question: String, _ history: [ConversationTurn])
@@ -109,12 +107,14 @@ public struct QueryPipeline: Sendable {
       runStarter ?? { starter, history in
         run(starter.question, history)
       }
-    self.prepareFollowUps = prepareFollowUps ?? { _ in
-      AsyncStream { $0.finish() }
-    }
-    self.runPrepared = runPrepared ?? { prepared, history in
-      run(prepared.question, history)
-    }
+    self.prepareFollowUps =
+      prepareFollowUps ?? { _ in
+        AsyncStream { $0.finish() }
+      }
+    self.runPrepared =
+      runPrepared ?? { prepared, history in
+        run(prepared.question, history)
+      }
   }
 
   public init(
@@ -145,12 +145,14 @@ public struct QueryPipeline: Sendable {
       runStarter ?? { starter, history in
         run(starter.question, history)
       }
-    self.prepareFollowUps = prepareFollowUps ?? { _ in
-      AsyncStream { $0.finish() }
-    }
-    self.runPrepared = runPrepared ?? { prepared, history in
-      run(prepared.question, history)
-    }
+    self.prepareFollowUps =
+      prepareFollowUps ?? { _ in
+        AsyncStream { $0.finish() }
+      }
+    self.runPrepared =
+      runPrepared ?? { prepared, history in
+        run(prepared.question, history)
+      }
   }
 
   public func prepare(
@@ -225,9 +227,7 @@ private func deterministicStarterStream(
         maxTokens: configuration.maxTokens)
       var candidate = CandidateTelemetry(request: request)
       candidate.sql = sql
-      candidate.sqlFingerprint = SHA256.hash(data: Data(sql.utf8))
-        .map { String(format: "%02x", $0) }
-        .joined()
+      candidate.sqlFingerprint = PreparedFollowUpIntegrity.fingerprint(sql: sql)
       var telemetry = TurnTelemetry(
         originalQuestion: question,
         runtimeMode: await runtimeMode())
@@ -395,8 +395,7 @@ extension QueryPipeline {
     now: @escaping @Sendable () -> Date = Date.init
   ) -> QueryPipeline {
     let heuristics = ResultHeuristics(db: db)
-    let runFreeForm:
-      @Sendable (String, [ConversationTurn]) -> AsyncStream<PipelineEvent> =
+    let runFreeForm: @Sendable (String, [ConversationTurn]) -> AsyncStream<PipelineEvent> =
       { question, history in
         AsyncStream { continuation in
           let task = Task {
@@ -443,14 +442,7 @@ extension QueryPipeline {
             var validByFingerprint: [String: CandidateTelemetry] = [:]
 
             func fingerprint(_ sql: String) -> String {
-              let normalized =
-                sql
-                .replacingOccurrences(of: "\r\n", with: "\n")
-                .replacingOccurrences(of: "\r", with: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-              return SHA256.hash(data: Data(normalized.utf8))
-                .map { String(format: "%02x", $0) }
-                .joined()
+              PreparedFollowUpIntegrity.fingerprint(sql: sql)
             }
 
             func remainingTurnSeconds() -> Double {
