@@ -160,3 +160,15 @@ _Avoid_: sample prompt, suggested prompt
 **Free-form Question**:
 User-authored text that enters follow-up rewriting, the Ambiguity Gate, SQL generation, validation, bounded repair, voting, grounding, and narration.
 _Avoid_: starter query
+
+**Follow-up Suggestion**:
+One of up to three standalone next questions derived only from the latest completed question-and-answer pair. It appears beneath that answer only after its Candidate Query has already validated, executed, returned a useful result, and passed Grounding Checks.
+_Avoid_: starter query, suggested prompt
+
+**Prepared Follow-up**:
+A Follow-up Suggestion bundled with its validated Candidate Query, cached typed result, and versioned model, runtime, schema, portfolio-database, SQL, and result provenance. A cache mismatch sends the question through the Free-form Question path.
+_Avoid_: cached answer, starter query
+
+**Prepared Answer**:
+The in-place answer state after a Prepared Follow-up is tapped: its cached result is visible immediately while Narration is being produced. If Narration is interrupted, the same message is finalized with deterministic fallback Narration.
+_Avoid_: partial answer, duplicate answer

@@ -996,6 +996,8 @@ actor MLXSQLGenerator {
     switch role {
     case .starter(let starter):
       "starter_\(starter.rawValue)"
+    case .followUpPreflight(let rank):
+      "follow_up_preflight_\(rank)"
     case .initial:
       "initial"
     case .repair(let attempt):

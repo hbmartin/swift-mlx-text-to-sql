@@ -44,6 +44,21 @@ struct MessageCell: View {
           message: body,
           diagnostic: message.devInfo?.terminalError,
           developerMode: developerMode)
+      case .preparedAnswer(let prepared):
+        HStack(spacing: 8) {
+          ProgressView()
+          Text("Result ready — summarizing…")
+            .foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+        ResultPreviewView(result: prepared.result) {
+          store.send(.resultViewerPresented(messageID: message.id))
+        }
+        if developerMode {
+          DevInfoSectionsView(
+            sql: prepared.sql,
+            devInfo: prepared.preparationTelemetry)
+        }
       case .answer(let result, let narration, let sql, let notice):
         Text(narration)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -75,6 +90,7 @@ struct MessageCell: View {
           messageID: message.id,
           narration: narration,
           result: result,
+          runtimeMode: message.devInfo?.runtimeMode ?? .evaluated,
           feedback: feedback,
           readAloud: readAloud,
           store: store)
@@ -86,6 +102,14 @@ struct MessageCell: View {
         TraceView(
           steps: message.traceSteps,
           elapsedMicroseconds: message.devInfo?.stageTimings.totalMicroseconds)
+      }
+      if let batch = store.followUpBatch,
+        batch.sourceAssistantMessageID == message.id,
+        !batch.suggestions.isEmpty
+      {
+        FollowUpSuggestionsView(
+          suggestions: batch.suggestions,
+          select: { store.send(.preparedFollowUpTapped($0)) })
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -101,103 +125,201 @@ struct MessageCell: View {
   }
 }
 
+struct FollowUpSuggestionsView: View {
+  let suggestions: [PreparedFollowUp]
+  let select: (UUID) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Ask a follow-up")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+      ForEach(suggestions) { suggestion in
+        Button {
+          select(suggestion.id)
+        } label: {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(suggestion.question)
+              .font(.subheadline)
+              .multilineTextAlignment(.leading)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Image(systemName: "arrow.up.right")
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 12)
+          .background(
+            .quaternary.opacity(0.5),
+            in: RoundedRectangle(cornerRadius: 14))
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Ask follow-up: \(suggestion.question)")
+      }
+    }
+    .padding(.top, 4)
+  }
+}
+
 /// Answer actions: copy the combined answer as Markdown, share it, narration
 /// Read Aloud, and reversible Helpful / Not right feedback.
 struct AnswerActionsRow: View {
   let messageID: UUID
   let narration: String
   let result: QueryResult
+  let runtimeMode: ModelRuntimeMode
   let feedback: AnswerFeedback?
   let readAloud: ChatFeature.ReadAloudState?
   let store: StoreOf<ChatFeature>
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+  @ViewBuilder
   var body: some View {
-    HStack(spacing: 18) {
-      Button {
-        Pasteboard.copy(
-          AnswerExport.combinedMarkdown(narration: narration, result: result))
-      } label: {
-        Image(systemName: "doc.on.doc")
-      }
-      .accessibilityLabel("Copy answer as Markdown")
-
-      ShareLink(
-        item: AnswerExport.combinedMarkdown(narration: narration, result: result)
+    if dynamicTypeSize.isAccessibilitySize {
+      LazyVGrid(
+        columns: [GridItem(.adaptive(minimum: 68), spacing: 8)],
+        alignment: .leading,
+        spacing: 8
       ) {
-        Image(systemName: "square.and.arrow.up")
+        copyButton
+        shareControl
+        readAloudButtons
+        helpfulButton
+        notRightButton
       }
-      .accessibilityLabel("Share answer")
-
-      readAloudControls
-
-      Spacer(minLength: 0)
-
-      Button {
-        store.send(.feedbackHelpfulTapped(messageID: messageID))
-      } label: {
-        Image(
-          systemName: feedback?.verdict == .helpful
-            ? "hand.thumbsup.fill" : "hand.thumbsup")
+    } else {
+      HStack(spacing: 8) {
+        copyButton
+        shareControl
+        readAloudButtons
+        Spacer(minLength: 0)
+        helpfulButton
+        notRightButton
       }
-      .foregroundStyle(
-        feedback?.verdict == .helpful ? CREGBrand.blue : Color.secondary)
-      .accessibilityLabel("Helpful")
-      .accessibilityAddTraits(
-        feedback?.verdict == .helpful ? [.isSelected] : [])
-
-      Button {
-        store.send(.feedbackNotRightTapped(messageID: messageID))
-      } label: {
-        Image(
-          systemName: feedback?.verdict == .notRight
-            ? "hand.thumbsdown.fill" : "hand.thumbsdown")
-      }
-      .foregroundStyle(
-        feedback?.verdict == .notRight ? Color.orange : Color.secondary)
-      .accessibilityLabel("Not right")
-      .accessibilityAddTraits(
-        feedback?.verdict == .notRight ? [.isSelected] : [])
     }
-    .font(.footnote)
+  }
+
+  private var exportedAnswer: String {
+    AnswerExport.combinedMarkdown(
+      narration: narration,
+      result: result,
+      runtimeMode: runtimeMode)
+  }
+
+  private var copyButton: some View {
+    Button {
+      Pasteboard.copy(exportedAnswer)
+    } label: {
+      Image(systemName: "doc.on.doc")
+        .cregIconButtonTarget()
+    }
     .buttonStyle(.plain)
     .foregroundStyle(.secondary)
-    .padding(.top, 2)
+    .accessibilityLabel("Copy answer as Markdown")
+    .cregLargeContentViewer(
+      "Copy answer as Markdown", systemImage: "doc.on.doc")
+  }
+
+  private var shareControl: some View {
+    ShareLink(item: exportedAnswer) {
+      Image(systemName: "square.and.arrow.up")
+        .cregIconButtonTarget()
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(.secondary)
+    .accessibilityLabel("Share answer")
+    .cregLargeContentViewer("Share answer", systemImage: "square.and.arrow.up")
+  }
+
+  private var helpfulButton: some View {
+    Button {
+      store.send(.feedbackHelpfulTapped(messageID: messageID))
+    } label: {
+      Image(
+        systemName: feedback?.verdict == .helpful
+          ? "hand.thumbsup.fill" : "hand.thumbsup"
+      )
+      .cregIconButtonTarget()
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(
+      feedback?.verdict == .helpful ? CREGBrand.blue : Color.secondary)
+    .accessibilityLabel("Helpful")
+    .accessibilityAddTraits(
+      feedback?.verdict == .helpful ? [.isSelected] : [])
+    .cregLargeContentViewer("Helpful", systemImage: "hand.thumbsup")
+  }
+
+  private var notRightButton: some View {
+    Button {
+      store.send(.feedbackNotRightTapped(messageID: messageID))
+    } label: {
+      Image(
+        systemName: feedback?.verdict == .notRight
+          ? "hand.thumbsdown.fill" : "hand.thumbsdown"
+      )
+      .cregIconButtonTarget()
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(
+      feedback?.verdict == .notRight ? Color.orange : Color.secondary)
+    .accessibilityLabel("Not right")
+    .accessibilityAddTraits(
+      feedback?.verdict == .notRight ? [.isSelected] : [])
+    .cregLargeContentViewer("Not right", systemImage: "hand.thumbsdown")
   }
 
   @ViewBuilder
-  private var readAloudControls: some View {
+  private var readAloudButtons: some View {
     if let readAloud, readAloud.messageID == messageID {
-      HStack(spacing: 12) {
-        if readAloud.phase == .playing {
-          Button {
-            store.send(.readAloudPauseTapped)
-          } label: {
-            Image(systemName: "pause.fill")
-          }
-          .accessibilityLabel("Pause reading")
-        } else {
-          Button {
-            store.send(.readAloudResumeTapped)
-          } label: {
-            Image(systemName: "play.fill")
-          }
-          .accessibilityLabel("Resume reading")
-        }
+      if readAloud.phase == .playing {
         Button {
-          store.send(.readAloudStopTapped)
+          store.send(.readAloudPauseTapped)
         } label: {
-          Image(systemName: "stop.fill")
+          Image(systemName: "pause.fill")
+            .cregIconButtonTarget()
         }
-        .accessibilityLabel("Stop reading")
+        .buttonStyle(.plain)
+        .foregroundStyle(CREGBrand.blue)
+        .accessibilityLabel("Pause reading")
+        .cregLargeContentViewer("Pause reading", systemImage: "pause.fill")
+      } else {
+        Button {
+          store.send(.readAloudResumeTapped)
+        } label: {
+          Image(systemName: "play.fill")
+            .cregIconButtonTarget()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(CREGBrand.blue)
+        .accessibilityLabel("Resume reading")
+        .cregLargeContentViewer("Resume reading", systemImage: "play.fill")
       }
+      Button {
+        store.send(.readAloudStopTapped)
+      } label: {
+        Image(systemName: "stop.fill")
+          .cregIconButtonTarget()
+      }
+      .accessibilityLabel("Stop reading")
+      .cregLargeContentViewer("Stop reading", systemImage: "stop.fill")
+      .buttonStyle(.plain)
       .foregroundStyle(CREGBrand.blue)
     } else {
       Button {
         store.send(.readAloudTapped(messageID: messageID))
       } label: {
         Image(systemName: "speaker.wave.2")
+          .cregIconButtonTarget()
       }
+      .buttonStyle(.plain)
+      .foregroundStyle(.secondary)
       .accessibilityLabel("Read narration aloud")
+      .cregLargeContentViewer(
+        "Read narration aloud", systemImage: "speaker.wave.2")
     }
   }
 }
@@ -205,12 +327,18 @@ struct AnswerActionsRow: View {
 /// Shared answer-export text: narration plus the returned table as Markdown.
 public enum AnswerExport {
   public static func combinedMarkdown(
-    narration: String, result: QueryResult
+    narration: String,
+    result: QueryResult,
+    runtimeMode: ModelRuntimeMode? = nil
   ) -> String {
+    let metadata = runtimeMode.map {
+      "Runtime mode: \($0.rawValue) · Evaluated: \($0.isEvaluated)\n\n"
+    } ?? ""
     guard !result.rows.isEmpty || !result.columns.isEmpty else {
-      return narration + "\n"
+      return metadata + narration + "\n"
     }
-    return narration + "\n\n" + result.markdownTableString()
+    return metadata + narration + "\n\n"
+      + result.markdownTableString(runtimeMode: nil)
   }
 }
 
@@ -417,6 +545,7 @@ struct DevInfoSectionsView: View {
   private func role(_ role: CandidateRole) -> String {
     switch role {
     case .starter(let starter): "starter-\(starter.rawValue)"
+    case .followUpPreflight(let rank): "follow-up-preflight-\(rank)"
     case .initial: "initial"
     case .repair(let attempt): "repair-\(attempt)"
     case .deterministicAnchor: "anchor"

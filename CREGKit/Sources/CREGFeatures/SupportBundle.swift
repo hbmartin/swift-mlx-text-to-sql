@@ -10,11 +10,11 @@ import ZIPFoundation
 /// and the bundled portfolio database are excluded; hashes and receipts
 /// stand in for them (CONTEXT.md "Support Bundle").
 public struct SupportBundleClient: Sendable {
-  public var build:
-    @Sendable (SupportBundleSource) async throws -> AppFeature.SupportBundleExport
+  public var build: @Sendable (SupportBundleSource) async throws -> AppFeature.SupportBundleExport
 
   public init(
-    build: @escaping @Sendable (SupportBundleSource) async throws ->
+    build:
+      @escaping @Sendable (SupportBundleSource) async throws ->
       AppFeature.SupportBundleExport
   ) {
     self.build = build
@@ -43,7 +43,8 @@ extension SupportBundleClient {
       let info = bundle.infoDictionary ?? [:]
       let preparationJSON =
         await ModelPreparationJournalClient.live().exportData()
-      let preparation: ModelPreparationJournalSnapshot? = preparationJSON
+      let preparation: ModelPreparationJournalSnapshot? =
+        preparationJSON
         .flatMap { data in
           let decoder = JSONDecoder()
           decoder.dateDecodingStrategy = .iso8601
@@ -113,6 +114,7 @@ public enum SupportBundleBuilder {
       ("messages.json", source.messagesJSON),
       ("events.jsonl", source.eventsJSONL),
       ("feedback.json", source.feedbackJSON),
+      ("prepared-follow-ups.json", source.followUpsJSON),
       ("diagnostics.txt", Data(diagnosticsText.utf8)),
     ]
     if let modelManifestJSON {
@@ -161,6 +163,13 @@ public enum SupportBundleBuilder {
     let fileManager = FileManager.default
     let stageDirectory = scratchDirectory.appendingPathComponent(
       "creg-support-bundle", isDirectory: true)
+    let zipURL = scratchDirectory.appendingPathComponent("creg-support-bundle.zip")
+    var completed = false
+    defer {
+      try? fileManager.removeItem(at: stageDirectory)
+      try? fileManager.removeItem(at: source.databaseSnapshotURL)
+      if !completed { try? fileManager.removeItem(at: zipURL) }
+    }
     try? fileManager.removeItem(at: stageDirectory)
     try fileManager.createDirectory(
       at: stageDirectory, withIntermediateDirectories: true)
@@ -184,7 +193,8 @@ public enum SupportBundleBuilder {
           sha256: sha256Hex(data)))
     }
 
-    let portfolioHash = bundledPortfolioDatabase
+    let portfolioHash =
+      bundledPortfolioDatabase
       .flatMap { try? Data(contentsOf: $0) }
       .map(sha256Hex)
     let manifest = SupportBundleManifest(
@@ -210,7 +220,6 @@ public enum SupportBundleBuilder {
     try encoder.encode(manifest)
       .write(to: stageDirectory.appendingPathComponent("manifest.json"))
 
-    let zipURL = scratchDirectory.appendingPathComponent("creg-support-bundle.zip")
     try? fileManager.removeItem(at: zipURL)
     let archive = try Archive(url: zipURL, accessMode: .create)
     for name in (files.map(\.0) + ["manifest.json"]).sorted() {
@@ -219,8 +228,7 @@ public enum SupportBundleBuilder {
         relativeTo: stageDirectory,
         compressionMethod: .deflate)
     }
-    try? fileManager.removeItem(at: stageDirectory)
-    try? fileManager.removeItem(at: source.databaseSnapshotURL)
+    completed = true
     return AppFeature.SupportBundleExport(url: zipURL, manifest: manifest)
   }
 
@@ -250,7 +258,8 @@ public enum SupportBundleBuilder {
         logEntry.subsystem == subsystem
       else { continue }
       lines.append(
-        "\(formatter.string(from: logEntry.date)) [\(logEntry.category)] \(logEntry.composedMessage)")
+        "\(formatter.string(from: logEntry.date)) [\(logEntry.category)] \(logEntry.composedMessage)"
+      )
     }
     return lines.isEmpty
       ? "No diagnostics were recorded in this process.\n"

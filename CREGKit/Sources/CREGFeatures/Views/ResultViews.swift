@@ -83,6 +83,26 @@ public enum ResultViewerLogic {
       ?? "\(result.rowCount) row\(result.rowCount == 1 ? "" : "s")"
   }
 
+  public static func rowStatusLabel(
+    for result: QueryResult,
+    displayedRowCount: Int,
+    searchIsActive: Bool
+  ) -> String {
+    guard searchIsActive else { return rowCountLabel(for: result) }
+    if let truncation = truncationLabel(for: result) {
+      return "\(truncation) · \(displayedRowCount) matching returned rows"
+    }
+    return "\(displayedRowCount) of \(result.rowCount) returned rows"
+  }
+
+  public static func runtimeMode(for message: ChatMessage) -> ModelRuntimeMode {
+    if let mode = message.devInfo?.runtimeMode { return mode }
+    if case .preparedAnswer(let prepared) = message.body {
+      return prepared.provenance.runtimeMode
+    }
+    return .evaluated
+  }
+
   /// Pinch arming uses hysteresis so tiny reversals around the activation
   /// threshold do not flicker the visual or haptic feedback.
   public static func pinchIsArmed(
@@ -330,7 +350,8 @@ struct ResultPreviewView: View {
         .padding(10)
         .background(
           .quaternary.opacity(0.5),
-          in: RoundedRectangle(cornerRadius: 12))
+          in: RoundedRectangle(cornerRadius: 12)
+        )
         .overlay {
           RoundedRectangle(cornerRadius: 12)
             .stroke(
@@ -345,7 +366,8 @@ struct ResultPreviewView: View {
       .sensoryFeedback(.selection, trigger: pinchHapticTrigger)
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(
-        "Result table, \(ResultViewerLogic.rowCountLabel(for: result))")
+        "Result table, \(ResultViewerLogic.rowCountLabel(for: result))"
+      )
       .accessibilityHint("Double-tap or pinch outward to open the full table")
     }
   }
@@ -420,12 +442,7 @@ struct ResultViewerView: View {
     self._selectedCell = State(initialValue: initialSelection)
   }
 
-  private var displayRows: [[SQLValue]] {
-    ResultViewerLogic.displayRows(
-      result: result, sort: sort, searchText: searchText)
-  }
-
-  private var columnWidths: [CGFloat] {
+  private func columnWidths() -> [CGFloat] {
     let scale = textSize.metricScale
     return ResultTableColumnMetrics(
       characterWidth: baseCharacterWidth * scale,
@@ -447,17 +464,20 @@ struct ResultViewerView: View {
     searchText.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private var hasNoSearchMatches: Bool {
-    !normalizedSearchText.isEmpty && displayRows.isEmpty
+  private var searchIsActive: Bool {
+    !normalizedSearchText.isEmpty
   }
 
-  private var selectedResultCell: SelectedResultCell? {
+  private func selectedResultCell(
+    in displayRows: [[SQLValue]]
+  ) -> SelectedResultCell? {
     guard let selectedCell,
       displayRows.indices.contains(selectedCell.row),
       result.columns.indices.contains(selectedCell.column)
     else { return nil }
     let row = displayRows[selectedCell.row]
-    let value = selectedCell.column < row.count
+    let value =
+      selectedCell.column < row.count
       ? row[selectedCell.column] : .null
     let columnName = result.columns[selectedCell.column]
     return SelectedResultCell(
@@ -470,14 +490,18 @@ struct ResultViewerView: View {
   }
 
   var body: some View {
+    let displayRows = ResultViewerLogic.displayRows(
+      result: result, sort: sort, searchText: searchText)
+    let widths = columnWidths()
+    let selectedResultCell = selectedResultCell(in: displayRows)
     NavigationStack {
       searchable(
         VStack(spacing: 0) {
-          table
-          if selectedResultCell != nil {
-            selectionAccessory
+          table(displayRows: displayRows, widths: widths)
+          if let selectedResultCell {
+            selectionAccessory(selectedResultCell)
           }
-          footer
+          footer(displayedRowCount: displayRows.count)
         }
       )
       .navigationTitle("Result Table")
@@ -512,9 +536,11 @@ struct ResultViewerView: View {
     #endif
   }
 
-  private var table: some View {
-    let widths = columnWidths
-    return ZStack(alignment: .top) {
+  private func table(
+    displayRows: [[SQLValue]],
+    widths: [CGFloat]
+  ) -> some View {
+    ZStack(alignment: .top) {
       ScrollView(.horizontal) {
         VStack(alignment: .leading, spacing: 0) {
           headerRow(widths: widths)
@@ -535,7 +561,7 @@ struct ResultViewerView: View {
       .scrollIndicators(.visible)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-      if hasNoSearchMatches {
+      if searchIsActive && displayRows.isEmpty {
         noMatchesState
       }
     }
@@ -566,13 +592,15 @@ struct ResultViewerView: View {
             if sort?.column == index {
               Image(
                 systemName: sort?.ascending == true
-                  ? "chevron.up" : "chevron.down")
+                  ? "chevron.up" : "chevron.down"
+              )
               .font(.caption2.weight(.bold))
               .contentTransition(.symbolEffect(.replace))
             }
           }
           .foregroundStyle(
-            sort?.column == index ? CREGBrand.blue : Color.secondary)
+            sort?.column == index ? CREGBrand.blue : Color.secondary
+          )
           .padding(.horizontal, cellHorizontalPadding)
           .padding(.vertical, 8)
           .frame(width: widths[index], alignment: .leading)
@@ -618,10 +646,12 @@ struct ResultViewerView: View {
             .padding(.horizontal, cellHorizontalPadding)
             .frame(
               width: index < widths.count ? widths[index] : 120,
-              alignment: .topLeading)
+              alignment: .topLeading
+            )
             .padding(.vertical, rowVerticalPadding)
             .background(
-              isSelected ? CREGBrand.blue.opacity(0.14) : Color.clear)
+              isSelected ? CREGBrand.blue.opacity(0.14) : Color.clear
+            )
             .overlay(alignment: .trailing) { Divider() }
             .overlay {
               if isSelected {
@@ -637,7 +667,8 @@ struct ResultViewerView: View {
           cellCopyActions(displayed: displayed, raw: raw, row: row)
         }
         .accessibilityLabel(
-          "Row \(displayIndex + 1), \(column), \(displayed)")
+          "Row \(displayIndex + 1), \(column), \(displayed)"
+        )
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityAction(named: "Copy value") {
@@ -686,38 +717,39 @@ struct ResultViewerView: View {
     }
   }
 
-  @ViewBuilder
-  private var selectionAccessory: some View {
-    if let selected = selectedResultCell {
-      let layout = dynamicTypeSize.isAccessibilitySize
-        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-        : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
-      layout {
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Row \(selected.selection.row + 1) · \(selected.columnName)")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-          Text(selected.displayedValue)
-            .font(textSize.cellFont)
-            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-            .textSelection(.enabled)
-        }
-        if !dynamicTypeSize.isAccessibilitySize {
-          Spacer(minLength: 0)
-        }
-        selectionActions(selected)
+  private func selectionAccessory(
+    _ selected: SelectedResultCell
+  ) -> some View {
+    let layout =
+      dynamicTypeSize.isAccessibilitySize
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+      : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+    return layout {
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Row \(selected.selection.row + 1) · \(selected.columnName)")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        Text(selected.displayedValue)
+          .font(textSize.cellFont)
+          .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+          .textSelection(.enabled)
       }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .background(.thinMaterial)
-      .transition(
-        reduceMotion
-          ? .opacity
-          : .opacity.combined(with: .move(edge: .bottom)))
-      .animation(
-        reduceMotion ? nil : .smooth(duration: 0.22),
-        value: selectedCell)
+      if !dynamicTypeSize.isAccessibilitySize {
+        Spacer(minLength: 0)
+      }
+      selectionActions(selected)
     }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 8)
+    .background(.thinMaterial)
+    .transition(
+      reduceMotion
+        ? .opacity
+        : .opacity.combined(with: .move(edge: .bottom))
+    )
+    .animation(
+      reduceMotion ? nil : .smooth(duration: 0.22),
+      value: selectedCell)
   }
 
   private func selectionActions(_ selected: SelectedResultCell) -> some View {
@@ -782,15 +814,15 @@ struct ResultViewerView: View {
     .cregLargeContentViewer("Clear selection", systemImage: "xmark")
   }
 
-  private var footer: some View {
+  private func footer(displayedRowCount: Int) -> some View {
     ViewThatFits(in: .horizontal) {
       HStack(spacing: 8) {
-        rowStatus
+        rowStatus(displayedRowCount: displayedRowCount)
         Spacer(minLength: 0)
         sortChip
       }
       VStack(alignment: .leading, spacing: 6) {
-        rowStatus
+        rowStatus(displayedRowCount: displayedRowCount)
         sortChip
       }
     }
@@ -800,14 +832,13 @@ struct ResultViewerView: View {
     .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: sort)
   }
 
-  private var rowStatus: some View {
-    Group {
-      if normalizedSearchText.isEmpty {
-        Text(ResultViewerLogic.rowCountLabel(for: result))
-      } else {
-        Text("\(displayRows.count) of \(result.rowCount) returned rows")
-      }
-    }
+  private func rowStatus(displayedRowCount: Int) -> some View {
+    Text(
+      ResultViewerLogic.rowStatusLabel(
+        for: result,
+        displayedRowCount: displayedRowCount,
+        searchIsActive: !normalizedSearchText.isEmpty)
+    )
     .font(.caption)
     .foregroundStyle(result.isTruncated ? .orange : .secondary)
   }
@@ -832,7 +863,8 @@ struct ResultViewerView: View {
       .buttonStyle(.plain)
       .cregTextButtonTarget()
       .accessibilityLabel(
-        "Clear sort by \(result.columns[sort.column]), \(sort.ascending ? "ascending" : "descending")")
+        "Clear sort by \(result.columns[sort.column]), \(sort.ascending ? "ascending" : "descending")"
+      )
     }
   }
 
@@ -863,7 +895,8 @@ struct ResultViewerView: View {
         .transition(
           reduceMotion
             ? .opacity
-            : .opacity.combined(with: .scale(scale: 0.96)))
+            : .opacity.combined(with: .scale(scale: 0.96))
+        )
         .accessibilityLabel(copyFeedbackMessage)
     }
   }
@@ -931,13 +964,21 @@ extension View {
     let binding = Binding<ResultViewerItem?>(
       get: {
         guard let id = store.resultViewerMessageID,
-          let message = store.messages[id: id],
-          case .answer(let result, _, _, _) = message.body
+          let message = store.messages[id: id]
         else { return nil }
+        let result: QueryResult
+        switch message.body {
+        case .answer(let answerResult, _, _, _):
+          result = answerResult
+        case .preparedAnswer(let prepared):
+          result = prepared.result
+        default:
+          return nil
+        }
         return ResultViewerItem(
           messageID: id,
           result: result,
-          runtimeMode: message.devInfo?.runtimeMode ?? .evaluated)
+          runtimeMode: ResultViewerLogic.runtimeMode(for: message))
       },
       set: { item in
         if item == nil {

@@ -55,6 +55,72 @@ extension QueryPipeline {
       }
     }
 
+    @Sendable func observedPreparation(
+      context: FollowUpSuggestionContext,
+      events: AsyncStream<FollowUpPreparationEvent>
+    ) -> AsyncStream<FollowUpPreparationEvent> {
+      AsyncStream { continuation in
+        let task = Task {
+          let started = ContinuousClock.now
+          var accepted = 0
+          var firstPrepared = false
+          diagnostics.info(
+            category: .pipeline,
+            code: "follow_up_preparation_started",
+            summary: "Prepared follow-up generation started.")
+          for await event in events {
+            guard !Task.isCancelled else { break }
+            switch event {
+            case .started(let candidateCount):
+              diagnostics.info(
+                category: .pipeline,
+                code: "follow_up_candidates_proposed",
+                summary: "Follow-up candidates were proposed.",
+                context: ["candidate_count": String(candidateCount)])
+            case .prepared(let prepared):
+              accepted += 1
+              var eventContext = [
+                "rank": String(prepared.rank),
+                "accepted_count": String(accepted),
+              ]
+              if !firstPrepared {
+                firstPrepared = true
+                eventContext["time_to_first_ms"] = operationMilliseconds(
+                  started.duration(to: .now).microseconds)
+              }
+              diagnostics.info(
+                category: .pipeline,
+                code: "follow_up_candidate_prepared",
+                summary: "A follow-up candidate passed preparation.",
+                context: eventContext)
+            case .rejected(let rank, let reason):
+              diagnostics.info(
+                category: .pipeline,
+                code: "follow_up_candidate_rejected",
+                summary: "A follow-up candidate did not pass preparation.",
+                context: [
+                  "rank": String(rank),
+                  "reason": reason.rawValue,
+                ])
+            case .finished:
+              diagnostics.info(
+                category: .pipeline,
+                code: "follow_up_preparation_finished",
+                summary: "Prepared follow-up generation finished.",
+                context: [
+                  "accepted_count": String(accepted),
+                  "elapsed_ms": operationMilliseconds(
+                    started.duration(to: .now).microseconds),
+                ])
+            }
+            continuation.yield(event)
+          }
+          continuation.finish()
+        }
+        continuation.onTermination = { _ in task.cancel() }
+      }
+    }
+
     return QueryPipeline(
       prepareMode: { mode in
         let started = ContinuousClock.now
@@ -106,6 +172,19 @@ extension QueryPipeline {
           queryOrigin: .starter,
           starterQueryID: starter,
           events: source.runStarter(starter, history))
+      },
+      prepareFollowUps: { context in
+        observedPreparation(
+          context: context,
+          events: source.prepareFollowUps(context))
+      },
+      runPrepared: { prepared, history in
+        observed(
+          question: prepared.question,
+          history: history,
+          queryOrigin: .preparedFollowUp,
+          starterQueryID: nil,
+          events: source.runPrepared(prepared, history))
       })
   }
 }
@@ -116,6 +195,7 @@ private struct PipelineOperationObserver {
   private var candidateStates: [CandidateID: CandidateOperationState] = [:]
   private var eventCount = 0
   private var terminalEventSeen = false
+  private var preparedResultSeen = false
   private var turnStartedAt: ContinuousClock.Instant?
   private var conversationContent: [String]
   private let traceID: String
@@ -311,6 +391,15 @@ private struct PipelineOperationObserver {
         "SQL candidate execution finished.",
         context: context)
 
+    case .preparedResultReady(_, let elapsedMicroseconds):
+      preparedResultSeen = true
+      info(
+        "prepared_follow_up_cache_hit",
+        "A prepared follow-up result became visible without SQL execution.",
+        context: [
+          "tap_to_result_ms": operationMilliseconds(elapsedMicroseconds)
+        ])
+
     case .executionFailed(let candidateID, let message, let attempt):
       var context = candidateContext(candidateID)
       context["attempt"] = String(attempt)
@@ -384,6 +473,11 @@ private struct PipelineOperationObserver {
 
     case .turnFinished(let outcome, let telemetry):
       terminalEventSeen = true
+      if queryOrigin == .preparedFollowUp, !preparedResultSeen {
+        info(
+          "prepared_follow_up_cache_miss",
+          "A prepared follow-up fell back to the standard query pipeline.")
+      }
       for candidate in telemetry.candidates {
         logCandidateSummary(candidate)
       }
@@ -691,6 +785,8 @@ private func candidateRole(_ role: CandidateRole) -> String {
   switch role {
   case .starter(let starter):
     "starter_\(starter.rawValue)"
+  case .followUpPreflight(let rank):
+    "follow_up_preflight_\(rank)"
   case .initial:
     "initial"
   case .repair(let attempt):

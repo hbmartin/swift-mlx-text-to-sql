@@ -24,6 +24,18 @@ struct SettingsView: View {
           }
         }
 
+        if case .failed(let failure) = store.modelReadiness {
+          Section("SQL model preparation") {
+            ModelPreparationFailureBanner(
+              failure: failure,
+              developerMode: store.developerMode,
+              retry: { store.send(.retryPreparation) },
+              retryCompatibility:
+                store.developerMode && failure.allowsCompatibilityRetry
+                ? { store.send(.retryCompatibilityPreparation) } : nil)
+          }
+        }
+
         Section {
           Toggle("Developer mode", isOn: $store.developerMode)
         } footer: {
@@ -45,6 +57,10 @@ struct SettingsView: View {
           LabeledContent(
             "Model revision",
             value: String(Self.modelIdentity.revision.prefix(12)))
+          LabeledContent("Build channel", value: Self.buildChannel)
+          LabeledContent(
+            "Runtime mode",
+            value: store.modelPreparationReport?.mode.rawValue ?? "not ready")
           if let identity = store.debugModelIdentity {
             LabeledContent("Debug candidate", value: identity.baseModelKey)
             LabeledContent(
@@ -160,6 +176,10 @@ struct SettingsView: View {
   static var modelIdentity: (key: String, revision: String) {
     SupportBundleBuilder.bundledModelIdentity()
   }
+
+  static var buildChannel: String {
+    (try? BuildChannel.load().rawValue) ?? "invalid"
+  }
 }
 
 enum PortfolioAsOfDateDisplay {
@@ -238,6 +258,9 @@ struct SupportBundleSendView: View {
         Conversations: \(export.manifest.conversationCount)
         Messages: \(export.manifest.messageCount)
         Model: \(export.manifest.modelKey) @ \(export.manifest.modelRevision.prefix(12))
+        Build channel: \(export.manifest.buildChannel)
+        Runtime mode: \(export.manifest.runtimeMode.rawValue)
+        Evaluated: \(export.manifest.isEvaluated)
         """,
         isHTML: false)
       if let data = try? Data(contentsOf: export.url) {

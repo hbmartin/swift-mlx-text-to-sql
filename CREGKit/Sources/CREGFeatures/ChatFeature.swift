@@ -79,6 +79,8 @@ public struct ChatFeature: Sendable {
     /// conversation, and this conversation's Queued Questions.
     public var processing: ProcessingState?
     public var queued: [QueuedQuestion] = []
+    /// Only the latest successful answer may own prepared follow-up chips.
+    public var followUpBatch: PreparedFollowUpBatch?
     /// Full-screen Result Viewer presentation (the message whose result is
     /// being inspected).
     public var resultViewerMessageID: UUID?
@@ -105,15 +107,31 @@ public struct ChatFeature: Sendable {
       self.interruptedTurn = interruptedTurn
     }
 
-    public init(snapshot: ConversationSnapshot) {
+    public init(
+      snapshot: ConversationSnapshot,
+      preservingActiveTurn: Bool = false,
+      preservingPreparedAnswerID: UUID? = nil
+    ) {
+      let recoveredPreparedAnswer = snapshot.messages.contains {
+        guard $0.id != preservingPreparedAnswerID else { return false }
+        if case .preparedAnswer = $0.body { return true }
+        return false
+      }
       self.init(
         conversationID: snapshot.summary.id,
         title: snapshot.summary.title,
         isManuallyTitled: snapshot.summary.isManuallyTitled,
-        messages: IdentifiedArray(uniqueElements: snapshot.messages),
+        messages: IdentifiedArray(
+          uniqueElements: snapshot.messages.map {
+            guard $0.id != preservingPreparedAnswerID else { return $0 }
+            return $0.finalizedInterruptedPreparedAnswer ?? $0
+          }),
         feedback: snapshot.feedback,
         composerText: snapshot.draft,
-        interruptedTurn: snapshot.interruptedTurn)
+        interruptedTurn:
+          recoveredPreparedAnswer || preservingActiveTurn
+          ? nil : snapshot.interruptedTurn)
+      self.followUpBatch = snapshot.followUpBatch
     }
 
     public var displayTitle: String {
@@ -132,6 +150,7 @@ public struct ChatFeature: Sendable {
     case submissionRefocused
     case sendTapped
     case starterQuestionTapped(StarterQueryID)
+    case preparedFollowUpTapped(UUID)
     case stopTapped
     case cancelQueuedTapped(UUID)
     case askAgainTapped
@@ -156,7 +175,7 @@ public struct ChatFeature: Sendable {
 
     /// Global work only ``AppFeature`` can perform.
     public enum Delegate: Sendable, Equatable {
-      case submitQuestion(question: String, starter: StarterQueryID?)
+      case submitQuestion(QuestionSubmission)
       case stopActiveTurn
       case cancelQueued(UUID)
       case openBrowser
@@ -265,14 +284,34 @@ public struct ChatFeature: Sendable {
       case .starterQuestionTapped(let starter):
         // Starter chips carry no typed keyboard candidates, so they bypass
         // the focus-settling latch and submit directly.
-        state.composerText = starter.question
         state.isSubmissionPending = false
         diagnostics.info(
           category: .submission,
           code: "chat_starter_question_tapped",
           summary: "A starter-query chip submitted its reviewed query.",
           context: ["starter_query_id": starter.rawValue])
-        return commitSubmission(state: &state, starter: starter)
+        return commitSubmission(
+          state: &state,
+          submittedQuestion: starter.question,
+          clearsComposer: false,
+          starter: starter)
+
+      case .preparedFollowUpTapped(let id):
+        guard
+          let prepared = state.followUpBatch?.suggestions.first(where: {
+            $0.id == id
+          })
+        else { return .none }
+        state.isSubmissionPending = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_prepared_follow_up_tapped",
+          summary: "A prepared follow-up chip was submitted.")
+        return commitSubmission(
+          state: &state,
+          submittedQuestion: prepared.question,
+          clearsComposer: false,
+          preparedFollowUp: prepared)
 
       case .stopTapped:
         guard state.isProcessing else { return .none }
@@ -414,18 +453,40 @@ public struct ChatFeature: Sendable {
   /// immediately or becomes a Queued Question.
   private func commitSubmission(
     state: inout State,
-    starter: StarterQueryID? = nil
+    submittedQuestion: String? = nil,
+    clearsComposer: Bool = true,
+    starter: StarterQueryID? = nil,
+    preparedFollowUp: PreparedFollowUp? = nil
   ) -> Effect<Action> {
-    let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let question = (submittedQuestion ?? state.composerText)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !question.isEmpty else { return .none }
-    state.composerText = ""
+    if clearsComposer { state.composerText = "" }
+    state.followUpBatch = nil
     let conversationID = state.conversationID
+    let source: QuestionSubmissionSource =
+      if let preparedFollowUp {
+        .preparedFollowUp(preparedFollowUp)
+      } else if let starter {
+        .starter(starter)
+      } else {
+        .freeForm
+      }
 
     var effects: [Effect<Action>] = [
-      .cancel(id: DraftSaveID(conversationID: conversationID)),
-      .run { _ in try? await history.saveDraft(conversationID, "") },
-      .send(.delegate(.submitQuestion(question: question, starter: starter))),
+      .send(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: question, source: source))))
     ]
+    if clearsComposer {
+      effects.insert(
+        .cancel(id: DraftSaveID(conversationID: conversationID)),
+        at: 0)
+      effects.insert(
+        .run { _ in try? await history.saveDraft(conversationID, "") },
+        at: 1)
+    }
 
     // A pending Not right correction records the question that follows it.
     if let context = state.correctionContext,

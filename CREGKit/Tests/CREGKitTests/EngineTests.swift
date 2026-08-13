@@ -1061,6 +1061,7 @@ import Testing
         let sql =
           switch request.role {
           case .starter: "SELECT 1"
+          case .followUpPreflight: "SELECT 1"
           case .initial: "SELECT 1"
           case .deterministicAnchor: "SELECT 2"
           case .consistencySample(let index): "SELECT \(index + 2)"
@@ -1131,6 +1132,7 @@ import Testing
         let sql =
           switch request.role {
           case .starter: "SELECT 1"
+          case .followUpPreflight: "SELECT 1"
           case .initial: "SELECT 1"
           case .deterministicAnchor: "SELECT anchor"
           case .consistencySample(let index): "SELECT \(index + 2)"
@@ -1179,6 +1181,7 @@ import Testing
         let sql =
           switch request.role {
           case .starter: "SELECT 1"
+          case .followUpPreflight: "SELECT 1"
           case .initial: "SELECT 1"
           case .deterministicAnchor: "SELECT 2"
           case .consistencySample(let index): "SELECT \(index + 2)"

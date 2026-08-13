@@ -251,6 +251,7 @@ public struct CandidateID: RawRepresentable, Sendable, Equatable, Hashable, Coda
 
 public enum CandidateRole: Sendable, Equatable, Hashable, Codable {
   case starter(StarterQueryID)
+  case followUpPreflight(rank: Int)
   case initial
   case repair(attempt: Int)
   case deterministicAnchor
@@ -425,6 +426,7 @@ public enum VoteOutcome: Sendable, Equatable, Codable {
 
 public enum CandidateSelectionReason: String, Sendable, Equatable, Codable {
   case starterQuery
+  case preparedFollowUp
   case initialSuccess
   case repairSuccess
   case majorityVote
@@ -435,11 +437,13 @@ public enum CandidateSelectionReason: String, Sendable, Equatable, Codable {
 public enum QueryOrigin: String, Sendable, Equatable, Codable {
   case freeForm
   case starter
+  case preparedFollowUp = "prepared_follow_up"
 }
 
 public enum QueryExecutionPath: String, Sendable, Equatable, Codable {
   case generated
   case deterministicStarter
+  case preparedFollowUp = "prepared_follow_up"
 }
 
 public enum AmbiguityGateMode: String, Sendable, Equatable, Codable {
@@ -471,13 +475,16 @@ public struct StageTimings: Sendable, Equatable, Codable {
 }
 
 public struct TurnTelemetry: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 4
+  public static let currentSchemaVersion = 5
 
   public var schemaVersion: Int
   public var originalQuestion: String
   public var standaloneQuestion: String
   public var queryOrigin: QueryOrigin
   public var starterQueryID: StarterQueryID?
+  public var preparedFollowUpID: UUID?
+  public var sourceAnswerMessageID: UUID?
+  public var preparedCacheHit: Bool?
   public var executionPath: QueryExecutionPath
   public var rewriteApplied: Bool
   public var rewriteUsedFM: Bool
@@ -511,6 +518,9 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     self.originalQuestion = originalQuestion
     self.standaloneQuestion = originalQuestion
     self.queryOrigin = .freeForm
+    self.preparedFollowUpID = nil
+    self.sourceAnswerMessageID = nil
+    self.preparedCacheHit = nil
     self.executionPath = .generated
     self.rewriteApplied = false
     self.rewriteUsedFM = false
@@ -530,6 +540,9 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case standaloneQuestion
     case queryOrigin
     case starterQueryID
+    case preparedFollowUpID
+    case sourceAnswerMessageID
+    case preparedCacheHit
     case executionPath
     case rewriteApplied
     case rewriteUsedFM
@@ -591,6 +604,12 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
       ?? .freeForm
     starterQueryID =
       try values.decodeIfPresent(StarterQueryID.self, forKey: .starterQueryID)
+    preparedFollowUpID =
+      try values.decodeIfPresent(UUID.self, forKey: .preparedFollowUpID)
+    sourceAnswerMessageID =
+      try values.decodeIfPresent(UUID.self, forKey: .sourceAnswerMessageID)
+    preparedCacheHit =
+      try values.decodeIfPresent(Bool.self, forKey: .preparedCacheHit)
     executionPath =
       try values.decodeIfPresent(QueryExecutionPath.self, forKey: .executionPath)
       ?? .generated

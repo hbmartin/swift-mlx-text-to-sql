@@ -75,13 +75,15 @@ Each user turn flows through a strictly **sequential** pipeline. Two models are 
 7. **Correction** (§10): on error, self-repair (≤2 retries); optional self-consistency voting; result-shape and value-grounding heuristics.
 8. **FM — result narration:** the FM produces a one-line plain-English summary of what was looked at and found ("Here's leased area by property for 2024 — Tower One leads").
 9. **Render:** result table + narration + the "thinking"-style step trace (§11).
-10. **Follow-up suggestions:** FM suggests likely follow-up questions offered as tappable bubbles. Evaluate ability to answer against table schema. Out of scope for v1, plan for v2.
+10. **Prepared Follow-up Suggestions:** only after a successful answer and while no user turn is active or queued, the FM proposes exactly three standalone next questions from the latest question/answer pair. Each proposal is independently sent through one temperature-zero SQL generation with the existing bounded repairs, SQLite validation and execution, and grounding. Valid suggestions appear progressively beneath the source answer; invalid, empty, null, or literal-mismatch results are omitted without replacement.
+
+A tapped Prepared Follow-up re-checks versioned model/runtime/schema/database provenance plus SQL and result hashes, validates the cached SQL once, and renders the cached result without model generation or SQL execution. Grounding and narration then run through the shared inference serializer and update the same message in place. A provenance mismatch or failed validation transparently uses the ordinary Free-form Question pipeline.
 
 ### 7.1 Inference serializer (hard requirement)
 
 A single **serializer** — implemented as a Swift `actor` (or a serial dispatch queue) — owns **every** model call, FM and bundled alike. It guarantees no two inferences ever overlap. Because the pipeline is sequential by nature, this mostly means the serializer never dispatches an FM call while an MLX generation is in flight, and vice versa.
 
-The serializer is global across all Conversations. One query may be active and is never preempted; later submissions become visible, cancellable Queued Questions. When the active query finishes, the oldest Queued Question in the currently visible Conversation runs first; if that Conversation has none, the globally oldest Queued Question runs. A Queued Question receives its Conversation's latest completed history when it starts, not when it was submitted.
+The serializer is global across all Conversations. One query may be active and is never preempted; later submissions become visible, cancellable Queued Questions. When the active query finishes, the oldest Queued Question in the currently visible Conversation runs first; if that Conversation has none, the globally oldest Queued Question runs. A Queued Question receives its Conversation's latest completed history when it starts, not when it was submitted. Prepared Follow-up work is lower priority than every user submission, is cancelled on submission or app inactivity, and may continue if the user merely switches Conversations.
 
 The user may browse and submit in other Conversations while inference continues. Switching Conversations never moves or cancels the active query, and completion never switches the visible Conversation. The queue is process-only and is not restored after termination. If the process ends during an active turn, that turn appears as **Interrupted** on next launch with an **Ask Again** action and never resumes automatically.
 
@@ -219,6 +221,7 @@ Starter Queries follow the typed deterministic path in ADR 0006. They are review
 ### Results and answer actions
 
 - A result card shows narration and a compact inline preview of the first four rows. Opening it presents a full-screen Result Viewer with frozen column headers, two-axis scrolling, local search, and local sorting.
+- Up to three full-width **Ask a follow-up** chips appear progressively beneath only the latest eligible answer. There is no preparation indicator. Submitting any question retires the chips. A tapped chip shows its cached result immediately with **Summarizing…**; the Result Viewer remains available, while narration-dependent copy, share, Read Aloud, and feedback actions remain hidden until the same answer message is finalized.
 - The engine returns at most 500 rows. A capped result is explicitly labeled **First 500+ rows** and never triggers a hidden unbounded rerun.
 - The Result Viewer can copy, share, or export the full returned table as CSV or Markdown. Charts remain deferred to v2.
 - Answer actions include: copy the complete answer as Markdown (narration plus returned table); Read Aloud for narration only using on-device speech with play, pause, and stop; and share the combined answer. The table menu separately handles CSV and full-table export.
@@ -243,7 +246,7 @@ A settings toggle (not hidden) surfaces per-message internals for accuracy work.
 
 - The **same structured event stream** that drives the thinking trace is written to disk (JSONL) for the eval harness — one event stream, two consumers. Build it as structured events from the start, not display strings.
 - Settings contains Developer Mode, model and build information, privacy/about, and **Email Complete Support Bundle**.
-- The Support Bundle is a ZIP containing all Conversations, drafts, messages, returned result rows, Answer Feedback, per-turn JSONL, sanitized diagnostics, applicable queued/running-state records, and build/model provenance. It excludes multi-gigabyte model weights and the bundled portfolio database; manifests, hashes, and receipts identify those excluded artifacts instead.
+- The Support Bundle is a ZIP containing all Conversations, drafts, messages, returned result rows, Answer Feedback, per-turn and Follow-up preparation JSONL, the current Prepared Follow-up batch and its provenance, sanitized diagnostics, applicable queued/running-state records, and build/model provenance. Conversation search excludes suggestion text and prepared result values. The bundle excludes multi-gigabyte model weights and the bundled portfolio database; manifests, hashes, and receipts identify those excluded artifacts instead.
 - Before creation, warn clearly that the bundle contains questions, results, SQL, drafts, and diagnostics. Nothing is transmitted automatically: the user explicitly sends it to `harold.martin@gmail.com` through the system mail composer. If Mail is unavailable, fall back to the system share sheet.
 
 ------

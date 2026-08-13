@@ -119,6 +119,13 @@ extension QueryPipeline {
           question: starter.question,
           history: history,
           events: self.runStarter(starter, history))
+      },
+      prepareFollowUps: self.prepareFollowUps,
+      runPrepared: { prepared, history in
+        reported(
+          question: prepared.question,
+          history: history,
+          events: self.runPrepared(prepared, history))
       })
   }
 }
@@ -336,6 +343,8 @@ private func terminalCandidateRole(_ role: CandidateRole) -> String {
   switch role {
   case .starter(let starter):
     "starter_\(starter.rawValue)"
+  case .followUpPreflight(let rank):
+    "follow_up_preflight_\(rank)"
   case .initial:
     "initial"
   case .repair(let attempt):

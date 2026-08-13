@@ -97,6 +97,9 @@ public struct ModelPreparationJournalSnapshot:
   Sendable, Equatable, Codable
 {
   public var attemptID: UUID
+  /// Identifies the app process that owns an unfinished attempt. Legacy
+  /// journals decode nil and are therefore treated as previous-process work.
+  public var processSessionID: UUID?
   public var mode: ModelRuntimeMode
   public var stage: ModelPreparationStage
   public var startedAt: Date
@@ -110,16 +113,24 @@ actor ModelPreparationJournalStore {
   static let shared = ModelPreparationJournalStore()
 
   private let url: URL
+  private let processSessionID: UUID
   private var current: ModelPreparationJournalSnapshot?
 
-  init(url: URL? = nil) {
-    self.url = url ?? URL.applicationSupportDirectory
+  init(url: URL? = nil, processSessionID: UUID = UUID()) {
+    self.url =
+      url
+      ?? URL.applicationSupportDirectory
       .appendingPathComponent("CREG", isDirectory: true)
       .appendingPathComponent("model-preparation.json")
+    self.processSessionID = processSessionID
   }
 
   func unfinishedAttempt() -> ModelPreparationJournalSnapshot? {
-    guard let snapshot = load(), !snapshot.completed else { return nil }
+    guard
+      let snapshot = load(),
+      !snapshot.completed,
+      snapshot.processSessionID != processSessionID
+    else { return nil }
     return snapshot
   }
 
@@ -130,6 +141,7 @@ actor ModelPreparationJournalStore {
     let now = Date()
     current = ModelPreparationJournalSnapshot(
       attemptID: UUID(),
+      processSessionID: processSessionID,
       mode: mode,
       stage: .buildPolicy,
       startedAt: now,
@@ -214,14 +226,10 @@ actor ModelPreparationJournalStore {
 }
 
 public struct ModelPreparationJournalClient: Sendable {
-  public var unfinishedAttempt:
-    @Sendable () async -> ModelPreparationJournalSnapshot?
-  public var begin:
-    @Sendable (ModelRuntimeMode, [String: String]) async -> Void
-  public var stageStarted:
-    @Sendable (ModelPreparationStage, ModelRuntimeMode) async -> Void
-  public var stageFinished:
-    @Sendable (ModelPreparationStage, ModelRuntimeMode) async -> Void
+  public var unfinishedAttempt: @Sendable () async -> ModelPreparationJournalSnapshot?
+  public var begin: @Sendable (ModelRuntimeMode, [String: String]) async -> Void
+  public var stageStarted: @Sendable (ModelPreparationStage, ModelRuntimeMode) async -> Void
+  public var stageFinished: @Sendable (ModelPreparationStage, ModelRuntimeMode) async -> Void
   public var fail: @Sendable (ModelPreparationFailure) async -> Void
   public var complete: @Sendable (ModelPreparationReport) async -> Void
   public var exportData: @Sendable () async -> Data?

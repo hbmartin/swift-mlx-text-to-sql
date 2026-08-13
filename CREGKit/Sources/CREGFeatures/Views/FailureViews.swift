@@ -90,7 +90,64 @@ struct FailureMessageView: View {
   }
 }
 
-private struct TechnicalDetailsView: View {
+struct ModelPreparationFailureBanner: View {
+  let failure: ModelPreparationFailure
+  let developerMode: Bool
+  let retry: () -> Void
+  let retryCompatibility: (() -> Void)?
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label(failure.userMessage, systemImage: "exclamationmark.triangle.fill")
+        .font(.callout)
+        .foregroundStyle(.orange)
+
+      let actionLayout = dynamicTypeSize.isAccessibilitySize
+        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+        : AnyLayout(HStackLayout(spacing: 12))
+      actionLayout {
+        Button("Retry") { retry() }
+          .cregTextButtonTarget()
+        if let retryCompatibility {
+          Button("Retry in compatibility mode") { retryCompatibility() }
+            .cregTextButtonTarget()
+        }
+      }
+      .font(.callout.weight(.semibold))
+
+      if developerMode {
+        TechnicalDetailsView(details: technicalDetails)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+    .overlay {
+      RoundedRectangle(cornerRadius: 16)
+        .stroke(.orange.opacity(0.35))
+    }
+    .accessibilityIdentifier("model-preparation-failure")
+  }
+
+  private var technicalDetails: String {
+    var values = [
+      "[\(failure.code)]",
+      "stage=\(failure.stage.rawValue)",
+      "runtime_mode=\(failure.mode.rawValue)",
+    ]
+    if let domain = failure.errorDomain {
+      values.append("error_domain=\(domain)")
+    }
+    if let code = failure.errorCode {
+      values.append("error_code=\(code)")
+    }
+    return values.joined(separator: " ") + "\n" + failure.diagnostic
+  }
+}
+
+struct TechnicalDetailsView: View {
   let details: String
 
   var body: some View {
