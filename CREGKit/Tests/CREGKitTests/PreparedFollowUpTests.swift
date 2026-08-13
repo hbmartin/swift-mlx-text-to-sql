@@ -15,6 +15,10 @@ private actor FollowUpCalls {
   func narrated() { narrations += 1 }
 }
 
+private enum FollowUpTestError: Error {
+  case failed
+}
+
 @Suite struct PreparedFollowUpTests {
   private static let model = ModelReference(
     key: "test-model",
@@ -119,6 +123,31 @@ private actor FollowUpCalls {
       ])
   }
 
+  @Test func proposalAndBatchUseTheSameQuestionIdentity() {
+    let questions = normalizedFollowUpQuestions(
+      ["AB C?", "A BC?"],
+      excluding: [])
+    #expect(questions == ["AB C?"])
+
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: UUID(1),
+      suggestions: [
+        Self.prepared(question: "AB C?", rank: 1),
+        Self.prepared(question: "A BC?", rank: 2),
+      ],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    #expect(batch.suggestions.map(\.question) == ["AB C?"])
+  }
+
+  @Test func normalizedQuestionLengthIncludesAnAppendedQuestionMark() {
+    let accepted = String(repeating: "a", count: 179)
+    let rejected = String(repeating: "b", count: 180)
+
+    #expect(
+      normalizedFollowUpQuestions([accepted, rejected], excluding: [])
+        == [accepted + "?"])
+  }
+
   @Test func resumedBatchesStayCappedWithUniqueRanksAndQuestions() {
     var batch = PreparedFollowUpBatch(
       sourceAssistantMessageID: UUID(1),
@@ -151,6 +180,26 @@ private actor FollowUpCalls {
     #expect(
       PreparedFollowUpIntegrity.fingerprint(sql: "  SELECT 1\r\n")
         == PreparedFollowUpIntegrity.fingerprint(sql: "SELECT 1\n"))
+    let slowerEquivalent = QueryResult(
+      columns: Self.result.columns,
+      rows: Self.result.rows,
+      isTruncated: Self.result.isTruncated,
+      elapsedMicroseconds: Self.result.elapsedMicroseconds + 10_000)
+    #expect(
+      PreparedFollowUpIntegrity.fingerprint(result: Self.result)
+        == PreparedFollowUpIntegrity.fingerprint(result: slowerEquivalent))
+  }
+
+  @Test func streamingFileHashMatchesInMemoryHash() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("prepared-integrity-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let data = Data((0..<10_000).map { UInt8($0 % 251) })
+    try data.write(to: url)
+
+    #expect(
+      try PreparedFollowUpIntegrity.sha256(contentsOf: url, chunkSize: 127)
+        == PreparedFollowUpIntegrity.sha256(data))
   }
 
   @Test func followUpEventsUseCanonicalJSONL() throws {
@@ -158,6 +207,126 @@ private actor FollowUpCalls {
       rank: 2, reason: .validationFailed
     ).jsonLine()
     #expect(line == #"{"rejected":{"rank":2,"reason":"validationFailed"}}"#)
+    #expect(
+      try FollowUpPreparationEvent.proposalFailed(
+        reason: .generationTimedOut
+      ).jsonLine()
+        == #"{"proposalFailed":{"reason":"generationTimedOut"}}"#)
+  }
+
+  @Test func proposalFailuresAreDistinctFromAnEmptyProposalSet() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in throw FollowUpTestError.failed })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: SQLGenClient { _ in
+        Issue.record("SQL generation must not run after proposal failure")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(events.contains(.proposalFailed(reason: .generationFailed)))
+    #expect(!events.contains(.started(candidateCount: 0)))
+    #expect(events.last == .finished)
+  }
+
+  @Test func proposalGenerationHasADeadline() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in
+        try await Task.sleep(for: .seconds(5))
+        return ["Too late?"]
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: SQLGenClient { _ in
+        Issue.record("SQL generation must not run after proposal timeout")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration(
+        deadlines: PipelineDeadlines(
+          generationSeconds: 0.01,
+          wholeTurnSeconds: 1)))
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(events.contains(.proposalFailed(reason: .generationTimedOut)))
+    #expect(events.last == .finished)
+  }
+
+  @Test func validationTimeoutIsNotReportedAsGenerationFailure() async {
+    let pipeline = QueryPipeline.live(
+      fm: Self.fm(suggestions: ["Slow validation?"]),
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in
+          try await Task.sleep(for: .seconds(5))
+          return SQLValidationReport()
+        },
+        execute: { _ in
+          Issue.record("execution must not run after validation timeout")
+          return Self.result
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration(
+        deadlines: PipelineDeadlines(
+          generationSeconds: 1,
+          wholeTurnSeconds: 0.02)))
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(events.contains(.rejected(rank: 1, reason: .validationTimedOut)))
+    #expect(!events.contains(.rejected(rank: 1, reason: .generationFailed)))
+  }
+
+  @Test func executionTimeoutIsTerminalInsteadOfRepairable() async {
+    let calls = FollowUpCalls()
+    let pipeline = QueryPipeline.live(
+      fm: Self.fm(suggestions: ["Slow execution?"]),
+      sqlGen: SQLGenClient { _ in
+        await calls.generated()
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in
+          try await Task.sleep(for: .seconds(5))
+          return Self.result
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration(
+        deadlines: PipelineDeadlines(
+          generationSeconds: 1,
+          wholeTurnSeconds: 0.02)))
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(events.contains(.rejected(rank: 1, reason: .executionTimedOut)))
+    #expect(await calls.generations == 1)
   }
 
   @Test func preparationEmitsProgressiveValidatedExecutedSubset() async {
@@ -242,7 +411,9 @@ private actor FollowUpCalls {
     #expect(events.contains(.rejected(rank: 1, reason: .validationFailed)))
   }
 
-  @Test func cacheHitShowsResultBeforeNarrationWithoutGenerationOrExecution() async {
+  @Test func cacheHitShowsResultBeforeNarrationWithoutGenerationOrExecution()
+    async throws
+  {
     let calls = FollowUpCalls()
     let sql = "SELECT 1"
     var telemetry = TurnTelemetry(originalQuestion: "Prepared?")
@@ -288,13 +459,12 @@ private actor FollowUpCalls {
     for await event in pipeline.runPrepared(prepared, []) {
       events.append(event)
     }
-    let previewIndex = events.firstIndex {
+    let previewIndex = try #require(events.firstIndex {
       if case .preparedResultReady = $0 { true } else { false }
-    }
-    let narrationIndex = events.firstIndex(of: .narrationStarted)
-    #expect(previewIndex != nil)
-    #expect(narrationIndex != nil)
-    #expect(previewIndex! < narrationIndex!)
+    })
+    let narrationIndex = try #require(
+      events.firstIndex(of: .narrationStarted))
+    #expect(previewIndex < narrationIndex)
     #expect(await calls.generations == 0)
     #expect(await calls.executions == 0)
     #expect(await calls.validations == 1)
@@ -398,6 +568,7 @@ private actor FollowUpCalls {
       return
     }
     #expect(telemetry.preparedCacheHit == false)
+    #expect(telemetry.preparedCacheMissReason == .sqlFingerprint)
     #expect(telemetry.preparedFollowUpID == prepared.id)
   }
 }

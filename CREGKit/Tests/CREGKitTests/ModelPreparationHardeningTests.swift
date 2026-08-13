@@ -84,20 +84,26 @@ import Testing
 
 @Suite struct ModelPreparationContractTests {
   @Test func compatibilityEligibilityExcludesIntegrityFailures() {
-    for stage in [
+    let integrityStages: Set<ModelPreparationStage> = [
       ModelPreparationStage.buildPolicy,
       .receiptValidation,
       .metalResource,
-    ] {
-      #expect(!stage.allowsCompatibilityRetry)
-    }
-    for stage in [
-      ModelPreparationStage.containerLoad,
+    ]
+    let compatibilityStages: Set<ModelPreparationStage> = [
+      .containerLoad,
       .qkvFusion,
       .promptCache,
       .ngramDraft,
       .outputVocabulary,
-    ] {
+    ]
+    #expect(integrityStages.isDisjoint(with: compatibilityStages))
+    #expect(
+      integrityStages.union(compatibilityStages)
+        == Set(ModelPreparationStage.allCases))
+    for stage in integrityStages {
+      #expect(!stage.allowsCompatibilityRetry)
+    }
+    for stage in compatibilityStages {
       #expect(stage.allowsCompatibilityRetry)
     }
   }
@@ -117,7 +123,7 @@ import Testing
     let decoded = try JSONDecoder().decode(
       TurnTelemetry.self,
       from: JSONEncoder().encode(source))
-    #expect(decoded.schemaVersion == 5)
+    #expect(decoded.schemaVersion == TurnTelemetry.currentSchemaVersion)
     #expect(decoded.runtimeMode == .compatibility)
     #expect(!decoded.isEvaluated)
   }

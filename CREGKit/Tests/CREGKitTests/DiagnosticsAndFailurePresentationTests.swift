@@ -724,6 +724,103 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(failure?.context["turn_elapsed_ms"] != nil)
   }
 
+  @Test func followUpPreparationDiagnosticsShareAPrivateTrace() async {
+    let recorder = DiagnosticEventRecorder()
+    let privateSourceID = UUID(5)
+    let source = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        AsyncStream { continuation in
+          continuation.yield(
+            .proposalFailed(reason: .generationTimedOut))
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      }
+    )
+    .reportingOperations(to: recorder.client)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: privateSourceID,
+      question: "private original question",
+      standaloneQuestion: "private standalone question",
+      narration: "private narration",
+      result: QueryResult(
+        columns: ["private_column"],
+        rows: [[.text("private row")]]))
+
+    _ = await Array(source.prepareFollowUps(context))
+
+    let events = recorder.events.filter {
+      $0.code.hasPrefix("follow_up_")
+    }
+    let traceIDs = Set(events.compactMap { $0.context["trace_id"] })
+    #expect(traceIDs.count == 1)
+    #expect(traceIDs.first?.isEmpty == false)
+    #expect(traceIDs.first != "<redacted identifier>")
+    #expect(events.allSatisfy { $0.context["source_message_id"] == nil })
+    let failure = events.first { $0.code == "follow_up_proposal_failed" }
+    #expect(failure?.level == .error)
+    #expect(failure?.context["reason"] == "generationTimedOut")
+    let rendered = events.map(String.init(describing:)).joined(separator: "\n")
+    for privateValue in [
+      privateSourceID.uuidString,
+      "private original question",
+      "private standalone question",
+      "private narration",
+      "private_column",
+      "private row",
+    ] {
+      #expect(!rendered.contains(privateValue))
+    }
+  }
+
+  @Test func cancelledFollowUpPreparationHasATerminalDiagnostic() async {
+    let recorder = DiagnosticEventRecorder()
+    let sourceEvents = AsyncStream<FollowUpPreparationEvent>.makeStream()
+    let source = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in sourceEvents.stream }
+    )
+    .reportingOperations(to: recorder.client)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: UUID(6),
+      question: "question",
+      standaloneQuestion: "question",
+      narration: "answer",
+      result: QueryResult(columns: [], rows: []))
+    let consumer = Task {
+      await Array(source.prepareFollowUps(context))
+    }
+
+    sourceEvents.continuation.yield(.started(candidateCount: 1))
+    for _ in 0..<100 {
+      if recorder.events.contains(where: {
+        $0.code == "follow_up_candidates_proposed"
+      }) {
+        break
+      }
+      await Task.yield()
+    }
+    consumer.cancel()
+    _ = await consumer.value
+    for _ in 0..<100 {
+      if recorder.events.contains(where: {
+        $0.code == "follow_up_preparation_cancelled"
+      }) {
+        break
+      }
+      await Task.yield()
+    }
+    sourceEvents.continuation.finish()
+
+    let cancellation = recorder.events.first {
+      $0.code == "follow_up_preparation_cancelled"
+    }
+    #expect(cancellation?.context["accepted_count"] == "0")
+    #expect(cancellation?.context["elapsed_ms"] != nil)
+    #expect(cancellation?.context["trace_id"] != nil)
+  }
+
   @Test func liveGenerationDeadlineExplainsLimitAndCancellationCleanup()
     async throws
   {

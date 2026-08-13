@@ -13,7 +13,7 @@ public struct DatabaseClient: Sendable {
   public var execute: @Sendable (_ sql: String) async throws -> QueryResult
 
   public init(
-    fingerprint: String = "test-portfolio-database",
+    fingerprint: String,
     validate: @escaping @Sendable (_ sql: String) async throws
       -> SQLValidationReport = { _ in SQLValidationReport() },
     execute: @escaping @Sendable (_ sql: String) async throws -> QueryResult
@@ -71,8 +71,8 @@ extension DatabaseClient {
   /// authorizer as the second line of defense behind the read-only
   /// connection (PRD §6). Grammar-constrained decoding is the first line.
   public static func live(url: URL, rowCap: Int = defaultRowCap) throws -> DatabaseClient {
-    let databaseFingerprint = PreparedFollowUpIntegrity.sha256(
-      try Data(contentsOf: url))
+    let databaseFingerprint = try PreparedFollowUpIntegrity.sha256(
+      contentsOf: url)
     var configuration = Configuration()
     configuration.readonly = true
     configuration.prepareDatabase { db in

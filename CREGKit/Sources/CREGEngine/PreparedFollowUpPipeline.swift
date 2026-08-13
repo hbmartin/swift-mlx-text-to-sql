@@ -1,6 +1,8 @@
 import Foundation
 
-private struct FollowUpDeadlineExceeded: Error, Sendable {}
+private struct FollowUpDeadlineExceeded: Error, Sendable {
+  var stage: String
+}
 
 private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
   private typealias Continuation = CheckedContinuation<Value, any Error>
@@ -12,6 +14,7 @@ private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
 
   func wait(
     seconds: Double,
+    stage: String,
     operation: @escaping @Sendable () async throws -> Value
   ) async throws -> Value {
     try await withTaskCancellationHandler {
@@ -27,7 +30,7 @@ private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
         let deadlineTask = Task {
           do {
             try await Task.sleep(for: .seconds(seconds))
-            resolve(.failure(FollowUpDeadlineExceeded()))
+            resolve(.failure(FollowUpDeadlineExceeded(stage: stage)))
           } catch is CancellationError {
             return
           } catch {
@@ -82,11 +85,13 @@ private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
 
 private func withFollowUpDeadline<Value: Sendable>(
   seconds: Double,
+  stage: String,
   operation: @escaping @Sendable () async throws -> Value
 ) async throws -> Value {
-  guard seconds > 0 else { throw FollowUpDeadlineExceeded() }
+  guard seconds > 0 else { throw FollowUpDeadlineExceeded(stage: stage) }
   return try await FollowUpDeadlineRace<Value>().wait(
     seconds: seconds,
+    stage: stage,
     operation: operation)
 }
 
@@ -121,11 +126,23 @@ func preparedFollowUpStream(
       let schema = (try? SQLGenClient.schemaPrompt()) ?? ""
       let proposed: [String]
       do {
-        proposed = try await serializer.run(operation: .followUpSuggestion) {
-          try await fm.suggestFollowUps(context, schema)
+        proposed = try await withFollowUpDeadline(
+          seconds: configuration.deadlines.generationSeconds,
+          stage: "follow-up-suggestion"
+        ) {
+          try await serializer.run(operation: .followUpSuggestion) {
+            try await fm.suggestFollowUps(context, schema)
+          }
         }
+      } catch is CancellationError {
+        return
+      } catch is FollowUpDeadlineExceeded {
+        continuation.yield(
+          .proposalFailed(reason: .generationTimedOut))
+        return
       } catch {
-        continuation.yield(.started(candidateCount: 0))
+        continuation.yield(
+          .proposalFailed(reason: .generationFailed))
         return
       }
 
@@ -165,7 +182,8 @@ func normalizedFollowUpQuestions(
   _ questions: [String],
   excluding sourceQuestions: [String]
 ) -> [String] {
-  let excluded = Set(sourceQuestions.map(normalizedQuestionIdentity))
+  let excluded = Set(
+    sourceQuestions.map(PreparedFollowUpIntegrity.questionIdentity))
   var seen = Set<String>()
   var result: [String] = []
   for raw in questions {
@@ -174,23 +192,16 @@ func normalizedFollowUpQuestions(
       .split(whereSeparator: \Character.isWhitespace)
       .joined(separator: " ")
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !question.isEmpty, question.count <= 180 else { continue }
+    guard !question.isEmpty else { continue }
     if !question.hasSuffix("?") { question.append("?") }
-    let identity = normalizedQuestionIdentity(question)
+    guard question.count <= 180 else { continue }
+    let identity = PreparedFollowUpIntegrity.questionIdentity(question)
     guard !identity.isEmpty, !excluded.contains(identity), seen.insert(identity).inserted
     else { continue }
     result.append(question)
-    if result.count == 3 { break }
+    if result.count == PreparedFollowUpBatch.maximumSuggestionCount { break }
   }
   return result
-}
-
-private func normalizedQuestionIdentity(_ question: String) -> String {
-  question
-    .lowercased()
-    .filter { $0.isLetter || $0.isNumber || $0.isWhitespace }
-    .split(whereSeparator: \Character.isWhitespace)
-    .joined(separator: " ")
 }
 
 private func prepareFollowUpCandidate(
@@ -258,115 +269,29 @@ private func prepareFollowUpCandidate(
       seed: temperature == 0 ? nil : randomSeed(),
       maxTokens: configuration.maxTokens)
     var candidate = CandidateTelemetry(request: request)
-    let elapsedSeconds =
-      Double(started.duration(to: .now).microseconds) / 1_000_000
-    let remaining = configuration.deadlines.wholeTurnSeconds - elapsedSeconds
-
+    let generation: SQLGeneration
     do {
-      let generation = try await withFollowUpDeadline(
-        seconds: min(configuration.deadlines.generationSeconds, remaining)
+      generation = try await withFollowUpDeadline(
+        seconds: min(
+          configuration.deadlines.generationSeconds,
+          remainingPreparedAnswerSeconds(
+            since: started,
+            limit: configuration.deadlines.wholeTurnSeconds)),
+        stage: "follow-up-generation"
       ) {
         try await serializer.run(operation: .sqlGeneration) {
           try await sqlGen.generate(request)
         }
       }
-      candidate.sql = generation.sql
-      candidate.tokensPerSecond = generation.tokensPerSecond
-      candidate.tokenCount = generation.tokenCount
-      candidate.speculation = generation.speculation
-      candidate.generationMicroseconds = generation.elapsedMicroseconds
-      let fingerprint = PreparedFollowUpIntegrity.fingerprint(sql: generation.sql)
-      candidate.sqlFingerprint = fingerprint
-      guard failedFingerprints.insert(fingerprint).inserted else {
-        candidate.error = "duplicate SQL matched an earlier failed preflight"
-        candidate.duplicateSuppressed = true
-        telemetry.candidates.append(candidate)
-        break
-      }
-
-      let validation = try await db.validate(generation.sql)
-      candidate.validationReport = validation
-      telemetry.stageTimings.validationMicroseconds =
-        (telemetry.stageTimings.validationMicroseconds ?? 0)
-        + validation.elapsedMicroseconds
-      if let issue = validation.issue {
-        candidate.error = issue.message
-        telemetry.candidates.append(candidate)
-        guard issue.disposition == .repairable else {
-          telemetry.stageTimings.totalMicroseconds =
-            started.duration(to: .now).microseconds
-          return .rejected(.validationFailed)
-        }
-        failedSQL = generation.sql
-        currentIssue = issue
-        continue
-      }
-
-      do {
-        let result = try await db.execute(generation.sql)
-        candidate.executionMicroseconds = result.elapsedMicroseconds
-        candidate.result = result
-        if !result.isTruncated {
-          candidate.resultDigest = CanonicalSQLResult(result).digest
-        }
-        let groundingStarted = ContinuousClock.now
-        let grounding = await heuristics.inspectDetailed(
-          sql: generation.sql,
-          result: result)
-        telemetry.stageTimings.groundingMicroseconds =
-          groundingStarted.duration(to: .now).microseconds
-        telemetry.grounding = grounding
-        guard !grounding.isUnhelpfulPreparedFollowUp else {
-          candidate.error = "preflight result was empty or not grounded"
-          telemetry.candidates.append(candidate)
-          telemetry.stageTimings.totalMicroseconds =
-            started.duration(to: .now).microseconds
-          return .rejected(.unhelpfulResult)
-        }
-
-        candidate.selected = true
-        telemetry.candidates.append(candidate)
-        telemetry.generatedCount = telemetry.candidates.count
-        telemetry.selectedCandidateID = candidateID
-        telemetry.selectionReason = .preparedFollowUp
-        telemetry.recoveryOutcome = attempt == 0 ? .notNeeded : .repaired
-        telemetry.stageTimings.totalMicroseconds =
-          started.duration(to: .now).microseconds
-        let provenance = PreparedQueryProvenance(
-          modelKey: configuration.model.key,
-          modelRevision: configuration.model.revision,
-          runtimeMode: runtimeMode,
-          preparationPolicyVersion:
-            "prepared-follow-up-v1|\(configuration.repairPolicyVersion)",
-          databaseFingerprint: db.fingerprint,
-          sqlFingerprint: fingerprint,
-          resultFingerprint: PreparedFollowUpIntegrity.fingerprint(result: result))
-        return .prepared(
-          PreparedFollowUp(
-            id: uuid(),
-            sourceAssistantMessageID: context.sourceAssistantMessageID,
-            rank: rank,
-            question: question,
-            sql: generation.sql,
-            result: result,
-            preparationTelemetry: telemetry,
-            provenance: provenance,
-            createdAt: now()))
-      } catch {
-        let issue = SQLValidationIssue.classify(error)
-        candidate.error = issue.message
-        candidate.validationReport = SQLValidationReport(issue: issue)
-        telemetry.candidates.append(candidate)
-        guard issue.disposition == .repairable else {
-          telemetry.stageTimings.totalMicroseconds =
-            started.duration(to: .now).microseconds
-          return .rejected(.executionFailed)
-        }
-        failedSQL = generation.sql
-        currentIssue = issue
-      }
     } catch is CancellationError {
       return .rejected(.cancelled)
+    } catch let deadline as FollowUpDeadlineExceeded {
+      telemetry.timeoutStage = deadline.stage
+      candidate.error = "generation deadline exceeded"
+      telemetry.candidates.append(candidate)
+      telemetry.stageTimings.totalMicroseconds =
+        started.duration(to: .now).microseconds
+      return .rejected(.generationTimedOut)
     } catch {
       candidate.error = "generation: \(String(reflecting: type(of: error)))"
       telemetry.candidates.append(candidate)
@@ -374,6 +299,172 @@ private func prepareFollowUpCandidate(
         started.duration(to: .now).microseconds
       return .rejected(.generationFailed)
     }
+    candidate.sql = generation.sql
+    candidate.tokensPerSecond = generation.tokensPerSecond
+    candidate.tokenCount = generation.tokenCount
+    candidate.speculation = generation.speculation
+    candidate.generationMicroseconds = generation.elapsedMicroseconds
+    let fingerprint = PreparedFollowUpIntegrity.fingerprint(sql: generation.sql)
+    candidate.sqlFingerprint = fingerprint
+    guard failedFingerprints.insert(fingerprint).inserted else {
+      candidate.error = "duplicate SQL matched an earlier failed preflight"
+      candidate.duplicateSuppressed = true
+      telemetry.candidates.append(candidate)
+      break
+    }
+
+    let validation: SQLValidationReport
+    do {
+      validation = try await withFollowUpDeadline(
+        seconds: remainingPreparedAnswerSeconds(
+          since: started,
+          limit: configuration.deadlines.wholeTurnSeconds),
+        stage: "follow-up-validation"
+      ) {
+        try await db.validate(generation.sql)
+      }
+    } catch is CancellationError {
+      return .rejected(.cancelled)
+    } catch let deadline as FollowUpDeadlineExceeded {
+      telemetry.timeoutStage = deadline.stage
+      candidate.error = "validation deadline exceeded"
+      telemetry.candidates.append(candidate)
+      telemetry.stageTimings.totalMicroseconds =
+        started.duration(to: .now).microseconds
+      return .rejected(.validationTimedOut)
+    } catch {
+      let issue = SQLValidationIssue.classify(error)
+      candidate.error = issue.message
+      candidate.validationReport = SQLValidationReport(issue: issue)
+      telemetry.candidates.append(candidate)
+      telemetry.stageTimings.totalMicroseconds =
+        started.duration(to: .now).microseconds
+      return .rejected(.validationFailed)
+    }
+    candidate.validationReport = validation
+    telemetry.stageTimings.validationMicroseconds =
+      (telemetry.stageTimings.validationMicroseconds ?? 0)
+      + validation.elapsedMicroseconds
+    if let issue = validation.issue {
+      candidate.error = issue.message
+      telemetry.candidates.append(candidate)
+      guard issue.disposition == .repairable else {
+        telemetry.stageTimings.totalMicroseconds =
+          started.duration(to: .now).microseconds
+        return .rejected(.validationFailed)
+      }
+      failedSQL = generation.sql
+      currentIssue = issue
+      continue
+    }
+
+    let result: QueryResult
+    do {
+      result = try await withFollowUpDeadline(
+        seconds: remainingPreparedAnswerSeconds(
+          since: started,
+          limit: configuration.deadlines.wholeTurnSeconds),
+        stage: "follow-up-execution"
+      ) {
+        try await db.execute(generation.sql)
+      }
+    } catch is CancellationError {
+      return .rejected(.cancelled)
+    } catch let deadline as FollowUpDeadlineExceeded {
+      telemetry.timeoutStage = deadline.stage
+      candidate.error = "execution deadline exceeded"
+      telemetry.candidates.append(candidate)
+      telemetry.stageTimings.totalMicroseconds =
+        started.duration(to: .now).microseconds
+      return .rejected(.executionTimedOut)
+    } catch {
+      let issue = SQLValidationIssue.classify(error)
+      candidate.error = issue.message
+      candidate.validationReport = SQLValidationReport(issue: issue)
+      telemetry.candidates.append(candidate)
+      guard issue.disposition == .repairable else {
+        telemetry.stageTimings.totalMicroseconds =
+          started.duration(to: .now).microseconds
+        return .rejected(.executionFailed)
+      }
+      failedSQL = generation.sql
+      currentIssue = issue
+      continue
+    }
+    candidate.executionMicroseconds = result.elapsedMicroseconds
+    candidate.result = result
+    if !result.isTruncated {
+      candidate.resultDigest = CanonicalSQLResult(result).digest
+    }
+
+    let groundingStarted = ContinuousClock.now
+    let grounding: GroundingReport
+    do {
+      grounding = try await withFollowUpDeadline(
+        seconds: remainingPreparedAnswerSeconds(
+          since: started,
+          limit: configuration.deadlines.wholeTurnSeconds),
+        stage: "follow-up-grounding"
+      ) {
+        await heuristics.inspectDetailed(
+          sql: generation.sql,
+          result: result)
+      }
+    } catch is CancellationError {
+      return .rejected(.cancelled)
+    } catch let deadline as FollowUpDeadlineExceeded {
+      telemetry.timeoutStage = deadline.stage
+      candidate.error = "grounding deadline exceeded"
+      telemetry.candidates.append(candidate)
+      telemetry.stageTimings.totalMicroseconds =
+        started.duration(to: .now).microseconds
+      return .rejected(.groundingTimedOut)
+    } catch {
+      candidate.error = "grounding: \(String(reflecting: type(of: error)))"
+      telemetry.candidates.append(candidate)
+      telemetry.stageTimings.totalMicroseconds =
+        started.duration(to: .now).microseconds
+      return .rejected(.unhelpfulResult)
+    }
+    telemetry.stageTimings.groundingMicroseconds =
+      groundingStarted.duration(to: .now).microseconds
+    telemetry.grounding = grounding
+    guard !grounding.isUnhelpfulPreparedFollowUp else {
+      candidate.error = "preflight result was empty or not grounded"
+      telemetry.candidates.append(candidate)
+      telemetry.stageTimings.totalMicroseconds =
+        started.duration(to: .now).microseconds
+      return .rejected(.unhelpfulResult)
+    }
+
+    candidate.selected = true
+    telemetry.candidates.append(candidate)
+    telemetry.generatedCount = telemetry.candidates.count
+    telemetry.selectedCandidateID = candidateID
+    telemetry.selectionReason = .preparedFollowUp
+    telemetry.recoveryOutcome = attempt == 0 ? .notNeeded : .repaired
+    telemetry.stageTimings.totalMicroseconds =
+      started.duration(to: .now).microseconds
+    let provenance = PreparedQueryProvenance(
+      modelKey: configuration.model.key,
+      modelRevision: configuration.model.revision,
+      runtimeMode: runtimeMode,
+      preparationPolicyVersion:
+        "prepared-follow-up-v1|\(configuration.repairPolicyVersion)",
+      databaseFingerprint: db.fingerprint,
+      sqlFingerprint: fingerprint,
+      resultFingerprint: PreparedFollowUpIntegrity.fingerprint(result: result))
+    return .prepared(
+      PreparedFollowUp(
+        id: uuid(),
+        sourceAssistantMessageID: context.sourceAssistantMessageID,
+        rank: rank,
+        question: question,
+        sql: generation.sql,
+        result: result,
+        preparationTelemetry: telemetry,
+        provenance: provenance,
+        createdAt: now()))
   }
 
   telemetry.generatedCount = telemetry.candidates.count
@@ -412,12 +503,13 @@ func preparedAnswerStream(
     let task = Task {
       let started = ContinuousClock.now
       let mode = await runtimeMode()
-      func runFreeFormFallback() async {
+      func runFreeFormFallback(reason: PreparedCacheMissReason) async {
         for await event in fallback(prepared.question, history) {
           if case .turnFinished(let outcome, var telemetry) = event {
             telemetry.preparedFollowUpID = prepared.id
             telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID
             telemetry.preparedCacheHit = false
+            telemetry.preparedCacheMissReason = reason
             continuation.yield(
               .turnFinished(outcome: outcome, telemetry: telemetry))
           } else {
@@ -426,33 +518,58 @@ func preparedAnswerStream(
         }
         continuation.finish()
       }
-      guard
-        prepared.provenance.schemaVersion
-          == PreparedQueryProvenance.currentSchemaVersion,
-        prepared.provenance.modelKey == configuration.model.key,
-        prepared.provenance.modelRevision == configuration.model.revision,
-        prepared.provenance.runtimeMode == mode,
-        prepared.provenance.preparationPolicyVersion
-          == "prepared-follow-up-v1|\(configuration.repairPolicyVersion)",
-        prepared.provenance.databaseFingerprint == db.fingerprint,
-        prepared.provenance.sqlFingerprint
-          == PreparedFollowUpIntegrity.fingerprint(sql: prepared.sql),
-        prepared.provenance.resultFingerprint
-          == PreparedFollowUpIntegrity.fingerprint(result: prepared.result)
-      else {
-        await runFreeFormFallback()
+      let cacheMissReason: PreparedCacheMissReason?
+      if prepared.provenance.schemaVersion
+        != PreparedQueryProvenance.currentSchemaVersion
+      {
+        cacheMissReason = .schemaVersion
+      } else if prepared.provenance.modelKey != configuration.model.key {
+        cacheMissReason = .modelKey
+      } else if prepared.provenance.modelRevision != configuration.model.revision {
+        cacheMissReason = .modelRevision
+      } else if prepared.provenance.runtimeMode != mode {
+        cacheMissReason = .runtimeMode
+      } else if prepared.provenance.preparationPolicyVersion
+        != "prepared-follow-up-v1|\(configuration.repairPolicyVersion)"
+      {
+        cacheMissReason = .preparationPolicyVersion
+      } else if prepared.provenance.databaseFingerprint != db.fingerprint {
+        cacheMissReason = .databaseFingerprint
+      } else if prepared.provenance.sqlFingerprint
+        != PreparedFollowUpIntegrity.fingerprint(sql: prepared.sql)
+      {
+        cacheMissReason = .sqlFingerprint
+      } else if prepared.provenance.resultFingerprint
+        != PreparedFollowUpIntegrity.fingerprint(result: prepared.result)
+      {
+        cacheMissReason = .resultFingerprint
+      } else {
+        cacheMissReason = nil
+      }
+      if let cacheMissReason {
+        await runFreeFormFallback(reason: cacheMissReason)
         return
       }
 
       let validation: SQLValidationReport
       do {
-        validation = try await db.validate(prepared.sql)
+        validation = try await withFollowUpDeadline(
+          seconds: remainingPreparedAnswerSeconds(
+            since: started,
+            limit: configuration.deadlines.wholeTurnSeconds),
+          stage: "prepared-validation"
+        ) {
+          try await db.validate(prepared.sql)
+        }
+      } catch is CancellationError {
+        continuation.finish()
+        return
       } catch {
-        await runFreeFormFallback()
+        await runFreeFormFallback(reason: .validationFailed)
         return
       }
       guard validation.isValid else {
-        await runFreeFormFallback()
+        await runFreeFormFallback(reason: .validationFailed)
         return
       }
 
@@ -518,7 +635,8 @@ func preparedAnswerStream(
         grounding = try await withFollowUpDeadline(
           seconds: remainingPreparedAnswerSeconds(
             since: started,
-            limit: configuration.deadlines.wholeTurnSeconds)
+            limit: configuration.deadlines.wholeTurnSeconds),
+          stage: "grounding"
         ) {
           await heuristics.inspectDetailed(
             sql: prepared.sql,
@@ -549,7 +667,8 @@ func preparedAnswerStream(
         narration = try await withFollowUpDeadline(
           seconds: remainingPreparedAnswerSeconds(
             since: started,
-            limit: configuration.deadlines.wholeTurnSeconds)
+            limit: configuration.deadlines.wholeTurnSeconds),
+          stage: "narration"
         ) {
           try await serializer.run(operation: .narration) {
             try await activeFM.narrate(prepared.question, prepared.result)
@@ -563,10 +682,7 @@ func preparedAnswerStream(
         if error is FollowUpDeadlineExceeded {
           telemetry.timeoutStage = "narration"
         }
-        narration =
-          (try? await FMClient.fallback().narrate(
-            prepared.question, prepared.result))
-          ?? PreparedAnswerFallback.narration(for: prepared.result)
+        narration = PreparedAnswerFallback.narration(for: prepared.result)
         narrationUsedFM = false
       }
       let narrationElapsed = narrationStarted.duration(to: .now).microseconds

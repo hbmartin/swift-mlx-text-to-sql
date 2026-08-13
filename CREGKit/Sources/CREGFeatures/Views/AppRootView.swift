@@ -99,8 +99,14 @@ struct AppRootView: View {
       }
       .onAppear { store.send(.onAppear) }
       .onChange(of: scenePhase) { _, phase in
-        store.send(
-          phase == .active ? .appBecameActive : .appBecameInactive)
+        switch phase {
+        case .active:
+          store.send(.appBecameActive)
+        case .background:
+          store.send(.appBecameInactive)
+        default:
+          break
+        }
       }
     }
     // Applied at the root rather than per-surface so the override reaches the

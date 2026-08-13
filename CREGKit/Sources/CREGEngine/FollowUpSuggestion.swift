@@ -133,11 +133,12 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
   public mutating func appendIfEligible(_ suggestion: PreparedFollowUp) -> Bool {
     suggestions = Self.normalized(suggestions)
     guard suggestions.count < Self.maximumSuggestionCount else { return false }
-    let identity = Self.questionIdentity(suggestion.question)
+    let identity = PreparedFollowUpIntegrity.questionIdentity(
+      suggestion.question)
     guard
       !suggestions.contains(where: { $0.rank == suggestion.rank }),
       !suggestions.contains(where: {
-        Self.questionIdentity($0.question) == identity
+        PreparedFollowUpIntegrity.questionIdentity($0.question) == identity
       })
     else { return false }
     suggestions.append(suggestion)
@@ -158,7 +159,8 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
     }
     for entry in ordered {
       let suggestion = entry.element
-      let identity = questionIdentity(suggestion.question)
+      let identity = PreparedFollowUpIntegrity.questionIdentity(
+        suggestion.question)
       guard
         ranks.insert(suggestion.rank).inserted,
         questions.insert(identity).inserted
@@ -167,12 +169,6 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
       if result.count == maximumSuggestionCount { break }
     }
     return result
-  }
-
-  private static func questionIdentity(_ question: String) -> String {
-    question
-      .lowercased()
-      .filter { $0.isLetter || $0.isNumber }
   }
 
   enum CodingKeys: String, CodingKey {
@@ -205,10 +201,19 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
 public enum FollowUpPreparationRejection: String, Sendable, Equatable, Codable {
   case invalidQuestion
   case generationFailed
+  case generationTimedOut
   case validationFailed
+  case validationTimedOut
   case executionFailed
+  case executionTimedOut
   case unhelpfulResult
+  case groundingTimedOut
   case cancelled
+}
+
+public enum FollowUpProposalFailure: String, Sendable, Equatable, Codable {
+  case generationFailed
+  case generationTimedOut
 }
 
 /// Background preparation events are separate from user-turn events. They can
@@ -216,6 +221,7 @@ public enum FollowUpPreparationRejection: String, Sendable, Equatable, Codable {
 /// user-visible turn.
 public enum FollowUpPreparationEvent: Sendable, Equatable, Codable {
   case started(candidateCount: Int)
+  case proposalFailed(reason: FollowUpProposalFailure)
   case prepared(PreparedFollowUp)
   case rejected(rank: Int, reason: FollowUpPreparationRejection)
   case finished
@@ -236,7 +242,7 @@ public enum PreparedFollowUpIntegrity {
   }
 
   public static func fingerprint(result: QueryResult) -> String {
-    var data = Data("CREG.PreparedResult.v2\0".utf8)
+    var data = Data("CREG.PreparedResult.v3\0".utf8)
     append(result.columns.count, to: &data)
     for column in result.columns { append(column, to: &data) }
     append(result.rows.count, to: &data)
@@ -262,8 +268,15 @@ public enum PreparedFollowUpIntegrity {
       }
     }
     data.append(result.isTruncated ? 1 : 0)
-    append(result.elapsedMicroseconds, to: &data)
     return sha256(data)
+  }
+
+  /// Canonical identity used at both proposal and persistence boundaries.
+  /// Whitespace and punctuation do not make two follow-up questions distinct.
+  public static func questionIdentity(_ question: String) -> String {
+    question
+      .lowercased()
+      .filter { $0.isLetter || $0.isNumber }
   }
 
   public static func normalizedSQL(_ sql: String) -> String {
@@ -275,6 +288,22 @@ public enum PreparedFollowUpIntegrity {
 
   public static func sha256(_ data: Data) -> String {
     SHA256.hash(data: data)
+      .map { String(format: "%02x", $0) }
+      .joined()
+  }
+
+  public static func sha256(
+    contentsOf url: URL,
+    chunkSize: Int = 1 << 20
+  ) throws -> String {
+    precondition(chunkSize > 0)
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
+      hasher.update(data: chunk)
+    }
+    return hasher.finalize()
       .map { String(format: "%02x", $0) }
       .joined()
   }

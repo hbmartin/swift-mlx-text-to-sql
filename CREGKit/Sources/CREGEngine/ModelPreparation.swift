@@ -13,7 +13,9 @@ public enum ModelRuntimeMode: String, Sendable, Equatable, Codable {
 }
 
 /// Stable preparation stages shared by diagnostics, support bundles, and UI.
-public enum ModelPreparationStage: String, Sendable, Equatable, Codable {
+public enum ModelPreparationStage:
+  String, Sendable, Equatable, Hashable, CaseIterable, Codable
+{
   case buildPolicy = "build_policy"
   case receiptValidation = "receipt_validation"
   case metalResource = "metal_resource"
