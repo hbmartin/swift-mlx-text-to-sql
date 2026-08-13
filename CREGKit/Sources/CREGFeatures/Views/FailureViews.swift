@@ -6,10 +6,12 @@ import SwiftUI
 /// degrading the chat surface, because no part of the product works without
 /// the on-device model.
 struct UnsupportedDeviceView: View {
+  @ScaledMetric(relativeTo: .title2) private var warningSymbolSize = 44.0
+
   var body: some View {
     VStack(spacing: 16) {
       Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 44))
+        .font(.system(size: warningSymbolSize))
         .foregroundStyle(.orange)
       Text("Unsupported iPhone")
         .font(.title2.weight(.semibold))
@@ -41,10 +43,11 @@ struct FailureBanner: View {
         Spacer()
         Button(action: dismiss) {
           Image(systemName: "xmark")
-            .font(.caption.bold())
+            .cregIconButtonTarget()
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Dismiss error")
+        .cregLargeContentViewer("Dismiss error", systemImage: "xmark")
       }
 
       Text(failure.message)

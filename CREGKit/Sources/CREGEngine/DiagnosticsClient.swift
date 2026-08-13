@@ -123,6 +123,12 @@ public enum DiagnosticDetails {
     }
   }
 
+  /// Safe for an in-app developer disclosure or a public diagnostic context.
+  /// The underlying error remains available only through private logging.
+  public static func sanitizedDescription(_ error: any Error) -> String {
+    DiagnosticPrivacy.redact(describe(error))
+  }
+
   private static func path(_ codingPath: [any CodingKey]) -> String {
     var result = ""
     for key in codingPath {

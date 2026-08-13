@@ -41,10 +41,21 @@ extension SupportBundleClient {
     SupportBundleClient { source in
       let bundle = Bundle.main
       let info = bundle.infoDictionary ?? [:]
+      let preparationJSON =
+        await ModelPreparationJournalClient.live().exportData()
+      let preparation: ModelPreparationJournalSnapshot? = preparationJSON
+        .flatMap { data in
+          let decoder = JSONDecoder()
+          decoder.dateDecodingStrategy = .iso8601
+          return try? decoder.decode(
+            ModelPreparationJournalSnapshot.self, from: data)
+        }
       let context = SupportBundleBuilder.Context(
         appVersion: info["CFBundleShortVersionString"] as? String ?? "unknown",
         buildNumber: info["CFBundleVersion"] as? String ?? "unknown",
+        buildChannel: (try? BuildChannel.load(info: info).rawValue) ?? "invalid",
         modelIdentity: SupportBundleBuilder.bundledModelIdentity(),
+        runtimeMode: preparation?.mode ?? .evaluated,
         createdAt: Date())
       return try SupportBundleBuilder.build(
         source: source,
@@ -56,6 +67,7 @@ extension SupportBundleClient {
         bundledPortfolioDatabase: bundle.url(
           forResource: "creg", withExtension: "sqlite"),
         diagnosticsText: SupportBundleBuilder.recentSanitizedDiagnostics(),
+        modelPreparationJSON: preparationJSON,
         scratchDirectory: FileManager.default.temporaryDirectory)
     }
   }
@@ -65,18 +77,24 @@ public enum SupportBundleBuilder {
   public struct Context: Sendable {
     public var appVersion: String
     public var buildNumber: String
+    public var buildChannel: String
     public var modelIdentity: (key: String, revision: String)
+    public var runtimeMode: ModelRuntimeMode
     public var createdAt: Date
 
     public init(
       appVersion: String,
       buildNumber: String,
+      buildChannel: String = "unknown",
       modelIdentity: (key: String, revision: String),
+      runtimeMode: ModelRuntimeMode = .evaluated,
       createdAt: Date
     ) {
       self.appVersion = appVersion
       self.buildNumber = buildNumber
+      self.buildChannel = buildChannel
       self.modelIdentity = modelIdentity
+      self.runtimeMode = runtimeMode
       self.createdAt = createdAt
     }
   }
@@ -87,7 +105,8 @@ public enum SupportBundleBuilder {
     source: SupportBundleSource,
     diagnosticsText: String,
     modelManifestJSON: Data?,
-    modelReceiptJSON: Data?
+    modelReceiptJSON: Data?,
+    modelPreparationJSON: Data? = nil
   ) -> [(name: String, data: Data)] {
     var files: [(String, Data)] = [
       ("conversations.json", source.conversationsJSON),
@@ -101,6 +120,9 @@ public enum SupportBundleBuilder {
     }
     if let modelReceiptJSON {
       files.append(("production-model-receipt.json", modelReceiptJSON))
+    }
+    if let modelPreparationJSON {
+      files.append(("model-preparation.json", modelPreparationJSON))
     }
     return files
   }
@@ -133,6 +155,7 @@ public enum SupportBundleBuilder {
     bundledModelReceipt: URL?,
     bundledPortfolioDatabase: URL?,
     diagnosticsText: String,
+    modelPreparationJSON: Data? = nil,
     scratchDirectory: URL
   ) throws -> AppFeature.SupportBundleExport {
     let fileManager = FileManager.default
@@ -146,7 +169,8 @@ public enum SupportBundleBuilder {
       source: source,
       diagnosticsText: diagnosticsText,
       modelManifestJSON: bundledModelManifest.flatMap { try? Data(contentsOf: $0) },
-      modelReceiptJSON: bundledModelReceipt.flatMap { try? Data(contentsOf: $0) })
+      modelReceiptJSON: bundledModelReceipt.flatMap { try? Data(contentsOf: $0) },
+      modelPreparationJSON: modelPreparationJSON)
     files.append(
       ("history-snapshot.sqlite", try Data(contentsOf: source.databaseSnapshotURL)))
 
@@ -167,8 +191,10 @@ public enum SupportBundleBuilder {
       createdAt: context.createdAt,
       appVersion: context.appVersion,
       buildNumber: context.buildNumber,
+      buildChannel: context.buildChannel,
       modelKey: context.modelIdentity.key,
       modelRevision: context.modelIdentity.revision,
+      runtimeMode: context.runtimeMode,
       conversationCount: source.conversationCount,
       messageCount: source.messageCount,
       eventLineCount: source.eventLineCount,

@@ -8,12 +8,32 @@ extension QueryPipeline {
     diagnosticCode: String,
     diagnostic: String
   ) -> QueryPipeline {
-    QueryPipeline(prepare: {
-      throw PipelineUnavailableError(diagnostic)
-    }) { question, _ in
+    let stage: ModelPreparationStage =
+      diagnosticCode.contains("receipt") ? .receiptValidation : .buildPolicy
+    return unavailable(failure: ModelPreparationFailure(
+      code: diagnosticCode,
+      stage: stage,
+      mode: .evaluated,
+      userMessage: userMessage,
+      diagnostic: diagnostic))
+  }
+
+  public static func unavailable(
+    failure: ModelPreparationFailure
+  ) -> QueryPipeline {
+    QueryPipeline(
+      prepareMode: { mode in
+        var failure = failure
+        failure.mode = mode
+        throw failure
+      },
+      runtimeMode: { failure.mode }
+    ) { question, _ in
       AsyncStream { continuation in
-        var telemetry = TurnTelemetry(originalQuestion: question)
-        telemetry.terminalError = "[\(diagnosticCode)] \(diagnostic)"
+        var telemetry = TurnTelemetry(
+          originalQuestion: question,
+          runtimeMode: failure.mode)
+        telemetry.terminalError = "[\(failure.code)] \(failure.diagnostic)"
         continuation.yield(.turnStarted(question: question))
         continuation.yield(
           .questionResolved(
@@ -23,7 +43,7 @@ extension QueryPipeline {
             elapsedMicroseconds: 0))
         continuation.yield(
           .turnFinished(
-            outcome: .failed(message: userMessage),
+            outcome: .failed(message: failure.userMessage),
             telemetry: telemetry))
         continuation.finish()
       }
@@ -86,7 +106,8 @@ extension QueryPipeline {
     }
 
     return QueryPipeline(
-      prepare: self.prepare,
+      prepareMode: { try await self.prepare($0) },
+      runtimeMode: { await self.runtimeMode() },
       run: { question, history in
         reported(
           question: question,
@@ -100,16 +121,6 @@ extension QueryPipeline {
           events: self.runStarter(starter, history))
       })
   }
-}
-
-private struct PipelineUnavailableError: Error, CustomStringConvertible {
-  var diagnostic: String
-
-  init(_ diagnostic: String) {
-    self.diagnostic = diagnostic
-  }
-
-  var description: String { diagnostic }
 }
 
 enum PipelineDiagnosticPrivacy {

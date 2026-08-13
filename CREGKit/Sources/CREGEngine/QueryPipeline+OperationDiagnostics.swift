@@ -56,22 +56,24 @@ extension QueryPipeline {
     }
 
     return QueryPipeline(
-      prepare: {
+      prepareMode: { mode in
         let started = ContinuousClock.now
         diagnostics.info(
           category: .pipeline,
           code: "pipeline_preparation_started",
           summary: "Pipeline preparation started.")
         do {
-          try await source.prepare()
+          let report = try await source.prepare(mode)
           diagnostics.info(
             category: .pipeline,
             code: "pipeline_preparation_finished",
             summary: "Pipeline preparation finished.",
             context: [
+              "runtime_mode": mode.rawValue,
               "elapsed_ms": operationMilliseconds(
                 started.duration(to: .now).microseconds)
             ])
+          return report
         } catch {
           diagnostics.record(
             DiagnosticEvent(
@@ -81,12 +83,14 @@ extension QueryPipeline {
               summary: "Pipeline preparation failed.",
               details: DiagnosticDetails.describe(error),
               context: [
+                "runtime_mode": mode.rawValue,
                 "elapsed_ms": operationMilliseconds(
                   started.duration(to: .now).microseconds)
               ]))
           throw error
         }
       },
+      runtimeMode: { await source.runtimeMode() },
       run: { question, history in
         observed(
           question: question,

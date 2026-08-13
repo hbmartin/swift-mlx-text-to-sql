@@ -6,11 +6,65 @@ import SwiftUI
 struct ChatChrome {
   var modelReadiness: AppFeature.ModelReadiness
   var developerMode: Bool
+  var resultTableTextSize: Binding<ResultTableTextSize>
   var hasUnreadElsewhere: Bool
   var debugModelIdentity: DebugModelIdentity?
   var presentedFailure: FailurePresentation?
   var dismissFailure: () -> Void
   var retryPreparation: () -> Void
+}
+
+/// The minimum transcript state needed to distinguish a completed assistant
+/// response from ordinary message growth. Counting assistant messages makes
+/// the completion detectable even when the scheduler appends the next queued
+/// user question in the same state update.
+struct ChatTranscriptSnapshot: Equatable {
+  var conversationID: UUID
+  var messageCount: Int
+  var assistantMessageCount: Int
+
+  init<Messages: Sequence>(
+    conversationID: UUID,
+    messages: Messages
+  ) where Messages.Element == ChatMessage {
+    self.conversationID = conversationID
+    var messageCount = 0
+    var assistantMessageCount = 0
+    for message in messages {
+      messageCount += 1
+      if message.role == .assistant {
+        assistantMessageCount += 1
+      }
+    }
+    self.messageCount = messageCount
+    self.assistantMessageCount = assistantMessageCount
+  }
+}
+
+enum ChatTranscriptScrollDecision: Equatable {
+  case none
+  case scrollToBottom
+  case incrementUnseen(by: Int)
+}
+
+/// Pure policy kept outside `ChatView` so completion and queue-coalescing
+/// behavior can be covered without relying on SwiftUI rendering timing.
+func chatTranscriptScrollDecision(
+  from previous: ChatTranscriptSnapshot,
+  to current: ChatTranscriptSnapshot,
+  isNearBottom: Bool
+) -> ChatTranscriptScrollDecision {
+  guard
+    previous.conversationID == current.conversationID,
+    current.messageCount > previous.messageCount
+  else { return .none }
+
+  if current.assistantMessageCount > previous.assistantMessageCount
+    || isNearBottom
+  {
+    return .scrollToBottom
+  }
+  return .incrementUnseen(by: current.messageCount - previous.messageCount)
 }
 
 /// The Messages-style chat surface: floating glass header, open transcript,
@@ -35,6 +89,12 @@ struct ChatView: View {
     ScrollViewReader { proxy in
       transcript(proxy: proxy)
     }
+  }
+
+  private var transcriptSnapshot: ChatTranscriptSnapshot {
+    ChatTranscriptSnapshot(
+      conversationID: store.conversationID,
+      messages: store.messages)
   }
 
   private func transcript(proxy: ScrollViewProxy) -> some View {
@@ -89,13 +149,19 @@ struct ChatView: View {
       withAnimation(.snappy(duration: 0.25)) { isNearBottom = nearBottom }
       if nearBottom { unseenMessageCount = 0 }
     }
-    .onChange(of: store.messages.count) { oldCount, newCount in
-      // Preserve position while reading older messages; only follow the
-      // transcript when the user is already at the latest content.
-      if isNearBottom {
+    .onChange(of: transcriptSnapshot) { previous, current in
+      switch chatTranscriptScrollDecision(
+        from: previous,
+        to: current,
+        isNearBottom: isNearBottom)
+      {
+      case .none:
+        break
+      case .scrollToBottom:
+        unseenMessageCount = 0
         scrollToLatest(proxy: proxy)
-      } else if newCount > oldCount {
-        unseenMessageCount += newCount - oldCount
+      case .incrementUnseen(let count):
+        unseenMessageCount += count
       }
     }
     .onChange(of: store.processing?.trace.count ?? 0) {
@@ -122,7 +188,9 @@ struct ChatView: View {
     .sheet(item: exportItem) { item in
       ExportShareSheet(url: item.url)
     }
-    .resultViewerPresentation(store: store)
+    .resultViewerPresentation(
+      store: store,
+      textSize: chrome.resultTableTextSize)
   }
 
   private var exportItem: Binding<ExportedFile?> {

@@ -55,7 +55,9 @@ private struct HuggingFaceTokenizerLoader: MLXLMCommon.TokenizerLoader {
 
 /// The bundled SQL specialist: grammar-constrained SQL generation on MLX.
 public struct SQLGenClient: Sendable {
-  public var prepare: @Sendable () async throws -> Void
+  private var prepareMode:
+    @Sendable (ModelRuntimeMode) async throws -> ModelPreparationReport
+  private var readRuntimeMode: @Sendable () async -> ModelRuntimeMode
   public var generate: @Sendable (SQLGenerationRequest) async throws -> SQLGeneration
 
   public init(
@@ -64,8 +66,40 @@ public struct SQLGenClient: Sendable {
       @escaping @Sendable (SQLGenerationRequest) async throws
       -> SQLGeneration
   ) {
-    self.prepare = prepare
+    self.prepareMode = { mode in
+      let started = ContinuousClock.now
+      try await prepare()
+      return ModelPreparationReport(
+        mode: mode,
+        elapsedMilliseconds:
+          Double(started.duration(to: .now).microseconds) / 1_000)
+    }
+    self.readRuntimeMode = { .evaluated }
     self.generate = generate
+  }
+
+  public init(
+    prepareMode:
+      @escaping @Sendable (ModelRuntimeMode) async throws
+      -> ModelPreparationReport,
+    runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode,
+    generate:
+      @escaping @Sendable (SQLGenerationRequest) async throws
+      -> SQLGeneration
+  ) {
+    self.prepareMode = prepareMode
+    self.readRuntimeMode = runtimeMode
+    self.generate = generate
+  }
+
+  public func prepare(
+    _ mode: ModelRuntimeMode = .evaluated
+  ) async throws -> ModelPreparationReport {
+    try await prepareMode(mode)
+  }
+
+  public func runtimeMode() async -> ModelRuntimeMode {
+    await readRuntimeMode()
   }
 }
 
@@ -264,7 +298,10 @@ extension SQLGenClient {
     experimentalNGramDraftCorpus: [String] = [],
     experimentalNGramDraftTokens: Int = 0,
     experimentalNGramSerialPrefixTokens: Int = 0,
-    experimentalNGramAdaptiveDraftMinimumSupport: Int = 0
+    experimentalNGramAdaptiveDraftMinimumSupport: Int = 0,
+    enablePromptPrefixCache: Bool = true,
+    runtimeMode: ModelRuntimeMode = .evaluated,
+    preparationProgress: ModelPreparationProgress = .noop
   ) -> SQLGenClient {
     let generator = MLXSQLGenerator(
       source: .directory(directory),
@@ -290,9 +327,24 @@ extension SQLGenClient {
       experimentalNGramSerialPrefixTokens:
         experimentalNGramSerialPrefixTokens,
       experimentalNGramAdaptiveDraftMinimumSupport:
-        experimentalNGramAdaptiveDraftMinimumSupport)
+        experimentalNGramAdaptiveDraftMinimumSupport,
+      enablePromptPrefixCache: enablePromptPrefixCache,
+      runtimeMode: runtimeMode,
+      preparationProgress: preparationProgress)
     return SQLGenClient(
-      prepare: { try await generator.prepare() },
+      prepareMode: { requestedMode in
+        guard requestedMode == runtimeMode else {
+          throw ModelPreparationFailure(
+            code: "model_runtime_mode_unavailable",
+            stage: .containerLoad,
+            mode: requestedMode,
+            userMessage: "That SQL model recovery mode is unavailable.",
+            diagnostic:
+              "Requested \(requestedMode.rawValue), client provides \(runtimeMode.rawValue).")
+        }
+        return try await generator.prepare(mode: runtimeMode)
+      },
+      runtimeMode: { runtimeMode },
       generate: { request in try await generator.generate(request) })
   }
 
@@ -313,24 +365,29 @@ extension SQLGenClient {
     modelKey: String
   ) -> SQLGenClient {
     SQLGenClient(
-      prepare: {
+      prepareMode: { mode in
         let started = ContinuousClock.now
         diagnostics.info(
           category: .model,
           code: "model_load_started",
           summary: "The bundled SQL model load started.",
-          context: ["model_key": modelKey])
+          context: [
+            "model_key": modelKey,
+            "runtime_mode": mode.rawValue,
+          ])
         do {
-          try await self.prepare()
+          let report = try await self.prepare(mode)
           diagnostics.info(
             category: .model,
             code: "model_load_finished",
             summary: "The bundled SQL model is ready.",
             context: [
               "model_key": modelKey,
+              "runtime_mode": mode.rawValue,
               "elapsed_ms": Self.milliseconds(
                 started.duration(to: .now).microseconds),
             ])
+          return report
         } catch {
           diagnostics.record(
             DiagnosticEvent(
@@ -341,12 +398,14 @@ extension SQLGenClient {
               details: DiagnosticDetails.describe(error),
               context: [
                 "model_key": modelKey,
+                "runtime_mode": mode.rawValue,
                 "elapsed_ms": Self.milliseconds(
                   started.duration(to: .now).microseconds),
               ]))
           throw error
         }
       },
+      runtimeMode: { await self.runtimeMode() },
       generate: self.generate)
   }
 
@@ -428,6 +487,9 @@ actor MLXSQLGenerator {
   private let ngramSerialPrefixTokens: Int
   private let ngramAdaptiveDraftMinimumSupport: Int
   private let ngramOrder: Int
+  private let enablePromptPrefixCache: Bool
+  private let runtimeMode: ModelRuntimeMode
+  private let preparationProgress: ModelPreparationProgress
   private let containerLoader = PreparationCoalescer<ModelContainer>()
   private var didPrepareCompiledQwen2QKVFusion = false
   private var promptPrefixCache: MLXPromptPrefixCache?
@@ -460,7 +522,10 @@ actor MLXSQLGenerator {
     experimentalNGramDraftCorpus: [String] = [],
     experimentalNGramDraftTokens: Int = 0,
     experimentalNGramSerialPrefixTokens: Int = 0,
-    experimentalNGramAdaptiveDraftMinimumSupport: Int = 0
+    experimentalNGramAdaptiveDraftMinimumSupport: Int = 0,
+    enablePromptPrefixCache: Bool = true,
+    runtimeMode: ModelRuntimeMode = .evaluated,
+    preparationProgress: ModelPreparationProgress = .noop
   ) {
     self.source = source
     self.diagnostics = diagnostics
@@ -491,20 +556,116 @@ actor MLXSQLGenerator {
       productionNGramSpeculation?.adaptiveDraftMinimumSupport
       ?? experimentalNGramAdaptiveDraftMinimumSupport
     self.ngramOrder = productionNGramSpeculation?.order ?? 6
+    self.enablePromptPrefixCache = enablePromptPrefixCache
+    self.runtimeMode = runtimeMode
+    self.preparationProgress = preparationProgress
   }
 
-  func prepare() async throws {
-    let container = try await loadedContainer()
-    try await preparedCompiledQwen2QKVFusion(using: container)
-    _ = try await preparedPromptPrefixCache(using: container)
-    _ = try await preparedNGramDraftModel(using: container)
-    _ = try await preparedQuestionOutputVocabulary(using: container)
+  func prepare(mode: ModelRuntimeMode) async throws -> ModelPreparationReport {
+    precondition(mode == runtimeMode)
+    let started = ContinuousClock.now
+    let container = try await prepareStage(.containerLoad, mode: mode) {
+      try await self.loadedContainer()
+    }
+    try await prepareStage(.qkvFusion, mode: mode) {
+      try await self.preparedCompiledQwen2QKVFusion(using: container)
+    }
+    _ = try await prepareStage(.promptCache, mode: mode) {
+      try await self.preparedPromptPrefixCache(using: container)
+    }
+    _ = try await prepareStage(.ngramDraft, mode: mode) {
+      try await self.preparedNGramDraftModel(using: container)
+    }
+    _ = try await prepareStage(.outputVocabulary, mode: mode) {
+      try await self.preparedQuestionOutputVocabulary(using: container)
+    }
+    return ModelPreparationReport(
+      mode: mode,
+      elapsedMilliseconds:
+        Double(started.duration(to: .now).microseconds) / 1_000)
+  }
+
+  private func prepareStage<Value>(
+    _ stage: ModelPreparationStage,
+    mode: ModelRuntimeMode,
+    operation: () async throws -> Value
+  ) async throws -> Value {
+    let started = ContinuousClock.now
+    let before = ModelRuntimeDiagnostics.memoryContext(prefix: "before")
+    await preparationProgress.stageStarted(stage, mode)
+    diagnostics.info(
+      category: .model,
+      code: "model_preparation_stage_started",
+      summary: "A SQL model preparation stage started.",
+      context: before.merging([
+        "stage": stage.rawValue,
+        "runtime_mode": mode.rawValue,
+      ]) { _, new in new })
+    do {
+      let value = try await operation()
+      let context = ModelRuntimeDiagnostics.memoryContext(prefix: "after")
+        .merging([
+          "stage": stage.rawValue,
+          "runtime_mode": mode.rawValue,
+          "elapsed_ms": Self.milliseconds(
+            started.duration(to: .now).microseconds),
+        ]) { _, new in new }
+      diagnostics.info(
+        category: .model,
+        code: "model_preparation_stage_finished",
+        summary: "A SQL model preparation stage finished.",
+        context: context)
+      await preparationProgress.stageFinished(stage, mode)
+      return value
+    } catch {
+      let nsError = error as NSError
+      let failure = ModelPreparationFailure(
+        code: "model_\(stage.rawValue)_failed",
+        stage: stage,
+        mode: mode,
+        userMessage: Self.userMessage(for: stage),
+        diagnostic: DiagnosticDetails.sanitizedDescription(error),
+        errorDomain: nsError.domain,
+        errorCode: nsError.code)
+      var context = ModelRuntimeDiagnostics.memoryContext(prefix: "after")
+      context["stage"] = stage.rawValue
+      context["runtime_mode"] = mode.rawValue
+      context["elapsed_ms"] = Self.milliseconds(
+        started.duration(to: .now).microseconds)
+      context["error_domain"] = nsError.domain
+      context["error_code"] = String(nsError.code)
+      diagnostics.record(DiagnosticEvent(
+        level: .error,
+        category: .model,
+        code: failure.code,
+        summary: "A SQL model preparation stage failed.",
+        details: DiagnosticDetails.describe(error),
+        context: context))
+      await preparationProgress.stageFailed(failure)
+      throw failure
+    }
+  }
+
+  private nonisolated static func userMessage(
+    for stage: ModelPreparationStage
+  ) -> String {
+    switch stage {
+    case .containerLoad:
+      "The SQL model could not be loaded. Restart CREG and try again."
+    case .qkvFusion, .promptCache, .ngramDraft, .outputVocabulary:
+      "The optimized SQL runtime could not be prepared. Try again or use Developer Mode recovery."
+    case .buildPolicy, .receiptValidation, .metalResource:
+      "The installed SQL model is unavailable. Install a fresh build of CREG."
+    }
   }
 
   func generate(_ request: SQLGenerationRequest) async throws -> SQLGeneration {
     let operationStarted = ContinuousClock.now
     let state = MLXGenerationDiagnosticState(phase: "model_access")
-    let baseContext = Self.generationDiagnosticContext(request)
+    let baseContext = Self.generationDiagnosticContext(request).merging([
+      "runtime_mode": runtimeMode.rawValue,
+      "evaluated": String(runtimeMode.isEvaluated),
+    ]) { current, _ in current }
     let diagnosticClient = diagnostics
     let generatedModelName = modelName
     diagnosticClient.info(
@@ -960,6 +1121,8 @@ actor MLXSQLGenerator {
       else {
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EINVAL)
       }
+    } else if runtimeMode == .compatibility {
+      unsetenv("MLX_MAX_MB_PER_BUFFER")
     }
     return try await containerLoader.value {
       MLX.Memory.cacheLimit = 20 * 1024 * 1024
@@ -1005,6 +1168,7 @@ actor MLXSQLGenerator {
   private func preparedPromptPrefixCache(
     using container: ModelContainer
   ) async throws -> MLXPromptPrefixCache? {
+    guard enablePromptPrefixCache else { return nil }
     if let promptPrefixCache { return promptPrefixCache }
 
     let systemContent = Self.systemPrompt(schema: try Self.schemaPrompt())

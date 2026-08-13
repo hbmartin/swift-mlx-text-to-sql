@@ -10,10 +10,14 @@ import SwiftUI
 /// distinguishes the three icons.
 struct AppIconSection: View {
   let store: StoreOf<AppFeature>
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     Section {
-      HStack(spacing: 18) {
+      let pickerLayout = dynamicTypeSize.isAccessibilitySize
+        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+        : AnyLayout(HStackLayout(spacing: 18))
+      pickerLayout {
         ForEach(AppIconVariant.allCases, id: \.self) { variant in
           Button {
             store.send(.appIconSelected(variant))
@@ -23,6 +27,7 @@ struct AppIconSection: View {
               isSelected: store.appIcon == variant)
           }
           .buttonStyle(.plain)
+          .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : nil, alignment: .leading)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -40,13 +45,17 @@ struct AppIconSection: View {
 private struct AppIconSwatch: View {
   let variant: AppIconVariant
   let isSelected: Bool
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   private var shape: RoundedRectangle {
     RoundedRectangle(cornerRadius: 15, style: .continuous)
   }
 
   var body: some View {
-    VStack(spacing: 6) {
+    let swatchLayout = dynamicTypeSize.isAccessibilitySize
+      ? AnyLayout(HStackLayout(spacing: 12))
+      : AnyLayout(VStackLayout(spacing: 6))
+    swatchLayout {
       shape
         .fill(
           LinearGradient(
@@ -64,7 +73,7 @@ private struct AppIconSwatch: View {
         .overlay(alignment: .bottomTrailing) {
           if isSelected {
             Image(systemName: "checkmark.circle.fill")
-              .font(.system(size: 20))
+              .font(.title3)
               .symbolRenderingMode(.palette)
               .foregroundStyle(.white, CREGBrand.blue)
               .offset(x: 6, y: 6)
@@ -76,7 +85,8 @@ private struct AppIconSwatch: View {
     }
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(variant.title)
-    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    .accessibilityValue(isSelected ? "Selected" : "Not selected")
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
 

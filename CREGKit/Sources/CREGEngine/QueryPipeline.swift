@@ -61,7 +61,9 @@ public struct QueryPipeline: Sendable {
     }
   }
 
-  public var prepare: @Sendable () async throws -> Void
+  private var prepareMode:
+    @Sendable (ModelRuntimeMode) async throws -> ModelPreparationReport
+  private var readRuntimeMode: @Sendable () async -> ModelRuntimeMode
   public var run:
     @Sendable (_ question: String, _ history: [ConversationTurn])
       -> AsyncStream<PipelineEvent>
@@ -79,12 +81,52 @@ public struct QueryPipeline: Sendable {
         -> AsyncStream<PipelineEvent>
     )? = nil
   ) {
-    self.prepare = prepare
+    self.prepareMode = { mode in
+      let started = ContinuousClock.now
+      try await prepare()
+      return ModelPreparationReport(
+        mode: mode,
+        elapsedMilliseconds:
+          Double(started.duration(to: .now).microseconds) / 1_000)
+    }
+    self.readRuntimeMode = { .evaluated }
     self.run = run
     self.runStarter =
       runStarter ?? { starter, history in
         run(starter.question, history)
       }
+  }
+
+  public init(
+    prepareMode:
+      @escaping @Sendable (ModelRuntimeMode) async throws
+      -> ModelPreparationReport,
+    runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode,
+    run:
+      @escaping @Sendable (String, [ConversationTurn])
+      -> AsyncStream<PipelineEvent>,
+    runStarter: (
+      @Sendable (StarterQueryID, [ConversationTurn])
+        -> AsyncStream<PipelineEvent>
+    )? = nil
+  ) {
+    self.prepareMode = prepareMode
+    self.readRuntimeMode = runtimeMode
+    self.run = run
+    self.runStarter =
+      runStarter ?? { starter, history in
+        run(starter.question, history)
+      }
+  }
+
+  public func prepare(
+    _ mode: ModelRuntimeMode = .evaluated
+  ) async throws -> ModelPreparationReport {
+    try await prepareMode(mode)
+  }
+
+  public func runtimeMode() async -> ModelRuntimeMode {
+    await readRuntimeMode()
   }
 }
 
@@ -129,7 +171,8 @@ private func deterministicStarterStream(
   db: DatabaseClient,
   serializer: InferenceSerializer,
   heuristics: ResultHeuristics,
-  configuration: QueryPipeline.Configuration
+  configuration: QueryPipeline.Configuration,
+  runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode
 ) -> AsyncStream<PipelineEvent> {
   AsyncStream { continuation in
     let task = Task {
@@ -151,7 +194,9 @@ private func deterministicStarterStream(
       candidate.sqlFingerprint = SHA256.hash(data: Data(sql.utf8))
         .map { String(format: "%02x", $0) }
         .joined()
-      var telemetry = TurnTelemetry(originalQuestion: question)
+      var telemetry = TurnTelemetry(
+        originalQuestion: question,
+        runtimeMode: await runtimeMode())
       telemetry.queryOrigin = .starter
       telemetry.starterQueryID = starter
       telemetry.executionPath = .deterministicStarter
@@ -315,16 +360,20 @@ extension QueryPipeline {
   ) -> QueryPipeline {
     let heuristics = ResultHeuristics(db: db)
     return QueryPipeline(
-      prepare: {
+      prepareMode: { mode in
         try await serializer.run(operation: .modelPreparation) {
-          try await sqlGen.prepare()
+          try await sqlGen.prepare(mode)
         }
       },
+      runtimeMode: { await sqlGen.runtimeMode() },
       run: { question, history in
         AsyncStream { continuation in
           let task = Task {
             let turnStarted = ContinuousClock.now
-            var telemetry = TurnTelemetry(originalQuestion: question)
+            let runtimeMode = await sqlGen.runtimeMode()
+            var telemetry = TurnTelemetry(
+              originalQuestion: question,
+              runtimeMode: runtimeMode)
             telemetry.repairPolicyVersion = configuration.repairPolicyVersion
             defer { continuation.finish() }
             continuation.yield(.turnStarted(question: question))
@@ -949,7 +998,8 @@ extension QueryPipeline {
           db: db,
           serializer: serializer,
           heuristics: heuristics,
-          configuration: configuration)
+          configuration: configuration,
+          runtimeMode: { await sqlGen.runtimeMode() })
       })
   }
 

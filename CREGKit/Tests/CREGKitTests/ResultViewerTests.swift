@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import Testing
 
@@ -112,6 +113,55 @@ import Testing
     #expect(ResultViewerLogic.rowCountLabel(for: single) == "1 row")
   }
 
+  // MARK: Pinch interaction
+
+  @Test func pinchArmingUsesTheApprovedHysteresisThresholds() {
+    #expect(!ResultViewerLogic.pinchIsArmed(magnification: 1.119, wasArmed: false))
+    #expect(ResultViewerLogic.pinchIsArmed(magnification: 1.12, wasArmed: false))
+    #expect(ResultViewerLogic.pinchIsArmed(magnification: 1.081, wasArmed: true))
+    #expect(!ResultViewerLogic.pinchIsArmed(magnification: 1.079, wasArmed: true))
+  }
+
+  @Test func previewScaleTracksOutwardMotionAndStaysRestrained() {
+    #expect(ResultViewerLogic.previewScale(for: 0.8) == 1)
+    #expect(ResultViewerLogic.previewScale(for: 1) == 1)
+    #expect(abs(ResultViewerLogic.previewScale(for: 1.12) - 1.03) < 0.0001)
+    #expect(ResultViewerLogic.previewScale(for: 2) == 1.04)
+  }
+
+  // MARK: Cell inspection
+
+  @Test func displayedAndRawCopyValuesRemainDistinct() {
+    let value = SQLValue.integer(1_200)
+    #expect(
+      ResultViewerLogic.displayedCopyValue(value, column: "property_value")
+        == "$1,200")
+    #expect(ResultViewerLogic.rawCopyValue(value) == "1200")
+  }
+
+  @Test func copiedRowIsOneHeaderlessRFC4180Record() {
+    let row: [SQLValue] = [
+      .text("Harbor, Point"),
+      .text("Suite \"A\""),
+      .text("line one\nline two"),
+      .null,
+    ]
+    #expect(
+      ResultViewerLogic.csvRowString(row)
+        == "\"Harbor, Point\",\"Suite \"\"A\"\"\",\"line one\nline two\",\n")
+  }
+
+  @Test func columnMetricsShareBoundsAcrossHeadersAndCells() {
+    let widths = ResultTableColumnMetrics(
+      characterWidth: 10,
+      horizontalPadding: 4,
+      minimumWidth: 40,
+      maximumWidth: 100
+    ).widths(for: result)
+
+    #expect(widths == [100, 58])
+  }
+
   // MARK: Export
 
   @Test func combinedMarkdownJoinsNarrationAndTable() {
@@ -126,5 +176,53 @@ import Testing
     let empty = QueryResult(columns: [], rows: [])
     let text = AnswerExport.combinedMarkdown(narration: "Nothing matched.", result: empty)
     #expect(text == "Nothing matched.\n")
+  }
+
+  @Test func compatibilityExportsAreExplicitlyUnevaluated() {
+    let markdown = AnswerExport.combinedMarkdown(
+      narration: "Two rows found.",
+      result: result,
+      runtimeMode: .compatibility)
+    #expect(markdown.contains("Runtime mode: compatibility"))
+    #expect(markdown.contains("Evaluated: false"))
+
+    let csv = result.csvString(runtimeMode: .compatibility)
+    #expect(csv.contains("__creg_runtime_mode,__creg_evaluated"))
+    #expect(csv.contains(",compatibility,false"))
+  }
+}
+
+@MainActor
+@Suite struct ResultTableTextSizePreferenceTests {
+  @Test func standardIsTheDefaultPreset() {
+    let defaults = UserDefaults.inMemory
+    let state = withDependencies {
+      $0.defaultAppStorage = defaults
+    } operation: {
+      AppFeature.State()
+    }
+
+    #expect(state.resultTableTextSize == .standard)
+    #expect(ResultTableTextSize.allCases == [.small, .standard, .large])
+    #expect(ResultTableTextSize.allCases.map(\.title) == ["Small", "Standard", "Large"])
+  }
+
+  @Test func changedPresetSurvivesStateReconstruction() {
+    let defaults = UserDefaults.inMemory
+    let initialState = withDependencies {
+      $0.defaultAppStorage = defaults
+    } operation: {
+      AppFeature.State()
+    }
+    initialState.$resultTableTextSize.withLock { $0 = .large }
+
+    let reconstructed = withDependencies {
+      $0.defaultAppStorage = defaults
+    } operation: {
+      AppFeature.State()
+    }
+
+    #expect(reconstructed.resultTableTextSize == .large)
+    #expect(defaults.string(forKey: ResultTableTextSize.storageKey) == "large")
   }
 }

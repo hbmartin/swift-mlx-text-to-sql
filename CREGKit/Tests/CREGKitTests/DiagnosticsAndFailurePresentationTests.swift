@@ -856,7 +856,7 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     )
     .reportingOperations(to: recorder.client)
 
-    try? await source.prepare()
+    _ = try? await source.prepare()
     _ = await Array(
       source.run(
         privateQuestion,
@@ -1098,7 +1098,7 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       }
     )
     .reportingModelLoad(to: recorder.client, modelKey: "test-model")
-    try? await success.prepare()
+    _ = try? await success.prepare()
 
     let failure = SQLGenClient(
       prepare: {

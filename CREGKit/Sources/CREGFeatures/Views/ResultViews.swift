@@ -7,6 +7,9 @@ import SwiftUI
 /// Sorting, searching, and truncation labeling for the Result Viewer. Pure
 /// so result tests never need a rendered view.
 public enum ResultViewerLogic {
+  public static let pinchArmThreshold: CGFloat = 1.12
+  public static let pinchDisarmThreshold: CGFloat = 1.08
+
   public struct SortState: Equatable, Sendable {
     public var column: Int
     public var ascending: Bool
@@ -80,6 +83,42 @@ public enum ResultViewerLogic {
       ?? "\(result.rowCount) row\(result.rowCount == 1 ? "" : "s")"
   }
 
+  /// Pinch arming uses hysteresis so tiny reversals around the activation
+  /// threshold do not flicker the visual or haptic feedback.
+  public static func pinchIsArmed(
+    magnification: CGFloat,
+    wasArmed: Bool
+  ) -> Bool {
+    if wasArmed {
+      return magnification >= pinchDisarmThreshold
+    }
+    return magnification >= pinchArmThreshold
+  }
+
+  /// Direct manipulation stays restrained: the card follows the fingers but
+  /// never grows enough to disturb transcript layout before presentation.
+  public static func previewScale(for magnification: CGFloat) -> CGFloat {
+    min(max(1 + (magnification - 1) * 0.25, 1), 1.04)
+  }
+
+  public static func displayedCopyValue(
+    _ value: SQLValue,
+    column: String
+  ) -> String {
+    PortfolioValueFormatting.displayString(for: value, column: column)
+  }
+
+  public static func rawCopyValue(_ value: SQLValue) -> String {
+    value.exportString
+  }
+
+  /// A headerless RFC-4180 record pastes cleanly into spreadsheet tools while
+  /// preserving the result's raw, full-precision values.
+  public static func csvRowString(_ row: [SQLValue]) -> String {
+    row.map { QueryResult.csvField($0.exportString) }
+      .joined(separator: ",") + "\n"
+  }
+
   private static func cell(_ row: [SQLValue], at index: Int) -> SQLValue {
     index < row.count ? row[index] : .null
   }
@@ -132,6 +171,85 @@ public enum ResultViewerLogic {
   }
 }
 
+/// The reader-controlled density of full-screen result tables. This is
+/// deliberately independent from Dynamic Type: the preset is an additional
+/// preference, while every semantic font and scaled metric still follows the
+/// system accessibility size.
+public enum ResultTableTextSize: String, CaseIterable, Sendable, Equatable, Hashable {
+  case small
+  case standard
+  case large
+
+  public static let storageKey = "resultTableTextSize"
+
+  public var title: String {
+    switch self {
+    case .small: "Small"
+    case .standard: "Standard"
+    case .large: "Large"
+    }
+  }
+
+  var cellFont: Font {
+    switch self {
+    case .small: .caption2.monospacedDigit()
+    case .standard: .caption.monospacedDigit()
+    case .large: .body.monospacedDigit()
+    }
+  }
+
+  var headerFont: Font {
+    switch self {
+    case .small: .caption2.weight(.semibold)
+    case .standard: .caption.weight(.semibold)
+    case .large: .callout.weight(.semibold)
+    }
+  }
+
+  var metricScale: CGFloat {
+    switch self {
+    case .small: 0.84
+    case .standard: 1
+    case .large: 1.22
+    }
+  }
+}
+
+/// Shared geometry keeps headers and cells aligned and makes the scaling
+/// policy independently testable from SwiftUI rendering.
+struct ResultTableColumnMetrics: Equatable, Sendable {
+  var characterWidth: CGFloat
+  var horizontalPadding: CGFloat
+  var minimumWidth: CGFloat
+  var maximumWidth: CGFloat
+
+  func widths(for result: QueryResult) -> [CGFloat] {
+    result.columns.enumerated().map { index, column in
+      var longest = column.count
+      for row in result.rows.prefix(60) where index < row.count {
+        longest = max(
+          longest,
+          ResultViewerLogic.displayedCopyValue(row[index], column: column).count)
+      }
+      let ideal = CGFloat(longest) * characterWidth + horizontalPadding * 2
+      return min(max(ideal, minimumWidth), maximumWidth)
+    }
+  }
+}
+
+struct ResultCellSelection: Equatable, Sendable {
+  var row: Int
+  var column: Int
+}
+
+private struct SelectedResultCell {
+  var selection: ResultCellSelection
+  var row: [SQLValue]
+  var columnName: String
+  var displayedValue: String
+  var rawValue: String
+}
+
 // MARK: - Inline preview
 
 /// The four-row Result Preview shown inline in the transcript; tapping it
@@ -141,6 +259,17 @@ struct ResultPreviewView: View {
   let open: () -> Void
 
   static let previewRowLimit = 4
+  @State private var pinchMagnification: CGFloat = 1
+  @State private var pinchIsArmed = false
+  @State private var pinchHapticTrigger = 0
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+  private var renderedScale: CGFloat {
+    reduceMotion
+      ? 1
+      : ResultViewerLogic.previewScale(for: pinchMagnification)
+  }
 
   var body: some View {
     if result.rows.isEmpty {
@@ -151,55 +280,107 @@ struct ResultPreviewView: View {
     } else {
       Button(action: open) {
         VStack(alignment: .leading, spacing: 6) {
-          Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-            GridRow {
-              ForEach(result.columns, id: \.self) { column in
-                Text(column)
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(.secondary)
-                  .lineLimit(1)
-              }
-            }
-            Divider()
-            ForEach(
-              Array(result.rows.prefix(Self.previewRowLimit).enumerated()),
-              id: \.offset
-            ) { _, row in
+          ScrollView(.horizontal) {
+            Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 6) {
               GridRow {
-                ForEach(Array(row.enumerated()), id: \.offset) { index, value in
-                  Text(
-                    PortfolioValueFormatting.displayString(
-                      for: value,
-                      column: index < result.columns.count
-                        ? result.columns[index] : "")
-                  )
-                  .font(.caption.monospacedDigit())
-                  .lineLimit(1)
+                ForEach(result.columns, id: \.self) { column in
+                  Text(column)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                }
+              }
+              Divider()
+              ForEach(
+                Array(result.rows.prefix(Self.previewRowLimit).enumerated()),
+                id: \.offset
+              ) { _, row in
+                GridRow {
+                  ForEach(Array(row.enumerated()), id: \.offset) { index, value in
+                    Text(
+                      ResultViewerLogic.displayedCopyValue(
+                        value,
+                        column: index < result.columns.count
+                          ? result.columns[index] : "")
+                    )
+                    .font(.caption.monospacedDigit())
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                  }
                 }
               }
             }
+            .fixedSize(horizontal: true, vertical: false)
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .clipped()
+          .scrollIndicators(.visible)
 
           HStack(spacing: 6) {
             Text(ResultViewerLogic.rowCountLabel(for: result))
               .font(.caption2)
               .foregroundStyle(.tertiary)
             Spacer(minLength: 0)
-            Label("View table", systemImage: "arrow.up.left.and.arrow.down.right")
-              .font(.caption2.weight(.medium))
-              .foregroundStyle(CREGBrand.blue)
+            Label(
+              pinchIsArmed ? "Release to expand" : "View table",
+              systemImage: "arrow.up.left.and.arrow.down.right"
+            )
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(CREGBrand.blue)
+            .contentTransition(.symbolEffect(.replace))
           }
         }
         .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .background(
+          .quaternary.opacity(0.5),
+          in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+          RoundedRectangle(cornerRadius: 12)
+            .stroke(
+              CREGBrand.blue.opacity(pinchIsArmed ? 0.85 : 0),
+              lineWidth: 2)
+        }
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .scaleEffect(renderedScale)
+      .simultaneousGesture(pinchGesture)
+      .sensoryFeedback(.selection, trigger: pinchHapticTrigger)
+      .accessibilityElement(children: .ignore)
       .accessibilityLabel(
-        "Result table, \(ResultViewerLogic.rowCountLabel(for: result)). Opens full table")
+        "Result table, \(ResultViewerLogic.rowCountLabel(for: result))")
+      .accessibilityHint("Double-tap or pinch outward to open the full table")
     }
+  }
+
+  private var pinchGesture: some Gesture {
+    MagnifyGesture()
+      .onChanged { value in
+        let magnification = value.magnification
+        let armed = ResultViewerLogic.pinchIsArmed(
+          magnification: magnification,
+          wasArmed: pinchIsArmed)
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+          pinchMagnification = magnification
+          if armed && !pinchIsArmed {
+            pinchHapticTrigger += 1
+          }
+          pinchIsArmed = armed
+        }
+      }
+      .onEnded { value in
+        let shouldOpen = ResultViewerLogic.pinchIsArmed(
+          magnification: value.magnification,
+          wasArmed: pinchIsArmed)
+        withAnimation(
+          reduceMotion ? nil : .spring(duration: 0.24, bounce: 0.18)
+        ) {
+          pinchMagnification = 1
+          pinchIsArmed = false
+        }
+        if shouldOpen {
+          open()
+        }
+      }
   }
 }
 
@@ -209,119 +390,195 @@ struct ResultPreviewView: View {
 /// typed sorting, local search, and copy/share/export of all returned rows.
 struct ResultViewerView: View {
   let result: QueryResult
+  let runtimeMode: ModelRuntimeMode
+  @Binding var textSize: ResultTableTextSize
   @State private var sort: ResultViewerLogic.SortState?
-  @State private var searchText = ""
+  @State private var searchText: String
+  @State private var selectedCell: ResultCellSelection?
+  @State private var copyFeedbackMessage: String?
+  @State private var copyFeedbackTrigger = 0
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @ScaledMetric(relativeTo: .caption) private var baseCharacterWidth = 8.5
+  @ScaledMetric(relativeTo: .caption) private var baseHorizontalPadding = 6.0
+  @ScaledMetric(relativeTo: .caption) private var baseMinimumWidth = 96.0
+  @ScaledMetric(relativeTo: .caption) private var baseMaximumWidth = 240.0
+  @ScaledMetric(relativeTo: .caption) private var baseRowVerticalPadding = 8.0
+
+  init(
+    result: QueryResult,
+    runtimeMode: ModelRuntimeMode,
+    textSize: Binding<ResultTableTextSize>,
+    initialSearchText: String = "",
+    initialSelection: ResultCellSelection? = nil
+  ) {
+    self.result = result
+    self.runtimeMode = runtimeMode
+    self._textSize = textSize
+    self._searchText = State(initialValue: initialSearchText)
+    self._selectedCell = State(initialValue: initialSelection)
+  }
 
   private var displayRows: [[SQLValue]] {
     ResultViewerLogic.displayRows(
       result: result, sort: sort, searchText: searchText)
   }
 
-  /// Fixed per-column widths keep the frozen header aligned with rows.
   private var columnWidths: [CGFloat] {
-    result.columns.enumerated().map { index, column in
-      var longest = column.count
-      for row in result.rows.prefix(60) where index < row.count {
-        longest = max(
-          longest,
-          PortfolioValueFormatting.displayString(
-            for: row[index], column: column
-          ).count)
-      }
-      return min(max(CGFloat(longest) * 8.5 + 24, 96), 240)
-    }
+    let scale = textSize.metricScale
+    return ResultTableColumnMetrics(
+      characterWidth: baseCharacterWidth * scale,
+      horizontalPadding: baseHorizontalPadding * scale,
+      minimumWidth: baseMinimumWidth * scale,
+      maximumWidth: baseMaximumWidth * scale
+    ).widths(for: result)
+  }
+
+  private var cellHorizontalPadding: CGFloat {
+    baseHorizontalPadding * textSize.metricScale
+  }
+
+  private var rowVerticalPadding: CGFloat {
+    baseRowVerticalPadding * textSize.metricScale
+  }
+
+  private var normalizedSearchText: String {
+    searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var hasNoSearchMatches: Bool {
+    !normalizedSearchText.isEmpty && displayRows.isEmpty
+  }
+
+  private var selectedResultCell: SelectedResultCell? {
+    guard let selectedCell,
+      displayRows.indices.contains(selectedCell.row),
+      result.columns.indices.contains(selectedCell.column)
+    else { return nil }
+    let row = displayRows[selectedCell.row]
+    let value = selectedCell.column < row.count
+      ? row[selectedCell.column] : .null
+    let columnName = result.columns[selectedCell.column]
+    return SelectedResultCell(
+      selection: selectedCell,
+      row: row,
+      columnName: columnName,
+      displayedValue: ResultViewerLogic.displayedCopyValue(
+        value, column: columnName),
+      rawValue: ResultViewerLogic.rawCopyValue(value))
   }
 
   var body: some View {
     NavigationStack {
-      VStack(spacing: 0) {
-        searchBar
-        table
-        footer
-      }
-      .navigationTitle("Result")
+      searchable(
+        VStack(spacing: 0) {
+          table
+          if selectedResultCell != nil {
+            selectionAccessory
+          }
+          footer
+        }
+      )
+      .navigationTitle("Result Table")
       .inlineNavigationTitle()
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Done") { dismiss() }
         }
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
+          textSizeMenu
           exportMenu
         }
       }
     }
+    .onChange(of: searchText) { _, _ in
+      selectedCell = nil
+    }
+    .onChange(of: sort) { _, _ in
+      selectedCell = nil
+    }
   }
 
-  private var searchBar: some View {
-    HStack(spacing: 6) {
-      Image(systemName: "magnifyingglass")
-        .foregroundStyle(.secondary)
-      TextField("Search rows", text: $searchText)
-        .textFieldStyle(.plain)
-        .autocorrectionDisabled()
-      if !searchText.isEmpty {
-        Button {
-          searchText = ""
-        } label: {
-          Image(systemName: "xmark.circle.fill")
-            .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Clear search")
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-    .padding(.horizontal)
-    .padding(.vertical, 8)
+  @ViewBuilder
+  private func searchable<Content: View>(_ content: Content) -> some View {
+    #if os(iOS)
+      content.searchable(
+        text: $searchText,
+        placement: .navigationBarDrawer(displayMode: .always),
+        prompt: "Search rows")
+    #else
+      content.searchable(text: $searchText, prompt: "Search rows")
+    #endif
   }
 
   private var table: some View {
     let widths = columnWidths
-    return ScrollView(.horizontal) {
-      VStack(alignment: .leading, spacing: 0) {
-        headerRow(widths: widths)
-        Divider()
-        ScrollView(.vertical) {
-          LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(displayRows.enumerated()), id: \.offset) { entry in
-              rowView(entry.element, widths: widths)
-                .background(
-                  entry.offset.isMultiple(of: 2)
-                    ? Color.clear
-                    : Color.primary.opacity(0.03))
+    return ZStack(alignment: .top) {
+      ScrollView(.horizontal) {
+        VStack(alignment: .leading, spacing: 0) {
+          headerRow(widths: widths)
+          Divider()
+          ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+              ForEach(Array(displayRows.enumerated()), id: \.offset) { entry in
+                rowView(
+                  entry.element,
+                  displayIndex: entry.offset,
+                  widths: widths)
+              }
             }
           }
+          .scrollDismissesKeyboard(.interactively)
         }
+      }
+      .scrollIndicators(.visible)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+      if hasNoSearchMatches {
+        noMatchesState
+      }
+    }
+    .overlay(alignment: .bottom) { copyFeedback }
+    .sensoryFeedback(.success, trigger: copyFeedbackTrigger)
+    .task(id: copyFeedbackTrigger) {
+      guard copyFeedbackTrigger > 0 else { return }
+      let trigger = copyFeedbackTrigger
+      try? await Task.sleep(for: .seconds(1.4))
+      guard !Task.isCancelled, trigger == copyFeedbackTrigger else { return }
+      withAnimation(reduceMotion ? nil : .smooth(duration: 0.2)) {
+        copyFeedbackMessage = nil
       }
     }
   }
 
   private func headerRow(widths: [CGFloat]) -> some View {
-    HStack(spacing: 0) {
+    HStack(alignment: .top, spacing: 0) {
       ForEach(Array(result.columns.enumerated()), id: \.offset) { index, column in
         Button {
           sort = ResultViewerLogic.toggleSort(sort, column: index)
         } label: {
-          HStack(spacing: 4) {
+          HStack(alignment: .top, spacing: 4) {
             Text(column)
-              .font(.caption.weight(.semibold))
-              .lineLimit(1)
+              .font(textSize.headerFont)
+              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+              .multilineTextAlignment(.leading)
             if sort?.column == index {
               Image(
                 systemName: sort?.ascending == true
                   ? "chevron.up" : "chevron.down")
               .font(.caption2.weight(.bold))
+              .contentTransition(.symbolEffect(.replace))
             }
           }
           .foregroundStyle(
             sort?.column == index ? CREGBrand.blue : Color.secondary)
+          .padding(.horizontal, cellHorizontalPadding)
+          .padding(.vertical, 8)
           .frame(width: widths[index], alignment: .leading)
-          .padding(.vertical, 10)
-          .padding(.horizontal, 6)
+          .frame(minHeight: 44, alignment: .topLeading)
           .contentShape(Rectangle())
+          .overlay(alignment: .trailing) { Divider() }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
@@ -331,66 +588,333 @@ struct ResultViewerView: View {
       }
     }
     .padding(.horizontal, 10)
+    .background(.thinMaterial)
+    .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: sort)
   }
 
-  private func rowView(_ row: [SQLValue], widths: [CGFloat]) -> some View {
-    HStack(spacing: 0) {
-      ForEach(Array(row.enumerated()), id: \.offset) { index, value in
-        Text(
-          PortfolioValueFormatting.displayString(
-            for: value,
-            column: index < result.columns.count ? result.columns[index] : "")
-        )
-        .font(.caption.monospacedDigit())
-        .lineLimit(1)
-        .frame(
-          width: index < widths.count ? widths[index] : 120,
-          alignment: .leading)
-        .padding(.vertical, 8)
-        .padding(.horizontal, 6)
+  private func rowView(
+    _ row: [SQLValue],
+    displayIndex: Int,
+    widths: [CGFloat]
+  ) -> some View {
+    let rowIsSelected = selectedCell?.row == displayIndex
+    return HStack(alignment: .top, spacing: 0) {
+      ForEach(result.columns.indices, id: \.self) { index in
+        let value: SQLValue = index < row.count ? row[index] : .null
+        let column = result.columns[index]
+        let displayed = ResultViewerLogic.displayedCopyValue(
+          value, column: column)
+        let raw = ResultViewerLogic.rawCopyValue(value)
+        let selection = ResultCellSelection(row: displayIndex, column: index)
+        let isSelected = selectedCell == selection
+
+        Button {
+          selectedCell = isSelected ? nil : selection
+        } label: {
+          Text(displayed)
+            .font(textSize.cellFont)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            .multilineTextAlignment(.leading)
+            .padding(.horizontal, cellHorizontalPadding)
+            .frame(
+              width: index < widths.count ? widths[index] : 120,
+              alignment: .topLeading)
+            .padding(.vertical, rowVerticalPadding)
+            .background(
+              isSelected ? CREGBrand.blue.opacity(0.14) : Color.clear)
+            .overlay(alignment: .trailing) { Divider() }
+            .overlay {
+              if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                  .stroke(CREGBrand.blue, lineWidth: 2)
+                  .padding(2)
+              }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+          cellCopyActions(displayed: displayed, raw: raw, row: row)
+        }
+        .accessibilityLabel(
+          "Row \(displayIndex + 1), \(column), \(displayed)")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAction(named: "Copy value") {
+          copy(displayed, confirmation: "Value copied")
+        }
+        .accessibilityAction(named: "Copy row as CSV") {
+          copy(
+            ResultViewerLogic.csvRowString(row),
+            confirmation: "Row copied")
+        }
       }
     }
     .padding(.horizontal, 10)
+    .background(
+      rowIsSelected
+        ? CREGBrand.blue.opacity(0.06)
+        : displayIndex.isMultiple(of: 2)
+          ? Color.clear
+          : Color.primary.opacity(0.035))
+  }
+
+  @ViewBuilder
+  private func cellCopyActions(
+    displayed: String,
+    raw: String,
+    row: [SQLValue]
+  ) -> some View {
+    Button {
+      copy(displayed, confirmation: "Value copied")
+    } label: {
+      Label("Copy Value", systemImage: "doc.on.doc")
+    }
+    if raw != displayed {
+      Button {
+        copy(raw, confirmation: "Raw value copied")
+      } label: {
+        Label("Copy Raw Value", systemImage: "number")
+      }
+    }
+    Button {
+      copy(
+        ResultViewerLogic.csvRowString(row),
+        confirmation: "Row copied")
+    } label: {
+      Label("Copy Row as CSV", systemImage: "tablecells")
+    }
+  }
+
+  @ViewBuilder
+  private var selectionAccessory: some View {
+    if let selected = selectedResultCell {
+      let layout = dynamicTypeSize.isAccessibilitySize
+        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+        : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+      layout {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Row \(selected.selection.row + 1) · \(selected.columnName)")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+          Text(selected.displayedValue)
+            .font(textSize.cellFont)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+            .textSelection(.enabled)
+        }
+        if !dynamicTypeSize.isAccessibilitySize {
+          Spacer(minLength: 0)
+        }
+        selectionActions(selected)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
+      .background(.thinMaterial)
+      .transition(
+        reduceMotion
+          ? .opacity
+          : .opacity.combined(with: .move(edge: .bottom)))
+      .animation(
+        reduceMotion ? nil : .smooth(duration: 0.22),
+        value: selectedCell)
+    }
+  }
+
+  private func selectionActions(_ selected: SelectedResultCell) -> some View {
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 6) {
+        selectionCopyButton(selected)
+        selectionMoreMenu(selected)
+        clearSelectionButton
+      }
+      VStack(alignment: .leading, spacing: 4) {
+        selectionCopyButton(selected)
+        selectionMoreMenu(selected)
+        clearSelectionButton
+      }
+    }
+  }
+
+  private func selectionCopyButton(
+    _ selected: SelectedResultCell
+  ) -> some View {
+    Button {
+      copy(selected.displayedValue, confirmation: "Value copied")
+    } label: {
+      Label("Copy Value", systemImage: "doc.on.doc")
+    }
+    .buttonStyle(.borderedProminent)
+    .cregTextButtonTarget()
+  }
+
+  private func selectionMoreMenu(_ selected: SelectedResultCell) -> some View {
+    Menu {
+      if selected.rawValue != selected.displayedValue {
+        Button {
+          copy(selected.rawValue, confirmation: "Raw value copied")
+        } label: {
+          Label("Copy Raw Value", systemImage: "number")
+        }
+      }
+      Button {
+        copy(
+          ResultViewerLogic.csvRowString(selected.row),
+          confirmation: "Row copied")
+      } label: {
+        Label("Copy Row as CSV", systemImage: "tablecells")
+      }
+    } label: {
+      Label("More", systemImage: "ellipsis.circle")
+    }
+    .buttonStyle(.bordered)
+    .cregTextButtonTarget()
+  }
+
+  private var clearSelectionButton: some View {
+    Button {
+      selectedCell = nil
+    } label: {
+      Image(systemName: "xmark")
+        .cregIconButtonTarget()
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Clear cell selection")
+    .cregLargeContentViewer("Clear selection", systemImage: "xmark")
   }
 
   private var footer: some View {
-    HStack(spacing: 8) {
-      // Never imply hidden rows were loaded: truncated results stay labeled.
-      Text(ResultViewerLogic.rowCountLabel(for: result))
-        .font(.caption)
-        .foregroundStyle(result.isTruncated ? .orange : .secondary)
-      if !searchText.isEmpty {
-        Text("· \(displayRows.count) matching")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 8) {
+        rowStatus
+        Spacer(minLength: 0)
+        sortChip
       }
-      Spacer(minLength: 0)
+      VStack(alignment: .leading, spacing: 6) {
+        rowStatus
+        sortChip
+      }
     }
     .padding(.horizontal)
-    .padding(.vertical, 10)
+    .padding(.vertical, 6)
+    .background(Color.primary.opacity(0.025))
+    .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: sort)
+  }
+
+  private var rowStatus: some View {
+    Group {
+      if normalizedSearchText.isEmpty {
+        Text(ResultViewerLogic.rowCountLabel(for: result))
+      } else {
+        Text("\(displayRows.count) of \(result.rowCount) returned rows")
+      }
+    }
+    .font(.caption)
+    .foregroundStyle(result.isTruncated ? .orange : .secondary)
+  }
+
+  @ViewBuilder
+  private var sortChip: some View {
+    if let sort, result.columns.indices.contains(sort.column) {
+      Button {
+        self.sort = nil
+      } label: {
+        HStack(spacing: 5) {
+          Image(systemName: sort.ascending ? "arrow.up" : "arrow.down")
+          Text(result.columns[sort.column])
+            .lineLimit(1)
+          Image(systemName: "xmark.circle.fill")
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(CREGBrand.blue)
+        .padding(.horizontal, 10)
+        .background(CREGBrand.blue.opacity(0.1), in: Capsule())
+      }
+      .buttonStyle(.plain)
+      .cregTextButtonTarget()
+      .accessibilityLabel(
+        "Clear sort by \(result.columns[sort.column]), \(sort.ascending ? "ascending" : "descending")")
+    }
+  }
+
+  private var noMatchesState: some View {
+    ContentUnavailableView {
+      Label("No Matching Rows", systemImage: "magnifyingglass")
+    } description: {
+      Text("No returned row contains “\(normalizedSearchText)”.")
+    } actions: {
+      Button("Clear Search") { searchText = "" }
+        .buttonStyle(.borderedProminent)
+        .cregTextButtonTarget()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(CREGBrand.chatSurface.opacity(0.96))
+  }
+
+  @ViewBuilder
+  private var copyFeedback: some View {
+    if let copyFeedbackMessage {
+      Label(copyFeedbackMessage, systemImage: "checkmark.circle.fill")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.green)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.bottom, 12)
+        .transition(
+          reduceMotion
+            ? .opacity
+            : .opacity.combined(with: .scale(scale: 0.96)))
+        .accessibilityLabel(copyFeedbackMessage)
+    }
+  }
+
+  private func copy(_ string: String, confirmation: String) {
+    Pasteboard.copy(string)
+    withAnimation(reduceMotion ? nil : .smooth(duration: 0.2)) {
+      copyFeedbackMessage = confirmation
+      copyFeedbackTrigger += 1
+    }
+  }
+
+  private var textSizeMenu: some View {
+    Menu {
+      Picker("Table Text Size", selection: $textSize) {
+        ForEach(ResultTableTextSize.allCases, id: \.self) { size in
+          Text(size.title).tag(size)
+        }
+      }
+    } label: {
+      Image(systemName: "textformat.size")
+        .cregIconButtonTarget()
+    }
+    .accessibilityLabel("Table text size")
+    .accessibilityValue(textSize.title)
+    .cregLargeContentViewer("Table text size", systemImage: "textformat.size")
   }
 
   private var exportMenu: some View {
     Menu {
       Button("Copy as CSV") {
-        Pasteboard.copy(result.csvString())
+        Pasteboard.copy(result.csvString(runtimeMode: runtimeMode))
       }
       Button("Copy as Markdown") {
-        Pasteboard.copy(result.markdownTableString())
+        Pasteboard.copy(result.markdownTableString(runtimeMode: runtimeMode))
       }
       ShareLink(
-        item: ResultCSVTransfer(result: result),
+        item: ResultCSVTransfer(result: result, runtimeMode: runtimeMode),
         preview: SharePreview("Result table (CSV)")
       ) {
         Label("Share CSV", systemImage: "square.and.arrow.up")
       }
-      ShareLink(item: result.markdownTableString()) {
+      ShareLink(item: result.markdownTableString(runtimeMode: runtimeMode)) {
         Label("Share Markdown", systemImage: "square.and.arrow.up")
       }
     } label: {
       Image(systemName: "square.and.arrow.up")
+        .cregIconButtonTarget()
     }
     .accessibilityLabel("Export table")
+    .cregLargeContentViewer("Export table", systemImage: "square.and.arrow.up")
   }
 }
 
@@ -400,14 +924,20 @@ extension View {
   /// Full-screen on iPhone; a sheet on the macOS host-test target, which has
   /// no full-screen cover.
   @ViewBuilder
-  func resultViewerPresentation(store: StoreOf<ChatFeature>) -> some View {
+  func resultViewerPresentation(
+    store: StoreOf<ChatFeature>,
+    textSize: Binding<ResultTableTextSize>
+  ) -> some View {
     let binding = Binding<ResultViewerItem?>(
       get: {
         guard let id = store.resultViewerMessageID,
           let message = store.messages[id: id],
           case .answer(let result, _, _, _) = message.body
         else { return nil }
-        return ResultViewerItem(messageID: id, result: result)
+        return ResultViewerItem(
+          messageID: id,
+          result: result,
+          runtimeMode: message.devInfo?.runtimeMode ?? .evaluated)
       },
       set: { item in
         if item == nil {
@@ -416,11 +946,17 @@ extension View {
       })
     #if os(iOS)
       self.fullScreenCover(item: binding) { item in
-        ResultViewerView(result: item.result)
+        ResultViewerView(
+          result: item.result,
+          runtimeMode: item.runtimeMode,
+          textSize: textSize)
       }
     #else
       self.sheet(item: binding) { item in
-        ResultViewerView(result: item.result)
+        ResultViewerView(
+          result: item.result,
+          runtimeMode: item.runtimeMode,
+          textSize: textSize)
       }
     #endif
   }
@@ -429,5 +965,6 @@ extension View {
 struct ResultViewerItem: Identifiable, Equatable {
   var messageID: UUID
   var result: QueryResult
+  var runtimeMode: ModelRuntimeMode
   var id: UUID { messageID }
 }

@@ -8,6 +8,7 @@ struct ConversationBrowserView: View {
   @Bindable var store: StoreOf<AppFeature>
   /// Fixed for previews; live rendering uses the current date.
   var now: Date = Date()
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -29,6 +30,7 @@ struct ConversationBrowserView: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .cregTextButtonTarget()
       .padding(.horizontal, 8)
 
       if isSearching {
@@ -50,6 +52,7 @@ struct ConversationBrowserView: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .cregTextButtonTarget()
       .padding(.horizontal, 8)
       .padding(.bottom, 8)
     }
@@ -73,9 +76,11 @@ struct ConversationBrowserView: View {
         } label: {
           Image(systemName: "xmark.circle.fill")
             .foregroundStyle(.secondary)
+            .cregIconButtonTarget()
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Clear search")
+        .cregLargeContentViewer("Clear search", systemImage: "xmark.circle.fill")
       }
     }
     .padding(.horizontal, 10)
@@ -129,15 +134,16 @@ struct ConversationBrowserView: View {
             VStack(alignment: .leading, spacing: 3) {
               Text(hit.title.isEmpty ? "New Chat" : hit.title)
                 .font(.subheadline.weight(.medium))
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
               Text(hit.snippet)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
@@ -156,15 +162,19 @@ struct ConversationRow: View {
   let now: Date
   let select: () -> Void
   let delete: () -> Void
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     Button(action: select) {
-      HStack(alignment: .top, spacing: 10) {
+      let rowLayout = dynamicTypeSize.isAccessibilitySize
+        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+        : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
+      rowLayout {
         VStack(alignment: .leading, spacing: 3) {
           HStack(spacing: 6) {
             Text(summary.displayTitle)
               .font(.subheadline.weight(.medium))
-              .lineLimit(1)
+              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             if isRunning {
               ProgressView()
                 .controlSize(.mini)
@@ -182,11 +192,13 @@ struct ConversationRow: View {
             Text(summary.latestMessagePreview)
               .font(.caption)
               .foregroundStyle(.secondary)
-              .lineLimit(2)
+              .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
           }
         }
-        Spacer(minLength: 4)
-        VStack(alignment: .trailing, spacing: 4) {
+        if !dynamicTypeSize.isAccessibilitySize {
+          Spacer(minLength: 4)
+        }
+        HStack(spacing: 8) {
           Text(relativeTime)
             .font(.caption2)
             .foregroundStyle(.secondary)
@@ -195,6 +207,9 @@ struct ConversationRow: View {
               .fill(CREGBrand.turquoise)
               .frame(width: 9, height: 9)
               .accessibilityLabel("Unread")
+          }
+          if dynamicTypeSize.isAccessibilitySize {
+            Spacer(minLength: 0)
           }
         }
       }

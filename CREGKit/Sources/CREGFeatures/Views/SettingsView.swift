@@ -10,6 +10,7 @@ import SwiftUI
 /// and the complete Support Bundle email export.
 struct SettingsView: View {
   @Bindable var store: StoreOf<AppFeature>
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     NavigationStack {
@@ -107,24 +108,43 @@ struct SettingsView: View {
   /// `UIUserInterfaceStyle`, so leaving this alone means CREG follows iOS.
   private var appearanceSection: some View {
     Section {
-      Picker(
-        "Theme",
-        selection: Binding(
-          get: { store.appearance },
-          set: { store.send(.appearanceSelected($0)) })
-      ) {
-        ForEach(AppearancePreference.allCases, id: \.self) { preference in
-          Text(preference.title).tag(preference)
+      if dynamicTypeSize.isAccessibilitySize {
+        Picker(
+          "Theme",
+          selection: appearanceBinding
+        ) {
+          appearanceChoices
         }
+        .pickerStyle(.inline)
+      } else {
+        Picker(
+          "Theme",
+          selection: appearanceBinding
+        ) {
+          appearanceChoices
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
       }
-      .pickerStyle(.segmented)
-      .labelsHidden()
     } header: {
       Text("Appearance")
     } footer: {
       Text(
         "System follows your iPhone’s Light/Dark setting, including its automatic schedule. Light and Dark pin CREG to that theme instead."
       )
+    }
+  }
+
+  private var appearanceBinding: Binding<AppearancePreference> {
+    Binding(
+      get: { store.appearance },
+      set: { store.send(.appearanceSelected($0)) })
+  }
+
+  @ViewBuilder
+  private var appearanceChoices: some View {
+    ForEach(AppearancePreference.allCases, id: \.self) { preference in
+      Text(preference.title).tag(preference)
     }
   }
 

@@ -471,7 +471,7 @@ public struct StageTimings: Sendable, Equatable, Codable {
 }
 
 public struct TurnTelemetry: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 3
+  public static let currentSchemaVersion = 4
 
   public var schemaVersion: Int
   public var originalQuestion: String
@@ -500,8 +500,13 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
   public var timeoutStage: String?
   public var grounding: GroundingReport?
   public var terminalError: String?
+  public var runtimeMode: ModelRuntimeMode
+  public var isEvaluated: Bool
 
-  public init(originalQuestion: String) {
+  public init(
+    originalQuestion: String,
+    runtimeMode: ModelRuntimeMode = .evaluated
+  ) {
     self.schemaVersion = Self.currentSchemaVersion
     self.originalQuestion = originalQuestion
     self.standaloneQuestion = originalQuestion
@@ -515,6 +520,8 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     self.candidates = []
     self.repairAttempts = 0
     self.generatedCount = 0
+    self.runtimeMode = runtimeMode
+    self.isEvaluated = runtimeMode.isEvaluated
   }
 
   enum CodingKeys: String, CodingKey {
@@ -545,6 +552,8 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case timeoutStage
     case grounding
     case terminalError
+    case runtimeMode
+    case isEvaluated
   }
 
   /// Schema-versioned tolerant decoding keeps chat history readable as
@@ -635,6 +644,12 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
       try values.decodeIfPresent(GroundingReport.self, forKey: .grounding)
     terminalError =
       try values.decodeIfPresent(String.self, forKey: .terminalError)
+    runtimeMode =
+      try values.decodeIfPresent(ModelRuntimeMode.self, forKey: .runtimeMode)
+      ?? .evaluated
+    isEvaluated =
+      try values.decodeIfPresent(Bool.self, forKey: .isEvaluated)
+      ?? runtimeMode.isEvaluated
   }
 }
 
