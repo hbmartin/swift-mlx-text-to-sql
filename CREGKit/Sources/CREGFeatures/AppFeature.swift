@@ -96,6 +96,10 @@ public struct AppFeature: Sendable {
     public var answerReadyBanner: AnswerReadyBanner?
     public var isSettingsPresented = false
     public var developerMode = false
+    /// Reader-controlled density for full-screen result tables. Inline table
+    /// previews continue to use the transcript's typography.
+    @Shared(.appStorage(ResultTableTextSize.storageKey))
+    public var resultTableTextSize: ResultTableTextSize = .standard
     /// The theme override. Unlike the app icon, nothing in the system holds
     /// this for us, so it is persisted in user defaults and hydrated from
     /// there when state is constructed.

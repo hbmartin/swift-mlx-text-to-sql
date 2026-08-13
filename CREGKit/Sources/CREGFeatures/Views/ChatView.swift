@@ -6,6 +6,7 @@ import SwiftUI
 struct ChatChrome {
   var modelReadiness: AppFeature.ModelReadiness
   var developerMode: Bool
+  var resultTableTextSize: Binding<ResultTableTextSize>
   var hasUnreadElsewhere: Bool
   var debugModelIdentity: DebugModelIdentity?
   var presentedFailure: FailurePresentation?
@@ -187,7 +188,9 @@ struct ChatView: View {
     .sheet(item: exportItem) { item in
       ExportShareSheet(url: item.url)
     }
-    .resultViewerPresentation(store: store)
+    .resultViewerPresentation(
+      store: store,
+      textSize: chrome.resultTableTextSize)
   }
 
   private var exportItem: Binding<ExportedFile?> {

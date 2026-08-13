@@ -125,6 +125,7 @@ struct AppRootView: View {
           chrome: ChatChrome(
             modelReadiness: store.modelReadiness,
             developerMode: store.developerMode,
+            resultTableTextSize: $store.resultTableTextSize,
             hasUnreadElsewhere: store.conversations.contains { $0.isUnread },
             debugModelIdentity: store.debugModelIdentity,
             presentedFailure: store.presentedFailure,

@@ -271,6 +271,7 @@ enum PreviewFixtures {
     ChatChrome(
       modelReadiness: .ready,
       developerMode: false,
+      resultTableTextSize: .constant(.standard),
       hasUnreadElsewhere: true,
       debugModelIdentity: nil,
       presentedFailure: nil,
@@ -363,12 +364,49 @@ enum PreviewFixtures {
 }
 
 #Preview("Result Viewer — Populated") {
-  ResultViewerView(result: PreviewFixtures.leaseListingResult)
+  ResultViewerView(
+    result: PreviewFixtures.leaseListingResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.standard))
+    .frame(width: 402, height: 874)
 }
 
 #Preview("Result Viewer — Truncated — Dark") {
-  ResultViewerView(result: PreviewFixtures.truncatedResult)
+  ResultViewerView(
+    result: PreviewFixtures.truncatedResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.standard))
+    .frame(width: 402, height: 874)
     .preferredColorScheme(.dark)
+}
+
+#Preview("Result Viewer — Large Text — Selected Cell") {
+  @Previewable @State var textSize = ResultTableTextSize.large
+  ResultViewerView(
+    result: PreviewFixtures.leaseListingResult,
+    runtimeMode: .evaluated,
+    textSize: $textSize,
+    initialSelection: ResultCellSelection(row: 1, column: 2))
+    .frame(width: 402, height: 874)
+}
+
+#Preview("Result Viewer — No Search Matches") {
+  ResultViewerView(
+    result: PreviewFixtures.leaseListingResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.standard),
+    initialSearchText: "no such tenant")
+    .frame(width: 402, height: 874)
+}
+
+#Preview("Result Viewer — Accessibility Dynamic Type") {
+  ResultViewerView(
+    result: PreviewFixtures.leaseListingResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.large),
+    initialSelection: ResultCellSelection(row: 0, column: 1))
+    .frame(width: 402, height: 874)
+    .environment(\.dynamicTypeSize, .accessibility3)
 }
 
 #Preview("Settings — App Icon Picker") {
