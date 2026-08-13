@@ -20,6 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CREGBuildChannel</key>
+	<string>$(CREG_BUILD_CHANNEL)</string>
+	<key>CREGExperimentalTrainingRun</key>
+	<string>$(CREG_EXPERIMENTAL_TRAINING_RUN)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>

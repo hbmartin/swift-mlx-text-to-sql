@@ -257,9 +257,12 @@ import Testing
       AnswerFeedback(
         messageID: message.id, verdict: .notRight,
         correction: "Exclude sold properties",
-        updatedAt: Date(timeIntervalSince1970: 30)))
+        updatedAt: Date(timeIntervalSince1970: 30),
+        runtimeMode: .compatibility))
     snapshot = try await client.loadConversation(id)
     #expect(snapshot.feedback[message.id]?.correction == "Exclude sold properties")
+    #expect(snapshot.feedback[message.id]?.runtimeMode == .compatibility)
+    #expect(snapshot.feedback[message.id]?.isEvaluated == false)
 
     try await client.clearFeedback(id, message.id)
     snapshot = try await client.loadConversation(id)
@@ -333,7 +336,8 @@ import Testing
       source: source,
       diagnosticsText: "log line\n",
       modelManifestJSON: Data("{}".utf8),
-      modelReceiptJSON: Data("{}".utf8))
+      modelReceiptJSON: Data("{}".utf8),
+      modelPreparationJSON: Data("{}".utf8))
     let names = files.map(\.name)
     #expect(names.contains("conversations.json"))
     #expect(names.contains("messages.json"))
@@ -342,6 +346,7 @@ import Testing
     #expect(names.contains("diagnostics.txt"))
     #expect(names.contains("model-manifest.json"))
     #expect(names.contains("production-model-receipt.json"))
+    #expect(names.contains("model-preparation.json"))
     // The weights and the portfolio database never join the inventory.
     #expect(!names.contains { $0.contains("safetensors") || $0.contains("creg.sqlite") })
 
@@ -367,7 +372,9 @@ import Testing
       context: SupportBundleBuilder.Context(
         appVersion: "2.0",
         buildNumber: "42",
+        buildChannel: "beta",
         modelIdentity: (key: "test-model", revision: "deadbeef"),
+        runtimeMode: .compatibility,
         createdAt: Date(timeIntervalSince1970: 100)),
       bundledModelManifest: nil,
       bundledModelReceipt: nil,
@@ -381,6 +388,9 @@ import Testing
     #expect(size > 0)
     #expect(export.manifest.appVersion == "2.0")
     #expect(export.manifest.modelKey == "test-model")
+    #expect(export.manifest.buildChannel == "beta")
+    #expect(export.manifest.runtimeMode == .compatibility)
+    #expect(!export.manifest.isEvaluated)
     #expect(export.manifest.conversationCount == 1)
     let entryPaths = export.manifest.entries.map(\.path)
     #expect(entryPaths.contains("history-snapshot.sqlite"))

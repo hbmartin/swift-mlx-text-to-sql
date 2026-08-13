@@ -477,8 +477,13 @@ public struct ChatFeature: Sendable {
       }
     }
 
+    let runtimeMode =
+      state.messages[id: messageID]?.devInfo?.runtimeMode ?? .evaluated
     let feedback = AnswerFeedback(
-      messageID: messageID, verdict: verdict, updatedAt: now)
+      messageID: messageID,
+      verdict: verdict,
+      updatedAt: now,
+      runtimeMode: runtimeMode)
     state.feedback[messageID] = feedback
     switch verdict {
     case .helpful:
@@ -495,7 +500,11 @@ public struct ChatFeature: Sendable {
       category: .history,
       code: "answer_feedback_recorded",
       summary: "An answer feedback judgment was recorded.",
-      context: ["verdict": verdict.rawValue])
+      context: [
+        "verdict": verdict.rawValue,
+        "runtime_mode": runtimeMode.rawValue,
+        "evaluated": String(runtimeMode.isEvaluated),
+      ])
     return .run { send in
       do {
         try await history.saveFeedback(conversationID, feedback)

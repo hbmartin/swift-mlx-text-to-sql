@@ -140,17 +140,23 @@ public struct AnswerFeedback: Equatable, Sendable, Codable {
   /// The eventual correction the user sent after a Not right judgment.
   public var correction: String?
   public var updatedAt: Date
+  public var runtimeMode: ModelRuntimeMode
+  public var isEvaluated: Bool
 
   public init(
     messageID: UUID,
     verdict: Verdict,
     correction: String? = nil,
-    updatedAt: Date
+    updatedAt: Date,
+    runtimeMode: ModelRuntimeMode = .evaluated,
+    isEvaluated: Bool? = nil
   ) {
     self.messageID = messageID
     self.verdict = verdict
     self.correction = correction
     self.updatedAt = updatedAt
+    self.runtimeMode = runtimeMode
+    self.isEvaluated = isEvaluated ?? runtimeMode.isEvaluated
   }
 }
 
@@ -186,8 +192,11 @@ public struct SupportBundleManifest: Equatable, Sendable, Codable {
   public var createdAt: Date
   public var appVersion: String
   public var buildNumber: String
+  public var buildChannel: String
   public var modelKey: String
   public var modelRevision: String
+  public var runtimeMode: ModelRuntimeMode
+  public var isEvaluated: Bool
   public var conversationCount: Int
   public var messageCount: Int
   public var eventLineCount: Int
@@ -199,8 +208,11 @@ public struct SupportBundleManifest: Equatable, Sendable, Codable {
     createdAt: Date,
     appVersion: String,
     buildNumber: String,
+    buildChannel: String = "unknown",
     modelKey: String,
     modelRevision: String,
+    runtimeMode: ModelRuntimeMode = .evaluated,
+    isEvaluated: Bool? = nil,
     conversationCount: Int,
     messageCount: Int,
     eventLineCount: Int,
@@ -211,8 +223,11 @@ public struct SupportBundleManifest: Equatable, Sendable, Codable {
     self.createdAt = createdAt
     self.appVersion = appVersion
     self.buildNumber = buildNumber
+    self.buildChannel = buildChannel
     self.modelKey = modelKey
     self.modelRevision = modelRevision
+    self.runtimeMode = runtimeMode
+    self.isEvaluated = isEvaluated ?? runtimeMode.isEvaluated
     self.conversationCount = conversationCount
     self.messageCount = messageCount
     self.eventLineCount = eventLineCount

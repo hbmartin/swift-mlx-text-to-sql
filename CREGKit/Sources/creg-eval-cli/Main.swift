@@ -537,7 +537,7 @@ struct EvalCLI {
       // Match the app lifecycle: load the model and prefill its invariant
       // schema/system prompt before measuring individual queries.
       let primaryPreparationStarted = ContinuousClock.now
-      try await sqlGen.prepare()
+      _ = try await sqlGen.prepare()
       let primaryPreparationMicroseconds =
         primaryPreparationStarted.duration(to: .now).microseconds
       let residentBytesAfterPrimaryPreparation = residentMemoryBytes()
@@ -570,7 +570,7 @@ struct EvalCLI {
       let residentBytesAfterFallbackPreparation: UInt64?
       if let fallbackSQLGen {
         let fallbackPreparationStarted = ContinuousClock.now
-        try await fallbackSQLGen.prepare()
+        _ = try await fallbackSQLGen.prepare()
         fallbackPreparationMicroseconds =
           fallbackPreparationStarted.duration(to: .now).microseconds
         residentBytesAfterFallbackPreparation = residentMemoryBytes()

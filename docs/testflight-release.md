@@ -42,10 +42,12 @@ it.
 | `CREG_WIRED_MEMORY` | honored | **ignored** | ignored |
 | Experimental banner | shown | **shown** | n/a |
 
-The Swift condition is `CREG_EXPERIMENTAL_MODEL`, set in the **project-level**
-Beta configuration. It must stay at project level: local SPM package targets
-(`CREGEngine`, `CREGFeatures`) inherit project-level build settings, and a
-target-level condition never reaches them.
+The app writes `CREGBuildChannel=beta` and the pinned
+`CREGExperimentalTrainingRun` into its processed Info.plist. Runtime policy
+reads those values explicitly. Do not use an app-project Swift compilation
+condition for this decision: local Swift-package targets compile with their own
+Release configuration and do not inherit `SWIFT_ACTIVE_COMPILATION_CONDITIONS`
+from the app project.
 
 ## The pinned model
 
@@ -94,6 +96,27 @@ xcodebuild -exportArchive \
   -exportPath build/install/beta-export \
   -exportOptionsPlist <app-store-connect-options>.plist
 ```
+
+Before uploading, verify **both** the archive and the exported IPA with the
+same Beta run. The gate checks the build channel and pinned candidate identity,
+recomputes the complete SQLModel inventory/receipt digest, and requires exactly
+one non-empty MLX `default.metallib` in each artifact:
+
+```sh
+cd fine-tuning
+uv run --frozen python tools/inspect_release_bundle.py \
+  --configuration Beta \
+  --run-id beta-<UTC timestamp> \
+  --expected-training-run \
+    qwen25-coder-3b-73cb7525c61bc76c76d880076d56d39e0f25cd1675f21a01c28ae2b560838500-seed-424242-wb-0qvg7e4k \
+  --archive ../build/install/CREG-beta.xcarchive \
+  --ipa ../build/install/beta-export/CREG.ipa
+```
+
+Do not upload when this command fails or when its report does not contain two
+complete artifacts (`archive` and `ipa`). On-device startup intentionally keeps
+the lightweight manifest/receipt identity check and does not re-hash the 1.65
+GB model; the archive/export gate is the full-byte integrity boundary.
 
 A strict Release build is still available, and should still fail:
 
@@ -155,6 +178,8 @@ uses swift-crypto only for hashing — so uploads do not prompt per build.
   by `tools/make_app_icons.py`. `AppIconMidnight` is primary; the other two ship
   as alternates the user picks in Settings. actool renders every required size
   including the opaque 1024pt marketing asset, so there is no PNG to hand-check.
+- **Artifact gate**: retain the complete schema-v2 verification report for both
+  the `.xcarchive` and exported `.ipa`; no successful report means no upload.
 
 ## Still open
 

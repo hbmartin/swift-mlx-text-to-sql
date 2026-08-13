@@ -249,6 +249,16 @@ final class HistoryStore: Sendable {
           """)
     }
 
+    migrator.registerMigration("v3-feedback-runtime-mode") { db in
+      try db.execute(
+        sql: """
+          ALTER TABLE feedback
+            ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'evaluated';
+          ALTER TABLE feedback
+            ADD COLUMN is_evaluated INTEGER NOT NULL DEFAULT 1;
+          """)
+    }
+
     return migrator
   }
 
@@ -344,7 +354,11 @@ final class HistoryStore: Sendable {
           messageID: messageID,
           verdict: verdict,
           correction: feedbackRow["correction"],
-          updatedAt: Date(timeIntervalSince1970: feedbackRow["updated_at"]))
+          updatedAt: Date(timeIntervalSince1970: feedbackRow["updated_at"]),
+          runtimeMode:
+            ModelRuntimeMode(rawValue: feedbackRow["runtime_mode"])
+            ?? .evaluated,
+          isEvaluated: (feedbackRow["is_evaluated"] as Int64) != 0)
       }
       let interrupted = try Row.fetchOne(
         db, sql: "SELECT * FROM turn_journal WHERE conversation_id = ?",
@@ -485,13 +499,15 @@ final class HistoryStore: Sendable {
       try db.execute(
         sql: """
           INSERT OR REPLACE INTO feedback
-            (message_id, conversation_id, verdict, correction, updated_at)
-          VALUES (?, ?, ?, ?, ?)
+            (message_id, conversation_id, verdict, correction, updated_at,
+             runtime_mode, is_evaluated)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           """,
         arguments: [
           feedback.messageID.uuidString, conversationID.uuidString,
           feedback.verdict.rawValue, feedback.correction,
           feedback.updatedAt.timeIntervalSince1970,
+          feedback.runtimeMode.rawValue, feedback.isEvaluated ? 1 : 0,
         ])
     }
   }
@@ -695,7 +711,11 @@ final class HistoryStore: Sendable {
               messageID: messageID,
               verdict: verdict,
               correction: row["correction"],
-              updatedAt: Date(timeIntervalSince1970: row["updated_at"])))
+              updatedAt: Date(timeIntervalSince1970: row["updated_at"]),
+              runtimeMode:
+                ModelRuntimeMode(rawValue: row["runtime_mode"])
+                ?? .evaluated,
+              isEvaluated: (row["is_evaluated"] as Int64) != 0))
         }
       let eventLines = try String.fetchAll(
         db, sql: "SELECT line FROM event ORDER BY conversation_id, seq")

@@ -13,14 +13,20 @@ import UniformTypeIdentifiers
 /// export cost, and shares with a real CSV content type and filename.
 public struct ResultCSVTransfer: Transferable, Sendable {
   public let result: QueryResult
+  public let runtimeMode: ModelRuntimeMode
 
-  public init(result: QueryResult) {
+  public init(
+    result: QueryResult,
+    runtimeMode: ModelRuntimeMode = .evaluated
+  ) {
     self.result = result
+    self.runtimeMode = runtimeMode
   }
 
   public static var transferRepresentation: some TransferRepresentation {
     DataRepresentation(exportedContentType: .commaSeparatedText) { transfer in
-      Data(transfer.result.csvString().utf8)
+      Data(
+        transfer.result.csvString(runtimeMode: transfer.runtimeMode).utf8)
     }
     .suggestedFileName("creg-result.csv")
   }
@@ -30,18 +36,28 @@ extension QueryResult {
   /// Machine-facing CSV: raw full-precision values, RFC-4180 quoting, no
   /// display formatting, trailing newline. Exports carry portfolio data —
   /// the same caveat as the JSONL session export.
-  public func csvString() -> String {
-    var lines = [columns.map(Self.csvField).joined(separator: ",")]
+  public func csvString(runtimeMode: ModelRuntimeMode? = nil) -> String {
+    let metadataColumns = runtimeMode == nil
+      ? [] : ["__creg_runtime_mode", "__creg_evaluated"]
+    var lines = [
+      (columns + metadataColumns).map(Self.csvField).joined(separator: ",")
+    ]
     for row in rows {
-      lines.append(
-        row.map { Self.csvField($0.exportString) }.joined(separator: ","))
+      var values = row.map { Self.csvField($0.exportString) }
+      if let runtimeMode {
+        values.append(Self.csvField(runtimeMode.rawValue))
+        values.append(String(runtimeMode.isEvaluated))
+      }
+      lines.append(values.joined(separator: ","))
     }
     return lines.joined(separator: "\n") + "\n"
   }
 
   /// Human-facing Markdown table using the same column-aware display
   /// formatting as the transcript.
-  public func markdownTableString() -> String {
+  public func markdownTableString(
+    runtimeMode: ModelRuntimeMode? = nil
+  ) -> String {
     func cell(_ raw: String) -> String {
       raw
         .replacingOccurrences(of: "|", with: "\\|")
@@ -60,7 +76,10 @@ extension QueryResult {
       }
       lines.append("| " + rendered.joined(separator: " | ") + " |")
     }
-    return lines.joined(separator: "\n") + "\n"
+    let metadata = runtimeMode.map {
+      "Runtime mode: \($0.rawValue) · Evaluated: \($0.isEvaluated)\n\n"
+    } ?? ""
+    return metadata + lines.joined(separator: "\n") + "\n"
   }
 
   static func csvField(_ raw: String) -> String {
