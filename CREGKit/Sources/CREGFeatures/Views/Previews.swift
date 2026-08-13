@@ -158,6 +158,59 @@ enum PreviewFixtures {
       messages: messages)
   }
 
+  static func answeredChatState() -> ChatFeature.State {
+    chatState(
+      messages: conversationMessages,
+      title: "Current market value by fund")
+  }
+
+  static func processingChatState() -> ChatFeature.State {
+    var state = answeredChatState()
+    state.processing = ChatFeature.ProcessingState(
+      questionID: id("3"),
+      question: "Which of those funds grew the most since acquisition?",
+      startedAt: now.addingTimeInterval(-6),
+      trace: [
+        "Understanding your question",
+        "Rephrasing your follow-up as a standalone question",
+        "Generating the initial lookup",
+      ],
+      isTimelineExpanded: true)
+    state.messages.append(
+      ChatMessage(
+        id: id("4"), role: .user,
+        body: .text("Which of those funds grew the most since acquisition?"),
+        createdAt: now.addingTimeInterval(-6)))
+    state.queued = [
+      QueuedQuestion(
+        id: id("5"),
+        conversationID: id("9"),
+        question: "And what's the total debt service across them?",
+        submittedAt: now.addingTimeInterval(-2))
+    ]
+    return state
+  }
+
+  static func recoveryChatState() -> ChatFeature.State {
+    var state = answeredChatState()
+    state.interruptedTurn = InterruptedTurn(
+      question:
+        "Compare every property’s debt maturity with its lease expiration schedule.",
+      interruptedAt: now.addingTimeInterval(-30))
+    state.correctionContext = ChatFeature.CorrectionContext(
+      messageID: id("2"),
+      answerNarration: answeredNarration)
+    state.composerText = "The Harborline total should exclude sold properties."
+    return state
+  }
+
+  static let presentationFailure = FailurePresentation(
+    code: "preview_history_unavailable",
+    title: "History unavailable",
+    message:
+      "CREG couldn’t load the saved conversation. You can continue, but changes may not be saved until the app reconnects to its local history store.",
+    diagnostic: "Deterministic preview failure")
+
   static var summaries: [ConversationSummary] {
     [
       ConversationSummary(
@@ -270,33 +323,8 @@ enum PreviewFixtures {
 }
 
 #Preview("Chat — Processing and Queue") {
-  var state = PreviewFixtures.chatState(
-    messages: PreviewFixtures.conversationMessages,
-    title: "Current market value by fund")
-  state.processing = ChatFeature.ProcessingState(
-    questionID: PreviewFixtures.id("3"),
-    question: "Which of those funds grew the most since acquisition?",
-    startedAt: PreviewFixtures.now.addingTimeInterval(-6),
-    trace: [
-      "Understanding your question",
-      "Rephrasing your follow-up as a standalone question",
-      "Generating the initial lookup",
-    ],
-    isTimelineExpanded: true)
-  state.messages.append(
-    ChatMessage(
-      id: PreviewFixtures.id("4"), role: .user,
-      body: .text("Which of those funds grew the most since acquisition?"),
-      createdAt: PreviewFixtures.now.addingTimeInterval(-6)))
-  state.queued = [
-    QueuedQuestion(
-      id: PreviewFixtures.id("5"),
-      conversationID: PreviewFixtures.id("9"),
-      question: "And what's the total debt service across them?",
-      submittedAt: PreviewFixtures.now.addingTimeInterval(-2))
-  ]
-  return ChatView(
-    store: PreviewFixtures.chatStore(state),
+  ChatView(
+    store: PreviewFixtures.chatStore(PreviewFixtures.processingChatState()),
     chrome: PreviewFixtures.chrome)
 }
 
@@ -352,12 +380,132 @@ enum PreviewFixtures {
     .preferredColorScheme(.dark)
 }
 
-#Preview("Chat — Accessibility XXL") {
-  ChatView(
-    store: PreviewFixtures.chatStore(
-      PreviewFixtures.chatState(
-        messages: PreviewFixtures.conversationMessages,
-        title: "Current market value by fund")),
-    chrome: PreviewFixtures.chrome)
-    .environment(\.dynamicTypeSize, .accessibility3)
-}
+#if DEBUG
+  private struct AccessibilityPreviewFrame: View {
+    let scenario: AccessibilityUITestConfiguration.Scenario
+    let size: DynamicTypeSize
+
+    var body: some View {
+      AccessibilityScenarioView(scenario: scenario)
+        .environment(\.dynamicTypeSize, size)
+    }
+  }
+
+  #Preview("Chat — Empty — AX1") {
+    AccessibilityPreviewFrame(scenario: .emptyChat, size: .accessibility1)
+  }
+
+  #Preview("Chat — Empty — AX3") {
+    AccessibilityPreviewFrame(scenario: .emptyChat, size: .accessibility3)
+  }
+
+  #Preview("Chat — Empty — AX5") {
+    AccessibilityPreviewFrame(scenario: .emptyChat, size: .accessibility5)
+  }
+
+  #Preview("Chat — Answered — AX1") {
+    AccessibilityPreviewFrame(scenario: .answeredChat, size: .accessibility1)
+  }
+
+  #Preview("Chat — Answered — AX3") {
+    AccessibilityPreviewFrame(scenario: .answeredChat, size: .accessibility3)
+  }
+
+  #Preview("Chat — Answered — AX5") {
+    AccessibilityPreviewFrame(scenario: .answeredChat, size: .accessibility5)
+  }
+
+  #Preview("Chat — Answered — AX5 — Dark") {
+    AccessibilityPreviewFrame(scenario: .answeredChat, size: .accessibility5)
+      .preferredColorScheme(.dark)
+  }
+
+  #Preview("Chat — Processing and Queue — AX1") {
+    AccessibilityPreviewFrame(scenario: .processingQueue, size: .accessibility1)
+  }
+
+  #Preview("Chat — Processing and Queue — AX3") {
+    AccessibilityPreviewFrame(scenario: .processingQueue, size: .accessibility3)
+  }
+
+  #Preview("Chat — Processing and Queue — AX5") {
+    AccessibilityPreviewFrame(scenario: .processingQueue, size: .accessibility5)
+  }
+
+  #Preview("Chat — Error — AX1") {
+    AccessibilityPreviewFrame(scenario: .error, size: .accessibility1)
+  }
+
+  #Preview("Chat — Error — AX3") {
+    AccessibilityPreviewFrame(scenario: .error, size: .accessibility3)
+  }
+
+  #Preview("Chat — Error — AX5") {
+    AccessibilityPreviewFrame(scenario: .error, size: .accessibility5)
+  }
+
+  #Preview("Chat — Recovery — AX1") {
+    AccessibilityPreviewFrame(scenario: .recovery, size: .accessibility1)
+  }
+
+  #Preview("Chat — Recovery — AX3") {
+    AccessibilityPreviewFrame(scenario: .recovery, size: .accessibility3)
+  }
+
+  #Preview("Chat — Recovery — AX5") {
+    AccessibilityPreviewFrame(scenario: .recovery, size: .accessibility5)
+  }
+
+  #Preview("Conversation Browser — AX1") {
+    AccessibilityPreviewFrame(scenario: .browser, size: .accessibility1)
+  }
+
+  #Preview("Conversation Browser — AX3") {
+    AccessibilityPreviewFrame(scenario: .browser, size: .accessibility3)
+  }
+
+  #Preview("Conversation Browser — AX5") {
+    AccessibilityPreviewFrame(scenario: .browser, size: .accessibility5)
+  }
+
+  #Preview("Settings — App Icon Picker — AX1") {
+    AccessibilityPreviewFrame(scenario: .settings, size: .accessibility1)
+  }
+
+  #Preview("Settings — App Icon Picker — AX3") {
+    AccessibilityPreviewFrame(scenario: .settings, size: .accessibility3)
+  }
+
+  #Preview("Settings — App Icon Picker — AX5") {
+    AccessibilityPreviewFrame(scenario: .settings, size: .accessibility5)
+  }
+
+  #Preview("Settings — App Icon Picker — AX5 — Dark") {
+    AccessibilityPreviewFrame(scenario: .settings, size: .accessibility5)
+      .preferredColorScheme(.dark)
+  }
+
+  #Preview("Transient Banners — AX1") {
+    AccessibilityPreviewFrame(scenario: .transientBanners, size: .accessibility1)
+  }
+
+  #Preview("Transient Banners — AX3") {
+    AccessibilityPreviewFrame(scenario: .transientBanners, size: .accessibility3)
+  }
+
+  #Preview("Transient Banners — AX5") {
+    AccessibilityPreviewFrame(scenario: .transientBanners, size: .accessibility5)
+  }
+
+  #if os(iOS)
+    #Preview("Chat — Answered — AX5 — Landscape") {
+      AccessibilityPreviewFrame(scenario: .answeredChat, size: .accessibility5)
+        .previewInterfaceOrientation(.landscapeLeft)
+    }
+
+    #Preview("Conversation Browser — AX5 — Landscape") {
+      AccessibilityPreviewFrame(scenario: .browser, size: .accessibility5)
+        .previewInterfaceOrientation(.landscapeLeft)
+    }
+  #endif
+#endif

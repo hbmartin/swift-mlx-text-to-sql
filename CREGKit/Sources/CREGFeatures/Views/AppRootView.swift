@@ -16,7 +16,21 @@ public struct RootView: View {
   /// ``AppRootView``. `store` is a `static let`, so leaving it unreferenced on
   /// this path means the reducer, `LiveDependencies`, and the 1.75 GB model
   /// load are never constructed at all.
+  @ViewBuilder
   public var body: some View {
+    #if DEBUG
+      if let configuration = AccessibilityUITestConfiguration.current {
+        AccessibilityUITestRootView(configuration: configuration)
+      } else {
+        liveRoot
+      }
+    #else
+      liveRoot
+    #endif
+  }
+
+  @ViewBuilder
+  private var liveRoot: some View {
     if DeviceCapability.isCurrentDeviceSupported {
       AppRootView(store: Self.store)
     } else {
@@ -37,6 +51,7 @@ struct AppRootView: View {
   /// In-flight gesture translation, composed with the settled reveal state.
   @State private var dragTranslation: CGFloat = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   /// The scheme actually in force. With no override applied this is the
   /// device's own setting, which is what `.system` needs to hand a sheet.
   @Environment(\.colorScheme) private var systemColorScheme
@@ -187,7 +202,10 @@ struct AppRootView: View {
       Button {
         store.send(.answerReadyBannerTapped)
       } label: {
-        HStack(spacing: 8) {
+        let bannerLayout = dynamicTypeSize.isAccessibilitySize
+          ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+          : AnyLayout(HStackLayout(spacing: 8))
+        bannerLayout {
           Image(systemName: "checkmark.circle.fill")
             .foregroundStyle(.green)
           VStack(alignment: .leading, spacing: 1) {
@@ -196,7 +214,7 @@ struct AppRootView: View {
             Text(banner.title)
               .font(.caption)
               .foregroundStyle(.secondary)
-              .lineLimit(1)
+              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
           }
         }
         .padding(.horizontal, 16)
@@ -213,14 +231,18 @@ struct AppRootView: View {
   @ViewBuilder
   private var undoDeletionToast: some View {
     if let pending = store.pendingDeletion {
-      HStack(spacing: 12) {
+      let toastLayout = dynamicTypeSize.isAccessibilitySize
+        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+        : AnyLayout(HStackLayout(spacing: 12))
+      toastLayout {
         Text("Deleted “\(pending.summary.displayTitle)”")
           .font(.subheadline)
-          .lineLimit(1)
+          .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
         Button("Undo") {
           store.send(.undoDeleteTapped)
         }
         .font(.subheadline.weight(.semibold))
+        .cregTextButtonTarget()
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 12)

@@ -291,9 +291,11 @@ struct DevInfoSectionsView: View {
             Pasteboard.copy(sql)
           } label: {
             Image(systemName: "doc.on.doc")
+              .cregIconButtonTarget()
           }
           .buttonStyle(.borderless)
           .accessibilityLabel("Copy SQL")
+          .cregLargeContentViewer("Copy SQL", systemImage: "doc.on.doc")
         }
       }
 
@@ -385,7 +387,6 @@ struct DevInfoSectionsView: View {
               }
               if let candidateSQL = candidate.sql {
                 Text(candidateSQL)
-                  .lineLimit(3)
               }
             }
           }
