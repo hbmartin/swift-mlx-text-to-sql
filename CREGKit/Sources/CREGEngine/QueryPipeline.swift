@@ -70,6 +70,12 @@ public struct QueryPipeline: Sendable {
   public var runStarter:
     @Sendable (_ starter: StarterQueryID, _ history: [ConversationTurn])
       -> AsyncStream<PipelineEvent>
+  public var prepareFollowUps:
+    @Sendable (_ context: FollowUpSuggestionContext)
+      -> AsyncStream<FollowUpPreparationEvent>
+  public var runPrepared:
+    @Sendable (_ prepared: PreparedFollowUp, _ history: [ConversationTurn])
+      -> AsyncStream<PipelineEvent>
 
   public init(
     prepare: @escaping @Sendable () async throws -> Void = {},
@@ -78,6 +84,14 @@ public struct QueryPipeline: Sendable {
       -> AsyncStream<PipelineEvent>,
     runStarter: (
       @Sendable (StarterQueryID, [ConversationTurn])
+        -> AsyncStream<PipelineEvent>
+    )? = nil,
+    prepareFollowUps: (
+      @Sendable (FollowUpSuggestionContext)
+        -> AsyncStream<FollowUpPreparationEvent>
+    )? = nil,
+    runPrepared: (
+      @Sendable (PreparedFollowUp, [ConversationTurn])
         -> AsyncStream<PipelineEvent>
     )? = nil
   ) {
@@ -95,6 +109,12 @@ public struct QueryPipeline: Sendable {
       runStarter ?? { starter, history in
         run(starter.question, history)
       }
+    self.prepareFollowUps = prepareFollowUps ?? { _ in
+      AsyncStream { $0.finish() }
+    }
+    self.runPrepared = runPrepared ?? { prepared, history in
+      run(prepared.question, history)
+    }
   }
 
   public init(
@@ -108,6 +128,14 @@ public struct QueryPipeline: Sendable {
     runStarter: (
       @Sendable (StarterQueryID, [ConversationTurn])
         -> AsyncStream<PipelineEvent>
+    )? = nil,
+    prepareFollowUps: (
+      @Sendable (FollowUpSuggestionContext)
+        -> AsyncStream<FollowUpPreparationEvent>
+    )? = nil,
+    runPrepared: (
+      @Sendable (PreparedFollowUp, [ConversationTurn])
+        -> AsyncStream<PipelineEvent>
     )? = nil
   ) {
     self.prepareMode = prepareMode
@@ -117,6 +145,12 @@ public struct QueryPipeline: Sendable {
       runStarter ?? { starter, history in
         run(starter.question, history)
       }
+    self.prepareFollowUps = prepareFollowUps ?? { _ in
+      AsyncStream { $0.finish() }
+    }
+    self.runPrepared = runPrepared ?? { prepared, history in
+      run(prepared.question, history)
+    }
   }
 
   public func prepare(
@@ -356,17 +390,14 @@ extension QueryPipeline {
     configuration: Configuration,
     randomSeed: @escaping @Sendable () -> UInt64 = {
       UInt64.random(in: UInt64.min...UInt64.max)
-    }
+    },
+    uuid: @escaping @Sendable () -> UUID = UUID.init,
+    now: @escaping @Sendable () -> Date = Date.init
   ) -> QueryPipeline {
     let heuristics = ResultHeuristics(db: db)
-    return QueryPipeline(
-      prepareMode: { mode in
-        try await serializer.run(operation: .modelPreparation) {
-          try await sqlGen.prepare(mode)
-        }
-      },
-      runtimeMode: { await sqlGen.runtimeMode() },
-      run: { question, history in
+    let runFreeForm:
+      @Sendable (String, [ConversationTurn]) -> AsyncStream<PipelineEvent> =
+      { question, history in
         AsyncStream { continuation in
           let task = Task {
             let turnStarted = ContinuousClock.now
@@ -990,7 +1021,16 @@ extension QueryPipeline {
           }
           continuation.onTermination = { _ in task.cancel() }
         }
+      }
+
+    return QueryPipeline(
+      prepareMode: { mode in
+        try await serializer.run(operation: .modelPreparation) {
+          try await sqlGen.prepare(mode)
+        }
       },
+      runtimeMode: { await sqlGen.runtimeMode() },
+      run: runFreeForm,
       runStarter: { starter, _ in
         deterministicStarterStream(
           starter: starter,
@@ -1000,6 +1040,31 @@ extension QueryPipeline {
           heuristics: heuristics,
           configuration: configuration,
           runtimeMode: { await sqlGen.runtimeMode() })
+      },
+      prepareFollowUps: { context in
+        preparedFollowUpStream(
+          context: context,
+          fm: fm,
+          sqlGen: sqlGen,
+          db: db,
+          serializer: serializer,
+          heuristics: heuristics,
+          configuration: configuration,
+          randomSeed: randomSeed,
+          uuid: uuid,
+          now: now)
+      },
+      runPrepared: { prepared, history in
+        preparedAnswerStream(
+          prepared: prepared,
+          history: history,
+          fm: fm,
+          db: db,
+          serializer: serializer,
+          heuristics: heuristics,
+          configuration: configuration,
+          runtimeMode: { await sqlGen.runtimeMode() },
+          fallback: runFreeForm)
       })
   }
 

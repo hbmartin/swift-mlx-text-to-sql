@@ -10,6 +10,9 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
 
   public enum Body: Equatable, Sendable, Codable {
     case text(String)
+    /// A prepared result is visible while grounding and narration continue.
+    /// The persisted message is updated in place to `.answer` at completion.
+    case preparedAnswer(PreparedFollowUp)
     case answer(result: QueryResult, narration: String, sql: String, notice: String?)
     case clarification(String)
     case failure(String)
@@ -55,6 +58,20 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
   }
 }
 
+extension ChatMessage {
+  public var finalizedInterruptedPreparedAnswer: ChatMessage? {
+    guard case .preparedAnswer(let prepared) = body else { return nil }
+    var message = self
+    message.body = .answer(
+      result: prepared.result,
+      narration: PreparedAnswerFallback.narration(for: prepared.result),
+      sql: prepared.sql,
+      notice: nil)
+    message.devInfo = prepared.preparationTelemetry
+    return message
+  }
+}
+
 extension PipelineEvent {
   /// The user-facing thinking-trace line for this event, if it deserves one.
   /// Plain English only — SQL never appears here (PRD §11).
@@ -75,6 +92,8 @@ extension PipelineEvent {
       switch request.role {
       case .starter:
         "Running the reviewed starter query"
+      case .followUpPreflight:
+        "Using the prepared follow-up lookup"
       case .initial:
         "Generating the initial lookup"
       case .repair(let attempt):
@@ -90,6 +109,8 @@ extension PipelineEvent {
     case .executionStarted: "Running the numbers"
     case .executionFinished(_, let result):
       "Looking through the results (\(result.rowCount) row\(result.rowCount == 1 ? "" : "s"))"
+    case .preparedResultReady(let prepared, _):
+      "Showing the prepared result (\(prepared.result.rowCount) row\(prepared.result.rowCount == 1 ? "" : "s"))"
     case .executionFailed: "Fixing a hiccup and retrying"
     case .repairStarted: nil
     case .groundingFinished: "Double-checking the result"

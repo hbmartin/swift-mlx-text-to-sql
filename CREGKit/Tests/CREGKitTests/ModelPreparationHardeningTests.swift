@@ -1,0 +1,233 @@
+import ComposableArchitecture
+import Foundation
+import Testing
+
+@testable import CREGEngine
+@testable import CREGFeatures
+
+@Suite struct BuildChannelTests {
+  private func configuration(
+    debugIdentity: DebugModelIdentity? = nil,
+    policyVersion: String? = nil
+  ) -> ProductionGenerationConfiguration {
+    ProductionGenerationConfiguration(
+      model: .selectionPending,
+      gcd: .off,
+      temperature: 0,
+      topP: 1,
+      topK: 0,
+      maxTokens: 128,
+      candidateCount: 1,
+      sampleTemperature: 0,
+      alwaysVote: false,
+      policyVersion: policyVersion,
+      debugModelIdentity: debugIdentity)
+  }
+
+  private let identity = DebugModelIdentity(
+    modelKey: "debug-model",
+    baseModelKey: "base-model",
+    trainingRunID: "pinned-run",
+    selectedIteration: 600,
+    selectedCheckpointSHA256: String(repeating: "a", count: 64),
+    localEvidenceStatus: "complete",
+    wandbReceiptRequired: false)
+
+  @Test func parsesEveryExplicitChannelAndFailsClosed() throws {
+    #expect(
+      try BuildChannel.load(info: [BuildChannel.infoKey: "debug"]) == .debug)
+    #expect(
+      try BuildChannel.load(info: [BuildChannel.infoKey: "beta"]) == .beta)
+    #expect(
+      try BuildChannel.load(info: [BuildChannel.infoKey: "release"]) == .release)
+    #expect(throws: BuildChannel.Error.missing) {
+      try BuildChannel.load(info: [:])
+    }
+    #expect(throws: BuildChannel.Error.unknown("nightly")) {
+      try BuildChannel.load(info: [BuildChannel.infoKey: "nightly"])
+    }
+  }
+
+  @Test func betaRequiresThePinnedCandidateIdentity() throws {
+    let info: [String: Any] = [
+      BuildChannel.infoKey: "beta",
+      BuildChannel.experimentalTrainingRunInfoKey: "pinned-run",
+    ]
+    try BuildChannel.beta.validate(
+      configuration(debugIdentity: identity), info: info)
+
+    #expect(throws: BuildChannel.Error.self) {
+      try BuildChannel.beta.validate(configuration(), info: info)
+    }
+    #expect(throws: BuildChannel.Error.self) {
+      try BuildChannel.beta.validate(
+        configuration(debugIdentity: identity),
+        info: [
+          BuildChannel.infoKey: "beta",
+          BuildChannel.experimentalTrainingRunInfoKey: "different-run",
+        ])
+    }
+  }
+
+  @Test func releaseRefusesCandidatesAndRequiresBoundedPolicy() throws {
+    #expect(throws: BuildChannel.Error.candidateForbidden) {
+      try BuildChannel.release.validate(
+        configuration(debugIdentity: identity), info: [:])
+    }
+    #expect(throws: BuildChannel.Error.boundedPolicyRequired) {
+      try BuildChannel.release.validate(configuration(), info: [:])
+    }
+    try BuildChannel.release.validate(
+      configuration(policyVersion: "bounded-three-generation-v1"), info: [:])
+  }
+}
+
+@Suite struct ModelPreparationContractTests {
+  @Test func compatibilityEligibilityExcludesIntegrityFailures() {
+    for stage in [
+      ModelPreparationStage.buildPolicy,
+      .receiptValidation,
+      .metalResource,
+    ] {
+      #expect(!stage.allowsCompatibilityRetry)
+    }
+    for stage in [
+      ModelPreparationStage.containerLoad,
+      .qkvFusion,
+      .promptCache,
+      .ngramDraft,
+      .outputVocabulary,
+    ] {
+      #expect(stage.allowsCompatibilityRetry)
+    }
+  }
+
+  @Test func legacyTelemetryDefaultsToEvaluated() throws {
+    let data = Data(
+      #"{"schemaVersion":3,"originalQuestion":"legacy"}"#.utf8)
+    let telemetry = try JSONDecoder().decode(TurnTelemetry.self, from: data)
+    #expect(telemetry.runtimeMode == .evaluated)
+    #expect(telemetry.isEvaluated)
+  }
+
+  @Test func currentTelemetryRetainsCompatibilityTag() throws {
+    let source = TurnTelemetry(
+      originalQuestion: "question",
+      runtimeMode: .compatibility)
+    let decoded = try JSONDecoder().decode(
+      TurnTelemetry.self,
+      from: JSONEncoder().encode(source))
+    #expect(decoded.schemaVersion == 5)
+    #expect(decoded.runtimeMode == .compatibility)
+    #expect(!decoded.isEvaluated)
+  }
+
+  @Test func legacyFeedbackDefaultsToEvaluated() throws {
+    let source = AnswerFeedback(
+      messageID: UUID(),
+      verdict: .helpful,
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var object = try #require(
+      JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(source)) as? [String: Any])
+    object.removeValue(forKey: "runtimeMode")
+    object.removeValue(forKey: "isEvaluated")
+
+    let decoded = try JSONDecoder().decode(
+      AnswerFeedback.self,
+      from: JSONSerialization.data(withJSONObject: object))
+    #expect(decoded.runtimeMode == .evaluated)
+    #expect(decoded.isEvaluated)
+  }
+
+  @Test func journalDetectsOnlyUnfinishedAttempts() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-preparation-test-\(UUID().uuidString)")
+    let url = directory.appendingPathComponent("model-preparation.json")
+    let store = ModelPreparationJournalStore(url: url)
+
+    try await store.begin(mode: .evaluated, environment: ["build": "test"])
+    try await store.stageStarted(.promptCache, mode: .evaluated)
+    #expect(await store.unfinishedAttempt()?.stage == .promptCache)
+
+    try await store.complete(
+      ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 1))
+    #expect(await store.unfinishedAttempt() == nil)
+    #expect(await store.exportData() != nil)
+  }
+}
+
+@MainActor
+@Suite struct ModelPreparationFeatureTests {
+  @Test func developerModeSurvivesStateReconstruction() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(true, forKey: DeveloperModePreference.storageKey)
+    let state = withDependencies {
+      $0.defaultAppStorage = defaults
+    } operation: {
+      AppFeature.State()
+    }
+    #expect(state.developerMode)
+  }
+
+  @Test func developerCanManuallyActivateCompatibilityMode() async {
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 2)
+      },
+      runtimeMode: { .compatibility },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = AppFeature.State()
+    state.$developerMode.withLock { $0 = true }
+    state.modelReadiness = .failed(ModelPreparationFailure(
+      code: "model_prompt_cache_failed",
+      stage: .promptCache,
+      mode: .evaluated,
+      userMessage: "failed",
+      diagnostic: "safe"))
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(.retryCompatibilityPreparation)
+    await store.receive(\.modelPrepared)
+    await store.finish()
+
+    #expect(modes.value == [.compatibility])
+    #expect(
+      store.state.modelPreparationReport?.mode == .compatibility)
+    #expect(store.state.modelReadiness == .ready)
+  }
+
+  @Test func compatibilityIsNotOfferedForBuildPolicyFailures() async {
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = AppFeature.State()
+    state.$developerMode.withLock { $0 = true }
+    state.modelReadiness = .failed(ModelPreparationFailure(
+      code: "build_channel_invalid",
+      stage: .buildPolicy,
+      mode: .evaluated,
+      userMessage: "failed",
+      diagnostic: "safe"))
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.queryPipeline = pipeline
+    }
+    store.exhaustivity = .off
+
+    await store.send(.retryCompatibilityPreparation)
+
+    #expect(modes.value.isEmpty)
+    #expect(store.state.modelPreparationReport == nil)
+  }
+}

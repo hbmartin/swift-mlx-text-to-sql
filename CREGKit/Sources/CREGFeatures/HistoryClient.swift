@@ -29,12 +29,19 @@ public struct HistoryClient: Sendable {
   public var endTurnJournal: @Sendable (_ conversationID: UUID) async throws -> Void
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
+  /// Replaces an existing payload without changing transcript position.
+  public var updateMessage:
+    @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   public var appendEvents:
     @Sendable (_ conversationID: UUID, _ messageID: UUID, _ jsonLines: [String]) async throws -> Void
   /// Writes the conversation's full JSONL event log to a temp file for export.
   public var exportJSONL: @Sendable (_ conversationID: UUID) async throws -> URL
   /// Gathers everything the Support Bundle includes from the history store.
   public var supportBundleSource: @Sendable () async throws -> SupportBundleSource
+  public var saveFollowUpBatch:
+    @Sendable (_ conversationID: UUID, _ batch: PreparedFollowUpBatch) async throws -> Void
+  public var clearFollowUpBatch:
+    @Sendable (_ conversationID: UUID) async throws -> Void
 }
 
 /// History-store contribution to a Support Bundle: a database snapshot plus
@@ -45,6 +52,7 @@ public struct SupportBundleSource: Sendable {
   public var messagesJSON: Data
   public var eventsJSONL: Data
   public var feedbackJSON: Data
+  public var followUpsJSON: Data
   public var conversationCount: Int
   public var messageCount: Int
   public var eventLineCount: Int
@@ -56,6 +64,7 @@ public struct SupportBundleSource: Sendable {
     messagesJSON: Data,
     eventsJSONL: Data,
     feedbackJSON: Data,
+    followUpsJSON: Data = Data("[]".utf8),
     conversationCount: Int,
     messageCount: Int,
     eventLineCount: Int,
@@ -66,6 +75,7 @@ public struct SupportBundleSource: Sendable {
     self.messagesJSON = messagesJSON
     self.eventsJSONL = eventsJSONL
     self.feedbackJSON = feedbackJSON
+    self.followUpsJSON = followUpsJSON
     self.conversationCount = conversationCount
     self.messageCount = messageCount
     self.eventLineCount = eventLineCount
@@ -97,11 +107,16 @@ extension HistoryClient {
       },
       endTurnJournal: { try await store.endTurnJournal(conversationID: $0) },
       appendMessage: { try await store.appendMessage(conversationID: $0, message: $1) },
+      updateMessage: { try await store.updateMessage(conversationID: $0, message: $1) },
       appendEvents: {
         try await store.appendEvents(conversationID: $0, messageID: $1, lines: $2)
       },
       exportJSONL: { try await store.exportJSONL(conversationID: $0) },
-      supportBundleSource: { try await store.supportBundleSource() }
+      supportBundleSource: { try await store.supportBundleSource() },
+      saveFollowUpBatch: {
+        try await store.saveFollowUpBatch(conversationID: $0, batch: $1)
+      },
+      clearFollowUpBatch: { try await store.clearFollowUpBatch(conversationID: $0) }
     )
   }
 }
@@ -259,6 +274,18 @@ final class HistoryStore: Sendable {
           """)
     }
 
+    migrator.registerMigration("v4-prepared-follow-ups") { db in
+      try db.execute(
+        sql: """
+          CREATE TABLE prepared_follow_up_batch (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversation(id),
+            source_message_id TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            payload TEXT NOT NULL
+          );
+          """)
+    }
+
     return migrator
   }
 
@@ -368,6 +395,14 @@ final class HistoryStore: Sendable {
           question: $0["question"],
           interruptedAt: Date(timeIntervalSince1970: $0["started_at"]))
       }
+      let followUpBatch = try String.fetchOne(
+        db,
+        sql: "SELECT payload FROM prepared_follow_up_batch WHERE conversation_id = ?",
+        arguments: [id.uuidString]
+      ).flatMap {
+        try? Self.decoder.decode(
+          PreparedFollowUpBatch.self, from: Data($0.utf8))
+      }
       let messageCount = try Int.fetchOne(
         db, sql: "SELECT COUNT(*) FROM message WHERE conversation_id = ?",
         arguments: [id.uuidString]) ?? 0
@@ -385,7 +420,8 @@ final class HistoryStore: Sendable {
         draft: row["draft"],
         messages: messages,
         feedback: feedback,
-        interruptedTurn: interrupted)
+        interruptedTurn: interrupted,
+        followUpBatch: followUpBatch)
     }
   }
 
@@ -405,7 +441,10 @@ final class HistoryStore: Sendable {
 
   func delete(id: UUID) async throws {
     try await queue.write { db in
-      for table in ["message", "event", "feedback", "turn_journal"] {
+      for table in [
+        "message", "event", "feedback", "turn_journal",
+        "prepared_follow_up_batch",
+      ] {
         try db.execute(
           sql: "DELETE FROM \(table) WHERE conversation_id = ?",
           arguments: [id.uuidString])
@@ -562,12 +601,16 @@ final class HistoryStore: Sendable {
           arguments: [conversationID.uuidString]) ?? 1
       try db.execute(
         sql: """
-          INSERT OR REPLACE INTO message (id, conversation_id, position, payload)
+          INSERT OR IGNORE INTO message (id, conversation_id, position, payload)
           VALUES (?, ?, ?, ?)
           """,
         arguments: [
           message.id.uuidString, conversationID.uuidString, position, payload,
         ])
+      // A prepared result and its final narration are persisted by separate
+      // effects. If the final update wins that race, a late provisional append
+      // must not replace it or move it to the end of the transcript.
+      guard db.changesCount == 1 else { return }
       try db.execute(
         sql: "UPDATE conversation SET last_activity_at = ? WHERE id = ?",
         arguments: [
@@ -599,6 +642,68 @@ final class HistoryStore: Sendable {
             message.id.uuidString, entry.kind,
           ])
       }
+    }
+  }
+
+  func updateMessage(conversationID: UUID, message: ChatMessage) async throws {
+    let payload = String(
+      decoding: try Self.encoder.encode(message), as: UTF8.self)
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          UPDATE message SET payload = ?
+          WHERE id = ? AND conversation_id = ?
+          """,
+        arguments: [
+          payload, message.id.uuidString, conversationID.uuidString,
+        ])
+      guard db.changesCount == 1 else {
+        throw HistoryStoreError.messageNotFound
+      }
+      try db.execute(
+        sql: "DELETE FROM search_index WHERE conversation_id = ? AND message_id = ?",
+        arguments: [conversationID.uuidString, message.id.uuidString])
+      if let entry = Self.searchEntry(for: message) {
+        try db.execute(
+          sql: """
+            INSERT INTO search_index (content, conversation_id, message_id, kind)
+            VALUES (?, ?, ?, ?)
+            """,
+          arguments: [
+            entry.content, conversationID.uuidString,
+            message.id.uuidString, entry.kind,
+          ])
+      }
+    }
+  }
+
+  func saveFollowUpBatch(
+    conversationID: UUID,
+    batch: PreparedFollowUpBatch
+  ) async throws {
+    let payload = String(
+      decoding: try Self.encoder.encode(batch), as: UTF8.self)
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          INSERT OR REPLACE INTO prepared_follow_up_batch
+            (conversation_id, source_message_id, updated_at, payload)
+          VALUES (?, ?, ?, ?)
+          """,
+        arguments: [
+          conversationID.uuidString,
+          batch.sourceAssistantMessageID.uuidString,
+          batch.updatedAt.timeIntervalSince1970,
+          payload,
+        ])
+    }
+  }
+
+  func clearFollowUpBatch(conversationID: UUID) async throws {
+    try await queue.write { db in
+      try db.execute(
+        sql: "DELETE FROM prepared_follow_up_batch WHERE conversation_id = ?",
+        arguments: [conversationID.uuidString])
     }
   }
 
@@ -643,8 +748,8 @@ final class HistoryStore: Sendable {
 
   func supportBundleSource() async throws -> SupportBundleSource {
     let snapshotURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("creg-history-snapshot.sqlite")
-    try? FileManager.default.removeItem(at: snapshotURL)
+      .appendingPathComponent(
+        "creg-history-snapshot-\(UUID().uuidString).sqlite")
     // VACUUM cannot run inside a transaction, so the snapshot copy happens
     // outside the transactional read below.
     try await queue.writeWithoutTransaction { db in
@@ -719,6 +824,13 @@ final class HistoryStore: Sendable {
         }
       let eventLines = try String.fetchAll(
         db, sql: "SELECT line FROM event ORDER BY conversation_id, seq")
+      let followUpPayloads = try String.fetchAll(
+        db,
+        sql: "SELECT payload FROM prepared_follow_up_batch ORDER BY conversation_id")
+      let followUps = followUpPayloads.compactMap {
+        try? Self.decoder.decode(
+          PreparedFollowUpBatch.self, from: Data($0.utf8))
+      }
 
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -729,6 +841,7 @@ final class HistoryStore: Sendable {
         eventsJSONL: Data(
           (eventLines.joined(separator: "\n") + "\n").utf8),
         feedbackJSON: try encoder.encode(feedback),
+        followUpsJSON: try encoder.encode(followUps),
         conversationCount: conversations.count,
         messageCount: messages.count,
         eventLineCount: eventLines.count,
@@ -786,6 +899,7 @@ final class HistoryStore: Sendable {
 
 enum HistoryStoreError: Error, Sendable {
   case conversationNotFound
+  case messageNotFound
 }
 
 // MARK: - Test and degraded variants
@@ -816,6 +930,7 @@ extension HistoryClient {
       beginTurnJournal: { _, _, _ in },
       endTurnJournal: { _ in },
       appendMessage: { _, _ in },
+      updateMessage: { _, _ in },
       appendEvents: { _, _, _ in },
       exportJSONL: { _ in FileManager.default.temporaryDirectory },
       supportBundleSource: {
@@ -829,7 +944,9 @@ extension HistoryClient {
           messageCount: 0,
           eventLineCount: 0,
           feedbackCount: 0)
-      }
+      },
+      saveFollowUpBatch: { _, _ in },
+      clearFollowUpBatch: { _ in }
     )
   }
 
@@ -852,9 +969,12 @@ extension HistoryClient {
       beginTurnJournal: { _, _, _ in throw error },
       endTurnJournal: { _ in throw error },
       appendMessage: { _, _ in throw error },
+      updateMessage: { _, _ in throw error },
       appendEvents: { _, _, _ in throw error },
       exportJSONL: { _ in throw error },
-      supportBundleSource: { throw error }
+      supportBundleSource: { throw error },
+      saveFollowUpBatch: { _, _ in throw error },
+      clearFollowUpBatch: { _ in throw error }
     )
   }
 }

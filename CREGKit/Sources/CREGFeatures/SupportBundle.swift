@@ -113,6 +113,7 @@ public enum SupportBundleBuilder {
       ("messages.json", source.messagesJSON),
       ("events.jsonl", source.eventsJSONL),
       ("feedback.json", source.feedbackJSON),
+      ("prepared-follow-ups.json", source.followUpsJSON),
       ("diagnostics.txt", Data(diagnosticsText.utf8)),
     ]
     if let modelManifestJSON {

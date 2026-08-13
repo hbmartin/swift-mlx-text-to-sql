@@ -62,19 +62,43 @@ public struct ConversationSnapshot: Equatable, Sendable {
   /// Feedback keyed by the assistant message it judges.
   public var feedback: [UUID: AnswerFeedback]
   public var interruptedTurn: InterruptedTurn?
+  public var followUpBatch: PreparedFollowUpBatch?
 
   public init(
     summary: ConversationSummary,
     draft: String = "",
     messages: [ChatMessage] = [],
     feedback: [UUID: AnswerFeedback] = [:],
-    interruptedTurn: InterruptedTurn? = nil
+    interruptedTurn: InterruptedTurn? = nil,
+    followUpBatch: PreparedFollowUpBatch? = nil
   ) {
     self.summary = summary
     self.draft = draft
     self.messages = messages
     self.feedback = feedback
     self.interruptedTurn = interruptedTurn
+    self.followUpBatch = followUpBatch
+  }
+}
+
+/// The execution contract carried from submission through the global queue.
+/// Only a tapped prepared follow-up contains cached SQL and result data.
+public enum QuestionSubmissionSource: Equatable, Sendable {
+  case freeForm
+  case starter(StarterQueryID)
+  case preparedFollowUp(PreparedFollowUp)
+}
+
+public struct QuestionSubmission: Equatable, Sendable {
+  public var question: String
+  public var source: QuestionSubmissionSource
+
+  public init(
+    question: String,
+    source: QuestionSubmissionSource = .freeForm
+  ) {
+    self.question = question
+    self.source = source
   }
 }
 
@@ -106,10 +130,12 @@ public struct ConversationSearchHit: Identifiable, Equatable, Sendable {
 public struct QueuedQuestion: Identifiable, Equatable, Sendable {
   public var id: UUID
   public var conversationID: UUID
-  public var question: String
-  /// Starter identity when the question came from a starter chip; queued
-  /// starters keep their deterministic execution path at dispatch.
-  public var starter: StarterQueryID?
+  public var submission: QuestionSubmission
+  public var question: String { submission.question }
+  public var starter: StarterQueryID? {
+    guard case .starter(let starter) = submission.source else { return nil }
+    return starter
+  }
   public var submittedAt: Date
 
   public init(
@@ -121,8 +147,21 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
   ) {
     self.id = id
     self.conversationID = conversationID
-    self.question = question
-    self.starter = starter
+    self.submission = QuestionSubmission(
+      question: question,
+      source: starter.map(QuestionSubmissionSource.starter) ?? .freeForm)
+    self.submittedAt = submittedAt
+  }
+
+  public init(
+    id: UUID,
+    conversationID: UUID,
+    submission: QuestionSubmission,
+    submittedAt: Date
+  ) {
+    self.id = id
+    self.conversationID = conversationID
+    self.submission = submission
     self.submittedAt = submittedAt
   }
 }
@@ -157,6 +196,29 @@ public struct AnswerFeedback: Equatable, Sendable, Codable {
     self.updatedAt = updatedAt
     self.runtimeMode = runtimeMode
     self.isEvaluated = isEvaluated ?? runtimeMode.isEvaluated
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case messageID
+    case verdict
+    case correction
+    case updatedAt
+    case runtimeMode
+    case isEvaluated
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    messageID = try values.decode(UUID.self, forKey: .messageID)
+    verdict = try values.decode(Verdict.self, forKey: .verdict)
+    correction = try values.decodeIfPresent(String.self, forKey: .correction)
+    updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+    runtimeMode =
+      try values.decodeIfPresent(ModelRuntimeMode.self, forKey: .runtimeMode)
+      ?? .evaluated
+    isEvaluated =
+      try values.decodeIfPresent(Bool.self, forKey: .isEvaluated)
+      ?? runtimeMode.isEvaluated
   }
 }
 
@@ -244,6 +306,8 @@ extension ChatMessage {
     switch body {
     case .text(let text), .clarification(let text), .failure(let text):
       text
+    case .preparedAnswer(let prepared):
+      "Result ready — summarizing \(prepared.result.rowCount) row\(prepared.result.rowCount == 1 ? "" : "s")…"
     case .answer(_, let narration, _, _):
       narration
     }

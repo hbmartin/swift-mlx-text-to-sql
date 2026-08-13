@@ -931,9 +931,17 @@ extension View {
     let binding = Binding<ResultViewerItem?>(
       get: {
         guard let id = store.resultViewerMessageID,
-          let message = store.messages[id: id],
-          case .answer(let result, _, _, _) = message.body
+          let message = store.messages[id: id]
         else { return nil }
+        let result: QueryResult
+        switch message.body {
+        case .answer(let answerResult, _, _, _):
+          result = answerResult
+        case .preparedAnswer(let prepared):
+          result = prepared.result
+        default:
+          return nil
+        }
         return ResultViewerItem(
           messageID: id,
           result: result,

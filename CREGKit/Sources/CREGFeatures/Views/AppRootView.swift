@@ -55,6 +55,7 @@ struct AppRootView: View {
   /// The scheme actually in force. With no override applied this is the
   /// device's own setting, which is what `.system` needs to hand a sheet.
   @Environment(\.colorScheme) private var systemColorScheme
+  @Environment(\.scenePhase) private var scenePhase
 
   /// The browser reveals ~80% of the width, capped near 340 points.
   static func revealWidth(for containerWidth: CGFloat) -> CGFloat {
@@ -97,6 +98,10 @@ struct AppRootView: View {
             store.appearance.colorScheme ?? systemColorScheme)
       }
       .onAppear { store.send(.onAppear) }
+      .onChange(of: scenePhase) { _, phase in
+        store.send(
+          phase == .active ? .appBecameActive : .appBecameInactive)
+      }
     }
     // Applied at the root rather than per-surface so the override reaches the
     // Settings sheet and the browser drawer too. `.system` resolves to nil,
@@ -124,13 +129,17 @@ struct AppRootView: View {
           store: chatStore,
           chrome: ChatChrome(
             modelReadiness: store.modelReadiness,
+            modelPreparationReport: store.modelPreparationReport,
             developerMode: store.developerMode,
             resultTableTextSize: $store.resultTableTextSize,
             hasUnreadElsewhere: store.conversations.contains { $0.isUnread },
             debugModelIdentity: store.debugModelIdentity,
             presentedFailure: store.presentedFailure,
             dismissFailure: { store.send(.dismissFailure) },
-            retryPreparation: { store.send(.retryPreparation) }))
+            retryPreparation: { store.send(.retryPreparation) },
+            retryCompatibilityPreparation: {
+              store.send(.retryCompatibilityPreparation)
+            }))
       } else {
         ProgressView()
           .frame(maxWidth: .infinity, maxHeight: .infinity)

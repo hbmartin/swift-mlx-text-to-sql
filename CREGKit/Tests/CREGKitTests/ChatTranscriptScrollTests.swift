@@ -105,6 +105,33 @@ import Testing
         == .scrollToBottom)
   }
 
+  @Test(arguments: [true, false])
+  func progressiveSuggestionArrivalFollowsOnlyNearTheBottom(
+    isNearBottom: Bool
+  ) {
+    let answer = message(
+      id: 1,
+      role: .assistant,
+      body: .answer(
+        result: result,
+        narration: "One property found.",
+        sql: "SELECT name FROM properties",
+        notice: nil))
+    let previous = ChatTranscriptSnapshot(
+      conversationID: conversationA,
+      messages: [answer],
+      suggestionCount: 1)
+    let current = ChatTranscriptSnapshot(
+      conversationID: conversationA,
+      messages: [answer],
+      suggestionCount: 2)
+
+    #expect(
+      chatTranscriptScrollDecision(
+        from: previous, to: current, isNearBottom: isNearBottom)
+        == (isNearBottom ? .scrollToBottom : .incrementUnseen(by: 1)))
+  }
+
   @Test func switchingConversationsIsNotACompletion() {
     let previous = ChatTranscriptSnapshot(
       conversationID: conversationA,

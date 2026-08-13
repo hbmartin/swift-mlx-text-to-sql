@@ -56,7 +56,7 @@ final class CallRecorder: @unchecked Sendable {
       runStarter: { starter, _ in
         starterRuns.record(starter.rawValue)
         return AsyncStream { continuation in
-          var telemetry = TurnTelemetry(originalQuestion: starter.question)
+          let telemetry = TurnTelemetry(originalQuestion: starter.question)
           continuation.yield(
             .turnFinished(
               outcome: .answered(
@@ -105,6 +105,31 @@ final class CallRecorder: @unchecked Sendable {
         sql: "SELECT name FROM properties",
         notice: nil),
       telemetry: telemetry)
+  }
+
+  static func preparedFollowUp(
+    id: UUID = UUID(80), sourceMessageID: UUID = UUID(79)
+  ) -> PreparedFollowUp {
+    let sql = "SELECT name FROM properties"
+    var telemetry = TurnTelemetry(originalQuestion: "Which fund owns it?")
+    telemetry.queryOrigin = .preparedFollowUp
+    return PreparedFollowUp(
+      id: id,
+      sourceAssistantMessageID: sourceMessageID,
+      rank: 1,
+      question: "Which fund owns it?",
+      sql: sql,
+      result: answer,
+      preparationTelemetry: telemetry,
+      provenance: PreparedQueryProvenance(
+        modelKey: "test-model",
+        modelRevision: "test-revision",
+        runtimeMode: .evaluated,
+        preparationPolicyVersion: "prepared-follow-up-v1|binding-repair-v2",
+        databaseFingerprint: "test-database",
+        sqlFingerprint: PreparedFollowUpIntegrity.fingerprint(sql: sql),
+        resultFingerprint: PreparedFollowUpIntegrity.fingerprint(result: answer)),
+      createdAt: Date(timeIntervalSince1970: 1))
   }
 
   @Test func sendDispatchesAndRendersAnswer() async {
@@ -161,13 +186,15 @@ final class CallRecorder: @unchecked Sendable {
     await store.send(.chat(.binding(.set(\.composerText, "first question"))))
     await store.send(.chat(.sendTapped))
     await store.receive(
-      .chat(.delegate(.submitQuestion(question: "first question", starter: nil))))
+      .chat(.delegate(.submitQuestion(
+        QuestionSubmission(question: "first question")))))
     #expect(store.state.activeTurn?.question == "first question")
 
     await store.send(.chat(.binding(.set(\.composerText, "second question"))))
     await store.send(.chat(.sendTapped))
     await store.receive(
-      .chat(.delegate(.submitQuestion(question: "second question", starter: nil))))
+      .chat(.delegate(.submitQuestion(
+        QuestionSubmission(question: "second question")))))
     #expect(store.state.queue.count == 1)
     #expect(store.state.queue.first?.question == "second question")
     #expect(store.state.chat?.queued.count == 1)
@@ -189,6 +216,251 @@ final class CallRecorder: @unchecked Sendable {
       store.state.chat?.messages.last?.body
         == .text("Stopped — ask again whenever you're ready."))
     await store.finish()
+  }
+
+  @Test func submissionRetiresPreparationAndQueuesPreparedPayloadFirst() async {
+    let prepared = Self.preparedFollowUp()
+    var state = Self.appState()
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: UUID(90),
+      conversationID: Self.conversationB,
+      question: "already running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    state.followUpPreparation = AppFeature.FollowUpPreparationState(
+      conversationID: Self.conversationA,
+      context: context,
+      batch: batch)
+    state.chat?.followUpBatch = batch
+    let clears = CallRecorder()
+    var history = HistoryClient.noop()
+    history.clearFollowUpBatch = { id in clears.record(id.uuidString) }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .chat(.delegate(.submitQuestion(
+        QuestionSubmission(
+          question: prepared.question,
+          source: .preparedFollowUp(prepared))))))
+    await store.finish()
+
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.chat?.followUpBatch == nil)
+    #expect(store.state.queue.count == 1)
+    guard case .preparedFollowUp(let queued)? =
+      store.state.queue.first?.submission.source
+    else {
+      Issue.record("Expected the cached prepared payload to stay in the queue")
+      return
+    }
+    #expect(queued == prepared)
+    #expect(clears.recorded == [Self.conversationA.uuidString])
+  }
+
+  @Test func preparedTapUpdatesTheSameAssistantMessageAfterImmediatePreview() async {
+    let sourceID = UUID(79)
+    let prepared = Self.preparedFollowUp(sourceMessageID: sourceID)
+    var state = Self.appState()
+    state.chat?.messages.append(
+      ChatMessage(
+        id: sourceID,
+        role: .assistant,
+        body: .answer(
+          result: answer,
+          narration: "One property found.",
+          sql: "SELECT name FROM properties",
+          notice: nil),
+        createdAt: Date(timeIntervalSince1970: 0)))
+    state.chat?.followUpBatch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: sourceID,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.appendMessage = { _, message in
+      let kind = if case .preparedAnswer = message.body {
+        "provisional"
+      } else if message.role == .user {
+        "user"
+      } else {
+        "assistant"
+      }
+      writes.record("append:\(kind):\(message.id.uuidString)")
+    }
+    history.updateMessage = { _, message in
+      writes.record("update:final:\(message.id.uuidString)")
+    }
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      },
+      runPrepared: { prepared, _ in
+        AsyncStream { continuation in
+          var telemetry = prepared.preparationTelemetry
+          telemetry.preparedCacheHit = true
+          telemetry.queryOrigin = .preparedFollowUp
+          telemetry.executionPath = .preparedFollowUp
+          continuation.yield(
+            .preparedResultReady(
+              prepared: prepared,
+              elapsedMicroseconds: 100))
+          continuation.yield(.narrationStarted)
+          continuation.yield(
+            .turnFinished(
+              outcome: .answered(
+                result: prepared.result,
+                narration: "One matching property.",
+                sql: prepared.sql,
+                notice: nil),
+              telemetry: telemetry))
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history, pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.preparedFollowUpTapped(prepared.id)))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.chat?.messages.count == 3)
+    guard case .answer(_, let narration, _, _)? =
+      store.state.chat?.messages.last?.body
+    else {
+      Issue.record("Expected the provisional answer to be finalized in place")
+      return
+    }
+    #expect(narration == "One matching property.")
+    let provisional = writes.recorded.first {
+      $0.hasPrefix("append:provisional:")
+    }?.split(separator: ":").last.map(String.init)
+    let final = writes.recorded.first {
+      $0.hasPrefix("update:final:")
+    }?.split(separator: ":").last.map(String.init)
+    #expect(provisional != nil)
+    #expect(provisional == final)
+    #expect(!writes.recorded.contains { $0.hasPrefix("append:assistant:") })
+  }
+
+  @Test func appInactivityCancelsPreparationAndPersistsItsEventsForResume() async {
+    let prepared = Self.preparedFollowUp()
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    var preparation = AppFeature.FollowUpPreparationState(
+      conversationID: Self.conversationA,
+      context: context,
+      batch: batch)
+    preparation.eventLines = ["{\"prepared\":true}"]
+    state.followUpPreparation = preparation
+    state.chat?.followUpBatch = batch
+    let eventWrites = CallRecorder()
+    var history = HistoryClient.noop()
+    history.appendEvents = { _, _, lines in
+      lines.forEach(eventWrites.record)
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.finish()
+
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.chat?.followUpBatch == batch)
+    #expect(eventWrites.recorded == ["{\"prepared\":true}"])
+  }
+
+  @Test func foregroundResumesAnIncompletePersistedBatch() async {
+    let prepared = Self.preparedFollowUp()
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context,
+      status: .preparing,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.chat?.followUpBatch = batch
+    let preparations = CallRecorder()
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        preparations.record("resumed")
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameActive)
+    await store.receive(
+      .followUpPreparationEvent(
+        conversationID: Self.conversationA,
+        sourceMessageID: prepared.sourceAssistantMessageID,
+        event: .finished))
+    await store.finish()
+
+    #expect(preparations.recorded == ["resumed"])
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.chat?.followUpBatch?.status == .completed)
+    #expect(store.state.chat?.followUpBatch?.suggestions == [prepared])
   }
 
   @Test func completionPrefersVisibleConversationQueuedQuestion() async {
@@ -505,7 +777,9 @@ final class CallRecorder: @unchecked Sendable {
     }
     store.exhaustivity = .off
 
-    await store.send(.modelPrepared)
+    await store.send(
+      .modelPrepared(
+        ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 0)))
     #expect(store.state.launchBenchmarkStarted)
     await store.finish()
     await store.skipReceivedActions()
@@ -532,6 +806,42 @@ final class CallRecorder: @unchecked Sendable {
         sql: "SELECT name FROM properties",
         notice: nil),
       createdAt: Date(timeIntervalSince1970: 0))
+  }
+
+  @Test func provisionalPreparedAnswerRecoversInPlaceAfterTermination() {
+    let prepared = AppFeatureSchedulerTests.preparedFollowUp()
+    let messageID = UUID(88)
+    let snapshot = ConversationSnapshot(
+      summary: ConversationSummary(
+        id: Self.conversationID,
+        title: "Prepared follow-up",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 2)),
+      messages: [
+        ChatMessage(
+          id: messageID,
+          role: .assistant,
+          body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2))
+      ],
+      interruptedTurn: InterruptedTurn(
+        question: prepared.question,
+        interruptedAt: Date(timeIntervalSince1970: 1)))
+
+    let state = ChatFeature.State(snapshot: snapshot)
+
+    #expect(state.messages.count == 1)
+    #expect(state.messages.first?.id == messageID)
+    guard case .answer(let result, let narration, let sql, _)? =
+      state.messages.first?.body
+    else {
+      Issue.record("Expected deterministic prepared-answer recovery")
+      return
+    }
+    #expect(result == prepared.result)
+    #expect(sql == prepared.sql)
+    #expect(narration == PreparedAnswerFallback.narration(for: prepared.result))
+    #expect(state.interruptedTurn == nil)
   }
 
   @Test func keyboardRefocusCancelsPendingSubmission() async {
@@ -645,7 +955,8 @@ final class CallRecorder: @unchecked Sendable {
     await store.send(.askAgainTapped)
     await store.receive(
       .delegate(
-        .submitQuestion(question: "Which leases expire soonest?", starter: nil)))
+        .submitQuestion(
+          QuestionSubmission(question: "Which leases expire soonest?"))))
     await store.finish()
 
     #expect(store.state.interruptedTurn == nil)

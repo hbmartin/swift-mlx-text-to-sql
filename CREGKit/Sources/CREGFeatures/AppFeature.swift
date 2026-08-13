@@ -16,7 +16,7 @@ public struct AppFeature: Sendable {
   public enum ModelReadiness: Sendable, Equatable {
     case preparing
     case ready
-    case failed(message: String)
+    case failed(ModelPreparationFailure)
   }
 
   /// The single globally active turn.
@@ -24,7 +24,12 @@ public struct AppFeature: Sendable {
     public var questionID: UUID
     public var conversationID: UUID
     public var question: String
-    public var starter: StarterQueryID?
+    public var submission: QuestionSubmission
+    public var starter: StarterQueryID? {
+      guard case .starter(let starter) = submission.source else { return nil }
+      return starter
+    }
+    public var provisionalAssistantMessageID: UUID?
     public var startedAt: Date
     /// Trace lines accumulating for the in-flight turn.
     public var trace: [String] = []
@@ -41,8 +46,40 @@ public struct AppFeature: Sendable {
       self.questionID = questionID
       self.conversationID = conversationID
       self.question = question
-      self.starter = starter
+      self.submission = QuestionSubmission(
+        question: question,
+        source: starter.map(QuestionSubmissionSource.starter) ?? .freeForm)
       self.startedAt = startedAt
+    }
+
+    public init(
+      questionID: UUID,
+      conversationID: UUID,
+      submission: QuestionSubmission,
+      startedAt: Date
+    ) {
+      self.questionID = questionID
+      self.conversationID = conversationID
+      self.question = submission.question
+      self.submission = submission
+      self.startedAt = startedAt
+    }
+  }
+
+  public struct FollowUpPreparationState: Equatable, Sendable {
+    public var conversationID: UUID
+    public var context: FollowUpSuggestionContext
+    public var batch: PreparedFollowUpBatch
+    public var eventLines: [String] = []
+
+    public init(
+      conversationID: UUID,
+      context: FollowUpSuggestionContext,
+      batch: PreparedFollowUpBatch
+    ) {
+      self.conversationID = conversationID
+      self.context = context
+      self.batch = batch
     }
   }
 
@@ -91,10 +128,12 @@ public struct AppFeature: Sendable {
     public var pendingDeletion: PendingDeletion?
     public var modelReadiness: ModelReadiness = .preparing
     public var activeTurn: ActiveTurn?
+    public var followUpPreparation: FollowUpPreparationState?
     /// Session-only Queued Questions across all Conversations, oldest first.
     public var queue: [QueuedQuestion] = []
     public var answerReadyBanner: AnswerReadyBanner?
     public var isSettingsPresented = false
+    @Shared(.appStorage(DeveloperModePreference.storageKey))
     public var developerMode = false
     /// Reader-controlled density for full-screen result tables. Inline table
     /// previews continue to use the transcript's typography.
@@ -112,6 +151,7 @@ public struct AppFeature: Sendable {
     public var isBuildingSupportBundle = false
     public var supportBundleExport: SupportBundleExport?
     public var presentedFailure: FailurePresentation?
+    public var modelPreparationReport: ModelPreparationReport?
     public var debugModelIdentity: DebugModelIdentity?
     /// Experimental physical-device benchmark input supplied at process
     /// launch. Ordinary Release builds always leave this nil.
@@ -125,11 +165,13 @@ public struct AppFeature: Sendable {
       // The experimental-model banner and the benchmark hook are deliberately
       // decoupled: a Beta build bundles an unfinalized candidate and must say
       // so, but must never auto-submit a question at launch.
-      #if DEBUG || CREG_DEVICE_BENCHMARK || CREG_EXPERIMENTAL_MODEL
-        self.debugModelIdentity = debugModelIdentity ?? Self.bundledDebugModelIdentity()
-      #else
-        self.debugModelIdentity = nil
-      #endif
+      let buildChannel = try? BuildChannel.load()
+      self.debugModelIdentity =
+        if buildChannel == .debug || buildChannel == .beta {
+          debugModelIdentity ?? Self.bundledDebugModelIdentity()
+        } else {
+          nil
+        }
       #if DEBUG || CREG_DEVICE_BENCHMARK
         self.launchBenchmarkQuestion =
           launchBenchmarkQuestion
@@ -159,9 +201,13 @@ public struct AppFeature: Sendable {
   public enum Action: BindableAction, Sendable, Equatable {
     case binding(BindingAction<State>)
     case onAppear
+    case appBecameActive
+    case appBecameInactive
+    case preparationJournalLoaded(ModelPreparationJournalSnapshot?)
     case retryPreparation
-    case modelPrepared
-    case modelPreparationFailed(String)
+    case retryCompatibilityPreparation
+    case modelPrepared(ModelPreparationReport)
+    case modelPreparationFailed(ModelPreparationFailure)
     case bootstrapFinished([ConversationSummary])
     case conversationCreated(ConversationSummary)
     case conversationLoaded(ConversationSnapshot)
@@ -177,6 +223,10 @@ public struct AppFeature: Sendable {
     case answerReadyBannerTapped
     case answerReadyBannerTimedOut
     case pipelineEvent(conversationID: UUID, questionID: UUID, event: PipelineEvent)
+    case followUpPreparationEvent(
+      conversationID: UUID,
+      sourceMessageID: UUID,
+      event: FollowUpPreparationEvent)
     case supportBundleExportTapped
     case supportBundleReady(SupportBundleExport)
     case supportBundleDismissed
@@ -189,6 +239,7 @@ public struct AppFeature: Sendable {
 
   private enum CancelID {
     case pipeline
+    case followUpPreparation
     case search
     case deleteCountdown
     case bannerTimeout
@@ -204,6 +255,7 @@ public struct AppFeature: Sendable {
   @Dependency(\.date.now) var now
   @Dependency(\.continuousClock) var clock
   @Dependency(\.diagnostics) var diagnostics
+  @Dependency(\.modelPreparationJournal) var preparationJournal
 
   public init() {}
 
@@ -238,7 +290,11 @@ public struct AppFeature: Sendable {
           summary: "The app surface appeared.",
           context: ["has_selection": String(state.chat != nil)])
         state.modelReadiness = .preparing
-        let prepare = preparationEffect()
+        let inspectPreparationJournal = Effect<Action>.run { send in
+          await send(
+            .preparationJournalLoaded(
+              await preparationJournal.unfinishedAttempt()))
+        }
         // The system owns which icon is showing, so read it back on every
         // appearance rather than trusting stored state.
         let readIcon = Effect<Action>.run { send in
@@ -248,9 +304,11 @@ public struct AppFeature: Sendable {
               supportsAlternates: appIconClient.supportsAlternates()))
         }
         .cancellable(id: CancelID.iconRead, cancelInFlight: true)
-        guard state.chat == nil else { return .merge(prepare, readIcon) }
+        guard state.chat == nil else {
+          return .merge(inspectPreparationJournal, readIcon)
+        }
         return .merge(
-          prepare,
+          inspectPreparationJournal,
           readIcon,
           .run { send in
             let summaries = try await history.bootstrap()
@@ -260,32 +318,107 @@ public struct AppFeature: Sendable {
               .operationFailed(.history(operation: .load, error: error)))
           })
 
+      case .appBecameActive:
+        return resumeFollowUpPreparationIfIdle(state: &state)
+
+      case .appBecameInactive:
+        let preparation = state.followUpPreparation
+        state.followUpPreparation = nil
+        var followOnEffects: [Effect<Action>] = []
+        if let preparation, !preparation.eventLines.isEmpty {
+          followOnEffects.append(
+            .run { _ in
+              try? await history.appendEvents(
+                preparation.conversationID,
+                preparation.context.sourceAssistantMessageID,
+                preparation.eventLines)
+            })
+        }
+        return .concatenate(
+          .cancel(id: CancelID.followUpPreparation),
+          .merge(followOnEffects))
+
+      case .preparationJournalLoaded(let previous):
+        if let previous {
+          let failure = ModelPreparationFailure(
+            code: "previous_preparation_interrupted",
+            stage: previous.stage,
+            mode: previous.mode,
+            userMessage:
+              "The previous SQL model preparation stopped unexpectedly. Review Developer Mode details, then retry.",
+            diagnostic:
+              "The prior process ended during \(previous.stage.rawValue) in \(previous.mode.rawValue) mode.")
+          state.modelReadiness = .failed(failure)
+          state.modelPreparationReport = nil
+          diagnostics.record(DiagnosticEvent(
+            level: .error,
+            category: .model,
+            code: failure.code,
+            summary: "The previous model preparation attempt was interrupted.",
+            context: [
+              "stage": failure.stage.rawValue,
+              "runtime_mode": failure.mode.rawValue,
+            ]))
+          return .none
+        }
+        state.modelReadiness = .preparing
+        return preparationEffect(mode: .evaluated)
+
       case .retryPreparation:
         diagnostics.info(
           category: .submission,
           code: "model_preparation_retry_requested",
           summary: "The user requested another model preparation attempt.")
         state.modelReadiness = .preparing
-        return preparationEffect()
+        state.modelPreparationReport = nil
+        return preparationEffect(mode: .evaluated)
 
-      case .modelPrepared:
+      case .retryCompatibilityPreparation:
+        guard
+          state.developerMode,
+          case .failed(let failure) = state.modelReadiness,
+          failure.allowsCompatibilityRetry
+        else { return .none }
+        diagnostics.info(
+          category: .submission,
+          code: "model_compatibility_preparation_requested",
+          summary: "The user requested compatibility model preparation.",
+          context: ["failed_stage": failure.stage.rawValue])
+        state.modelReadiness = .preparing
+        state.modelPreparationReport = nil
+        return preparationEffect(mode: .compatibility)
+
+      case .modelPrepared(let report):
         state.modelReadiness = .ready
+        state.modelPreparationReport = report
         diagnostics.info(
           category: .submission,
           code: "chat_model_ready",
-          summary: "Chat submission is enabled because the SQL model is ready.")
-        return startLaunchBenchmarkIfReady(state: &state)
+          summary: "Chat submission is enabled because the SQL model is ready.",
+          context: [
+            "runtime_mode": report.mode.rawValue,
+            "evaluated": String(report.mode.isEvaluated),
+          ])
+        return .merge(
+          startLaunchBenchmarkIfReady(state: &state),
+          resumeFollowUpPreparationIfIdle(state: &state))
 
-      case .modelPreparationFailed(let diagnostic):
-        state.modelReadiness = .failed(
-          message: "The SQL model couldn’t be prepared. Check storage and try again.")
+      case .modelPreparationFailed(let failure):
+        state.modelReadiness = .failed(failure)
+        state.modelPreparationReport = nil
         diagnostics.record(
           DiagnosticEvent(
             level: .error,
             category: .configuration,
-            code: "model_preparation_failed",
+            code: failure.code,
             summary: "The SQL model could not be prepared.",
-            details: diagnostic))
+            details: failure.diagnostic,
+            context: [
+              "stage": failure.stage.rawValue,
+              "runtime_mode": failure.mode.rawValue,
+              "error_domain": failure.errorDomain ?? "none",
+              "error_code": failure.errorCode.map(String.init) ?? "none",
+            ]))
         return .none
 
       case .bootstrapFinished(let summaries):
@@ -312,6 +445,22 @@ public struct AppFeature: Sendable {
         syncSchedulerProjection(into: &state)
         state.isBrowserRevealed = false
         var effects: [Effect<Action>] = []
+        let recovered = snapshot.messages.compactMap(
+          \.finalizedInterruptedPreparedAnswer)
+        if !recovered.isEmpty {
+          let conversationID = snapshot.summary.id
+          if let latest = recovered.last {
+            state.conversations[id: conversationID]?.latestMessagePreview =
+              latest.previewText
+          }
+          effects.append(
+            .run { _ in
+              for message in recovered {
+                try? await history.updateMessage(conversationID, message)
+              }
+              try? await history.endTurnJournal(conversationID)
+            })
+        }
         if snapshot.summary.isUnread {
           state.conversations[id: snapshot.summary.id]?.isUnread = false
           let id = snapshot.summary.id
@@ -323,6 +472,7 @@ public struct AppFeature: Sendable {
           effects.append(.cancel(id: CancelID.bannerTimeout))
         }
         effects.append(startLaunchBenchmarkIfReady(state: &state))
+        effects.append(resumeFollowUpPreparationIfIdle(state: &state))
         return .merge(effects)
 
       case .browserButtonTapped, .chat(.delegate(.openBrowser)):
@@ -399,22 +549,45 @@ public struct AppFeature: Sendable {
           questionID: questionID,
           event: event)
 
-      case .chat(.delegate(.submitQuestion(let question, let starter))):
+      case .followUpPreparationEvent(
+        let conversationID, let sourceMessageID, let event):
+        return handleFollowUpPreparationEvent(
+          state: &state,
+          conversationID: conversationID,
+          sourceMessageID: sourceMessageID,
+          event: event)
+
+      case .chat(.delegate(.submitQuestion(let submission))):
         guard state.modelReadiness == .ready, let chat = state.chat
         else { return .none }
         let conversationID = chat.conversationID
+        let preparation = state.followUpPreparation
+        state.followUpPreparation = nil
+        state.chat?.followUpBatch = nil
+        let cancelPreparation = Effect<Action>.cancel(
+          id: CancelID.followUpPreparation)
+        let clearBatch = Effect<Action>.run { _ in
+          if let preparation, !preparation.eventLines.isEmpty {
+            try? await history.appendEvents(
+              preparation.conversationID,
+              preparation.context.sourceAssistantMessageID,
+              preparation.eventLines)
+          }
+          try? await history.clearFollowUpBatch(conversationID)
+        }
         if state.activeTurn == nil {
-          return dispatch(
+          let userTurn = dispatch(
             state: &state,
             conversationID: conversationID,
-            question: question,
-            starter: starter)
+            submission: submission)
+          return .concatenate(
+            cancelPreparation,
+            .merge(clearBatch, userTurn))
         }
         let queued = QueuedQuestion(
           id: uuid(),
           conversationID: conversationID,
-          question: question,
-          starter: starter,
+          submission: submission,
           submittedAt: now)
         state.queue.append(queued)
         syncSchedulerProjection(into: &state)
@@ -423,7 +596,7 @@ public struct AppFeature: Sendable {
           code: "question_queued",
           summary: "A submission became a queued question behind active work.",
           context: ["queue_depth": String(state.queue.count)])
-        return .none
+        return .concatenate(cancelPreparation, clearBatch)
 
       case .chat(.delegate(.stopActiveTurn)):
         return stopActiveTurn(state: &state)
@@ -566,9 +739,9 @@ public struct AppFeature: Sendable {
   private func dispatch(
     state: inout State,
     conversationID: UUID,
-    question: String,
-    starter: StarterQueryID?
+    submission: QuestionSubmission
   ) -> Effect<Action> {
+    let question = submission.question
     let questionID = uuid()
     let startedAt = now
     let userMessage = ChatMessage(
@@ -576,8 +749,7 @@ public struct AppFeature: Sendable {
     state.activeTurn = ActiveTurn(
       questionID: questionID,
       conversationID: conversationID,
-      question: question,
-      starter: starter,
+      submission: submission,
       startedAt: startedAt)
 
     // Reflect the dispatch in whatever surfaces show this conversation.
@@ -606,7 +778,7 @@ public struct AppFeature: Sendable {
       code: "chat_submission_committed",
       summary: "A submission started a pipeline turn.",
       context: [
-        "query_origin": starter == nil ? "free_form" : "starter",
+        "query_origin": submission.source.queryOrigin.rawValue,
         "queue_depth": String(state.queue.count),
       ])
 
@@ -629,9 +801,15 @@ public struct AppFeature: Sendable {
           .operationFailed(.history(operation: .messageSave, error: error)))
       }
       guard !Task.isCancelled else { return }
-      let events =
-        starter.map { pipeline.runStarter($0, turns) }
-        ?? pipeline.run(question, turns)
+      let events: AsyncStream<PipelineEvent> =
+        switch submission.source {
+        case .freeForm:
+          pipeline.run(question, turns)
+        case .starter(let starter):
+          pipeline.runStarter(starter, turns)
+        case .preparedFollowUp(let prepared):
+          pipeline.runPrepared(prepared, turns)
+        }
       for await event in events {
         await send(
           .pipelineEvent(
@@ -657,8 +835,7 @@ public struct AppFeature: Sendable {
     return dispatch(
       state: &state,
       conversationID: next.conversationID,
-      question: next.question,
-      starter: next.starter)
+      submission: next.submission)
   }
 
   private func stopActiveTurn(state: inout State) -> Effect<Action> {
@@ -666,6 +843,47 @@ public struct AppFeature: Sendable {
       active.conversationID == state.chat?.conversationID
     else { return .none }
     state.activeTurn = nil
+    if let provisionalID = active.provisionalAssistantMessageID,
+      case .preparedFollowUp(let prepared) = active.submission.source
+    {
+      let finalized = ChatMessage(
+        id: provisionalID,
+        role: .assistant,
+        body: .answer(
+          result: prepared.result,
+          narration: PreparedAnswerFallback.narration(for: prepared.result),
+          sql: prepared.sql,
+          notice: nil),
+        traceSteps: active.trace,
+        createdAt: now,
+        devInfo: prepared.preparationTelemetry)
+      if state.chat?.conversationID == active.conversationID,
+        let index = state.chat?.messages.index(id: provisionalID)
+      {
+        state.chat?.messages[index] = finalized
+        state.chat?.processing = nil
+      }
+      updateSummaryAfterMessage(
+        state: &state,
+        conversationID: active.conversationID,
+        message: finalized,
+        replacing: true)
+      let conversationID = active.conversationID
+      let lines = active.eventLines
+      return .merge(
+        .cancel(id: CancelID.pipeline),
+        .run { send in
+          do {
+            try await history.updateMessage(conversationID, finalized)
+            try await history.appendEvents(conversationID, finalized.id, lines)
+            try await history.endTurnJournal(conversationID)
+          } catch {
+            await send(
+              .operationFailed(.history(operation: .messageSave, error: error)))
+          }
+        },
+        dispatchNextIfIdle(state: &state))
+    }
     let stoppedMessage = ChatMessage(
       id: uuid(), role: .assistant,
       body: .text("Stopped — ask again whenever you're ready."),
@@ -715,6 +933,35 @@ public struct AppFeature: Sendable {
       let trace = state.activeTurn?.trace ?? []
       state.chat?.processing?.trace = trace
     }
+    if case .preparedResultReady(let prepared, _) = event {
+      guard state.activeTurn?.provisionalAssistantMessageID == nil else {
+        return .none
+      }
+      let messageID = uuid()
+      state.activeTurn?.provisionalAssistantMessageID = messageID
+      let provisional = ChatMessage(
+        id: messageID,
+        role: .assistant,
+        body: .preparedAnswer(prepared),
+        traceSteps: state.activeTurn?.trace ?? [],
+        createdAt: now,
+        devInfo: nil)
+      if state.chat?.conversationID == conversationID {
+        state.chat?.messages.append(provisional)
+      }
+      updateSummaryAfterMessage(
+        state: &state,
+        conversationID: conversationID,
+        message: provisional)
+      return .run { send in
+        do {
+          try await history.appendMessage(conversationID, provisional)
+        } catch {
+          await send(
+            .operationFailed(.history(operation: .messageSave, error: error)))
+        }
+      }
+    }
     guard case .turnFinished(let outcome, let telemetry) = event,
       let active = state.activeTurn
     else { return .none }
@@ -729,7 +976,7 @@ public struct AppFeature: Sendable {
         .failure(message)
       }
     let assistantMessage = ChatMessage(
-      id: uuid(), role: .assistant, body: body,
+      id: active.provisionalAssistantMessageID ?? uuid(), role: .assistant, body: body,
       traceSteps: active.trace, createdAt: now,
       devInfo: telemetry)
     let lines = active.eventLines
@@ -743,6 +990,8 @@ public struct AppFeature: Sendable {
         "outcome": outcomeName(outcome),
         "query_origin": telemetry.queryOrigin.rawValue,
         "execution_path": telemetry.executionPath.rawValue,
+        "runtime_mode": telemetry.runtimeMode.rawValue,
+        "evaluated": String(telemetry.isEvaluated),
         "confidence": telemetry.confidence?.rawValue ?? "none",
         "generated_count": String(telemetry.generatedCount),
         "repair_attempts": String(telemetry.repairAttempts),
@@ -752,10 +1001,15 @@ public struct AppFeature: Sendable {
           state.chat?.conversationID != conversationID),
       ])
 
+    let replacesProvisional = active.provisionalAssistantMessageID != nil
     var effects: [Effect<Action>] = [
       .run { send in
         do {
-          try await history.appendMessage(conversationID, assistantMessage)
+          if replacesProvisional {
+            try await history.updateMessage(conversationID, assistantMessage)
+          } else {
+            try await history.appendMessage(conversationID, assistantMessage)
+          }
           try await history.appendEvents(
             conversationID, assistantMessage.id, lines)
           try await history.endTurnJournal(conversationID)
@@ -767,7 +1021,13 @@ public struct AppFeature: Sendable {
     ]
 
     if state.chat?.conversationID == conversationID {
-      state.chat?.messages.append(assistantMessage)
+      if replacesProvisional,
+        let index = state.chat?.messages.index(id: assistantMessage.id)
+      {
+        state.chat?.messages[index] = assistantMessage
+      } else {
+        state.chat?.messages.append(assistantMessage)
+      }
       state.chat?.processing = nil
     } else {
       // Background completion never changes the selected chat: mark the
@@ -790,9 +1050,160 @@ public struct AppFeature: Sendable {
         .cancellable(id: CancelID.bannerTimeout, cancelInFlight: true))
     }
     updateSummaryAfterMessage(
-      state: &state, conversationID: conversationID, message: assistantMessage)
-    effects.append(dispatchNextIfIdle(state: &state))
+      state: &state,
+      conversationID: conversationID,
+      message: assistantMessage,
+      replacing: replacesProvisional)
+    let nextUserWork = dispatchNextIfIdle(state: &state)
+    effects.append(nextUserWork)
+    if state.activeTurn == nil, state.queue.isEmpty,
+      case .answered(let result, let narration, _, _) = outcome
+    {
+      let context = FollowUpSuggestionContext(
+        sourceAssistantMessageID: assistantMessage.id,
+        question: active.question,
+        standaloneQuestion: telemetry.standaloneQuestion,
+        narration: narration,
+        result: result)
+      effects.append(
+        startFollowUpPreparation(
+          state: &state,
+          conversationID: conversationID,
+          context: context))
+    }
     return .merge(effects)
+  }
+
+  private func startFollowUpPreparation(
+    state: inout State,
+    conversationID: UUID,
+    context: FollowUpSuggestionContext
+  ) -> Effect<Action> {
+    guard
+      state.activeTurn == nil,
+      state.queue.isEmpty,
+      state.modelReadiness == .ready
+    else { return .none }
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: context.sourceAssistantMessageID,
+      context: context,
+      status: .preparing,
+      updatedAt: now)
+    state.followUpPreparation = FollowUpPreparationState(
+      conversationID: conversationID,
+      context: context,
+      batch: batch)
+    if state.chat?.conversationID == conversationID {
+      state.chat?.followUpBatch = batch
+    }
+    return .run(priority: .low) { send in
+      try? await history.saveFollowUpBatch(conversationID, batch)
+      for await event in pipeline.prepareFollowUps(context) {
+        guard !Task.isCancelled else { return }
+        await send(
+          .followUpPreparationEvent(
+            conversationID: conversationID,
+            sourceMessageID: context.sourceAssistantMessageID,
+            event: event))
+      }
+    }
+    .cancellable(
+      id: CancelID.followUpPreparation,
+      cancelInFlight: true)
+  }
+
+  private func resumeFollowUpPreparationIfIdle(
+    state: inout State
+  ) -> Effect<Action> {
+    guard
+      state.activeTurn == nil,
+      state.queue.isEmpty,
+      state.followUpPreparation == nil,
+      state.modelReadiness == .ready,
+      let chat = state.chat,
+      let batch = chat.followUpBatch,
+      batch.status == .preparing,
+      let context = batch.context
+    else { return .none }
+    state.followUpPreparation = FollowUpPreparationState(
+      conversationID: chat.conversationID,
+      context: context,
+      batch: batch)
+    let conversationID = chat.conversationID
+    return .run(priority: .low) { send in
+      for await event in pipeline.prepareFollowUps(context) {
+        guard !Task.isCancelled else { return }
+        await send(
+          .followUpPreparationEvent(
+            conversationID: conversationID,
+            sourceMessageID: context.sourceAssistantMessageID,
+            event: event))
+      }
+    }
+    .cancellable(
+      id: CancelID.followUpPreparation,
+      cancelInFlight: true)
+  }
+
+  private func handleFollowUpPreparationEvent(
+    state: inout State,
+    conversationID: UUID,
+    sourceMessageID: UUID,
+    event: FollowUpPreparationEvent
+  ) -> Effect<Action> {
+    guard
+      var preparation = state.followUpPreparation,
+      preparation.conversationID == conversationID,
+      preparation.context.sourceAssistantMessageID == sourceMessageID,
+      state.activeTurn == nil,
+      state.queue.isEmpty
+    else { return .none }
+
+    if let data = try? JSONEncoder().encode(event) {
+      preparation.eventLines.append(String(decoding: data, as: UTF8.self))
+    }
+    switch event {
+    case .started, .rejected:
+      state.followUpPreparation = preparation
+      return .none
+
+    case .prepared(let prepared):
+      let identity = prepared.question
+        .lowercased()
+        .filter { $0.isLetter || $0.isNumber }
+      let exists = preparation.batch.suggestions.contains {
+        $0.question.lowercased().filter { $0.isLetter || $0.isNumber }
+          == identity
+      }
+      if !exists {
+        preparation.batch.suggestions.append(prepared)
+        preparation.batch.suggestions.sort { $0.rank < $1.rank }
+      }
+      preparation.batch.updatedAt = now
+      state.followUpPreparation = preparation
+      if state.chat?.conversationID == conversationID {
+        state.chat?.followUpBatch = preparation.batch
+      }
+      let batch = preparation.batch
+      return .run { _ in
+        try? await history.saveFollowUpBatch(conversationID, batch)
+      }
+
+    case .finished:
+      preparation.batch.status = .completed
+      preparation.batch.updatedAt = now
+      state.followUpPreparation = nil
+      if state.chat?.conversationID == conversationID {
+        state.chat?.followUpBatch = preparation.batch
+      }
+      let batch = preparation.batch
+      let lines = preparation.eventLines
+      return .run { _ in
+        try? await history.saveFollowUpBatch(conversationID, batch)
+        try? await history.appendEvents(
+          conversationID, sourceMessageID, lines)
+      }
+    }
   }
 
   // MARK: - Conversation lifecycle helpers
@@ -818,6 +1229,10 @@ public struct AppFeature: Sendable {
     if state.activeTurn?.conversationID == summary.id {
       state.activeTurn = nil
       effects.append(.cancel(id: CancelID.pipeline))
+    }
+    if state.followUpPreparation?.conversationID == summary.id {
+      state.followUpPreparation = nil
+      effects.append(.cancel(id: CancelID.followUpPreparation))
     }
 
     if state.chat?.conversationID == summary.id {
@@ -888,12 +1303,13 @@ public struct AppFeature: Sendable {
   private func updateSummaryAfterMessage(
     state: inout State,
     conversationID: UUID,
-    message: ChatMessage
+    message: ChatMessage,
+    replacing: Bool = false
   ) {
     guard var summary = state.conversations[id: conversationID] else { return }
     summary.lastActivityAt = message.createdAt
     summary.latestMessagePreview = message.previewText
-    summary.messageCount += 1
+    if !replacing { summary.messageCount += 1 }
     state.conversations[id: conversationID] = summary
     state.conversations.sort { $0.lastActivityAt > $1.lastActivityAt }
   }
@@ -924,16 +1340,46 @@ public struct AppFeature: Sendable {
     return dispatch(
       state: &state,
       conversationID: conversationID,
-      question: question,
-      starter: nil)
+      submission: QuestionSubmission(question: question))
   }
 
-  private func preparationEffect() -> Effect<Action> {
+  private func preparationEffect(
+    mode: ModelRuntimeMode
+  ) -> Effect<Action> {
     .run { send in
-      try await pipeline.prepare()
-      await send(.modelPrepared)
-    } catch: { error, send in
-      await send(.modelPreparationFailed(DiagnosticDetails.describe(error)))
+      var environment = ModelPreparationEnvironment.snapshot()
+      environment["runtime_mode"] = mode.rawValue
+      diagnostics.info(
+        category: .model,
+        code: "model_preparation_attempt_started",
+        summary: "A SQL model preparation attempt started.",
+        context: environment)
+      await preparationJournal.begin(
+        mode,
+        environment)
+      do {
+        let report = try await pipeline.prepare(mode)
+        await preparationJournal.complete(report)
+        await send(.modelPrepared(report))
+      } catch {
+        let failure: ModelPreparationFailure
+        if let preparationFailure = error as? ModelPreparationFailure {
+          failure = preparationFailure
+        } else {
+          let nsError = error as NSError
+          failure = ModelPreparationFailure(
+            code: "model_preparation_unexpected",
+            stage: .containerLoad,
+            mode: mode,
+            userMessage:
+              "The SQL model could not be prepared. Restart CREG and try again.",
+            diagnostic: DiagnosticDetails.sanitizedDescription(error),
+            errorDomain: nsError.domain,
+            errorCode: nsError.code)
+        }
+        await preparationJournal.fail(failure)
+        await send(.modelPreparationFailed(failure))
+      }
     }
   }
 
@@ -953,6 +1399,16 @@ public struct AppFeature: Sendable {
       stage
     default:
       "unknown"
+    }
+  }
+}
+
+private extension QuestionSubmissionSource {
+  var queryOrigin: QueryOrigin {
+    switch self {
+    case .freeForm: .freeForm
+    case .starter: .starter
+    case .preparedFollowUp: .preparedFollowUp
     }
   }
 }

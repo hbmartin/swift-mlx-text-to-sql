@@ -11,6 +11,7 @@ public actor InferenceSerializer {
     case modelPreparation = "model_preparation"
     case rewrite
     case gate
+    case followUpSuggestion = "follow_up_suggestion"
     case sqlGeneration = "sql_generation"
     case narration
   }
@@ -61,6 +62,10 @@ public actor InferenceSerializer {
       } onCancel: {
         task.cancel()
       }
+      // A model operation can finish at the same instant its deadline cancels
+      // the parent task. Do not report that race as a successful inference or
+      // allow its value to escape after cancellation.
+      try Task.checkCancellation()
       operationCompleted(
         kind: operationKind,
         error: nil,

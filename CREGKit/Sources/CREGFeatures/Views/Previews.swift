@@ -164,6 +164,69 @@ enum PreviewFixtures {
       title: "Current market value by fund")
   }
 
+  static func preparedFollowUps(count: Int = 3) -> [PreparedFollowUp] {
+    let questions = [
+      "How does current market value compare with acquisition cost by fund?",
+      "Which held properties contribute the most value to Meridian Core Fund I?",
+      "What is the outstanding loan balance by fund?",
+    ]
+    return Array(questions.prefix(count)).enumerated().map { offset, question in
+      let sql = "SELECT \(offset + 1)"
+      return PreparedFollowUp(
+        id: id(String(6 + offset)),
+        sourceAssistantMessageID: id("2"),
+        rank: offset + 1,
+        question: question,
+        sql: sql,
+        result: fundValueResult,
+        preparationTelemetry: answeredTelemetry,
+        provenance: PreparedQueryProvenance(
+          modelKey: "creg-sql-xiyansql-3b",
+          modelRevision: "aa11bb22cc33dd44",
+          runtimeMode: .evaluated,
+          preparationPolicyVersion: "prepared-follow-up-v1|binding-repair-v2",
+          databaseFingerprint: "preview-database",
+          sqlFingerprint: PreparedFollowUpIntegrity.fingerprint(sql: sql),
+          resultFingerprint: PreparedFollowUpIntegrity.fingerprint(
+            result: fundValueResult)),
+        createdAt: now.addingTimeInterval(Double(offset)))
+    }
+  }
+
+  static func followUpChatState(count: Int) -> ChatFeature.State {
+    var state = answeredChatState()
+    state.followUpBatch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: id("2"),
+      status: count == 3 ? .completed : .preparing,
+      suggestions: preparedFollowUps(count: count),
+      updatedAt: now)
+    return state
+  }
+
+  static func summarizingPreparedChatState() -> ChatFeature.State {
+    var state = answeredChatState()
+    let prepared = preparedFollowUps(count: 1)[0]
+    state.messages.append(
+      ChatMessage(
+        id: id("5"), role: .user, body: .text(prepared.question),
+        createdAt: now.addingTimeInterval(1)))
+    state.messages.append(
+      ChatMessage(
+        id: id("6"), role: .assistant,
+        body: .preparedAnswer(prepared),
+        traceSteps: ["Showing the prepared result (4 rows)"],
+        createdAt: now.addingTimeInterval(2)))
+    state.processing = ChatFeature.ProcessingState(
+      questionID: id("7"),
+      question: prepared.question,
+      startedAt: now.addingTimeInterval(1),
+      trace: [
+        "Showing the prepared result (4 rows)",
+        "Summarizing what I found",
+      ])
+    return state
+  }
+
   static func processingChatState() -> ChatFeature.State {
     var state = answeredChatState()
     state.processing = ChatFeature.ProcessingState(
@@ -267,16 +330,28 @@ enum PreviewFixtures {
     return state
   }
 
+  static func transientAppState() -> AppFeature.State {
+    var state = appState(revealed: false, chat: answeredChatState())
+    state.answerReadyBanner = AppFeature.AnswerReadyBanner(
+      conversationID: summaries[1].id,
+      title: summaries[1].displayTitle)
+    state.pendingDeletion = AppFeature.PendingDeletion(
+      summary: summaries[2], index: 2)
+    return state
+  }
+
   static var chrome: ChatChrome {
     ChatChrome(
       modelReadiness: .ready,
+      modelPreparationReport: nil,
       developerMode: false,
       resultTableTextSize: .constant(.standard),
       hasUnreadElsewhere: true,
       debugModelIdentity: nil,
       presentedFailure: nil,
       dismissFailure: {},
-      retryPreparation: {})
+      retryPreparation: {},
+      retryCompatibilityPreparation: {})
   }
 
   /// An inert store: state renders, every action is ignored, and no
@@ -327,6 +402,37 @@ enum PreviewFixtures {
   ChatView(
     store: PreviewFixtures.chatStore(PreviewFixtures.processingChatState()),
     chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Chat — Follow-up Suggestions — Partial") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.followUpChatState(count: 1)),
+    chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Chat — Follow-up Suggestions — Ready — Dark") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.followUpChatState(count: 3)),
+    chrome: PreviewFixtures.chrome)
+    .background(CREGBrand.chatSurface.ignoresSafeArea())
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Chat — Prepared Answer — Summarizing") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.summarizingPreparedChatState()),
+    chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Chat — Follow-up Suggestions — Accessibility") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.followUpChatState(count: 3)),
+    chrome: PreviewFixtures.chrome)
+    .environment(\.dynamicTypeSize, .accessibility3)
 }
 
 #Preview("Chat — Developer Mode Expanded") {

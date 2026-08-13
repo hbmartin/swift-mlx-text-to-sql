@@ -79,6 +79,8 @@ public struct ChatFeature: Sendable {
     /// conversation, and this conversation's Queued Questions.
     public var processing: ProcessingState?
     public var queued: [QueuedQuestion] = []
+    /// Only the latest successful answer may own prepared follow-up chips.
+    public var followUpBatch: PreparedFollowUpBatch?
     /// Full-screen Result Viewer presentation (the message whose result is
     /// being inspected).
     public var resultViewerMessageID: UUID?
@@ -106,14 +108,21 @@ public struct ChatFeature: Sendable {
     }
 
     public init(snapshot: ConversationSnapshot) {
+      let recoveredPreparedAnswer = snapshot.messages.contains {
+        if case .preparedAnswer = $0.body { true } else { false }
+      }
       self.init(
         conversationID: snapshot.summary.id,
         title: snapshot.summary.title,
         isManuallyTitled: snapshot.summary.isManuallyTitled,
-        messages: IdentifiedArray(uniqueElements: snapshot.messages),
+        messages: IdentifiedArray(
+          uniqueElements: snapshot.messages.map {
+            $0.finalizedInterruptedPreparedAnswer ?? $0
+          }),
         feedback: snapshot.feedback,
         composerText: snapshot.draft,
-        interruptedTurn: snapshot.interruptedTurn)
+        interruptedTurn: recoveredPreparedAnswer ? nil : snapshot.interruptedTurn)
+      self.followUpBatch = snapshot.followUpBatch
     }
 
     public var displayTitle: String {
@@ -132,6 +141,7 @@ public struct ChatFeature: Sendable {
     case submissionRefocused
     case sendTapped
     case starterQuestionTapped(StarterQueryID)
+    case preparedFollowUpTapped(UUID)
     case stopTapped
     case cancelQueuedTapped(UUID)
     case askAgainTapped
@@ -156,7 +166,7 @@ public struct ChatFeature: Sendable {
 
     /// Global work only ``AppFeature`` can perform.
     public enum Delegate: Sendable, Equatable {
-      case submitQuestion(question: String, starter: StarterQueryID?)
+      case submitQuestion(QuestionSubmission)
       case stopActiveTurn
       case cancelQueued(UUID)
       case openBrowser
@@ -273,6 +283,20 @@ public struct ChatFeature: Sendable {
           summary: "A starter-query chip submitted its reviewed query.",
           context: ["starter_query_id": starter.rawValue])
         return commitSubmission(state: &state, starter: starter)
+
+      case .preparedFollowUpTapped(let id):
+        guard
+          let prepared = state.followUpBatch?.suggestions.first(where: {
+            $0.id == id
+          })
+        else { return .none }
+        state.composerText = prepared.question
+        state.isSubmissionPending = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_prepared_follow_up_tapped",
+          summary: "A prepared follow-up chip was submitted.")
+        return commitSubmission(state: &state, preparedFollowUp: prepared)
 
       case .stopTapped:
         guard state.isProcessing else { return .none }
@@ -414,17 +438,30 @@ public struct ChatFeature: Sendable {
   /// immediately or becomes a Queued Question.
   private func commitSubmission(
     state: inout State,
-    starter: StarterQueryID? = nil
+    starter: StarterQueryID? = nil,
+    preparedFollowUp: PreparedFollowUp? = nil
   ) -> Effect<Action> {
     let question = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !question.isEmpty else { return .none }
     state.composerText = ""
+    state.followUpBatch = nil
     let conversationID = state.conversationID
+    let source: QuestionSubmissionSource =
+      if let preparedFollowUp {
+        .preparedFollowUp(preparedFollowUp)
+      } else if let starter {
+        .starter(starter)
+      } else {
+        .freeForm
+      }
 
     var effects: [Effect<Action>] = [
       .cancel(id: DraftSaveID(conversationID: conversationID)),
       .run { _ in try? await history.saveDraft(conversationID, "") },
-      .send(.delegate(.submitQuestion(question: question, starter: starter))),
+      .send(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: question, source: source)))),
     ]
 
     // A pending Not right correction records the question that follows it.

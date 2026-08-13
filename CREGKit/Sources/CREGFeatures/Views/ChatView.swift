@@ -5,6 +5,7 @@ import SwiftUI
 /// App-level context the chat surface renders but does not own.
 struct ChatChrome {
   var modelReadiness: AppFeature.ModelReadiness
+  var modelPreparationReport: ModelPreparationReport?
   var developerMode: Bool
   var resultTableTextSize: Binding<ResultTableTextSize>
   var hasUnreadElsewhere: Bool
@@ -12,6 +13,7 @@ struct ChatChrome {
   var presentedFailure: FailurePresentation?
   var dismissFailure: () -> Void
   var retryPreparation: () -> Void
+  var retryCompatibilityPreparation: () -> Void
 }
 
 /// The minimum transcript state needed to distinguish a completed assistant
@@ -22,10 +24,12 @@ struct ChatTranscriptSnapshot: Equatable {
   var conversationID: UUID
   var messageCount: Int
   var assistantMessageCount: Int
+  var suggestionCount: Int
 
   init<Messages: Sequence>(
     conversationID: UUID,
-    messages: Messages
+    messages: Messages,
+    suggestionCount: Int = 0
   ) where Messages.Element == ChatMessage {
     self.conversationID = conversationID
     var messageCount = 0
@@ -38,7 +42,10 @@ struct ChatTranscriptSnapshot: Equatable {
     }
     self.messageCount = messageCount
     self.assistantMessageCount = assistantMessageCount
+    self.suggestionCount = suggestionCount
   }
+
+  var contentCount: Int { messageCount + suggestionCount }
 }
 
 enum ChatTranscriptScrollDecision: Equatable {
@@ -56,7 +63,7 @@ func chatTranscriptScrollDecision(
 ) -> ChatTranscriptScrollDecision {
   guard
     previous.conversationID == current.conversationID,
-    current.messageCount > previous.messageCount
+    current.contentCount > previous.contentCount
   else { return .none }
 
   if current.assistantMessageCount > previous.assistantMessageCount
@@ -64,7 +71,7 @@ func chatTranscriptScrollDecision(
   {
     return .scrollToBottom
   }
-  return .incrementUnseen(by: current.messageCount - previous.messageCount)
+  return .incrementUnseen(by: current.contentCount - previous.contentCount)
 }
 
 /// The Messages-style chat surface: floating glass header, open transcript,
@@ -84,6 +91,7 @@ struct ChatView: View {
   @State private var unseenMessageCount = 0
   @State private var isDeleteConfirmationPresented = false
   @Namespace private var glassNamespace
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -94,7 +102,8 @@ struct ChatView: View {
   private var transcriptSnapshot: ChatTranscriptSnapshot {
     ChatTranscriptSnapshot(
       conversationID: store.conversationID,
-      messages: store.messages)
+      messages: store.messages,
+      suggestionCount: store.followUpBatch?.suggestions.count ?? 0)
   }
 
   private func transcript(proxy: ScrollViewProxy) -> some View {
@@ -201,82 +210,110 @@ struct ChatView: View {
 
   // MARK: Header
 
+  @ViewBuilder
   private var header: some View {
-    HStack(spacing: 10) {
-      CREGGlassContainer(spacing: 10) {
-        Button {
-          store.send(.delegate(.openBrowser))
-        } label: {
-          Image(systemName: "sidebar.leading")
-            .font(.body.weight(.medium))
-            .frame(width: 44, height: 44)
-            .overlay(alignment: .topTrailing) {
-              if chrome.hasUnreadElsewhere {
-                Circle()
-                  .fill(CREGBrand.turquoise)
-                  .frame(width: 8, height: 8)
-                  .offset(x: -8, y: 9)
-              }
-            }
+    if dynamicTypeSize.isAccessibilitySize {
+      VStack(spacing: 8) {
+        HStack(spacing: 10) {
+          browserButton
+          Spacer(minLength: 0)
+          newChatButton
+          overflowMenu
         }
-        .cregGlassCapsule(interactive: true)
-        .accessibilityLabel(
-          chrome.hasUnreadElsewhere
-            ? "Conversations, unread answers available" : "Conversations")
+        titlePill(lineLimit: nil)
       }
-
-      Spacer(minLength: 0)
-
-      Text(store.displayTitle)
-        .font(.headline)
-        .lineLimit(1)
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-        .cregGlassCapsule()
-        .layoutPriority(1)
-
-      Spacer(minLength: 0)
-
-      CREGGlassContainer(spacing: 10) {
-        Button {
-          store.send(.delegate(.newChatRequested))
-        } label: {
-          Image(systemName: "square.and.pencil")
-            .font(.body.weight(.medium))
-            .frame(width: 44, height: 44)
-        }
-        .cregGlassCapsule(interactive: true)
-        .accessibilityLabel("New chat")
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+    } else {
+      HStack(spacing: 10) {
+        browserButton
+        Spacer(minLength: 0)
+        titlePill(lineLimit: 1)
+          .layoutPriority(1)
+        Spacer(minLength: 0)
+        newChatButton
+        overflowMenu
       }
-
-      // The overflow Menu stays outside morphing glass containers to avoid
-      // the iOS 26.1 Menu-in-container morph break.
-      Menu {
-        Button {
-          store.send(.renameTapped)
-        } label: {
-          Label("Rename", systemImage: "pencil")
-        }
-        Button {
-          store.send(.exportTapped)
-        } label: {
-          Label("Export JSONL", systemImage: "square.and.arrow.up")
-        }
-        Button(role: .destructive) {
-          isDeleteConfirmationPresented = true
-        } label: {
-          Label("Delete", systemImage: "trash")
-        }
-      } label: {
-        Image(systemName: "ellipsis")
-          .font(.body.weight(.medium))
-          .frame(width: 44, height: 44)
-          .cregGlassCapsule(interactive: true)
-      }
-      .accessibilityLabel("More")
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 6)
+  }
+
+  private var browserButton: some View {
+    CREGGlassContainer(spacing: 10) {
+      Button {
+        store.send(.delegate(.openBrowser))
+      } label: {
+        Image(systemName: "sidebar.leading")
+          .cregIconButtonTarget()
+          .overlay(alignment: .topTrailing) {
+            if chrome.hasUnreadElsewhere {
+              Circle()
+                .fill(CREGBrand.turquoise)
+                .frame(width: 8, height: 8)
+                .offset(x: -8, y: 9)
+            }
+          }
+      }
+      .cregGlassCapsule(interactive: true)
+      .accessibilityLabel(
+        chrome.hasUnreadElsewhere
+          ? "Conversations, unread answers available" : "Conversations")
+      .cregLargeContentViewer(
+        "Conversations", systemImage: "sidebar.leading")
+    }
+  }
+
+  private func titlePill(lineLimit: Int?) -> some View {
+    Text(store.displayTitle)
+      .font(.headline)
+      .lineLimit(lineLimit)
+      .multilineTextAlignment(.center)
+      .padding(.horizontal, 16)
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .cregGlassCapsule()
+  }
+
+  private var newChatButton: some View {
+    CREGGlassContainer(spacing: 10) {
+      Button {
+        store.send(.delegate(.newChatRequested))
+      } label: {
+        Image(systemName: "square.and.pencil")
+          .cregIconButtonTarget()
+      }
+      .cregGlassCapsule(interactive: true)
+      .accessibilityLabel("New chat")
+      .cregLargeContentViewer("New chat", systemImage: "square.and.pencil")
+    }
+  }
+
+  private var overflowMenu: some View {
+    // The overflow Menu stays outside morphing glass containers to avoid the
+    // iOS 26.1 Menu-in-container morph break.
+    Menu {
+      Button {
+        store.send(.renameTapped)
+      } label: {
+        Label("Rename", systemImage: "pencil")
+      }
+      Button {
+        store.send(.exportTapped)
+      } label: {
+        Label("Export JSONL", systemImage: "square.and.arrow.up")
+      }
+      Button(role: .destructive) {
+        isDeleteConfirmationPresented = true
+      } label: {
+        Label("Delete", systemImage: "trash")
+      }
+    } label: {
+      Image(systemName: "ellipsis")
+        .cregIconButtonTarget()
+        .cregGlassCapsule(interactive: true)
+    }
+    .accessibilityLabel("More")
+    .cregLargeContentViewer("More", systemImage: "ellipsis")
   }
 
   // MARK: Bottom stack
@@ -355,21 +392,20 @@ struct ChatView: View {
             store.send(.stopTapped)
           } label: {
             Image(systemName: "stop.fill")
-              .font(.body.weight(.semibold))
               .foregroundStyle(.white)
-              .frame(width: 44, height: 44)
+              .cregIconButtonTarget(font: .body.weight(.semibold))
           }
           .cregGlassProminent(tint: .red)
           .cregGlassID("composer-primary", in: glassNamespace)
           .accessibilityLabel("Stop answering")
+          .cregLargeContentViewer("Stop answering", systemImage: "stop.fill")
         } else {
           Button {
             requestSend()
           } label: {
             Image(systemName: "arrow.up")
-              .font(.body.weight(.semibold))
               .foregroundStyle(.white)
-              .frame(width: 44, height: 44)
+              .cregIconButtonTarget(font: .body.weight(.semibold))
           }
           .cregGlassProminent(tint: CREGBrand.blue)
           .cregGlassID("composer-primary", in: glassNamespace)
@@ -381,6 +417,7 @@ struct ChatView: View {
               ).isEmpty
           )
           .accessibilityLabel("Send")
+          .cregLargeContentViewer("Send", systemImage: "arrow.up")
         }
       }
     }
@@ -391,7 +428,27 @@ struct ChatView: View {
   private var readinessBanner: some View {
     switch chrome.modelReadiness {
     case .ready:
-      EmptyView()
+      if chrome.modelPreparationReport?.mode == .compatibility {
+        let warningLayout = dynamicTypeSize.isAccessibilitySize
+          ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+          : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        warningLayout {
+          Label(
+            "Compatibility mode — unevaluated results",
+            systemImage: "wrench.and.screwdriver.fill")
+            .font(.callout)
+            .foregroundStyle(.orange)
+          if !dynamicTypeSize.isAccessibilitySize {
+            Spacer()
+          }
+          Button("Retry evaluated") { chrome.retryPreparation() }
+            .cregTextButtonTarget()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .cregGlassRounded(cornerRadius: 16)
+        .accessibilityIdentifier("compatibility-mode-warning")
+      }
     case .preparing:
       HStack(spacing: 8) {
         ProgressView()
@@ -402,17 +459,14 @@ struct ChatView: View {
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
       .cregGlassRounded(cornerRadius: 16)
-    case .failed(let message):
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Label(message, systemImage: "exclamationmark.triangle.fill")
-          .font(.callout)
-          .foregroundStyle(.orange)
-        Spacer()
-        Button("Retry") { chrome.retryPreparation() }
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .cregGlassRounded(cornerRadius: 16)
+    case .failed(let failure):
+      ModelPreparationFailureBanner(
+        failure: failure,
+        developerMode: chrome.developerMode,
+        retry: chrome.retryPreparation,
+        retryCompatibility:
+          chrome.developerMode && failure.allowsCompatibilityRetry
+          ? chrome.retryCompatibilityPreparation : nil)
     }
   }
 
@@ -432,13 +486,12 @@ struct ChatView: View {
           HStack(spacing: 5) {
             if unseenMessageCount > 0 {
               Text("\(unseenMessageCount)")
-                .font(.caption.weight(.bold))
             }
             Image(systemName: "chevron.down")
-              .font(.caption.weight(.bold))
           }
+          .font(.body.weight(.semibold))
           .padding(.horizontal, 12)
-          .frame(height: 36)
+          .frame(minHeight: 44)
           .contentShape(.capsule)
           .cregGlassCapsule(interactive: true)
         }
@@ -449,6 +502,7 @@ struct ChatView: View {
       .accessibilityLabel(
         unseenMessageCount > 0
           ? "Jump to latest, \(unseenMessageCount) new" : "Jump to latest")
+      .cregLargeContentViewer("Jump to latest", systemImage: "chevron.down")
     }
   }
 
@@ -587,15 +641,17 @@ struct QueuedQuestionCell: View {
             .foregroundStyle(.secondary)
           Button(action: cancel) {
             Image(systemName: "xmark.circle.fill")
-              .font(.footnote)
               .foregroundStyle(.secondary)
+              .cregIconButtonTarget()
           }
           .buttonStyle(.plain)
           .accessibilityLabel("Cancel queued question")
+          .cregLargeContentViewer(
+            "Cancel queued question", systemImage: "xmark.circle.fill")
         }
       }
     }
-    .accessibilityElement(children: .combine)
+    .accessibilityElement(children: .contain)
   }
 }
 
@@ -604,25 +660,14 @@ struct QueuedQuestionCell: View {
 struct ProcessingStatusRow: View {
   let processing: ChatFeature.ProcessingState
   let toggleExpansion: () -> Void
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       Button(action: toggleExpansion) {
-        HStack(spacing: 8) {
-          ProgressView()
-          Text(processing.trace.last ?? "Thinking…")
-            .foregroundStyle(.secondary)
-            .contentTransition(.opacity)
-            .lineLimit(1)
-          Spacer(minLength: 4)
-          ElapsedTimeText(since: processing.startedAt)
-          Image(systemName: "chevron.down")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.tertiary)
-            .rotationEffect(
-              .degrees(processing.isTimelineExpanded ? 180 : 0))
-        }
-        .font(.subheadline)
+        statusLabel
+          .font(.subheadline)
+          .frame(minHeight: 44)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -644,6 +689,43 @@ struct ProcessingStatusRow: View {
     .padding(.vertical, 4)
     .animation(.default, value: processing.isTimelineExpanded)
   }
+
+  @ViewBuilder
+  private var statusLabel: some View {
+    if dynamicTypeSize.isAccessibilitySize {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .top, spacing: 8) {
+          ProgressView()
+          Text(processing.trace.last ?? "Thinking…")
+            .foregroundStyle(.secondary)
+            .contentTransition(.opacity)
+        }
+        HStack(spacing: 6) {
+          ElapsedTimeText(since: processing.startedAt)
+          Image(systemName: "chevron.down")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .rotationEffect(
+              .degrees(processing.isTimelineExpanded ? 180 : 0))
+        }
+      }
+    } else {
+      HStack(spacing: 8) {
+        ProgressView()
+        Text(processing.trace.last ?? "Thinking…")
+          .foregroundStyle(.secondary)
+          .contentTransition(.opacity)
+          .lineLimit(1)
+        Spacer(minLength: 4)
+        ElapsedTimeText(since: processing.startedAt)
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(.tertiary)
+          .rotationEffect(
+            .degrees(processing.isTimelineExpanded ? 180 : 0))
+      }
+    }
+  }
 }
 
 /// Live elapsed readout for the in-flight turn.
@@ -664,27 +746,38 @@ struct InterruptedTurnBanner: View {
   let interrupted: InterruptedTurn
   let askAgain: () -> Void
   let dismiss: () -> Void
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 10) {
+    let bannerLayout = dynamicTypeSize.isAccessibilitySize
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+      : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
+    bannerLayout {
       VStack(alignment: .leading, spacing: 3) {
         Text("Interrupted before it finished")
           .font(.footnote.weight(.semibold))
         Text(interrupted.question)
           .font(.footnote)
           .foregroundStyle(.secondary)
-          .lineLimit(2)
+          .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
       }
-      Spacer(minLength: 4)
-      Button("Ask Again", action: askAgain)
-        .font(.footnote.weight(.semibold))
-      Button(action: dismiss) {
-        Image(systemName: "xmark")
-          .font(.caption.bold())
-          .foregroundStyle(.secondary)
+      if !dynamicTypeSize.isAccessibilitySize {
+        Spacer(minLength: 4)
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Dismiss interrupted question")
+      HStack(spacing: 4) {
+        Button("Ask Again", action: askAgain)
+          .font(.footnote.weight(.semibold))
+          .cregTextButtonTarget()
+        Button(action: dismiss) {
+          Image(systemName: "xmark")
+            .foregroundStyle(.secondary)
+            .cregIconButtonTarget()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Dismiss interrupted question")
+        .cregLargeContentViewer(
+          "Dismiss interrupted question", systemImage: "xmark")
+      }
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
@@ -695,9 +788,13 @@ struct InterruptedTurnBanner: View {
 struct CorrectionContextBanner: View {
   let context: ChatFeature.CorrectionContext
   let dismiss: () -> Void
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 10) {
+    let bannerLayout = dynamicTypeSize.isAccessibilitySize
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+      : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
+    bannerLayout {
       Image(systemName: "arrow.uturn.backward.circle")
         .foregroundStyle(.orange)
       VStack(alignment: .leading, spacing: 2) {
@@ -706,16 +803,19 @@ struct CorrectionContextBanner: View {
         Text(context.answerNarration)
           .font(.footnote)
           .foregroundStyle(.secondary)
-          .lineLimit(2)
+          .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
       }
-      Spacer(minLength: 4)
+      if !dynamicTypeSize.isAccessibilitySize {
+        Spacer(minLength: 4)
+      }
       Button(action: dismiss) {
         Image(systemName: "xmark")
-          .font(.caption.bold())
           .foregroundStyle(.secondary)
+          .cregIconButtonTarget()
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Dismiss correction")
+      .cregLargeContentViewer("Dismiss correction", systemImage: "xmark")
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)

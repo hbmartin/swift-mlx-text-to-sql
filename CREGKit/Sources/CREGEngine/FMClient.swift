@@ -13,17 +13,25 @@ public struct FMClient: Sendable {
   public var gate: @Sendable (_ standaloneQuestion: String, _ sensitivity: Double) async throws -> GateDecision
   /// One-line plain-English summary of what was looked at and found.
   public var narrate: @Sendable (_ standaloneQuestion: String, _ result: QueryResult) async throws -> String
+  /// Three schema-answerable next questions derived from one completed pair.
+  public var suggestFollowUps:
+    @Sendable (_ context: FollowUpSuggestionContext, _ schema: String) async throws
+      -> [String]
 
   public init(
     availability: @escaping @Sendable () -> FMAvailability,
     rewrite: @escaping @Sendable (String, [ConversationTurn]) async throws -> String,
     gate: @escaping @Sendable (String, Double) async throws -> GateDecision,
-    narrate: @escaping @Sendable (String, QueryResult) async throws -> String
+    narrate: @escaping @Sendable (String, QueryResult) async throws -> String,
+    suggestFollowUps: (
+      @Sendable (FollowUpSuggestionContext, String) async throws -> [String]
+    )? = nil
   ) {
     self.availability = availability
     self.rewrite = rewrite
     self.gate = gate
     self.narrate = narrate
+    self.suggestFollowUps = suggestFollowUps ?? { _, _ in [] }
   }
 }
 
@@ -36,6 +44,13 @@ private struct GateProbe {
   var needsClarification: Bool
   @Guide(description: "If clarification is needed, one short friendly question to ask the user. Otherwise an empty string.")
   var clarifyingQuestion: String
+}
+
+@Generable
+@available(macOS 26.0, iOS 26.0, *)
+private struct FollowUpQuestionSet {
+  @Guide(description: "Exactly three distinct, concise, standalone questions. Each must end with a question mark and be answerable from the supplied portfolio schema.")
+  var questions: [String]
 }
 
 extension FMClient {
@@ -106,6 +121,35 @@ extension FMClient {
           \(preview)
           """)
         return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+      },
+      suggestFollowUps: { context, schema in
+        let session = LanguageModelSession(instructions: """
+          You suggest the next questions a commercial real estate professional would ask. \
+          Return exactly three distinct, concise, standalone questions. Every question \
+          must be answerable from the supplied portfolio schema, must not repeat the \
+          source question, and must not require older conversation context. Prefer a \
+          useful mix of drill-down, comparison, and adjacent portfolio analysis. Never \
+          mention SQL, tables, columns, or unavailable data.
+          """)
+        let preview = context.result.rows.prefix(8)
+          .map { row in row.map(\.displayString).joined(separator: " | ") }
+          .joined(separator: "\n")
+        let response = try await session.respond(
+          to: """
+            Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
+            Portfolio schema:
+            \(schema)
+
+            Source question: \(context.question)
+            Standalone interpretation: \(context.standaloneQuestion)
+            Answer summary: \(context.narration)
+            Result columns: \(context.result.columns.joined(separator: ", "))
+            Result row count: \(context.result.rowCount)\(context.result.isTruncated ? " (truncated)" : "")
+            First rows:
+            \(preview)
+            """,
+          generating: FollowUpQuestionSet.self)
+        return response.content.questions
       }
     )
   }
@@ -121,7 +165,8 @@ extension FMClient {
         result.rowCount == 0
           ? "I didn't find any matching rows."
           : "Here's what I found — \(result.rowCount) row\(result.rowCount == 1 ? "" : "s")\(result.isTruncated ? " (showing the first \(result.rowCount))" : "")."
-      }
+      },
+      suggestFollowUps: { _, _ in [] }
     )
   }
 }

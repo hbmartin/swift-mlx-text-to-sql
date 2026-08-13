@@ -30,6 +30,11 @@ public enum PipelineEvent: Sendable, Equatable, Codable {
     report: SQLValidationReport)
   case executionStarted(candidateID: CandidateID, sql: String)
   case executionFinished(candidateID: CandidateID, result: QueryResult)
+  /// A cache hit has passed provenance, integrity, and SQLite validation. The
+  /// result can render immediately while grounding and narration continue.
+  case preparedResultReady(
+    prepared: PreparedFollowUp,
+    elapsedMicroseconds: Int64)
   case executionFailed(
     candidateID: CandidateID,
     message: String,
