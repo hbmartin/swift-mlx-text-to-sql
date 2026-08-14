@@ -1,6 +1,21 @@
 import CREGEngine
 import Foundation
 
+public struct ResultPresentationPreference: Equatable, Hashable, Sendable, Codable {
+  public enum Mode: String, Equatable, Hashable, Sendable, Codable {
+    case chart
+    case table
+  }
+
+  public var mode: Mode
+  public var specificationID: String?
+
+  public init(mode: Mode, specificationID: String? = nil) {
+    self.mode = mode
+    self.specificationID = specificationID
+  }
+}
+
 /// One message cell in the chat transcript.
 public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
   public enum Role: String, Equatable, Sendable, Codable {
@@ -25,10 +40,14 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
   public var traceSteps: [String]
   public var createdAt: Date
   public var devInfo: TurnTelemetry?
+  /// Per-result display choice. Nil is the backward-compatible automatic
+  /// default: chart when a safe recommendation exists, otherwise table.
+  public var resultPresentation: ResultPresentationPreference?
 
   public init(
     id: UUID, role: Role, body: Body, traceSteps: [String] = [],
-    createdAt: Date, devInfo: TurnTelemetry? = nil
+    createdAt: Date, devInfo: TurnTelemetry? = nil,
+    resultPresentation: ResultPresentationPreference? = nil
   ) {
     self.id = id
     self.role = role
@@ -36,10 +55,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     self.traceSteps = traceSteps
     self.createdAt = createdAt
     self.devInfo = devInfo
+    self.resultPresentation = resultPresentation
   }
 
   enum CodingKeys: String, CodingKey {
-    case id, role, body, traceSteps, createdAt, devInfo
+    case id, role, body, traceSteps, createdAt, devInfo, resultPresentation
   }
 
   /// Old histories stored a mutable six-field developer summary under
@@ -55,6 +75,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     createdAt = try values.decode(Date.self, forKey: .createdAt)
     devInfo = try? values.decodeIfPresent(
       TurnTelemetry.self, forKey: .devInfo)
+    resultPresentation = try? values.decodeIfPresent(
+      ResultPresentationPreference.self, forKey: .resultPresentation)
   }
 }
 

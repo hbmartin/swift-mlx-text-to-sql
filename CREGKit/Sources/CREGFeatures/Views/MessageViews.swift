@@ -51,9 +51,19 @@ struct MessageCell: View {
             .foregroundStyle(.secondary)
         }
         .font(.subheadline)
-        ResultPreviewView(result: prepared.result) {
-          store.send(.resultViewerPresented(messageID: message.id))
-        }
+        ResultPreviewView(
+          result: prepared.result,
+          sql: prepared.sql,
+          question: prepared.question,
+          preference: message.resultPresentation,
+          setPreference: {
+            store.send(
+              .resultPresentationChanged(
+                messageID: message.id, preference: $0))
+          },
+          open: {
+            store.send(.resultViewerPresented(messageID: message.id))
+          })
         if developerMode {
           DevInfoSectionsView(
             sql: prepared.sql,
@@ -83,9 +93,19 @@ struct MessageCell: View {
             .font(.caption)
             .foregroundStyle(.orange)
         }
-        ResultPreviewView(result: result) {
-          store.send(.resultViewerPresented(messageID: message.id))
-        }
+        ResultPreviewView(
+          result: result,
+          sql: sql,
+          question: message.devInfo?.originalQuestion,
+          preference: message.resultPresentation,
+          setPreference: {
+            store.send(
+              .resultPresentationChanged(
+                messageID: message.id, preference: $0))
+          },
+          open: {
+            store.send(.resultViewerPresented(messageID: message.id))
+          })
         AnswerActionsRow(
           messageID: message.id,
           narration: narration,

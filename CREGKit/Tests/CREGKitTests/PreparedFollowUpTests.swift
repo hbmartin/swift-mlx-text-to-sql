@@ -202,6 +202,20 @@ private enum FollowUpTestError: Error {
         == PreparedFollowUpIntegrity.sha256(data))
   }
 
+  @Test func streamingFileHashRejectsNonpositiveChunkSizes() {
+    let url = URL(fileURLWithPath: #filePath)
+
+    for chunkSize in [0, -1] {
+      #expect(
+        throws: PreparedFollowUpIntegrityError.invalidChunkSize(chunkSize)
+      ) {
+        try PreparedFollowUpIntegrity.sha256(
+          contentsOf: url,
+          chunkSize: chunkSize)
+      }
+    }
+  }
+
   @Test func followUpEventsUseCanonicalJSONL() throws {
     let line = try FollowUpPreparationEvent.rejected(
       rank: 2, reason: .validationFailed
@@ -293,7 +307,7 @@ private enum FollowUpTestError: Error {
       configuration: Self.configuration(
         deadlines: PipelineDeadlines(
           generationSeconds: 1,
-          wholeTurnSeconds: 0.02)))
+          wholeTurnSeconds: 1)))
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
@@ -321,7 +335,7 @@ private enum FollowUpTestError: Error {
       configuration: Self.configuration(
         deadlines: PipelineDeadlines(
           generationSeconds: 1,
-          wholeTurnSeconds: 0.02)))
+          wholeTurnSeconds: 1)))
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 

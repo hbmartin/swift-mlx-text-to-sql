@@ -1,3 +1,4 @@
+import AutoTableCharts
 import CREGEngine
 import ComposableArchitecture
 import Foundation
@@ -469,19 +470,33 @@ enum PreviewFixtures {
     .preferredColorScheme(.dark)
 }
 
-#Preview("Result Viewer — Populated") {
+#Preview("Result Viewer — Range Chart — Light") {
   ResultViewerView(
     result: PreviewFixtures.leaseListingResult,
     runtimeMode: .evaluated,
-    textSize: .constant(.standard))
+    textSize: .constant(.standard),
+    sql: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql,
+    question: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.question)
     .frame(width: 402, height: 874)
 }
 
-#Preview("Result Viewer — Truncated — Dark") {
+#Preview("Result Viewer — Bar Chart — Light") {
+  ResultViewerView(
+    result: PreviewFixtures.fundValueResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.standard),
+    sql: StarterQueryID.portfolioValueByFundV1.sql,
+    question: StarterQueryID.portfolioValueByFundV1.question)
+    .frame(width: 402, height: 874)
+}
+
+#Preview("Result Viewer — Truncation Warning — Dark") {
   ResultViewerView(
     result: PreviewFixtures.truncatedResult,
     runtimeMode: .evaluated,
-    textSize: .constant(.standard))
+    textSize: .constant(.standard),
+    sql: "SELECT property, tenant, annual_base_rent FROM leases LIMIT 500",
+    question: "Show the distribution of returned annual base rent")
     .frame(width: 402, height: 874)
     .preferredColorScheme(.dark)
 }
@@ -492,6 +507,7 @@ enum PreviewFixtures {
     result: PreviewFixtures.leaseListingResult,
     runtimeMode: .evaluated,
     textSize: $textSize,
+    preference: ResultPresentationPreference(mode: .table),
     initialSelection: ResultCellSelection(row: 1, column: 2))
     .frame(width: 402, height: 874)
 }
@@ -501,16 +517,33 @@ enum PreviewFixtures {
     result: PreviewFixtures.leaseListingResult,
     runtimeMode: .evaluated,
     textSize: .constant(.standard),
+    preference: ResultPresentationPreference(mode: .table),
     initialSearchText: "no such tenant")
     .frame(width: 402, height: 874)
 }
 
-#Preview("Result Viewer — Accessibility Dynamic Type") {
+#Preview("Result Viewer — Filtered Table") {
   ResultViewerView(
     result: PreviewFixtures.leaseListingResult,
     runtimeMode: .evaluated,
+    textSize: .constant(.standard),
+    sql: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql,
+    question: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.question,
+    preference: ResultPresentationPreference(mode: .table),
+    initialChartSelection: AutoChartSelection(
+      sourceRowIDs: ["row-0", "row-4", "row-8"],
+      label: "Selected expiration",
+      valueDescription: "3 source rows"))
+    .frame(width: 402, height: 874)
+}
+
+#Preview("Result Viewer — Chart — Accessibility Dynamic Type") {
+  ResultViewerView(
+    result: PreviewFixtures.fundValueResult,
+    runtimeMode: .evaluated,
     textSize: .constant(.large),
-    initialSelection: ResultCellSelection(row: 0, column: 1))
+    sql: StarterQueryID.portfolioValueByFundV1.sql,
+    question: StarterQueryID.portfolioValueByFundV1.question)
     .frame(width: 402, height: 874)
     .environment(\.dynamicTypeSize, .accessibility3)
 }

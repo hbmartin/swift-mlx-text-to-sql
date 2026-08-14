@@ -166,6 +166,9 @@ public struct ChatFeature: Sendable {
     case readAloudFinished
     case resultViewerPresented(messageID: UUID)
     case resultViewerDismissed
+    case resultPresentationChanged(
+      messageID: UUID,
+      preference: ResultPresentationPreference)
     case renameTapped
     case renameCommitted
     case exportTapped
@@ -392,6 +395,21 @@ public struct ChatFeature: Sendable {
       case .resultViewerDismissed:
         state.resultViewerMessageID = nil
         return .none
+
+      case .resultPresentationChanged(let messageID, let preference):
+        guard var message = state.messages[id: messageID] else { return .none }
+        message.resultPresentation = preference
+        state.messages[id: messageID] = message
+        let conversationID = state.conversationID
+        let updatedMessage = message
+        return .run { send in
+          do {
+            try await history.updateMessage(conversationID, updatedMessage)
+          } catch {
+            await send(
+              .operationFailed(.history(operation: .messageSave, error: error)))
+          }
+        }
 
       case .renameTapped:
         state.renameDraft = state.title

@@ -172,3 +172,7 @@ _Avoid_: cached answer, starter query
 **Prepared Answer**:
 The in-place answer state after a Prepared Follow-up is tapped: its cached result is visible immediately while Narration is being produced. If Narration is interrupted, the same message is finalized with deterministic fallback Narration.
 _Avoid_: partial answer, duplicate answer
+
+**Result Presentation**:
+The per-answer Chart or Table choice and, when charted, the selected deterministic specification. Chart marks retain the source row identities needed to filter the Table view temporarily; exports always use the complete returned result.
+_Avoid_: generated visualization, sampled chart

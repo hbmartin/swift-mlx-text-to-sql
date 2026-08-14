@@ -10,6 +10,7 @@ final class AccessibilityUITests: XCTestCase {
     "browser",
     "settings",
     "result-preview",
+    "result-explorer",
     "transient-banners",
   ]
 
@@ -77,6 +78,22 @@ final class AccessibilityUITests: XCTestCase {
       try app.performAccessibilityAudit(for: [.dynamicType, .hitRegion, .textClipped])
       app.terminate()
     }
+  }
+
+  func testChartExplorerExposesStableControlsAndTableFallback() {
+    let app = launch(scenario: "result-explorer")
+    XCTAssertTrue(app.descendants(matching: .any)["result-view-mode"].exists)
+    XCTAssertTrue(app.descendants(matching: .any)["result-chart-explorer"].exists)
+    XCTAssertTrue(app.descendants(matching: .any)["auto-chart-bar"].exists)
+    XCTAssertTrue(app.descendants(matching: .any)["result-chart-type"].exists)
+
+    let table = app.segmentedControls.buttons["Table"]
+    XCTAssertTrue(table.waitForExistence(timeout: 5))
+    table.tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["result-table-explorer"]
+        .waitForExistence(timeout: 5))
+    app.terminate()
   }
 
   @discardableResult

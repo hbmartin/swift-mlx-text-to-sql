@@ -133,16 +133,28 @@ extension QueryPipeline {
             }
             continuation.yield(event)
           }
-          if Task.isCancelled, !finishedSeen {
-            diagnostics.info(
-              category: .pipeline,
-              code: "follow_up_preparation_cancelled",
-              summary: "Prepared follow-up generation was cancelled.",
-              context: baseContext.merging([
-                "accepted_count": String(accepted),
-                "elapsed_ms": operationMilliseconds(
-                  started.duration(to: .now).microseconds),
-              ]) { current, _ in current })
+          if !finishedSeen {
+            let context = baseContext.merging([
+              "accepted_count": String(accepted),
+              "elapsed_ms": operationMilliseconds(
+                started.duration(to: .now).microseconds),
+            ]) { current, _ in current }
+            if Task.isCancelled {
+              diagnostics.info(
+                category: .pipeline,
+                code: "follow_up_preparation_cancelled",
+                summary: "Prepared follow-up generation was cancelled.",
+                context: context)
+            } else {
+              diagnostics.record(
+                DiagnosticEvent(
+                  level: .error,
+                  category: .pipeline,
+                  code: "pipeline_stream_ended_without_terminal_event",
+                  summary:
+                    "The pipeline event stream ended without a terminal event.",
+                  context: context))
+            }
           }
           continuation.finish()
         }
