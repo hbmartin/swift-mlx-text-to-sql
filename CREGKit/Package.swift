@@ -12,6 +12,7 @@ let package = Package(
     .library(name: "CREGFeatures", targets: ["CREGFeatures"]),
   ],
   dependencies: [
+    .package(path: "../../AutoTableCharts"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
@@ -63,6 +64,7 @@ let package = Package(
       name: "CREGFeatures",
       dependencies: [
         "CREGEngine",
+        .product(name: "AutoTableCharts", package: "AutoTableCharts"),
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         .product(name: "ZIPFoundation", package: "ZIPFoundation"),
       ]
@@ -73,7 +75,11 @@ let package = Package(
     ),
     .testTarget(
       name: "CREGKitTests",
-      dependencies: ["CREGEngine", "CREGFeatures"]
+      dependencies: [
+        "CREGEngine",
+        "CREGFeatures",
+        .product(name: "AutoTableCharts", package: "AutoTableCharts"),
+      ]
     ),
   ]
 )

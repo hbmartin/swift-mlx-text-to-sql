@@ -1023,10 +1023,16 @@ public struct AppFeature: Sendable {
       case .failed(let message):
         .failure(message)
       }
+    let assistantMessageID = active.provisionalAssistantMessageID ?? uuid()
+    let preservedResultPresentation =
+      state.chat?.conversationID == conversationID
+      ? state.chat?.messages[id: assistantMessageID]?.resultPresentation
+      : nil
     let assistantMessage = ChatMessage(
-      id: active.provisionalAssistantMessageID ?? uuid(), role: .assistant, body: body,
+      id: assistantMessageID, role: .assistant, body: body,
       traceSteps: active.trace, createdAt: now,
-      devInfo: telemetry)
+      devInfo: telemetry,
+      resultPresentation: preservedResultPresentation)
     let lines = active.eventLines
     state.activeTurn = nil
 

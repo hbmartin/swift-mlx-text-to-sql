@@ -3,7 +3,8 @@
 CREG is an iOS text-to-SQL research prototype for a fixed, synthetic
 commercial-real-estate portfolio. It rewrites and gates a question on device,
 generates SQL with a pinned 4-bit MLX model, executes against a bundled
-read-only SQLite database, and returns a table plus a concise narration.
+read-only SQLite database, and returns a chart-first result, its complete
+table, and a concise narration.
 
 The product requirements are in
 [`CREG — Product Requirements Document.md`](./CREG%20—%20Product%20Requirements%20Document.md),
@@ -75,6 +76,22 @@ seed, SQL, token metrics, integer-microsecond timings, complete typed result
 rows, truncation, errors, Result Group SHA-256, and selection state.
 `TurnTelemetry` is the immutable record rendered by developer mode and
 persisted in chat history and JSONL.
+
+### Result charts
+
+CREG adapts each typed `QueryResult` to the local
+[`AutoTableCharts`](../AutoTableCharts) Swift package. The package profiles the
+supplied rows, generates a bounded set of semantically safe specifications,
+ranks them deterministically, and renders them with native Swift Charts. It is
+fully offline and does not parse the user's question with a model.
+
+Chartable answers default to a compact, noninteractive chart preview. The
+full Result explorer offers up to five ranked chart alternatives and the
+complete Table view. Selecting one exact chart mark filters the Table tab by
+the contributing source-row IDs; changing the chart or closing the explorer
+clears that temporary selection. CSV and Markdown exports always contain the
+complete returned result. Truncated results are labeled as the first returned
+rows and suppress totals, frequency claims, and composition charts.
 
 ### On-device operational diagnostics
 

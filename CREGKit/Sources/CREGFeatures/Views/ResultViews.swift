@@ -1,3 +1,4 @@
+import AutoTableCharts
 import CREGEngine
 import ComposableArchitecture
 import SwiftUI
@@ -276,6 +277,10 @@ private struct SelectedResultCell {
 /// opens the full-screen Result Viewer.
 struct ResultPreviewView: View {
   let result: QueryResult
+  let sql: String
+  let question: String?
+  let preference: ResultPresentationPreference?
+  let setPreference: (ResultPresentationPreference) -> Void
   let open: () -> Void
 
   static let previewRowLimit = 4
@@ -298,78 +303,129 @@ struct ResultPreviewView: View {
         .foregroundStyle(.secondary)
         .padding(10)
     } else {
-      Button(action: open) {
-        VStack(alignment: .leading, spacing: 6) {
-          ScrollView(.horizontal) {
-            Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 6) {
-              GridRow {
-                ForEach(result.columns, id: \.self) { column in
-                  Text(column)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                }
-              }
-              Divider()
-              ForEach(
-                Array(result.rows.prefix(Self.previewRowLimit).enumerated()),
-                id: \.offset
-              ) { _, row in
-                GridRow {
-                  ForEach(Array(row.enumerated()), id: \.offset) { index, value in
-                    Text(
-                      ResultViewerLogic.displayedCopyValue(
-                        value,
-                        column: index < result.columns.count
-                          ? result.columns[index] : "")
-                    )
-                    .font(.caption.monospacedDigit())
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                  }
-                }
-              }
-            }
-            .fixedSize(horizontal: true, vertical: false)
+      let chart = CREGChartAdapter.recommendations(
+        result: result, sql: sql, question: question)
+      let recommendations = chart.set.chartRecommendations
+      let selected = selectedRecommendation(in: recommendations)
+      let mode = effectiveMode(hasChart: selected != nil)
+      VStack(alignment: .leading, spacing: 8) {
+        if selected != nil {
+          Picker(
+            "Result preview",
+            selection: Binding(
+              get: { effectiveMode(hasChart: true) },
+              set: { newMode in
+                setPreference(
+                  ResultPresentationPreference(
+                    mode: newMode,
+                    specificationID: preference?.specificationID ?? selected?.id))
+              })
+          ) {
+            Label("Chart", systemImage: "chart.xyaxis.line")
+              .tag(ResultPresentationPreference.Mode.chart)
+            Label("Table", systemImage: "tablecells")
+              .tag(ResultPresentationPreference.Mode.table)
           }
-          .scrollIndicators(.visible)
+          .pickerStyle(.segmented)
+          .accessibilityIdentifier("result-preview-mode")
+        }
 
-          HStack(spacing: 6) {
-            Text(ResultViewerLogic.rowCountLabel(for: result))
-              .font(.caption2)
-              .foregroundStyle(.tertiary)
-            Spacer(minLength: 0)
-            Label(
-              pinchIsArmed ? "Release to expand" : "View table",
-              systemImage: "arrow.up.left.and.arrow.down.right"
-            )
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(CREGBrand.blue)
-            .contentTransition(.symbolEffect(.replace))
+        Button(action: open) {
+          VStack(alignment: .leading, spacing: 6) {
+            if mode == .chart, let selected {
+              AutoChartView(
+                table: chart.table,
+                recommendation: selected,
+                interaction: .preview,
+                height: 156)
+            } else {
+              tablePreview
+            }
+            HStack(spacing: 6) {
+              Text(ResultViewerLogic.rowCountLabel(for: result))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+              Spacer(minLength: 0)
+              Label(
+                pinchIsArmed ? "Release to expand" : "Explore result",
+                systemImage: "arrow.up.left.and.arrow.down.right"
+              )
+              .font(.caption2.weight(.medium))
+              .foregroundStyle(CREGBrand.blue)
+              .contentTransition(.symbolEffect(.replace))
+            }
+          }
+          .padding(10)
+          .background(
+            .quaternary.opacity(0.5),
+            in: RoundedRectangle(cornerRadius: 12)
+          )
+          .overlay {
+            RoundedRectangle(cornerRadius: 12)
+              .stroke(
+                CREGBrand.blue.opacity(pinchIsArmed ? 0.85 : 0),
+                lineWidth: 2)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(renderedScale)
+        .simultaneousGesture(pinchGesture)
+        .sensoryFeedback(.selection, trigger: pinchHapticTrigger)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+          "Result \(mode == .chart ? "chart" : "table"), \(ResultViewerLogic.rowCountLabel(for: result))"
+        )
+        .accessibilityHint("Double-tap or pinch outward to open the result explorer")
+      }
+    }
+  }
+
+  private func selectedRecommendation(
+    in recommendations: [AutoChartRecommendation]
+  ) -> AutoChartRecommendation? {
+    CREGChartAdapter.resolvedRecommendation(
+      preferredID: preference?.specificationID,
+      in: recommendations)
+  }
+
+  private func effectiveMode(hasChart: Bool) -> ResultPresentationPreference.Mode {
+    guard hasChart else { return .table }
+    return preference?.mode ?? .chart
+  }
+
+  private var tablePreview: some View {
+    ScrollView(.horizontal) {
+      Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 6) {
+        GridRow {
+          ForEach(result.columns, id: \.self) { column in
+            Text(column)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.secondary)
+              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
           }
         }
-        .padding(10)
-        .background(
-          .quaternary.opacity(0.5),
-          in: RoundedRectangle(cornerRadius: 12)
-        )
-        .overlay {
-          RoundedRectangle(cornerRadius: 12)
-            .stroke(
-              CREGBrand.blue.opacity(pinchIsArmed ? 0.85 : 0),
-              lineWidth: 2)
+        Divider()
+        ForEach(
+          Array(result.rows.prefix(Self.previewRowLimit).enumerated()),
+          id: \.offset
+        ) { _, row in
+          GridRow {
+            ForEach(Array(row.enumerated()), id: \.offset) { index, value in
+              Text(
+                ResultViewerLogic.displayedCopyValue(
+                  value,
+                  column: index < result.columns.count ? result.columns[index] : "")
+              )
+              .font(.caption.monospacedDigit())
+              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            }
+          }
         }
-        .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
-      .scaleEffect(renderedScale)
-      .simultaneousGesture(pinchGesture)
-      .sensoryFeedback(.selection, trigger: pinchHapticTrigger)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(
-        "Result table, \(ResultViewerLogic.rowCountLabel(for: result))"
-      )
-      .accessibilityHint("Double-tap or pinch outward to open the full table")
+      .fixedSize(horizontal: true, vertical: false)
     }
+    .scrollIndicators(.visible)
   }
 
   private var pinchGesture: some Gesture {
@@ -408,15 +464,22 @@ struct ResultPreviewView: View {
 
 // MARK: - Full-screen viewer
 
-/// Full-screen Result Viewer: frozen headers, two-axis scrolling, one-column
-/// typed sorting, local search, and copy/share/export of all returned rows.
+/// Full-screen Chart/Table explorer with exact-mark linked filtering. Table
+/// export always retains the complete returned result rather than the current
+/// chart selection.
 struct ResultViewerView: View {
   let result: QueryResult
   let runtimeMode: ModelRuntimeMode
+  let chartTable: CREGChartTable
+  let chartRecommendations: [AutoChartRecommendation]
+  let persistPreference: (ResultPresentationPreference) -> Void
   @Binding var textSize: ResultTableTextSize
   @State private var sort: ResultViewerLogic.SortState?
   @State private var searchText: String
   @State private var selectedCell: ResultCellSelection?
+  @State private var resultMode: ResultPresentationPreference.Mode
+  @State private var selectedSpecificationID: String?
+  @State private var chartSelection: AutoChartSelection?
   @State private var copyFeedbackMessage: String?
   @State private var copyFeedbackTrigger = 0
   @Environment(\.dismiss) private var dismiss
@@ -432,14 +495,32 @@ struct ResultViewerView: View {
     result: QueryResult,
     runtimeMode: ModelRuntimeMode,
     textSize: Binding<ResultTableTextSize>,
+    sql: String = "",
+    question: String? = nil,
+    preference: ResultPresentationPreference? = nil,
+    persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
     initialSearchText: String = "",
-    initialSelection: ResultCellSelection? = nil
+    initialSelection: ResultCellSelection? = nil,
+    initialChartSelection: AutoChartSelection? = nil
   ) {
+    let chart = CREGChartAdapter.recommendations(
+      result: result, sql: sql, question: question)
+    let recommendations = chart.set.chartRecommendations
+    let selectedID = CREGChartAdapter.resolvedRecommendation(
+      preferredID: preference?.specificationID,
+      in: recommendations)?.id
     self.result = result
     self.runtimeMode = runtimeMode
+    self.chartTable = chart.table
+    self.chartRecommendations = recommendations
+    self.persistPreference = persistPreference
     self._textSize = textSize
     self._searchText = State(initialValue: initialSearchText)
     self._selectedCell = State(initialValue: initialSelection)
+    self._resultMode = State(
+      initialValue: recommendations.isEmpty ? .table : preference?.mode ?? .chart)
+    self._selectedSpecificationID = State(initialValue: selectedID)
+    self._chartSelection = State(initialValue: initialChartSelection)
   }
 
   private func columnWidths() -> [CGFloat] {
@@ -468,6 +549,30 @@ struct ResultViewerView: View {
     !normalizedSearchText.isEmpty
   }
 
+  private var selectedRecommendation: AutoChartRecommendation? {
+    if let selectedSpecificationID,
+      let recommendation = chartRecommendations.first(where: {
+        $0.id == selectedSpecificationID
+      })
+    {
+      return recommendation
+    }
+    return chartRecommendations.first
+  }
+
+  private var filteredResult: QueryResult {
+    guard let indexes = chartTable.sourceRowIndexes(for: chartSelection) else {
+      return result
+    }
+    return QueryResult(
+      columns: result.columns,
+      rows: result.rows.enumerated().compactMap { index, row in
+        indexes.contains(index) ? row : nil
+      },
+      isTruncated: result.isTruncated,
+      elapsedMicroseconds: result.elapsedMicroseconds)
+  }
+
   private func selectedResultCell(
     in displayRows: [[SQLValue]]
   ) -> SelectedResultCell? {
@@ -490,27 +595,70 @@ struct ResultViewerView: View {
   }
 
   var body: some View {
+    let tableResult = filteredResult
     let displayRows = ResultViewerLogic.displayRows(
-      result: result, sort: sort, searchText: searchText)
+      result: tableResult, sort: sort, searchText: searchText)
     let widths = columnWidths()
     let selectedResultCell = selectedResultCell(in: displayRows)
     NavigationStack {
-      searchable(
-        VStack(spacing: 0) {
-          table(displayRows: displayRows, widths: widths)
-          if let selectedResultCell {
-            selectionAccessory(selectedResultCell)
+      VStack(spacing: 0) {
+        if !chartRecommendations.isEmpty {
+          Picker("Result view", selection: $resultMode) {
+            Label("Chart", systemImage: "chart.xyaxis.line")
+              .tag(ResultPresentationPreference.Mode.chart)
+            Label("Table", systemImage: "tablecells")
+              .tag(ResultPresentationPreference.Mode.table)
           }
-          footer(displayedRowCount: displayRows.count)
+          .pickerStyle(.segmented)
+          .padding(.horizontal)
+          .padding(.vertical, 8)
+          .accessibilityIdentifier("result-view-mode")
         }
-      )
-      .navigationTitle("Result Table")
+
+        if resultMode == .chart, let selectedRecommendation {
+          ScrollView {
+            AutoChartView(
+              table: chartTable,
+              recommendation: selectedRecommendation,
+              selection: $chartSelection,
+              interaction: .explore,
+              height: 360)
+              .padding()
+            if let reason = selectedRecommendation.rationale.first {
+              Label(reason, systemImage: "lightbulb")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+          }
+          .accessibilityIdentifier("result-chart-explorer")
+        } else {
+          searchable(
+            VStack(spacing: 0) {
+              table(displayRows: displayRows, widths: widths)
+              if let selectedResultCell {
+                selectionAccessory(selectedResultCell)
+              }
+              footer(
+                displayedRowCount: displayRows.count,
+                sourceResult: tableResult,
+                selectionIsActive: chartSelection != nil)
+            }
+          )
+          .accessibilityIdentifier("result-table-explorer")
+        }
+      }
+      .navigationTitle("Result")
       .inlineNavigationTitle()
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Done") { dismiss() }
         }
         ToolbarItemGroup(placement: .primaryAction) {
+          if resultMode == .chart, chartRecommendations.count > 1 {
+            chartTypeMenu
+          }
           textSizeMenu
           exportMenu
         }
@@ -521,6 +669,17 @@ struct ResultViewerView: View {
     }
     .onChange(of: sort) { _, _ in
       selectedCell = nil
+    }
+    .onChange(of: resultMode) { _, mode in
+      persistPreference(
+        ResultPresentationPreference(
+          mode: mode,
+          specificationID: selectedRecommendation?.id))
+    }
+    .onChange(of: selectedSpecificationID) { _, id in
+      chartSelection = nil
+      persistPreference(
+        ResultPresentationPreference(mode: .chart, specificationID: id))
     }
   }
 
@@ -814,15 +973,25 @@ struct ResultViewerView: View {
     .cregLargeContentViewer("Clear selection", systemImage: "xmark")
   }
 
-  private func footer(displayedRowCount: Int) -> some View {
+  private func footer(
+    displayedRowCount: Int,
+    sourceResult: QueryResult,
+    selectionIsActive: Bool
+  ) -> some View {
     ViewThatFits(in: .horizontal) {
       HStack(spacing: 8) {
-        rowStatus(displayedRowCount: displayedRowCount)
+        rowStatus(
+          displayedRowCount: displayedRowCount,
+          sourceResult: sourceResult,
+          selectionIsActive: selectionIsActive)
         Spacer(minLength: 0)
         sortChip
       }
       VStack(alignment: .leading, spacing: 6) {
-        rowStatus(displayedRowCount: displayedRowCount)
+        rowStatus(
+          displayedRowCount: displayedRowCount,
+          sourceResult: sourceResult,
+          selectionIsActive: selectionIsActive)
         sortChip
       }
     }
@@ -832,13 +1001,23 @@ struct ResultViewerView: View {
     .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: sort)
   }
 
-  private func rowStatus(displayedRowCount: Int) -> some View {
-    Text(
-      ResultViewerLogic.rowStatusLabel(
-        for: result,
-        displayedRowCount: displayedRowCount,
-        searchIsActive: !normalizedSearchText.isEmpty)
-    )
+  private func rowStatus(
+    displayedRowCount: Int,
+    sourceResult: QueryResult,
+    selectionIsActive: Bool
+  ) -> some View {
+    let label =
+      if selectionIsActive {
+        normalizedSearchText.isEmpty
+          ? "\(sourceResult.rowCount) selected of \(result.rowCount) returned rows"
+          : "\(displayedRowCount) matching selected rows"
+      } else {
+        ResultViewerLogic.rowStatusLabel(
+          for: result,
+          displayedRowCount: displayedRowCount,
+          searchIsActive: !normalizedSearchText.isEmpty)
+      }
+    return Text(label)
     .font(.caption)
     .foregroundStyle(result.isTruncated ? .orange : .secondary)
   }
@@ -909,6 +1088,23 @@ struct ResultViewerView: View {
     }
   }
 
+  private var chartTypeMenu: some View {
+    Menu {
+      Picker("Chart type", selection: $selectedSpecificationID) {
+        ForEach(chartRecommendations) { recommendation in
+          Text(recommendation.specification.family.displayName)
+            .tag(Optional(recommendation.id))
+        }
+      }
+    } label: {
+      Image(systemName: "chart.xyaxis.line")
+        .cregIconButtonTarget()
+    }
+    .accessibilityLabel("Chart type")
+    .accessibilityIdentifier("result-chart-type")
+    .cregLargeContentViewer("Chart type", systemImage: "chart.xyaxis.line")
+  }
+
   private var textSizeMenu: some View {
     Menu {
       Picker("Table Text Size", selection: $textSize) {
@@ -967,18 +1163,27 @@ extension View {
           let message = store.messages[id: id]
         else { return nil }
         let result: QueryResult
+        let sql: String
+        let question: String?
         switch message.body {
-        case .answer(let answerResult, _, _, _):
+        case .answer(let answerResult, _, let answerSQL, _):
           result = answerResult
+          sql = answerSQL
+          question = message.devInfo?.originalQuestion
         case .preparedAnswer(let prepared):
           result = prepared.result
+          sql = prepared.sql
+          question = prepared.question
         default:
           return nil
         }
         return ResultViewerItem(
           messageID: id,
           result: result,
-          runtimeMode: ResultViewerLogic.runtimeMode(for: message))
+          runtimeMode: ResultViewerLogic.runtimeMode(for: message),
+          sql: sql,
+          question: question,
+          preference: message.resultPresentation)
       },
       set: { item in
         if item == nil {
@@ -990,14 +1195,30 @@ extension View {
         ResultViewerView(
           result: item.result,
           runtimeMode: item.runtimeMode,
-          textSize: textSize)
+          textSize: textSize,
+          sql: item.sql,
+          question: item.question,
+          preference: item.preference,
+          persistPreference: {
+            store.send(
+              .resultPresentationChanged(
+                messageID: item.messageID, preference: $0))
+          })
       }
     #else
       self.sheet(item: binding) { item in
         ResultViewerView(
           result: item.result,
           runtimeMode: item.runtimeMode,
-          textSize: textSize)
+          textSize: textSize,
+          sql: item.sql,
+          question: item.question,
+          preference: item.preference,
+          persistPreference: {
+            store.send(
+              .resultPresentationChanged(
+                messageID: item.messageID, preference: $0))
+          })
       }
     #endif
   }
@@ -1007,5 +1228,8 @@ struct ResultViewerItem: Identifiable, Equatable {
   var messageID: UUID
   var result: QueryResult
   var runtimeMode: ModelRuntimeMode
+  var sql: String
+  var question: String?
+  var preference: ResultPresentationPreference?
   var id: UUID { messageID }
 }

@@ -1,3 +1,4 @@
+import CREGEngine
 import SwiftUI
 
 #if DEBUG
@@ -13,6 +14,7 @@ import SwiftUI
       case browser
       case settings
       case resultPreview = "result-preview"
+      case resultExplorer = "result-explorer"
       case transientBanners = "transient-banners"
     }
 
@@ -51,6 +53,14 @@ import SwiftUI
 
       case .answeredChat, .resultPreview:
         answeredChat
+
+      case .resultExplorer:
+        ResultViewerView(
+          result: PreviewFixtures.fundValueResult,
+          runtimeMode: .evaluated,
+          textSize: .constant(.standard),
+          sql: StarterQueryID.portfolioValueByFundV1.sql,
+          question: StarterQueryID.portfolioValueByFundV1.question)
 
       case .processingQueue:
         ChatView(
