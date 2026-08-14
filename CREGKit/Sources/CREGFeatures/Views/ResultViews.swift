@@ -103,7 +103,7 @@ public enum ResultViewerLogic {
     searchIsActive: Bool
   ) -> String {
     let selection = searchIsActive
-      ? "\(displayedRowCount) matching selected rows"
+      ? "\(displayedRowCount) matching selected row\(displayedRowCount == 1 ? "" : "s")"
       : "\(selectedRowCount) selected of \(result.rowCount) returned rows"
     guard let truncation = truncationLabel(for: result) else { return selection }
     return "\(truncation) · \(selection)"
@@ -302,7 +302,7 @@ final class ResultChartAnalysis {
 @MainActor
 enum ResultPreviewChartCache {
   private struct Entry {
-    var result: QueryResult
+    var resultFingerprint: String
     var sql: String
     var question: String?
     var analysis: ResultChartAnalysis
@@ -318,8 +318,11 @@ enum ResultPreviewChartCache {
     sql: String,
     question: String?
   ) -> ResultChartAnalysis {
+    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
     if let entry = entries[messageID],
-      entry.result == result, entry.sql == sql, entry.question == question
+      entry.resultFingerprint == resultFingerprint,
+      entry.sql == sql,
+      entry.question == question
     {
       markRecent(messageID)
       return entry.analysis
@@ -327,7 +330,10 @@ enum ResultPreviewChartCache {
     let analysis = ResultChartAnalysis(
       result: result, sql: sql, question: question)
     entries[messageID] = Entry(
-      result: result, sql: sql, question: question, analysis: analysis)
+      resultFingerprint: resultFingerprint,
+      sql: sql,
+      question: question,
+      analysis: analysis)
     markRecent(messageID)
     while recency.count > limit {
       entries[recency.removeFirst()] = nil
@@ -721,7 +727,7 @@ struct ResultViewerView: View {
             }
           }
           .accessibilityIdentifier("result-chart-explorer")
-        } else if resultMode == .table {
+        } else {
           let tableResult = filteredResult
           let displayRows = ResultViewerLogic.displayRows(
             result: tableResult, sort: sort, searchText: searchText)
@@ -1111,6 +1117,7 @@ struct ResultViewerView: View {
         .font(.caption.weight(.medium))
     }
     .buttonStyle(.bordered)
+    .cregTextButtonTarget()
     .accessibilityIdentifier("clear-chart-selection")
   }
 

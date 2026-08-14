@@ -1,6 +1,11 @@
 import CREGEngine
+import Combine
 import ComposableArchitecture
 import SwiftUI
+
+#if os(iOS)
+  import UIKit
+#endif
 
 /// The app's single entry point; owns the root store so the app shell
 /// needs no TCA import.
@@ -113,6 +118,18 @@ struct AppRootView: View {
     // Settings sheet and the browser drawer too. `.system` resolves to nil,
     // which leaves the device's own setting in charge.
     .preferredColorScheme(store.appearance.colorScheme)
+    .onChange(of: store.chat?.conversationID) { previous, current in
+      guard previous != nil, previous != current else { return }
+      ResultPreviewChartCache.removeAll()
+    }
+    #if os(iOS)
+      .onReceive(
+        NotificationCenter.default.publisher(
+          for: UIApplication.didReceiveMemoryWarningNotification)
+      ) { _ in
+        ResultPreviewChartCache.removeAll()
+      }
+    #endif
   }
 
   private func currentOffset(revealWidth: CGFloat) -> CGFloat {

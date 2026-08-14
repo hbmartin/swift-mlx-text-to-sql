@@ -141,7 +141,7 @@ import Testing
         selectedRowCount: 2,
         displayedRowCount: 1,
         searchIsActive: true)
-        == "First 4+ rows · 1 matching selected rows")
+        == "First 4+ rows · 1 matching selected row")
   }
 
   // MARK: Pinch interaction

@@ -48,6 +48,21 @@ import Testing
     #expect(projections[2].contains("p.city"))
   }
 
+  @Test func sharedScannerSkipsEscapedQuotesAndCommentLikeLiterals() {
+    let projections = CREGChartAdapter.topLevelProjections(
+      #"""
+      SELECT "from, ""quoted""" AS label,
+             'it''s, /* still literal */ from here' AS note,
+             SUM(value /* ignored, FROM fake */) AS total
+      FROM properties
+      """#)
+
+    #expect(projections.count == 3)
+    #expect(projections[0].contains(#""from, ""quoted""""#))
+    #expect(projections[1].contains("/* still literal */"))
+    #expect(CREGChartAdapter.aggregate(in: projections[2]) == .sum)
+  }
+
   @Test func aggregateDetectionUsesSQLTokensAndRejectsWindowedValues() {
     #expect(CREGChartAdapter.aggregate(in: "COUNT(DISTINCT tenant_id)") == .countDistinct)
     #expect(CREGChartAdapter.aggregate(in: "COALESCE(SUM(value), 0)") == .sum)
@@ -153,6 +168,30 @@ import Testing
     #expect(mixed.unit == nil)
   }
 
+  @Test func hintValuesAreMaterializedOnlyForValueAwareStyles() {
+    var nominalMaterializations = 0
+    func nominalValues() -> [SQLValue] {
+      nominalMaterializations += 1
+      return [.text("Core")]
+    }
+    _ = CREGChartAdapter.hints(
+      for: "fund_name",
+      projection: "fund_name",
+      values: nominalValues())
+    #expect(nominalMaterializations == 0)
+
+    var percentMaterializations = 0
+    func percentValues() -> [SQLValue] {
+      percentMaterializations += 1
+      return [.real(0.62)]
+    }
+    _ = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate",
+      values: percentValues())
+    #expect(percentMaterializations == 1)
+  }
+
   @Test func temporalAliasesAllowSparseInvalidValues() {
     let table = CREGChartTable(
       result: QueryResult(
@@ -221,12 +260,25 @@ import Testing
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(first === second)
 
+    var retimed = result
+    retimed.elapsedMicroseconds = 42_000
+    let equivalent = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: retimed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === equivalent)
+
     var changed = result
     changed.rows.append([.text("Value-Add"), .real(8)])
     let third = ResultPreviewChartCache.analysis(
       messageID: messageID, result: changed,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(first !== third)
+
+    ResultPreviewChartCache.removeAll()
+    let afterRelease = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: changed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(third !== afterRelease)
   }
 
   @Test(arguments: [

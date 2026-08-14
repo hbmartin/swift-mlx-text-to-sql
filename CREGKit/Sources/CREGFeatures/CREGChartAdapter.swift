@@ -109,7 +109,7 @@ enum CREGChartAdapter {
   static func hints(
     for name: String,
     projection: String?,
-    values: [SQLValue] = []
+    values: @autoclosure () -> [SQLValue] = []
   ) -> AutoChartColumnHints {
     let normalized = name.lowercased()
     let aggregation = aggregate(in: projection)
@@ -124,7 +124,7 @@ enum CREGChartAdapter {
         aggregationSafety: .unsafe)
     }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
-    if style == .date, hasValidTemporalValues(values) {
+    if style == .date, hasValidTemporalValues(values()) {
       let role: AutoChartAnalyticRole =
         containsWord(normalized, [
           "commencement", "origination", "acquisition", "inception", "start",
@@ -147,48 +147,40 @@ enum CREGChartAdapter {
         aggregation: aggregation,
         aggregationSafety: safety)
     }
-    if style == .percent, values.isEmpty || hasQuantitativeValues(values) {
-      return AutoChartColumnHints(
-        semanticType: .quantitative,
-        role: .measure,
+    if style == .percent {
+      let values = values()
+      return quantitativeHints(
+        values: values,
         unit: percentUnit(for: values),
         aggregation: aggregation,
-        aggregationSafety: safety)
+        safety: safety)
     }
-    if (style == .currency || style == .currencyPerSquareFoot),
-      values.isEmpty || hasQuantitativeValues(values)
-    {
-      return AutoChartColumnHints(
-        semanticType: .quantitative,
-        role: .measure,
+    if style == .currency || style == .currencyPerSquareFoot {
+      return quantitativeHints(
+        values: values(),
         unit: .currency(code: "USD"),
         aggregation: aggregation,
-        aggregationSafety: safety)
+        safety: safety)
     }
-    if style == .squareFeet, values.isEmpty || hasQuantitativeValues(values) {
-      return AutoChartColumnHints(
-        semanticType: .quantitative,
-        role: .measure,
+    if style == .squareFeet {
+      return quantitativeHints(
+        values: values(),
         unit: .area(unit: "sq ft"),
         aggregation: aggregation,
-        aggregationSafety: safety)
+        safety: safety)
     }
-    if style == .count, containsWord(normalized, ["month", "months"]),
-      values.isEmpty || hasQuantitativeValues(values)
-    {
-      return AutoChartColumnHints(
-        semanticType: .quantitative,
-        role: .measure,
+    if style == .count, containsWord(normalized, ["month", "months"]) {
+      return quantitativeHints(
+        values: values(),
         unit: .duration(unit: "months"),
         aggregation: aggregation,
-        aggregationSafety: safety)
+        safety: safety)
     }
-    if style == .ratio, values.isEmpty || hasQuantitativeValues(values) {
-      return AutoChartColumnHints(
-        semanticType: .quantitative,
-        role: .measure,
+    if style == .ratio {
+      return quantitativeHints(
+        values: values(),
         aggregation: aggregation,
-        aggregationSafety: safety)
+        safety: safety)
     }
     if style == .plainDigits, containsWord(normalized, ["year"]) {
       return AutoChartColumnHints(
@@ -269,49 +261,18 @@ enum CREGChartAdapter {
   static func topLevelProjections(_ sql: String) -> [String] {
     let characters = Array(sql)
     var depth = 0
-    var quote: Character?
     var selectStart: Int?
     var index = 0
     while index < characters.count {
       let character = characters[index]
-      if let activeQuote = quote {
-        if character == activeQuote {
-          if index + 1 < characters.count, characters[index + 1] == activeQuote {
-            index += 2
-            continue
-          }
-          quote = nil
-        }
-        index += 1
+      if let next = skippingComment(characters, from: index) {
+        index = next
         continue
       }
-      if character == "-", index + 1 < characters.count,
-        characters[index + 1] == "-"
-      {
-        index += 2
-        while index < characters.count, !characters[index].isNewline {
-          index += 1
-        }
+      if let next = skippingQuotedRegion(characters, from: index) {
+        index = next
         continue
       }
-      if character == "/", index + 1 < characters.count,
-        characters[index + 1] == "*"
-      {
-        index += 2
-        while index + 1 < characters.count,
-          !(characters[index] == "*" && characters[index + 1] == "/")
-        {
-          index += 1
-        }
-        index = min(index + 2, characters.count)
-        continue
-      }
-      if character == "'" || character == "\"" || character == "`" {
-        quote = character
-        index += 1
-        continue
-      }
-      if character == "[" { quote = "]"; index += 1; continue }
       if character == "(" { depth += 1; index += 1; continue }
       if character == ")" { depth = max(0, depth - 1); index += 1; continue }
       if depth == 0, character.isLetter {
@@ -338,48 +299,19 @@ enum CREGChartAdapter {
     let characters = Array(text)
     var output: [String] = []
     var depth = 0
-    var quote: Character?
     var start = 0
     var index = 0
     while index < characters.count {
       let character = characters[index]
-      if let activeQuote = quote {
-        if character == activeQuote {
-          if index + 1 < characters.count, characters[index + 1] == activeQuote {
-            index += 2
-            continue
-          }
-          quote = nil
-        }
-        index += 1
+      if let next = skippingComment(characters, from: index) {
+        index = next
         continue
       }
-      if character == "-", index + 1 < characters.count,
-        characters[index + 1] == "-"
-      {
-        index += 2
-        while index < characters.count, !characters[index].isNewline {
-          index += 1
-        }
+      if let next = skippingQuotedRegion(characters, from: index) {
+        index = next
         continue
       }
-      if character == "/", index + 1 < characters.count,
-        characters[index + 1] == "*"
-      {
-        index += 2
-        while index + 1 < characters.count,
-          !(characters[index] == "*" && characters[index + 1] == "/")
-        {
-          index += 1
-        }
-        index = min(index + 2, characters.count)
-        continue
-      }
-      if character == "'" || character == "\"" || character == "`" {
-        quote = character
-      } else if character == "[" {
-        quote = "]"
-      } else if character == "(" {
+      if character == "(" {
         depth += 1
       } else if character == ")" {
         depth = max(0, depth - 1)
@@ -429,44 +361,12 @@ enum CREGChartAdapter {
         index += 1
         continue
       }
-      if character == "-", index + 1 < characters.count,
-        characters[index + 1] == "-"
-      {
-        index += 2
-        while index < characters.count, !characters[index].isNewline {
-          index += 1
-        }
+      if let next = skippingComment(characters, from: index) {
+        index = next
         continue
       }
-      if character == "/", index + 1 < characters.count,
-        characters[index + 1] == "*"
-      {
-        index += 2
-        while index + 1 < characters.count,
-          !(characters[index] == "*" && characters[index + 1] == "/")
-        {
-          index += 1
-        }
-        index = min(index + 2, characters.count)
-        continue
-      }
-      if character == "'" || character == "\"" || character == "`"
-        || character == "["
-      {
-        let closing: Character = character == "[" ? "]" : character
-        index += 1
-        while index < characters.count {
-          guard characters[index] == closing else {
-            index += 1
-            continue
-          }
-          if index + 1 < characters.count, characters[index + 1] == closing {
-            index += 2
-            continue
-          }
-          index += 1
-          break
-        }
+      if let next = skippingQuotedRegion(characters, from: index) {
+        index = next
         continue
       }
       if character.isLetter || character == "_" {
@@ -494,6 +394,59 @@ enum CREGChartAdapter {
       && Array(tokens.suffix(2)) == [.symbol("."), .symbol("*")]
   }
 
+  /// Advances past a SQL line or block comment beginning at `index`.
+  private static func skippingComment(
+    _ characters: [Character], from index: Int
+  ) -> Int? {
+    guard index + 1 < characters.count else { return nil }
+    if characters[index] == "-", characters[index + 1] == "-" {
+      var next = index + 2
+      while next < characters.count, !characters[next].isNewline { next += 1 }
+      return next
+    }
+    if characters[index] == "/", characters[index + 1] == "*" {
+      var next = index + 2
+      while next + 1 < characters.count,
+        !(characters[next] == "*" && characters[next + 1] == "/")
+      {
+        next += 1
+      }
+      return min(next + 2, characters.count)
+    }
+    return nil
+  }
+
+  /// Advances past a quoted value or quoted/bracketed identifier, including
+  /// SQL's doubled-delimiter escaping. Returns nil when `index` is unquoted.
+  private static func skippingQuotedRegion(
+    _ characters: [Character], from index: Int
+  ) -> Int? {
+    guard let closing = closingDelimiter(for: characters[index]) else {
+      return nil
+    }
+    var next = index + 1
+    while next < characters.count {
+      guard characters[next] == closing else {
+        next += 1
+        continue
+      }
+      if next + 1 < characters.count, characters[next + 1] == closing {
+        next += 2
+        continue
+      }
+      return next + 1
+    }
+    return characters.count
+  }
+
+  private static func closingDelimiter(for character: Character) -> Character? {
+    switch character {
+    case "'", "\"", "`": character
+    case "[": "]"
+    default: nil
+    }
+  }
+
   private static func hasValidTemporalValues(_ values: [SQLValue]) -> Bool {
     let nonNull = values.filter { if case .null = $0 { false } else { true } }
     guard !nonNull.isEmpty else { return false }
@@ -503,6 +456,25 @@ enum CREGChartAdapter {
     }
     return validCount == nonNull.count
       || (validCount >= 2 && Double(validCount) / Double(nonNull.count) >= 0.8)
+  }
+
+  private static func quantitativeHints(
+    values: [SQLValue],
+    unit: AutoChartUnit? = nil,
+    aggregation: AutoChartAggregation?,
+    safety: AutoChartAggregationSafety
+  ) -> AutoChartColumnHints {
+    guard values.isEmpty || hasQuantitativeValues(values) else {
+      return AutoChartColumnHints(
+        aggregation: aggregation,
+        aggregationSafety: safety)
+    }
+    return AutoChartColumnHints(
+      semanticType: .quantitative,
+      role: .measure,
+      unit: unit,
+      aggregation: aggregation,
+      aggregationSafety: safety)
   }
 
   private static func hasQuantitativeValues(_ values: [SQLValue]) -> Bool {
