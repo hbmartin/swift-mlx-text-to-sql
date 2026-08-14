@@ -327,7 +327,8 @@ public struct ChatFeature: Sendable {
           state: &state,
           submittedQuestion: prepared.question,
           clearsComposer: false,
-          preparedFollowUp: prepared)
+          preparedFollowUp: prepared,
+          clearsFollowUpBatch: false)
 
       case .stopTapped:
         guard state.isProcessing else { return .none }
@@ -495,14 +496,15 @@ public struct ChatFeature: Sendable {
     submittedQuestion: String? = nil,
     clearsComposer: Bool = true,
     starter: StarterQueryID? = nil,
-    preparedFollowUp: PreparedFollowUp? = nil
+    preparedFollowUp: PreparedFollowUp? = nil,
+    clearsFollowUpBatch: Bool = true
   ) -> Effect<Action> {
     guard state.isSubmissionEnabled else { return .none }
     let question = (submittedQuestion ?? state.composerText)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !question.isEmpty else { return .none }
     if clearsComposer { state.composerText = "" }
-    state.followUpBatch = nil
+    if clearsFollowUpBatch { state.followUpBatch = nil }
     let conversationID = state.conversationID
     let source: QuestionSubmissionSource =
       if let preparedFollowUp {

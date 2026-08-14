@@ -344,6 +344,36 @@ private actor AssistantPersistenceGate {
     #expect(clears.recorded == [Self.conversationA.uuidString])
   }
 
+  @Test func appReadinessGateKeepsPreparedFollowUpAvailable() async {
+    let prepared = Self.preparedFollowUp()
+    var state = Self.appState()
+    state.chat?.followUpBatch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .modelPreparationFailed(
+        ModelPreparationFailure(
+          code: "model_prompt_cache_failed",
+          stage: .promptCache,
+          mode: .evaluated,
+          userMessage: "Model preparation failed.",
+          diagnostic: "test failure")))
+    #expect(store.state.chat?.isSubmissionEnabled == false)
+
+    await store.send(.chat(.preparedFollowUpTapped(prepared.id)))
+    await store.finish()
+
+    #expect(store.state.chat?.followUpBatch?.suggestions == [prepared])
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.queue.isEmpty)
+  }
+
   @Test func preparedTapUpdatesTheSameAssistantMessageAfterImmediatePreview() async {
     let sourceID = UUID(79)
     let prepared = Self.preparedFollowUp(sourceMessageID: sourceID)
@@ -1162,7 +1192,9 @@ private actor AssistantPersistenceGate {
     await store.skipReceivedActions()
 
     #expect(store.state.composerText == "Keep this draft for later")
-    #expect(store.state.followUpBatch == nil)
+    // AppFeature owns consuming the batch after its authoritative readiness
+    // check accepts the delegated submission.
+    #expect(store.state.followUpBatch?.suggestions == [prepared])
     #expect(drafts.recorded.isEmpty)
   }
 

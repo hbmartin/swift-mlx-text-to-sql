@@ -303,6 +303,7 @@ public struct AppFeature: Sendable {
         if !state.didRequestPreparationJournalInspection {
           state.didRequestPreparationJournalInspection = true
           state.modelReadiness = .preparing
+          syncSchedulerProjection(into: &state)
           effects.append(
             .run { send in
               await send(
@@ -627,13 +628,6 @@ public struct AppFeature: Sendable {
           conversationID: conversationID,
           sourceMessageID: sourceMessageID,
           event: event)
-
-      case .chat(.preparedFollowUpTapped(_)):
-        // Refresh this projection before the child reducer sees the tap. This
-        // also protects against a stale view action racing a readiness change.
-        let isSubmissionEnabled = state.modelReadiness == .ready
-        state.chat?.isSubmissionEnabled = isSubmissionEnabled
-        return .none
 
       case .chat(.delegate(.submitQuestion(let submission))):
         guard state.modelReadiness == .ready, let chat = state.chat
