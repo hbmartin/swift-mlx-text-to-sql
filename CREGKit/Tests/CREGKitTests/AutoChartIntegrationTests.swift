@@ -48,6 +48,47 @@ import Testing
     #expect(projections[2].contains("p.city"))
   }
 
+  @Test func sharedScannerSkipsEscapedQuotesAndCommentLikeLiterals() {
+    let projections = CREGChartAdapter.topLevelProjections(
+      #"""
+      SELECT "from, ""quoted""" AS label,
+             'it''s, /* still literal */ from here' AS note,
+             SUM(value /* ignored, FROM fake */) AS total
+      FROM properties
+      """#)
+
+    #expect(projections.count == 3)
+    #expect(projections[0].contains(#""from, ""quoted""""#))
+    #expect(projections[1].contains("/* still literal */"))
+    #expect(CREGChartAdapter.aggregate(in: projections[2]) == .sum)
+  }
+
+  @Test func aggregateDetectionUsesSQLTokensAndRejectsWindowedValues() {
+    #expect(CREGChartAdapter.aggregate(in: "COUNT(DISTINCT tenant_id)") == .countDistinct)
+    #expect(CREGChartAdapter.aggregate(in: "COALESCE(SUM(value), 0)") == .sum)
+    #expect(CREGChartAdapter.aggregate(in: "checksum(value)") == nil)
+    #expect(CREGChartAdapter.aggregate(in: "value /* SUM(fake) */") == nil)
+    #expect(CREGChartAdapter.aggregate(in: "'SUM(fake)' AS label") == nil)
+    #expect(
+      CREGChartAdapter.aggregate(
+        in: "SUM(value) OVER (PARTITION BY fund_id)") == nil)
+  }
+
+  @Test func wildcardOrMismatchedProjectionsSuppressPositionalHints() {
+    #expect(
+      CREGChartAdapter.alignedProjections(
+        "SELECT p.*, SUM(value) FROM properties p", columnCount: 4)
+        == [nil, nil, nil, nil])
+    #expect(
+      CREGChartAdapter.alignedProjections(
+        "SELECT name, value FROM properties", columnCount: 3)
+        == [nil, nil, nil])
+    #expect(
+      CREGChartAdapter.alignedProjections(
+        "SELECT name, SUM(value) FROM properties", columnCount: 2)[1]
+        == "SUM(value)")
+  }
+
   @Test func schemaAndProjectionHintsPreserveIdentifiersUnitsDatesAndAggregates() {
     let result = QueryResult(
       columns: ["loan_id", "current_balance", "maturity_date"],
@@ -88,6 +129,156 @@ import Testing
     #expect(duration.role == .measure)
     #expect(year.semanticType == .ordinal)
     #expect(year.role == .dimension)
+  }
+
+  @Test func frozenSchemaUnitsUseWordBoundariesAndSpecificUnitsFirst() {
+    let area = CREGChartAdapter.hints(for: "rentable_sqft", projection: nil)
+    let duration = CREGChartAdapter.hints(for: "free_rent_months", projection: nil)
+    let credit = CREGChartAdapter.hints(for: "credit_rating", projection: nil)
+
+    #expect(area.unit == .area(unit: "sq ft"))
+    #expect(duration.unit == .duration(unit: "months"))
+    #expect(credit.unit == nil)
+    #expect(credit.semanticType == nil)
+  }
+
+  @Test func textRateColumnsRemainNominalAndPercentScaleFollowsValues() {
+    let rateType = CREGChartAdapter.hints(
+      for: "rate_type",
+      projection: "rate_type",
+      values: [.text("Fixed"), .text("Floating")])
+    #expect(rateType.semanticType == nil)
+    #expect(rateType.role == nil)
+    #expect(rateType.unit == nil)
+
+    let fractions = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate",
+      values: [.real(0.62), .real(0.91)])
+    let points = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate * 100",
+      values: [.real(62), .real(91)])
+    let mixed = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate",
+      values: [.real(0.62), .real(91)])
+    #expect(fractions.unit == .percent(fractional: true))
+    #expect(points.unit == .percent(fractional: false))
+    #expect(mixed.unit == nil)
+  }
+
+  @Test func hintValuesAreMaterializedOnlyForValueAwareStyles() {
+    var nominalMaterializations = 0
+    func nominalValues() -> [SQLValue] {
+      nominalMaterializations += 1
+      return [.text("Core")]
+    }
+    _ = CREGChartAdapter.hints(
+      for: "fund_name",
+      projection: "fund_name",
+      values: nominalValues())
+    #expect(nominalMaterializations == 0)
+
+    var percentMaterializations = 0
+    func percentValues() -> [SQLValue] {
+      percentMaterializations += 1
+      return [.real(0.62)]
+    }
+    _ = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate",
+      values: percentValues())
+    #expect(percentMaterializations == 1)
+  }
+
+  @Test func temporalAliasesAllowSparseInvalidValues() {
+    let table = CREGChartTable(
+      result: QueryResult(
+        columns: ["lease_commencement", "rent"],
+        rows: [
+          [.text("2025-01-01"), .real(10)],
+          [.text("2025-02-01"), .real(11)],
+          [.text("unknown"), .real(12)],
+          [.text("2025-04-01"), .real(13)],
+          [.text("2025-05-01"), .real(14)],
+        ]),
+      sql: "SELECT lease_commencement, rent FROM leases",
+      question: "Show lease starts")
+
+    #expect(table.chartColumns[0].hints.semanticType == .temporal)
+    #expect(table.chartColumns[0].hints.role == .intervalStart)
+  }
+
+  @Test func temporalHintsRequireValidValuesAndDateOnlyParsingUsesTheProvidedCalendar() throws {
+    let invalid = CREGChartTable(
+      result: QueryResult(
+        columns: ["maturity_date", "current_balance"],
+        rows: [[.text("not scheduled"), .real(10)]]),
+      sql: "SELECT maturity_date, current_balance FROM loans",
+      question: "Show the trend")
+    #expect(invalid.chartColumns[0].hints.semanticType != .temporal)
+    #expect(invalid.chartRows[0].chartValue(for: invalid.chartColumns[0].id).dateValue == nil)
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+    let date = try #require(
+      CREGChartAdapter.parseISODate("2027-03-15", calendar: calendar))
+    let components = calendar.dateComponents([.year, .month, .day], from: date)
+    #expect(components.year == 2027)
+    #expect(components.month == 3)
+    #expect(components.day == 15)
+    #expect(CREGChartAdapter.parseISODate("2027-02-31", calendar: calendar) == nil)
+  }
+
+  @Test func defaultDateOnlyParsingUsesGregorianGMT() throws {
+    let date = try #require(CREGChartAdapter.parseISODate("2027-03-15"))
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = .gmt
+    let components = calendar.dateComponents(
+      [.year, .month, .day, .hour, .minute, .second], from: date)
+    #expect(components.year == 2027)
+    #expect(components.month == 3)
+    #expect(components.day == 15)
+    #expect(components.hour == 0)
+    #expect(components.minute == 0)
+    #expect(components.second == 0)
+  }
+
+  @Test @MainActor
+  func previewChartAnalysisIsCachedByMessageAndInvalidatedByInput() {
+    ResultPreviewChartCache.removeAll()
+    let messageID = UUID()
+    let result = QueryResult(
+      columns: ["fund", "current_market_value"],
+      rows: [[.text("Core"), .real(10)]])
+    let first = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    let second = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === second)
+
+    var retimed = result
+    retimed.elapsedMicroseconds = 42_000
+    let equivalent = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: retimed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === equivalent)
+
+    var changed = result
+    changed.rows.append([.text("Value-Add"), .real(8)])
+    let third = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: changed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first !== third)
+
+    ResultPreviewChartCache.removeAll()
+    let afterRelease = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: changed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(third !== afterRelease)
   }
 
   @Test(arguments: [
@@ -168,7 +359,7 @@ import Testing
             [.text("Harbor Point"), .text("Bay Bank"), .real(25_000_000), .text("2027-04-01")],
             [.text("Eastgate"), .text("Union Credit"), .real(18_500_000), .text("2028-02-15")],
           ]),
-        .bubble
+        .line
       ),
     ]
 
@@ -289,7 +480,7 @@ import Testing
       mode: .table, specificationID: "policy|bar|fund|value")
     let recorder = PreferenceRecorder()
     var history = HistoryClient.noop()
-    history.updateMessage = { conversationID, updated in
+    history.updateResultPresentation = { conversationID, updated in
       recorder.record(conversationID: conversationID, message: updated)
     }
     var state = ChatFeature.State(conversationID: UUID())
@@ -343,9 +534,9 @@ import Testing
 
     let gate = FirstPreferenceSaveGate()
     var delayedHistory = liveHistory
-    delayedHistory.updateMessage = { conversationID, message in
+    delayedHistory.updateResultPresentation = { conversationID, message in
       await gate.delayFirstSave()
-      try await liveHistory.updateMessage(conversationID, message)
+      try await liveHistory.updateResultPresentation(conversationID, message)
     }
     var state = ChatFeature.State(conversationID: conversationID)
     state.messages.append(message)
@@ -374,6 +565,30 @@ import Testing
 
     let loaded = try await liveHistory.loadConversation(conversationID)
     #expect(loaded.messages.first?.resultPresentation == finalPreference)
+  }
+
+  @Test func reducerRevisionsRejectAnOlderEffectThatReachesTheActorLast() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let messageID = UUID()
+    let writes = PreferenceWriteRecorder()
+
+    try await queue.save(
+      conversationID: conversationID,
+      messageID: messageID,
+      revision: 2
+    ) {
+      writes.record("new")
+    }
+    try await queue.save(
+      conversationID: conversationID,
+      messageID: messageID,
+      revision: 1
+    ) {
+      writes.record("old")
+    }
+
+    #expect(writes.values == ["new"])
   }
 
   private static func answerMessage() -> ChatMessage {
@@ -466,6 +681,23 @@ private final class PreferenceRecorder: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return storedPreference
+  }
+}
+
+private final class PreferenceWriteRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedValues: [String] = []
+
+  func record(_ value: String) {
+    lock.lock()
+    storedValues.append(value)
+    lock.unlock()
+  }
+
+  var values: [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedValues
   }
 }
 

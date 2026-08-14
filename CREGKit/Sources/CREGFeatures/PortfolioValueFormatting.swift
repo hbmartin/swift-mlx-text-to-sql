@@ -7,7 +7,7 @@ import Foundation
 /// identity, voting, and CSV export never see these strings. Output is
 /// deterministic en-US so unit tests hold across device locales.
 public enum PortfolioValueFormatting {
-  enum Style {
+  enum Style: Equatable {
     /// Years and identifiers: digits without grouping ("2019", not "2,019").
     case plainDigits
     /// Counts such as `term_months`: default numeric display.
@@ -58,12 +58,24 @@ public enum PortfolioValueFormatting {
     }
 
     if has("id") { return .plainDigits }
-    if has("year") { return .plainDigits }
     if has("month", "months", "floor", "floors") { return .count }
     if has("psf") { return .currencyPerSquareFoot }
     if has("sqft", "sf", "square") { return .squareFeet }
     if has("dscr") { return .ratio }
-    if has("date", "period_end", "maturity", "inception") { return .date }
+    if has(
+      "date", "period_end", "commencement", "expiration", "maturity",
+      "origination", "acquisition", "disposition", "inception")
+    {
+      return .date
+    }
+    // A terminal year token describes the dimension associated with a metric
+    // (for example `noi_year`), while labels such as
+    // `year_over_year_growth_rate` still describe the metric itself.
+    if normalized == "year" || normalized.hasSuffix("_year")
+      || normalized.hasSuffix(" year")
+    {
+      return .plainDigits
+    }
     if has(
       "value", "price", "rent", "balance", "income", "expense", "expenses",
       "capital", "deposit", "noi", "capex", "loss", "allowance",
@@ -76,6 +88,7 @@ public enum PortfolioValueFormatting {
     {
       return .percent
     }
+    if has("year") { return .plainDigits }
     return .plain
   }
 

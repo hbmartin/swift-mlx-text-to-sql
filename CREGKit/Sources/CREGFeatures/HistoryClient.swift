@@ -29,9 +29,17 @@ public struct HistoryClient: Sendable {
   public var endTurnJournal: @Sendable (_ conversationID: UUID) async throws -> Void
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
-  /// Replaces an existing payload without changing transcript position, or
-  /// inserts it when finalization beats its provisional append to the store.
+  /// Replaces an existing body/telemetry payload without changing transcript
+  /// position, while preserving any newer result-presentation preference. It
+  /// inserts the supplied message when finalization beats its provisional
+  /// append to the store.
   public var updateMessage:
+    @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
+  /// Updates only a message's result-presentation preference. The supplied
+  /// message is used as an insert fallback if its provisional append has not
+  /// reached the store yet; an existing payload's body and telemetry are never
+  /// replaced by this operation.
+  public var updateResultPresentation:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   public var appendEvents:
     @Sendable (_ conversationID: UUID, _ messageID: UUID, _ jsonLines: [String]) async throws ->
@@ -109,6 +117,9 @@ extension HistoryClient {
       endTurnJournal: { try await store.endTurnJournal(conversationID: $0) },
       appendMessage: { try await store.appendMessage(conversationID: $0, message: $1) },
       updateMessage: { try await store.updateMessage(conversationID: $0, message: $1) },
+      updateResultPresentation: {
+        try await store.updateResultPresentation(conversationID: $0, message: $1)
+      },
       appendEvents: {
         try await store.appendEvents(conversationID: $0, messageID: $1, lines: $2)
       },
@@ -649,9 +660,23 @@ final class HistoryStore: Sendable {
   }
 
   func updateMessage(conversationID: UUID, message: ChatMessage) async throws {
-    let payload = String(
-      decoding: try Self.encoder.encode(message), as: UTF8.self)
     try await queue.write { db in
+      var mergedMessage = message
+      if let storedPayload = try String.fetchOne(
+        db,
+        sql: """
+          SELECT payload FROM message
+          WHERE id = ? AND conversation_id = ?
+          """,
+        arguments: [message.id.uuidString, conversationID.uuidString])
+      {
+        let storedMessage = try Self.decoder.decode(
+          ChatMessage.self, from: Data(storedPayload.utf8))
+        mergedMessage.resultPresentation =
+          storedMessage.resultPresentation ?? message.resultPresentation
+      }
+      let payload = String(
+        decoding: try Self.encoder.encode(mergedMessage), as: UTF8.self)
       try db.execute(
         sql: """
           UPDATE message SET payload = ?
@@ -694,6 +719,83 @@ final class HistoryStore: Sendable {
       try db.execute(
         sql: "DELETE FROM search_index WHERE conversation_id = ? AND message_id = ?",
         arguments: [conversationID.uuidString, message.id.uuidString])
+      if let entry = Self.searchEntry(for: mergedMessage) {
+        try db.execute(
+          sql: """
+            INSERT INTO search_index (content, conversation_id, message_id, kind)
+            VALUES (?, ?, ?, ?)
+            """,
+          arguments: [
+            entry.content, conversationID.uuidString,
+            message.id.uuidString, entry.kind,
+          ])
+      }
+    }
+  }
+
+  func updateResultPresentation(
+    conversationID: UUID,
+    message: ChatMessage
+  ) async throws {
+    let fallbackPayload = String(
+      decoding: try Self.encoder.encode(message), as: UTF8.self)
+    try await queue.write { db in
+      let storedPayload = try String.fetchOne(
+        db,
+        sql: """
+          SELECT payload FROM message
+          WHERE id = ? AND conversation_id = ?
+          """,
+        arguments: [message.id.uuidString, conversationID.uuidString])
+
+      if let storedPayload {
+        var storedMessage = try Self.decoder.decode(
+          ChatMessage.self, from: Data(storedPayload.utf8))
+        storedMessage.resultPresentation = message.resultPresentation
+        let patchedPayload = String(
+          decoding: try Self.encoder.encode(storedMessage), as: UTF8.self)
+        try db.execute(
+          sql: """
+            UPDATE message SET payload = ?
+            WHERE id = ? AND conversation_id = ?
+            """,
+          arguments: [
+            patchedPayload, message.id.uuidString, conversationID.uuidString,
+          ])
+        guard db.changesCount == 1 else {
+          throw HistoryStoreError.messageNotFound
+        }
+        return
+      }
+
+      // The result can become interactive before its independent provisional
+      // append reaches SQLite. Preserve that behavior without allowing a stale
+      // provisional payload to replace an already-finalized message.
+      let position =
+        try Int.fetchOne(
+          db,
+          sql: """
+            SELECT COALESCE(MAX(position), 0) + 1 FROM message
+            WHERE conversation_id = ?
+            """,
+          arguments: [conversationID.uuidString]) ?? 1
+      try db.execute(
+        sql: """
+          INSERT OR IGNORE INTO message (id, conversation_id, position, payload)
+          VALUES (?, ?, ?, ?)
+          """,
+        arguments: [
+          message.id.uuidString, conversationID.uuidString, position,
+          fallbackPayload,
+        ])
+      guard db.changesCount == 1 else {
+        throw HistoryStoreError.messageNotFound
+      }
+      try db.execute(
+        sql: "UPDATE conversation SET last_activity_at = ? WHERE id = ?",
+        arguments: [
+          message.createdAt.timeIntervalSince1970, conversationID.uuidString,
+        ])
       if let entry = Self.searchEntry(for: message) {
         try db.execute(
           sql: """
@@ -970,6 +1072,7 @@ extension HistoryClient {
       endTurnJournal: { _ in },
       appendMessage: { _, _ in },
       updateMessage: { _, _ in },
+      updateResultPresentation: { _, _ in },
       appendEvents: { _, _, _ in },
       exportJSONL: { _ in FileManager.default.temporaryDirectory },
       supportBundleSource: {
@@ -1009,6 +1112,7 @@ extension HistoryClient {
       endTurnJournal: { _ in throw error },
       appendMessage: { _, _ in throw error },
       updateMessage: { _, _ in throw error },
+      updateResultPresentation: { _, _ in throw error },
       appendEvents: { _, _, _ in throw error },
       exportJSONL: { _ in throw error },
       supportBundleSource: { throw error },

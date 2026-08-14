@@ -69,6 +69,9 @@ public struct ChatFeature: Sendable {
     public var messages: IdentifiedArrayOf<ChatMessage>
     public var feedback: [UUID: AnswerFeedback]
     public var composerText: String
+    /// Mirrors app-level model readiness so every reducer submission path,
+    /// including prepared follow-up chips, can reject before mutating state.
+    public var isSubmissionEnabled: Bool
     /// Keyboard-candidate protection owned by the reducer so every cancel and
     /// commit path is deterministic and testable.
     public var isSubmissionPending = false
@@ -88,7 +91,6 @@ public struct ChatFeature: Sendable {
     public var renameDraft = ""
     /// Set after a successful JSONL export, consumed by the share sheet.
     public var exportURL: URL?
-
     public init(
       conversationID: UUID,
       title: String = "",
@@ -96,6 +98,7 @@ public struct ChatFeature: Sendable {
       messages: IdentifiedArrayOf<ChatMessage> = [],
       feedback: [UUID: AnswerFeedback] = [:],
       composerText: String = "",
+      isSubmissionEnabled: Bool = true,
       interruptedTurn: InterruptedTurn? = nil
     ) {
       self.conversationID = conversationID
@@ -104,6 +107,7 @@ public struct ChatFeature: Sendable {
       self.messages = messages
       self.feedback = feedback
       self.composerText = composerText
+      self.isSubmissionEnabled = isSubmissionEnabled
       self.interruptedTurn = interruptedTurn
     }
 
@@ -308,6 +312,7 @@ public struct ChatFeature: Sendable {
           starter: starter)
 
       case .preparedFollowUpTapped(let id):
+        guard state.isSubmissionEnabled else { return .none }
         guard
           let prepared = state.followUpBatch?.suggestions.first(where: {
             $0.id == id
@@ -322,7 +327,8 @@ public struct ChatFeature: Sendable {
           state: &state,
           submittedQuestion: prepared.question,
           clearsComposer: false,
-          preparedFollowUp: prepared)
+          preparedFollowUp: prepared,
+          clearsFollowUpBatch: false)
 
       case .stopTapped:
         guard state.isProcessing else { return .none }
@@ -410,13 +416,16 @@ public struct ChatFeature: Sendable {
         state.messages[id: messageID] = message
         let conversationID = state.conversationID
         let updatedMessage = message
+        let revision = resultPresentationSaveRevisionCounter.next()
         return .run { send in
           do {
             try await messageUpdateQueue.save(
               conversationID: conversationID,
-              messageID: updatedMessage.id
+              messageID: updatedMessage.id,
+              revision: revision
             ) {
-              try await history.updateMessage(conversationID, updatedMessage)
+              try await history.updateResultPresentation(
+                conversationID, updatedMessage)
             }
           } catch {
             await send(
@@ -487,13 +496,15 @@ public struct ChatFeature: Sendable {
     submittedQuestion: String? = nil,
     clearsComposer: Bool = true,
     starter: StarterQueryID? = nil,
-    preparedFollowUp: PreparedFollowUp? = nil
+    preparedFollowUp: PreparedFollowUp? = nil,
+    clearsFollowUpBatch: Bool = true
   ) -> Effect<Action> {
+    guard state.isSubmissionEnabled else { return .none }
     let question = (submittedQuestion ?? state.composerText)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !question.isEmpty else { return .none }
     if clearsComposer { state.composerText = "" }
-    state.followUpBatch = nil
+    if clearsFollowUpBatch { state.followUpBatch = nil }
     let conversationID = state.conversationID
     let source: QuestionSubmissionSource =
       if let preparedFollowUp {
@@ -638,13 +649,19 @@ actor MessageUpdateQueue {
 
   private var active: Set<Key> = []
   private var waiters: [Key: [CheckedContinuation<Void, Never>]] = [:]
+  private var latestRevisions: [Key: UInt64] = [:]
 
   func save(
     conversationID: UUID,
     messageID: UUID,
+    revision: UInt64? = nil,
     operation: @escaping @Sendable () async throws -> Void
   ) async throws {
     let key = Key(conversationID: conversationID, messageID: messageID)
+    if let revision {
+      guard revision > (latestRevisions[key] ?? 0) else { return }
+      latestRevisions[key] = revision
+    }
     if active.contains(key) {
       await withCheckedContinuation { continuation in
         waiters[key, default: []].append(continuation)
@@ -671,5 +688,22 @@ actor MessageUpdateQueue {
     let next = queued.removeFirst()
     waiters[key] = queued.isEmpty ? nil : queued
     next.resume()
+  }
+}
+
+/// Reducers allocate revisions synchronously, before their effects can be
+/// scheduled out of order. The process-wide counter also stays monotonic when
+/// a conversation is unloaded and later reconstructed from history.
+private let resultPresentationSaveRevisionCounter = MessageUpdateRevisionCounter()
+
+private final class MessageUpdateRevisionCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value: UInt64 = 0
+
+  func next() -> UInt64 {
+    lock.lock()
+    defer { lock.unlock() }
+    value &+= 1
+    return value
   }
 }

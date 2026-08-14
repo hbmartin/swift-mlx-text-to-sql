@@ -203,6 +203,88 @@ import Testing
     #expect(await overlap.maxActive == 1)
     #expect(await overlap.order.count == 5)
   }
+
+  @Test func nextOperationFailsFastWhileCancelledInferenceStillRuns() async throws {
+    let recorder = InferenceSerializerEventRecorder()
+    let serializer = InferenceSerializer(diagnostics: recorder.client)
+    let gate = CancellationInsensitiveInferenceGate()
+    let first = Task {
+      try await serializer.run(operation: .rewrite) {
+        await gate.holdUntilReleased()
+        return 1
+      }
+    }
+    await gate.waitUntilStarted()
+
+    first.cancel()
+    for _ in 0..<100
+    where !recorder.contains("inference_cancelled_operation_still_running") {
+      await Task.yield()
+    }
+    #expect(recorder.contains("inference_cancelled_operation_still_running"))
+
+    await #expect(
+      throws: InferenceSerializer.SerializerError.cancelledOperationStillRunning
+    ) {
+      _ = try await serializer.run(operation: .sqlGeneration) { 2 }
+    }
+
+    await gate.release()
+    _ = try? await first.value
+    let recovered = try await serializer.run(operation: .sqlGeneration) { 3 }
+    #expect(recovered == 3)
+  }
+}
+
+private actor CancellationInsensitiveInferenceGate {
+  private var started = false
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdUntilReleased() async {
+    started = true
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+    await withCheckedContinuation { continuation in
+      releaseContinuation = continuation
+    }
+  }
+
+  func waitUntilStarted() async {
+    guard !started else { return }
+    await withCheckedContinuation { continuation in
+      startWaiters.append(continuation)
+    }
+  }
+
+  func release() {
+    releaseContinuation?.resume()
+    releaseContinuation = nil
+  }
+}
+
+private final class InferenceSerializerEventRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var codes: [String] = []
+
+  var client: DiagnosticsClient {
+    DiagnosticsClient { [weak self] event in
+      self?.record(event.code)
+    }
+  }
+
+  func contains(_ code: String) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return codes.contains(code)
+  }
+
+  private func record(_ code: String) {
+    lock.lock()
+    codes.append(code)
+    lock.unlock()
+  }
 }
 
 @Suite struct PreparationCoalescerTests {

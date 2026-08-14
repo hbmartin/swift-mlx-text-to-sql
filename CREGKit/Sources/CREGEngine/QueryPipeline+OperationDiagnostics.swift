@@ -82,15 +82,6 @@ extension QueryPipeline {
                 context: baseContext.merging([
                   "candidate_count": String(candidateCount)
                 ]) { current, _ in current })
-            case .proposalRetrying(let attempt, let reason):
-              diagnostics.info(
-                category: .pipeline,
-                code: "follow_up_proposal_retrying",
-                summary: "Follow-up candidate proposal generation is retrying.",
-                context: baseContext.merging([
-                  "attempt": String(attempt),
-                  "reason": reason.rawValue,
-                ]) { current, _ in current })
             case .proposalFailed(let reason):
               diagnostics.record(
                 DiagnosticEvent(

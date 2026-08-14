@@ -26,6 +26,35 @@ final class CallRecorder: @unchecked Sendable {
   var count: Int { recorded.count }
 }
 
+private actor AssistantPersistenceGate {
+  private var isHolding = false
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdFirstAssistant() async {
+    guard !isHolding else { return }
+    isHolding = true
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+    await withCheckedContinuation { continuation in
+      releaseContinuation = continuation
+    }
+  }
+
+  func waitUntilHeld() async {
+    guard !isHolding else { return }
+    await withCheckedContinuation { continuation in
+      startWaiters.append(continuation)
+    }
+  }
+
+  func release() {
+    releaseContinuation?.resume()
+    releaseContinuation = nil
+  }
+}
+
 @MainActor
 @Suite struct AppFeatureSchedulerTests {
   static let conversationA = UUID(10)
@@ -315,6 +344,36 @@ final class CallRecorder: @unchecked Sendable {
     #expect(clears.recorded == [Self.conversationA.uuidString])
   }
 
+  @Test func appReadinessGateKeepsPreparedFollowUpAvailable() async {
+    let prepared = Self.preparedFollowUp()
+    var state = Self.appState()
+    state.chat?.followUpBatch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .modelPreparationFailed(
+        ModelPreparationFailure(
+          code: "model_prompt_cache_failed",
+          stage: .promptCache,
+          mode: .evaluated,
+          userMessage: "Model preparation failed.",
+          diagnostic: "test failure")))
+    #expect(store.state.chat?.isSubmissionEnabled == false)
+
+    await store.send(.chat(.preparedFollowUpTapped(prepared.id)))
+    await store.finish()
+
+    #expect(store.state.chat?.followUpBatch?.suggestions == [prepared])
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.queue.isEmpty)
+  }
+
   @Test func preparedTapUpdatesTheSameAssistantMessageAfterImmediatePreview() async {
     let sourceID = UUID(79)
     let prepared = Self.preparedFollowUp(sourceMessageID: sourceID)
@@ -472,6 +531,53 @@ final class CallRecorder: @unchecked Sendable {
     #expect(writes.recorded.contains("table"))
   }
 
+  @Test func stoppingPreparedTurnPreservesPresentationPreference() async throws {
+    let prepared = Self.preparedFollowUp()
+    let questionID = UUID(90)
+    let provisionalID = UUID(91)
+    let preference = ResultPresentationPreference(
+      mode: .table, specificationID: "policy|table")
+    var state = Self.appState(selected: Self.conversationA)
+    var activeTurn = AppFeature.ActiveTurn(
+      questionID: questionID,
+      conversationID: Self.conversationA,
+      submission: QuestionSubmission(
+        question: prepared.question,
+        source: .preparedFollowUp(prepared)),
+      startedAt: Date(timeIntervalSince1970: 1))
+    activeTurn.provisionalAssistantMessageID = provisionalID
+    activeTurn.resultPresentationPreference = preference
+    state.activeTurn = activeTurn
+    state.chat?.messages.append(
+      ChatMessage(
+        id: provisionalID,
+        role: .assistant,
+        body: .preparedAnswer(prepared),
+        createdAt: Date(timeIntervalSince1970: 1),
+        resultPresentation: preference))
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, message in
+      writes.record(message.resultPresentation?.mode.rawValue ?? "nil")
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.stopActiveTurn)))
+    await store.finish()
+
+    let message = try #require(store.state.chat?.messages[id: provisionalID])
+    #expect(message.resultPresentation == preference)
+    #expect(writes.recorded.contains("table"))
+  }
+
   @Test func appInactivityCancelsPreparationAndPersistsItsEventsForResume() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
@@ -598,6 +704,7 @@ final class CallRecorder: @unchecked Sendable {
         conversationID: Self.conversationB,
         questionID: activeID,
         event: Self.finishedEvent()))
+    await store.receive(.dispatchNextIfIdle)
 
     #expect(store.state.activeTurn?.question == "newer question in visible A")
     #expect(store.state.activeTurn?.conversationID == Self.conversationA)
@@ -904,6 +1011,59 @@ final class CallRecorder: @unchecked Sendable {
     #expect(store.state.queue.isEmpty)
   }
 
+  @Test func queuedTurnWaitsForThePreviousAssistantToPersist() async {
+    var state = Self.appState()
+    let activeID = UUID(90)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(91),
+        conversationID: Self.conversationA,
+        question: "Use the previous answer",
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    let gate = AssistantPersistenceGate()
+    let runs = CallRecorder()
+    var history = HistoryClient.noop()
+    history.appendMessage = { _, message in
+      if message.role == .assistant {
+        await gate.holdFirstAssistant()
+      }
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+    await gate.waitUntilHeld()
+
+    #expect(runs.recorded.isEmpty)
+    #expect(store.state.queue.count == 1)
+    #expect(store.state.activeTurn == nil)
+
+    await gate.release()
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(runs.recorded == ["Use the previous answer"])
+    #expect(store.state.queue.isEmpty)
+  }
+
   @Test func debugLaunchBenchmarkWaitsForReadinessAndRunsStandalone() async {
     var state = Self.appState()
     state.modelReadiness = .preparing
@@ -1032,8 +1192,29 @@ final class CallRecorder: @unchecked Sendable {
     await store.skipReceivedActions()
 
     #expect(store.state.composerText == "Keep this draft for later")
-    #expect(store.state.followUpBatch == nil)
+    // AppFeature owns consuming the batch after its authoritative readiness
+    // check accepts the delegated submission.
+    #expect(store.state.followUpBatch?.suggestions == [prepared])
     #expect(drafts.recorded.isEmpty)
+  }
+
+  @Test func preparedFollowUpTapDuringPreparationKeepsTheChipBatch() async {
+    let prepared = AppFeatureSchedulerTests.preparedFollowUp()
+    var state = Self.chatState()
+    state.isSubmissionEnabled = false
+    state.followUpBatch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.preparedFollowUpTapped(prepared.id))
+    await store.finish()
+
+    #expect(store.state.followUpBatch?.suggestions == [prepared])
   }
 
   @Test func feedbackIsReversibleAndSwitchable() async {

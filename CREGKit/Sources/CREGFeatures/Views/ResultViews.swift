@@ -96,6 +96,19 @@ public enum ResultViewerLogic {
     return "\(displayedRowCount) of \(result.rowCount) returned rows"
   }
 
+  public static func selectedRowStatusLabel(
+    for result: QueryResult,
+    selectedRowCount: Int,
+    displayedRowCount: Int,
+    searchIsActive: Bool
+  ) -> String {
+    let selection = searchIsActive
+      ? "\(displayedRowCount) matching selected row\(displayedRowCount == 1 ? "" : "s")"
+      : "\(selectedRowCount) selected of \(result.rowCount) returned rows"
+    guard let truncation = truncationLabel(for: result) else { return selection }
+    return "\(truncation) · \(selection)"
+  }
+
   public static func runtimeMode(for message: ChatMessage) -> ModelRuntimeMode {
     if let mode = message.devInfo?.runtimeMode { return mode }
     if case .preparedAnswer(let prepared) = message.body {
@@ -273,14 +286,79 @@ private struct SelectedResultCell {
 
 // MARK: - Inline preview
 
+@MainActor
+final class ResultChartAnalysis {
+  let table: CREGChartTable
+  let recommendations: [AutoChartRecommendation]
+
+  init(result: QueryResult, sql: String, question: String?) {
+    let chart = CREGChartAdapter.recommendations(
+      result: result, sql: sql, question: question)
+    table = chart.table
+    recommendations = chart.set.chartRecommendations
+  }
+}
+
+@MainActor
+enum ResultPreviewChartCache {
+  private struct Entry {
+    var resultFingerprint: String
+    var sql: String
+    var question: String?
+    var analysis: ResultChartAnalysis
+  }
+
+  private static let limit = 64
+  private static var entries: [UUID: Entry] = [:]
+  private static var recency: [UUID] = []
+
+  static func analysis(
+    messageID: UUID,
+    result: QueryResult,
+    sql: String,
+    question: String?
+  ) -> ResultChartAnalysis {
+    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
+    if let entry = entries[messageID],
+      entry.resultFingerprint == resultFingerprint,
+      entry.sql == sql,
+      entry.question == question
+    {
+      markRecent(messageID)
+      return entry.analysis
+    }
+    let analysis = ResultChartAnalysis(
+      result: result, sql: sql, question: question)
+    entries[messageID] = Entry(
+      resultFingerprint: resultFingerprint,
+      sql: sql,
+      question: question,
+      analysis: analysis)
+    markRecent(messageID)
+    while recency.count > limit {
+      entries[recency.removeFirst()] = nil
+    }
+    return analysis
+  }
+
+  static func removeAll() {
+    entries.removeAll()
+    recency.removeAll()
+  }
+
+  private static func markRecent(_ messageID: UUID) {
+    recency.removeAll { $0 == messageID }
+    recency.append(messageID)
+  }
+}
+
 /// The four-row Result Preview shown inline in the transcript; tapping it
 /// opens the full-screen Result Viewer.
 struct ResultPreviewView: View {
   let result: QueryResult
   let sql: String
   let question: String?
-  let chartTable: CREGChartTable
-  let chartRecommendations: [AutoChartRecommendation]
+  let chartAnalysis: ResultChartAnalysis
   let preference: ResultPresentationPreference?
   let setPreference: (ResultPresentationPreference) -> Void
   let open: () -> Void
@@ -293,6 +371,7 @@ struct ResultPreviewView: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   init(
+    messageID: UUID,
     result: QueryResult,
     sql: String,
     question: String?,
@@ -300,13 +379,11 @@ struct ResultPreviewView: View {
     setPreference: @escaping (ResultPresentationPreference) -> Void,
     open: @escaping () -> Void
   ) {
-    let chart = CREGChartAdapter.recommendations(
-      result: result, sql: sql, question: question)
     self.result = result
     self.sql = sql
     self.question = question
-    self.chartTable = chart.table
-    self.chartRecommendations = chart.set.chartRecommendations
+    self.chartAnalysis = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: result, sql: sql, question: question)
     self.preference = preference
     self.setPreference = setPreference
     self.open = open
@@ -325,7 +402,7 @@ struct ResultPreviewView: View {
         .foregroundStyle(.secondary)
         .padding(10)
     } else {
-      let selected = selectedRecommendation(in: chartRecommendations)
+      let selected = selectedRecommendation(in: chartAnalysis.recommendations)
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
         if selected != nil {
@@ -353,7 +430,7 @@ struct ResultPreviewView: View {
           VStack(alignment: .leading, spacing: 6) {
             if mode == .chart, let selected {
               AutoChartView(
-                table: chartTable,
+                table: chartAnalysis.table,
                 recommendation: selected,
                 interaction: .preview,
                 height: 156)
@@ -417,7 +494,7 @@ struct ResultPreviewView: View {
     ScrollView(.horizontal) {
       Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 6) {
         GridRow {
-          ForEach(result.columns, id: \.self) { column in
+          ForEach(Array(result.columns.enumerated()), id: \.offset) { _, column in
             Text(column)
               .font(.caption.weight(.semibold))
               .foregroundStyle(.secondary)
@@ -514,6 +591,7 @@ struct ResultViewerView: View {
     result: QueryResult,
     runtimeMode: ModelRuntimeMode,
     textSize: Binding<ResultTableTextSize>,
+    messageID: UUID? = nil,
     sql: String = "",
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
@@ -522,15 +600,17 @@ struct ResultViewerView: View {
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection? = nil
   ) {
-    let chart = CREGChartAdapter.recommendations(
-      result: result, sql: sql, question: question)
-    let recommendations = chart.set.chartRecommendations
+    let analysis = messageID.map {
+      ResultPreviewChartCache.analysis(
+        messageID: $0, result: result, sql: sql, question: question)
+    } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
+    let recommendations = analysis.recommendations
     let selectedID = CREGChartAdapter.resolvedRecommendation(
       preferredID: preference?.specificationID,
       in: recommendations)?.id
     self.result = result
     self.runtimeMode = runtimeMode
-    self.chartTable = chart.table
+    self.chartTable = analysis.table
     self.chartRecommendations = recommendations
     self.persistPreference = persistPreference
     self._textSize = textSize
@@ -647,7 +727,7 @@ struct ResultViewerView: View {
             }
           }
           .accessibilityIdentifier("result-chart-explorer")
-        } else if resultMode == .table {
+        } else {
           let tableResult = filteredResult
           let displayRows = ResultViewerLogic.displayRows(
             result: tableResult, sort: sort, searchText: searchText)
@@ -687,6 +767,9 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .onChange(of: sort) { _, _ in
+      selectedCell = nil
+    }
+    .onChange(of: chartSelection) { _, _ in
       selectedCell = nil
     }
     .onChange(of: resultMode) { _, mode in
@@ -1034,6 +1117,7 @@ struct ResultViewerView: View {
         .font(.caption.weight(.medium))
     }
     .buttonStyle(.bordered)
+    .cregTextButtonTarget()
     .accessibilityIdentifier("clear-chart-selection")
   }
 
@@ -1044,9 +1128,11 @@ struct ResultViewerView: View {
   ) -> some View {
     let label =
       if selectionIsActive {
-        normalizedSearchText.isEmpty
-          ? "\(sourceResult.rowCount) selected of \(result.rowCount) returned rows"
-          : "\(displayedRowCount) matching selected rows"
+        ResultViewerLogic.selectedRowStatusLabel(
+          for: result,
+          selectedRowCount: sourceResult.rowCount,
+          displayedRowCount: displayedRowCount,
+          searchIsActive: !normalizedSearchText.isEmpty)
       } else {
         ResultViewerLogic.rowStatusLabel(
           for: result,
@@ -1232,6 +1318,7 @@ extension View {
           result: item.result,
           runtimeMode: item.runtimeMode,
           textSize: textSize,
+          messageID: item.messageID,
           sql: item.sql,
           question: item.question,
           preference: item.preference,
@@ -1247,6 +1334,7 @@ extension View {
           result: item.result,
           runtimeMode: item.runtimeMode,
           textSize: textSize,
+          messageID: item.messageID,
           sql: item.sql,
           question: item.question,
           preference: item.preference,

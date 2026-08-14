@@ -9,6 +9,7 @@ private actor FollowUpCalls {
   var validations = 0
   var executions = 0
   var narrations = 0
+  var fallbackHistoryCounts: [Int] = []
 
   func proposed() -> Int {
     proposals += 1
@@ -22,6 +23,9 @@ private actor FollowUpCalls {
   }
   func executed() { executions += 1 }
   func narrated() { narrations += 1 }
+  func recordedFallback(historyCount: Int) {
+    fallbackHistoryCounts.append(historyCount)
+  }
 }
 
 private enum FollowUpTestError: Error {
@@ -353,7 +357,7 @@ private enum FollowUpTestError: Error {
     #expect(events.last == .finished)
   }
 
-  @Test func transientProposalTimeoutRetriesOnce() async {
+  @Test func proposalTimeoutDoesNotQueueBehindTheCancelledInference() async {
     let calls = FollowUpCalls()
     let fm = FMClient(
       availability: { .available },
@@ -361,11 +365,9 @@ private enum FollowUpTestError: Error {
       gate: { _, _ in .proceed },
       narrate: { _, _ in "unused" },
       suggestFollowUps: { _, _ in
-        let attempt = await calls.proposed()
-        if attempt == 1 {
-          try await Task.sleep(for: .seconds(5))
-        }
-        return ["Recovered proposal?"]
+        _ = await calls.proposed()
+        try await Task.sleep(for: .seconds(5))
+        return ["Too late?"]
       })
     let pipeline = QueryPipeline.live(
       fm: fm,
@@ -384,14 +386,8 @@ private enum FollowUpTestError: Error {
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
-    #expect(
-      events.contains(
-        .proposalRetrying(
-          attempt: 2,
-          reason: .generationTimedOut)))
-    #expect(!events.contains(.proposalFailed(reason: .generationTimedOut)))
-    #expect(events.contains { if case .prepared = $0 { true } else { false } })
-    #expect(await calls.proposals == 2)
+    #expect(events.contains(.proposalFailed(reason: .generationTimedOut)))
+    #expect(await calls.proposals == 1)
     #expect(events.last == .finished)
   }
 
@@ -418,10 +414,6 @@ private enum FollowUpTestError: Error {
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
     #expect(events.contains(.proposalFailed(reason: .generationFailed)))
-    #expect(
-      !events.contains {
-        if case .proposalRetrying = $0 { true } else { false }
-      })
     #expect(events.last == .finished)
   }
 
@@ -666,6 +658,57 @@ private enum FollowUpTestError: Error {
       return
     }
     #expect(telemetry.preparedCacheMissReason == .schemaVersion)
+  }
+
+  @Test func preparedFallbackTreatsTheChipQuestionAsStandalone() async {
+    let calls = FollowUpCalls()
+    var prepared = Self.prepared(question: "Which fund owns it?", rank: 1)
+    prepared.provenance.schemaVersion = 2
+    let priorTurns = [
+      ConversationTurn(
+        question: "Which property leads?",
+        answerSummary: "Sable Tower leads.")
+    ]
+    let db = DatabaseClient(
+      fingerprint: "snapshot-v1",
+      validate: { _ in SQLValidationReport() },
+      execute: { _ in Self.result })
+
+    let events = await Array(
+      preparedAnswerStream(
+        prepared: prepared,
+        history: priorTurns,
+        fm: .fallback(),
+        db: db,
+        serializer: InferenceSerializer(),
+        heuristics: ResultHeuristics(db: db),
+        configuration: Self.configuration(),
+        runtimeMode: { .evaluated },
+        fallback: { question, history in
+          AsyncStream { continuation in
+            Task {
+              await calls.recordedFallback(historyCount: history.count)
+              var telemetry = TurnTelemetry(originalQuestion: question)
+              telemetry.standaloneQuestion = question
+              continuation.yield(
+                .turnFinished(
+                  outcome: .answered(
+                    result: Self.result,
+                    narration: "Fallback",
+                    sql: "SELECT 1",
+                    notice: nil),
+                  telemetry: telemetry))
+              continuation.finish()
+            }
+          }
+        }))
+
+    guard case .turnFinished(_, let telemetry) = events.last else {
+      Issue.record("Expected free-form fallback")
+      return
+    }
+    #expect(await calls.fallbackHistoryCounts == [0])
+    #expect(telemetry.standaloneQuestion == prepared.question)
   }
 
   @Test func preparedValidationTimeoutHasADistinctCacheMissReason() async {

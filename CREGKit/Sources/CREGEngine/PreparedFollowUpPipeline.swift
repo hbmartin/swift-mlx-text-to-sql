@@ -15,8 +15,6 @@ private struct FollowUpDeadlineExceeded: Error, Sendable {
   }
 }
 
-private let maximumFollowUpProposalAttempts = 2
-
 private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
   private typealias Continuation = CheckedContinuation<Value, any Error>
 
@@ -137,41 +135,33 @@ func preparedFollowUpStream(
       }
 
       let schema = (try? SQLGenClient.schemaPrompt()) ?? ""
-      var proposed: [String]?
-      for attempt in 1...maximumFollowUpProposalAttempts {
-        do {
-          proposed = try await withFollowUpDeadline(
-            seconds: configuration.deadlines.generationSeconds,
-            stage: "follow-up-suggestion"
-          ) {
-            try await serializer.run(operation: .followUpSuggestion) {
-              try await fm.suggestFollowUps(context, schema)
-            }
+      let proposed: [String]
+      do {
+        proposed = try await withFollowUpDeadline(
+          seconds: configuration.deadlines.generationSeconds,
+          stage: "follow-up-suggestion"
+        ) {
+          try await serializer.run(operation: .followUpSuggestion) {
+            try await fm.suggestFollowUps(context, schema)
           }
-          break
-        } catch is CancellationError {
-          guard !Task.isCancelled else { return }
-          continuation.yield(
-            .proposalFailed(reason: .generationFailed))
-          return
-        } catch is FollowUpDeadlineExceeded {
-          guard attempt == maximumFollowUpProposalAttempts else {
-            continuation.yield(
-              .proposalRetrying(
-                attempt: attempt + 1,
-                reason: .generationTimedOut))
-            continue
-          }
-          continuation.yield(
-            .proposalFailed(reason: .generationTimedOut))
-          return
-        } catch {
-          continuation.yield(
-            .proposalFailed(reason: .generationFailed))
-          return
         }
+      } catch is CancellationError {
+        guard !Task.isCancelled else { return }
+        continuation.yield(
+          .proposalFailed(reason: .generationFailed))
+        return
+      } catch is FollowUpDeadlineExceeded {
+        // A timed-out FM call may continue to own the FIFO serializer until it
+        // observes cancellation. Retrying here would either overlap inference
+        // or spend the retry deadline waiting behind the first call.
+        continuation.yield(
+          .proposalFailed(reason: .generationTimedOut))
+        return
+      } catch {
+        continuation.yield(
+          .proposalFailed(reason: .generationFailed))
+        return
       }
-      guard let proposed else { return }
 
       let questions = normalizedFollowUpQuestions(
         proposed,
@@ -549,7 +539,10 @@ func preparedAnswerStream(
         reason: PreparedCacheMissReason,
         timeoutStage: String? = nil
       ) async {
-        for await event in fallback(prepared.question, history) {
+        // Prepared suggestions are generated and preflighted as standalone
+        // questions. An empty history prevents the free-form pipeline from
+        // spending another FM call rewriting the chip label.
+        for await event in fallback(prepared.question, []) {
           if case .turnFinished(let outcome, var telemetry) = event {
             telemetry.preparedFollowUpID = prepared.id
             telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID

@@ -100,6 +100,7 @@ import Testing
   @Test func ratioYearAndIdentifierStyles() {
     #expect(fmt(.real(1.25), "dscr") == "1.25×")
     #expect(fmt(.integer(2019), "vintage_year") == "2019")
+    #expect(fmt(.integer(2019), "noi_year") == "2019")
     #expect(fmt(.integer(1984), "year_built") == "1984")
     #expect(fmt(.integer(1024), "property_id") == "1024")
   }

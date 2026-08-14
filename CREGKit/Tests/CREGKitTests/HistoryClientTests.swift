@@ -413,6 +413,76 @@ import Testing
     #expect(try await client.search("final narration").count == 1)
   }
 
+  @Test func resultPresentationPatchCannotRegressFinalizedPayload() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    let prepared = preparedFollowUp(sourceMessageID: UUID())
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let provisional = ChatMessage(
+      id: UUID(), role: .assistant, body: .preparedAnswer(prepared),
+      createdAt: Date(timeIntervalSince1970: 11))
+    try await client.appendMessage(conversationID, provisional)
+
+    var final = provisional
+    final.body = .answer(
+      result: prepared.result,
+      narration: "The finalized narration must survive.",
+      sql: prepared.sql,
+      notice: nil)
+    try await client.updateMessage(conversationID, final)
+
+    var stalePresentationWrite = provisional
+    stalePresentationWrite.resultPresentation = ResultPresentationPreference(
+      mode: .table, specificationID: "policy|table")
+    try await client.updateResultPresentation(
+      conversationID, stalePresentationWrite)
+
+    let stored = try #require(
+      try await client.loadConversation(conversationID).messages.last)
+    guard case .answer(_, let narration, _, _) = stored.body else {
+      Issue.record("Expected the finalized answer payload to survive")
+      return
+    }
+    #expect(narration == "The finalized narration must survive.")
+    #expect(stored.resultPresentation == stalePresentationWrite.resultPresentation)
+    #expect(try await client.search("finalized narration").count == 1)
+  }
+
+  @Test func wholeMessageUpdatePreservesANewerPresentationPreference() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let original = answerMessage(
+      narration: "Initial narration.", at: 10)
+    try await client.appendMessage(conversationID, original)
+
+    var preferenceWrite = original
+    preferenceWrite.resultPresentation = ResultPresentationPreference(
+      mode: .table, specificationID: "policy|table")
+    try await client.updateResultPresentation(conversationID, preferenceWrite)
+
+    var staleWholeMessage = original
+    staleWholeMessage.body = .answer(
+      result: QueryResult(columns: ["n"], rows: [[.integer(2)]]),
+      narration: "Recovered final narration.",
+      sql: "SELECT 2",
+      notice: nil)
+    try await client.updateMessage(conversationID, staleWholeMessage)
+
+    let stored = try #require(
+      try await client.loadConversation(conversationID).messages.last)
+    #expect(stored.resultPresentation == preferenceWrite.resultPresentation)
+    guard case .answer(let result, let narration, let sql, _) = stored.body else {
+      Issue.record("Expected the recovered whole-message body")
+      return
+    }
+    #expect(result.rows == [[.integer(2)]])
+    #expect(narration == "Recovered final narration.")
+    #expect(sql == "SELECT 2")
+  }
+
   @Test func preparedSuggestionTextAndProvisionalResultsAreNotSearchable() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()
