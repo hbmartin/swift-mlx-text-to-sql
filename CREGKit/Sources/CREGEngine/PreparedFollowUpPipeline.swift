@@ -2,6 +2,16 @@ import Foundation
 
 private struct FollowUpDeadlineExceeded: Error, Sendable {
   var stage: String
+
+  var telemetryStage: String {
+    switch stage {
+    case "follow-up-generation": "generation"
+    case "follow-up-validation": "validation"
+    case "follow-up-execution": "execution"
+    case "follow-up-grounding": "grounding"
+    default: stage
+    }
+  }
 }
 
 private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
@@ -286,7 +296,7 @@ private func prepareFollowUpCandidate(
     } catch is CancellationError {
       return .rejected(.cancelled)
     } catch let deadline as FollowUpDeadlineExceeded {
-      telemetry.timeoutStage = deadline.stage
+      telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "generation deadline exceeded"
       telemetry.candidates.append(candidate)
       telemetry.stageTimings.totalMicroseconds =
@@ -326,7 +336,7 @@ private func prepareFollowUpCandidate(
     } catch is CancellationError {
       return .rejected(.cancelled)
     } catch let deadline as FollowUpDeadlineExceeded {
-      telemetry.timeoutStage = deadline.stage
+      telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "validation deadline exceeded"
       telemetry.candidates.append(candidate)
       telemetry.stageTimings.totalMicroseconds =
@@ -371,7 +381,7 @@ private func prepareFollowUpCandidate(
     } catch is CancellationError {
       return .rejected(.cancelled)
     } catch let deadline as FollowUpDeadlineExceeded {
-      telemetry.timeoutStage = deadline.stage
+      telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "execution deadline exceeded"
       telemetry.candidates.append(candidate)
       telemetry.stageTimings.totalMicroseconds =
@@ -413,7 +423,7 @@ private func prepareFollowUpCandidate(
     } catch is CancellationError {
       return .rejected(.cancelled)
     } catch let deadline as FollowUpDeadlineExceeded {
-      telemetry.timeoutStage = deadline.stage
+      telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "grounding deadline exceeded"
       telemetry.candidates.append(candidate)
       telemetry.stageTimings.totalMicroseconds =

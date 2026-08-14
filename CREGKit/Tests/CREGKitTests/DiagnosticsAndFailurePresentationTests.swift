@@ -774,6 +774,35 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     }
   }
 
+  @Test func followUpPreparationWithoutFinishedIsReportedAsAnError() async {
+    let recorder = DiagnosticEventRecorder()
+    let source = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        AsyncStream { continuation in
+          continuation.yield(.started(candidateCount: 1))
+          continuation.finish()
+        }
+      }
+    )
+    .reportingOperations(to: recorder.client)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: UUID(6),
+      question: "question",
+      standaloneQuestion: "question",
+      narration: "answer",
+      result: QueryResult(columns: [], rows: []))
+
+    _ = await Array(source.prepareFollowUps(context))
+
+    let failure = recorder.events.last
+    #expect(failure?.code == "pipeline_stream_ended_without_terminal_event")
+    #expect(failure?.level == .error)
+    #expect(failure?.context["accepted_count"] == "0")
+    #expect(failure?.context["elapsed_ms"] != nil)
+    #expect(failure?.context["trace_id"] != nil)
+  }
+
   @Test func cancelledFollowUpPreparationHasATerminalDiagnostic() async {
     let recorder = DiagnosticEventRecorder()
     let sourceEvents = AsyncStream<FollowUpPreparationEvent>.makeStream()

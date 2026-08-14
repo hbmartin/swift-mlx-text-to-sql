@@ -236,6 +236,10 @@ extension FollowUpPreparationEvent {
   }
 }
 
+public enum PreparedFollowUpIntegrityError: Error, Equatable, Sendable {
+  case invalidChunkSize(Int)
+}
+
 public enum PreparedFollowUpIntegrity {
   public static func fingerprint(sql: String) -> String {
     sha256(Data(normalizedSQL(sql).utf8))
@@ -296,7 +300,9 @@ public enum PreparedFollowUpIntegrity {
     contentsOf url: URL,
     chunkSize: Int = 1 << 20
   ) throws -> String {
-    precondition(chunkSize > 0)
+    guard chunkSize > 0 else {
+      throw PreparedFollowUpIntegrityError.invalidChunkSize(chunkSize)
+    }
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var hasher = SHA256()
