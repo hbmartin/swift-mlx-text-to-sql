@@ -171,6 +171,38 @@ final class CallRecorder: @unchecked Sendable {
         == "One property found.")
   }
 
+  @Test func streamEndingWithoutTerminalEventClearsTheActiveTurn() async {
+    let pipeline = QueryPipeline { _, _ in
+      AsyncStream { continuation in continuation.finish() }
+    }
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: "Will this finish?")))))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.chat?.processing == nil)
+    guard case .failure(let message)? = store.state.chat?.messages.last?.body else {
+      Issue.record("Expected unterminated stream recovery to render a failure")
+      return
+    }
+    #expect(message == "CREG couldn’t finish that answer. Please try again.")
+  }
+
   @Test func submitWhileActiveBecomesCancellableQueuedQuestion() async {
     let store = TestStore(initialState: Self.appState()) {
       AppFeature()
@@ -380,6 +412,64 @@ final class CallRecorder: @unchecked Sendable {
     #expect(provisional != nil)
     #expect(provisional == final)
     #expect(!writes.recorded.contains { $0.hasPrefix("append:assistant:") })
+  }
+
+  @Test func backgroundPreparedCompletionPreservesPresentationPreference() async throws {
+    let prepared = Self.preparedFollowUp()
+    let questionID = UUID(90)
+    var state = Self.appState(selected: Self.conversationA)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: questionID,
+      conversationID: Self.conversationA,
+      submission: QuestionSubmission(
+        question: prepared.question,
+        source: .preparedFollowUp(prepared)),
+      startedAt: Date(timeIntervalSince1970: 1))
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, message in
+      if case .answer = message.body {
+        writes.record(message.resultPresentation?.mode.rawValue ?? "nil")
+      }
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: questionID,
+        event: .preparedResultReady(
+          prepared: prepared, elapsedMicroseconds: 100)))
+    let provisionalID = try #require(
+      store.state.activeTurn?.provisionalAssistantMessageID)
+    let preference = ResultPresentationPreference(mode: .table)
+    await store.send(
+      .chat(
+        .resultPresentationChanged(
+          messageID: provisionalID, preference: preference)))
+    #expect(store.state.activeTurn?.resultPresentationPreference == preference)
+
+    let backgroundSnapshot = ConversationSnapshot(
+      summary: try #require(state.conversations[id: Self.conversationB]))
+    await store.send(.conversationLoaded(backgroundSnapshot))
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: questionID,
+        event: Self.finishedEvent()))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(writes.recorded.contains("table"))
   }
 
   @Test func appInactivityCancelsPreparationAndPersistsItsEventsForResume() async {

@@ -82,10 +82,19 @@ final class AccessibilityUITests: XCTestCase {
 
   func testChartExplorerExposesStableControlsAndTableFallback() {
     let app = launch(scenario: "result-explorer")
-    XCTAssertTrue(app.descendants(matching: .any)["result-view-mode"].exists)
-    XCTAssertTrue(app.descendants(matching: .any)["result-chart-explorer"].exists)
-    XCTAssertTrue(app.descendants(matching: .any)["auto-chart-bar"].exists)
-    XCTAssertTrue(app.descendants(matching: .any)["result-chart-type"].exists)
+    XCTAssertTrue(
+      app.descendants(matching: .any)["result-view-mode"]
+        .waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      app.descendants(matching: .any)["result-chart-explorer"]
+        .waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      app.descendants(matching: .any)["auto-chart-bar"]
+        .waitForExistence(timeout: 5),
+      "portfolioValueByFundV1 is expected to use the bar family")
+    XCTAssertTrue(
+      app.descendants(matching: .any)["result-chart-type"]
+        .waitForExistence(timeout: 5))
 
     let table = app.segmentedControls.buttons["Table"]
     XCTAssertTrue(table.waitForExistence(timeout: 5))

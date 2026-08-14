@@ -4,13 +4,22 @@ import Testing
 @testable import CREGEngine
 
 private actor FollowUpCalls {
+  var proposals = 0
   var generations = 0
   var validations = 0
   var executions = 0
   var narrations = 0
 
+  func proposed() -> Int {
+    proposals += 1
+    return proposals
+  }
   func generated() { generations += 1 }
   func validated() { validations += 1 }
+  func nextValidation() -> Int {
+    validations += 1
+    return validations
+  }
   func executed() { executions += 1 }
   func narrated() { narrations += 1 }
 }
@@ -101,6 +110,25 @@ private enum FollowUpTestError: Error {
         return "Prepared narration."
       },
       suggestFollowUps: { _, _ in suggestions })
+  }
+
+  private static func rejection(
+    in events: [FollowUpPreparationEvent],
+    rank: Int,
+    reason: FollowUpPreparationRejection
+  ) -> (found: Bool, telemetry: FollowUpRejectionTelemetry?) {
+    for event in events {
+      guard
+        case .rejected(
+          let eventRank,
+          let eventReason,
+          let telemetry) = event,
+        eventRank == rank,
+        eventReason == reason
+      else { continue }
+      return (true, telemetry)
+    }
+    return (false, nil)
   }
 
   @Test func normalizesAndDeduplicatesSuggestedQuestions() {
@@ -221,11 +249,49 @@ private enum FollowUpTestError: Error {
       rank: 2, reason: .validationFailed
     ).jsonLine()
     #expect(line == #"{"rejected":{"rank":2,"reason":"validationFailed"}}"#)
+    guard
+      case .rejected(let legacyRank, let legacyReason, nil) =
+        try JSONDecoder().decode(
+          FollowUpPreparationEvent.self,
+          from: Data(line.utf8))
+    else {
+      Issue.record("Expected legacy rejected events to decode without telemetry")
+      return
+    }
+    #expect(legacyRank == 2)
+    #expect(legacyReason == .validationFailed)
     #expect(
       try FollowUpPreparationEvent.proposalFailed(
         reason: .generationTimedOut
       ).jsonLine()
         == #"{"proposalFailed":{"reason":"generationTimedOut"}}"#)
+
+    let telemetry = FollowUpRejectionTelemetry(
+      timeoutStage: "validation",
+      stageTimings: StageTimings(totalMicroseconds: 12_000),
+      candidateCount: 1,
+      failedCandidateCount: 1,
+      lastCandidateGeneratedSQL: true,
+      lastCandidateErrorPresent: true)
+    let telemetryLine = try FollowUpPreparationEvent.rejected(
+      rank: 1,
+      reason: .validationTimedOut,
+      telemetry: telemetry
+    ).jsonLine()
+    guard
+      case .rejected(let rank, let reason, let decodedTelemetry) =
+        try JSONDecoder().decode(
+          FollowUpPreparationEvent.self,
+          from: Data(telemetryLine.utf8))
+    else {
+      Issue.record("Expected rejected-candidate telemetry to round trip")
+      return
+    }
+    #expect(rank == 1)
+    #expect(reason == .validationTimedOut)
+    #expect(decodedTelemetry?.timeoutStage == "validation")
+    #expect(decodedTelemetry?.stageTimings.totalMicroseconds == 12_000)
+    #expect(decodedTelemetry?.candidateCount == 1)
   }
 
   @Test func proposalFailuresAreDistinctFromAnEmptyProposalSet() async {
@@ -287,6 +353,78 @@ private enum FollowUpTestError: Error {
     #expect(events.last == .finished)
   }
 
+  @Test func transientProposalTimeoutRetriesOnce() async {
+    let calls = FollowUpCalls()
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in
+        let attempt = await calls.proposed()
+        if attempt == 1 {
+          try await Task.sleep(for: .seconds(5))
+        }
+        return ["Recovered proposal?"]
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration(
+        deadlines: PipelineDeadlines(
+          generationSeconds: 0.01,
+          wholeTurnSeconds: 1)))
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(
+      events.contains(
+        .proposalRetrying(
+          attempt: 2,
+          reason: .generationTimedOut)))
+    #expect(!events.contains(.proposalFailed(reason: .generationTimedOut)))
+    #expect(events.contains { if case .prepared = $0 { true } else { false } })
+    #expect(await calls.proposals == 2)
+    #expect(events.last == .finished)
+  }
+
+  @Test func unexpectedProposalCancellationIsReportedAsFailure() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in throw CancellationError() })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: SQLGenClient { _ in
+        Issue.record("SQL generation must not run after proposal failure")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(events.contains(.proposalFailed(reason: .generationFailed)))
+    #expect(
+      !events.contains {
+        if case .proposalRetrying = $0 { true } else { false }
+      })
+    #expect(events.last == .finished)
+  }
+
   @Test func validationTimeoutIsNotReportedAsGenerationFailure() async {
     let pipeline = QueryPipeline.live(
       fm: Self.fm(suggestions: ["Slow validation?"]),
@@ -311,8 +449,17 @@ private enum FollowUpTestError: Error {
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
-    #expect(events.contains(.rejected(rank: 1, reason: .validationTimedOut)))
-    #expect(!events.contains(.rejected(rank: 1, reason: .generationFailed)))
+    let rejection = Self.rejection(
+      in: events,
+      rank: 1,
+      reason: .validationTimedOut)
+    #expect(rejection.found)
+    #expect(rejection.telemetry?.timeoutStage == "validation")
+    #expect(rejection.telemetry?.candidateCount == 1)
+    #expect(rejection.telemetry?.lastCandidateGeneratedSQL == true)
+    #expect(rejection.telemetry?.lastCandidateErrorPresent == true)
+    #expect(
+      !Self.rejection(in: events, rank: 1, reason: .generationFailed).found)
   }
 
   @Test func executionTimeoutIsTerminalInsteadOfRepairable() async {
@@ -339,7 +486,8 @@ private enum FollowUpTestError: Error {
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
-    #expect(events.contains(.rejected(rank: 1, reason: .executionTimedOut)))
+    #expect(
+      Self.rejection(in: events, rank: 1, reason: .executionTimedOut).found)
     #expect(await calls.generations == 1)
   }
 
@@ -383,7 +531,8 @@ private enum FollowUpTestError: Error {
       return value
     }
     #expect(prepared.map(\.question) == ["First?", "Third?"])
-    #expect(events.contains(.rejected(rank: 2, reason: .unhelpfulResult)))
+    #expect(
+      Self.rejection(in: events, rank: 2, reason: .unhelpfulResult).found)
     #expect(await calls.generations == 3)
     #expect(await calls.validations == 3)
     #expect(await calls.executions == 3)
@@ -422,7 +571,8 @@ private enum FollowUpTestError: Error {
     #expect(await calls.generations == 3)
     #expect(await calls.validations == 3)
     #expect(await calls.executions == 0)
-    #expect(events.contains(.rejected(rank: 1, reason: .validationFailed)))
+    #expect(
+      Self.rejection(in: events, rank: 1, reason: .validationFailed).found)
   }
 
   @Test func cacheHitShowsResultBeforeNarrationWithoutGenerationOrExecution()
@@ -489,6 +639,145 @@ private enum FollowUpTestError: Error {
     }
     #expect(finalTelemetry.preparedCacheHit == true)
     #expect(finalTelemetry.queryOrigin == .preparedFollowUp)
+  }
+
+  @Test func legacyFingerprintSchemaFallsBackAsSchemaVersion() async {
+    var prepared = Self.prepared(question: "Prepared?", rank: 1)
+    prepared.provenance.schemaVersion = 2
+    prepared.provenance.resultFingerprint = "legacy-v2-fingerprint"
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.runPrepared(prepared, []))
+
+    #expect(PreparedQueryProvenance.currentSchemaVersion == 3)
+    guard case .turnFinished(_, let telemetry) = events.last else {
+      Issue.record("Expected schema-version fallback outcome")
+      return
+    }
+    #expect(telemetry.preparedCacheMissReason == .schemaVersion)
+  }
+
+  @Test func preparedValidationTimeoutHasADistinctCacheMissReason() async {
+    let calls = FollowUpCalls()
+    let prepared = Self.prepared(question: "Prepared?", rank: 1)
+    let db = DatabaseClient(
+      fingerprint: "snapshot-v1",
+      validate: { _ in
+        _ = await calls.nextValidation()
+        try await Task.sleep(for: .seconds(5))
+        return SQLValidationReport()
+      },
+      execute: { _ in Self.result })
+    let events = await Array(
+      preparedAnswerStream(
+        prepared: prepared,
+        history: [],
+        fm: .fallback(),
+        db: db,
+        serializer: InferenceSerializer(),
+        heuristics: ResultHeuristics(db: db),
+        configuration: Self.configuration(
+          deadlines: PipelineDeadlines(
+            generationSeconds: 0.05,
+            wholeTurnSeconds: 0.05)),
+        runtimeMode: { .evaluated },
+        fallback: { question, _ in
+          AsyncStream { continuation in
+            continuation.yield(
+              .turnFinished(
+                outcome: .answered(
+                  result: Self.result,
+                  narration: "Fallback",
+                  sql: "SELECT 1",
+                  notice: nil),
+                telemetry: TurnTelemetry(originalQuestion: question)))
+            continuation.finish()
+          }
+        }))
+
+    guard case .turnFinished(.answered, let telemetry) = events.last else {
+      Issue.record("Expected free-form fallback after validation timeout")
+      return
+    }
+    #expect(telemetry.preparedCacheHit == false)
+    #expect(telemetry.preparedCacheMissReason == .validationTimedOut)
+    #expect(telemetry.timeoutStage == "validation")
+    #expect(await calls.validations == 1)
+  }
+
+  @Test func unexpectedPreparedValidationCancellationFallsBack() async {
+    let calls = FollowUpCalls()
+    let prepared = Self.prepared(question: "Prepared?", rank: 1)
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in
+          if await calls.nextValidation() == 1 {
+            throw CancellationError()
+          }
+          return SQLValidationReport()
+        },
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.runPrepared(prepared, []))
+
+    guard case .turnFinished(.answered, let telemetry) = events.last else {
+      Issue.record("Expected live-task cancellation to use free-form fallback")
+      return
+    }
+    #expect(telemetry.preparedCacheMissReason == .validationFailed)
+    #expect(await calls.validations == 2)
+  }
+
+  @Test func unexpectedNarrationCancellationFinalizesPreparedAnswer() async {
+    let prepared = Self.prepared(question: "Prepared?", rank: 1)
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in throw CancellationError() })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: SQLGenClient { _ in
+        SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.runPrepared(prepared, []))
+
+    guard case .turnFinished(let outcome, let telemetry) = events.last,
+      case .answered(_, let narration, _, _) = outcome
+    else {
+      Issue.record("Expected deterministic narration after cancellation")
+      return
+    }
+    #expect(narration == PreparedAnswerFallback.narration(for: prepared.result))
+    #expect(telemetry.narrationUsedFM == false)
+    #expect(telemetry.timeoutStage == nil)
   }
 
   @Test func cachedNarrationDeadlineFinalizesWithFallback() async {

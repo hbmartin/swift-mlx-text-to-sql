@@ -9,10 +9,13 @@ private struct FollowUpDeadlineExceeded: Error, Sendable {
     case "follow-up-validation": "validation"
     case "follow-up-execution": "execution"
     case "follow-up-grounding": "grounding"
+    case "prepared-validation": "validation"
     default: stage
     }
   }
 }
+
+private let maximumFollowUpProposalAttempts = 2
 
 private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
   private typealias Continuation = CheckedContinuation<Value, any Error>
@@ -107,7 +110,7 @@ private func withFollowUpDeadline<Value: Sendable>(
 
 private enum PreparedCandidateOutcome {
   case prepared(PreparedFollowUp)
-  case rejected(FollowUpPreparationRejection)
+  case rejected(FollowUpPreparationRejection, telemetry: TurnTelemetry)
 }
 
 func preparedFollowUpStream(
@@ -134,27 +137,41 @@ func preparedFollowUpStream(
       }
 
       let schema = (try? SQLGenClient.schemaPrompt()) ?? ""
-      let proposed: [String]
-      do {
-        proposed = try await withFollowUpDeadline(
-          seconds: configuration.deadlines.generationSeconds,
-          stage: "follow-up-suggestion"
-        ) {
-          try await serializer.run(operation: .followUpSuggestion) {
-            try await fm.suggestFollowUps(context, schema)
+      var proposed: [String]?
+      for attempt in 1...maximumFollowUpProposalAttempts {
+        do {
+          proposed = try await withFollowUpDeadline(
+            seconds: configuration.deadlines.generationSeconds,
+            stage: "follow-up-suggestion"
+          ) {
+            try await serializer.run(operation: .followUpSuggestion) {
+              try await fm.suggestFollowUps(context, schema)
+            }
           }
+          break
+        } catch is CancellationError {
+          guard !Task.isCancelled else { return }
+          continuation.yield(
+            .proposalFailed(reason: .generationFailed))
+          return
+        } catch is FollowUpDeadlineExceeded {
+          guard attempt == maximumFollowUpProposalAttempts else {
+            continuation.yield(
+              .proposalRetrying(
+                attempt: attempt + 1,
+                reason: .generationTimedOut))
+            continue
+          }
+          continuation.yield(
+            .proposalFailed(reason: .generationTimedOut))
+          return
+        } catch {
+          continuation.yield(
+            .proposalFailed(reason: .generationFailed))
+          return
         }
-      } catch is CancellationError {
-        return
-      } catch is FollowUpDeadlineExceeded {
-        continuation.yield(
-          .proposalFailed(reason: .generationTimedOut))
-        return
-      } catch {
-        continuation.yield(
-          .proposalFailed(reason: .generationFailed))
-        return
       }
+      guard let proposed else { return }
 
       let questions = normalizedFollowUpQuestions(
         proposed,
@@ -179,8 +196,12 @@ func preparedFollowUpStream(
         switch outcome {
         case .prepared(let prepared):
           continuation.yield(.prepared(prepared))
-        case .rejected(let reason):
-          continuation.yield(.rejected(rank: rank, reason: reason))
+        case .rejected(let reason, let telemetry):
+          continuation.yield(
+            .rejected(
+              rank: rank,
+              reason: reason,
+              telemetry: FollowUpRejectionTelemetry(telemetry)))
         }
       }
     }
@@ -241,8 +262,22 @@ private func prepareFollowUpCandidate(
   var failedSQL: String?
   var currentIssue: SQLValidationIssue?
 
+  func rejected(
+    _ reason: FollowUpPreparationRejection,
+    appending candidate: CandidateTelemetry? = nil
+  ) -> PreparedCandidateOutcome {
+    var rejectedTelemetry = telemetry
+    if let candidate {
+      rejectedTelemetry.candidates.append(candidate)
+    }
+    rejectedTelemetry.generatedCount = rejectedTelemetry.candidates.count
+    rejectedTelemetry.stageTimings.totalMicroseconds =
+      started.duration(to: .now).microseconds
+    return .rejected(reason, telemetry: rejectedTelemetry)
+  }
+
   for attempt in 0...configuration.maxRepairAttempts {
-    guard !Task.isCancelled else { return .rejected(.cancelled) }
+    guard !Task.isCancelled else { return rejected(.cancelled) }
     let candidateID = CandidateID(
       rawValue: attempt == 0
         ? "follow-up-\(rank)-initial"
@@ -294,20 +329,16 @@ private func prepareFollowUpCandidate(
         }
       }
     } catch is CancellationError {
-      return .rejected(.cancelled)
+      guard !Task.isCancelled else { return rejected(.cancelled) }
+      candidate.error = "generation: unexpected cancellation"
+      return rejected(.generationFailed, appending: candidate)
     } catch let deadline as FollowUpDeadlineExceeded {
       telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "generation deadline exceeded"
-      telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.generationTimedOut)
+      return rejected(.generationTimedOut, appending: candidate)
     } catch {
       candidate.error = "generation: \(String(reflecting: type(of: error)))"
-      telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.generationFailed)
+      return rejected(.generationFailed, appending: candidate)
     }
     candidate.sql = generation.sql
     candidate.tokensPerSecond = generation.tokensPerSecond
@@ -334,22 +365,18 @@ private func prepareFollowUpCandidate(
         try await db.validate(generation.sql)
       }
     } catch is CancellationError {
-      return .rejected(.cancelled)
+      guard !Task.isCancelled else { return rejected(.cancelled) }
+      candidate.error = "validation: unexpected cancellation"
+      return rejected(.validationFailed, appending: candidate)
     } catch let deadline as FollowUpDeadlineExceeded {
       telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "validation deadline exceeded"
-      telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.validationTimedOut)
+      return rejected(.validationTimedOut, appending: candidate)
     } catch {
       let issue = SQLValidationIssue.classify(error)
       candidate.error = issue.message
       candidate.validationReport = SQLValidationReport(issue: issue)
-      telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.validationFailed)
+      return rejected(.validationFailed, appending: candidate)
     }
     candidate.validationReport = validation
     telemetry.stageTimings.validationMicroseconds =
@@ -359,9 +386,7 @@ private func prepareFollowUpCandidate(
       candidate.error = issue.message
       telemetry.candidates.append(candidate)
       guard issue.disposition == .repairable else {
-        telemetry.stageTimings.totalMicroseconds =
-          started.duration(to: .now).microseconds
-        return .rejected(.validationFailed)
+        return rejected(.validationFailed)
       }
       failedSQL = generation.sql
       currentIssue = issue
@@ -379,23 +404,20 @@ private func prepareFollowUpCandidate(
         try await db.execute(generation.sql)
       }
     } catch is CancellationError {
-      return .rejected(.cancelled)
+      guard !Task.isCancelled else { return rejected(.cancelled) }
+      candidate.error = "execution: unexpected cancellation"
+      return rejected(.executionFailed, appending: candidate)
     } catch let deadline as FollowUpDeadlineExceeded {
       telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "execution deadline exceeded"
-      telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.executionTimedOut)
+      return rejected(.executionTimedOut, appending: candidate)
     } catch {
       let issue = SQLValidationIssue.classify(error)
       candidate.error = issue.message
       candidate.validationReport = SQLValidationReport(issue: issue)
       telemetry.candidates.append(candidate)
       guard issue.disposition == .repairable else {
-        telemetry.stageTimings.totalMicroseconds =
-          started.duration(to: .now).microseconds
-        return .rejected(.executionFailed)
+        return rejected(.executionFailed)
       }
       failedSQL = generation.sql
       currentIssue = issue
@@ -421,20 +443,16 @@ private func prepareFollowUpCandidate(
           result: result)
       }
     } catch is CancellationError {
-      return .rejected(.cancelled)
+      guard !Task.isCancelled else { return rejected(.cancelled) }
+      candidate.error = "grounding: unexpected cancellation"
+      return rejected(.unhelpfulResult, appending: candidate)
     } catch let deadline as FollowUpDeadlineExceeded {
       telemetry.timeoutStage = deadline.telemetryStage
       candidate.error = "grounding deadline exceeded"
-      telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.groundingTimedOut)
+      return rejected(.groundingTimedOut, appending: candidate)
     } catch {
       candidate.error = "grounding: \(String(reflecting: type(of: error)))"
-      telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.unhelpfulResult)
+      return rejected(.unhelpfulResult, appending: candidate)
     }
     telemetry.stageTimings.groundingMicroseconds =
       groundingStarted.duration(to: .now).microseconds
@@ -442,9 +460,7 @@ private func prepareFollowUpCandidate(
     guard !grounding.isUnhelpfulPreparedFollowUp else {
       candidate.error = "preflight result was empty or not grounded"
       telemetry.candidates.append(candidate)
-      telemetry.stageTimings.totalMicroseconds =
-        started.duration(to: .now).microseconds
-      return .rejected(.unhelpfulResult)
+      return rejected(.unhelpfulResult)
     }
 
     candidate.selected = true
@@ -477,12 +493,28 @@ private func prepareFollowUpCandidate(
         createdAt: now()))
   }
 
-  telemetry.generatedCount = telemetry.candidates.count
-  telemetry.stageTimings.totalMicroseconds =
-    started.duration(to: .now).microseconds
-  return .rejected(
+  return rejected(
     telemetry.candidates.last?.sql == nil
       ? .generationFailed : .validationFailed)
+}
+
+extension FollowUpRejectionTelemetry {
+  fileprivate init(_ telemetry: TurnTelemetry) {
+    let lastCandidate = telemetry.candidates.last
+    self.init(
+      timeoutStage: telemetry.timeoutStage,
+      stageTimings: telemetry.stageTimings,
+      candidateCount: telemetry.candidates.count,
+      failedCandidateCount: telemetry.candidates.filter { $0.error != nil }.count,
+      repairAttempts: telemetry.repairAttempts,
+      lastCandidateRole: lastCandidate?.role,
+      lastCandidateGeneratedSQL: lastCandidate?.sql != nil,
+      lastCandidateProducedResult: lastCandidate?.result != nil,
+      lastCandidateErrorPresent: lastCandidate?.error != nil,
+      lastIssueKind: lastCandidate?.validationReport?.issue?.kind,
+      lastIssueDisposition:
+        lastCandidate?.validationReport?.issue?.disposition)
+  }
 }
 
 extension GroundingReport {
@@ -513,13 +545,19 @@ func preparedAnswerStream(
     let task = Task {
       let started = ContinuousClock.now
       let mode = await runtimeMode()
-      func runFreeFormFallback(reason: PreparedCacheMissReason) async {
+      func runFreeFormFallback(
+        reason: PreparedCacheMissReason,
+        timeoutStage: String? = nil
+      ) async {
         for await event in fallback(prepared.question, history) {
           if case .turnFinished(let outcome, var telemetry) = event {
             telemetry.preparedFollowUpID = prepared.id
             telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID
             telemetry.preparedCacheHit = false
             telemetry.preparedCacheMissReason = reason
+            if telemetry.timeoutStage == nil {
+              telemetry.timeoutStage = timeoutStage
+            }
             continuation.yield(
               .turnFinished(outcome: outcome, telemetry: telemetry))
           } else {
@@ -572,7 +610,16 @@ func preparedAnswerStream(
           try await db.validate(prepared.sql)
         }
       } catch is CancellationError {
+        guard Task.isCancelled else {
+          await runFreeFormFallback(reason: .validationFailed)
+          return
+        }
         continuation.finish()
+        return
+      } catch let deadline as FollowUpDeadlineExceeded {
+        await runFreeFormFallback(
+          reason: .validationTimedOut,
+          timeoutStage: deadline.telemetryStage)
         return
       } catch {
         await runFreeFormFallback(reason: .validationFailed)
@@ -653,10 +700,15 @@ func preparedAnswerStream(
             result: prepared.result)
         }
       } catch is CancellationError {
-        continuation.finish()
-        return
+        if Task.isCancelled {
+          continuation.finish()
+          return
+        }
+        grounding = GroundingReport()
+      } catch let deadline as FollowUpDeadlineExceeded {
+        telemetry.timeoutStage = deadline.telemetryStage
+        grounding = GroundingReport()
       } catch {
-        telemetry.timeoutStage = "grounding"
         grounding = GroundingReport()
       }
       let groundingElapsed = groundingStarted.duration(to: .now).microseconds
@@ -686,12 +738,17 @@ func preparedAnswerStream(
         }
         narrationUsedFM = fmAvailable
       } catch is CancellationError {
-        continuation.finish()
-        return
-      } catch {
-        if error is FollowUpDeadlineExceeded {
-          telemetry.timeoutStage = "narration"
+        if Task.isCancelled {
+          continuation.finish()
+          return
         }
+        narration = PreparedAnswerFallback.narration(for: prepared.result)
+        narrationUsedFM = false
+      } catch let deadline as FollowUpDeadlineExceeded {
+        telemetry.timeoutStage = deadline.telemetryStage
+        narration = PreparedAnswerFallback.narration(for: prepared.result)
+        narrationUsedFM = false
+      } catch {
         narration = PreparedAnswerFallback.narration(for: prepared.result)
         narrationUsedFM = false
       }
