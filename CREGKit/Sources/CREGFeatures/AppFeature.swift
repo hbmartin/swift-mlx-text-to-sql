@@ -30,6 +30,7 @@ public struct AppFeature: Sendable {
       return starter
     }
     public var provisionalAssistantMessageID: UUID?
+    public var resultPresentationPreference: ResultPresentationPreference?
     public var startedAt: Date
     /// Trace lines accumulating for the in-flight turn.
     public var trace: [String] = []
@@ -263,6 +264,7 @@ public struct AppFeature: Sendable {
   @Dependency(\.continuousClock) var clock
   @Dependency(\.diagnostics) var diagnostics
   @Dependency(\.modelPreparationJournal) var preparationJournal
+  private let messageUpdateQueue = MessageUpdateQueue()
 
   public init() {}
 
@@ -670,6 +672,14 @@ public struct AppFeature: Sendable {
         state.conversations[id: id]?.isManuallyTitled = true
         return .none
 
+      case .chat(.resultPresentationChanged(let messageID, let preference)):
+        guard
+          state.activeTurn?.conversationID == state.chat?.conversationID,
+          state.activeTurn?.provisionalAssistantMessageID == messageID
+        else { return .none }
+        state.activeTurn?.resultPresentationPreference = preference
+        return .none
+
       case .chat(.operationFailed(let failure)):
         return .send(.operationFailed(failure))
 
@@ -783,7 +793,7 @@ public struct AppFeature: Sendable {
       }
     }
     .ifLet(\.chat, action: \.chat) {
-      ChatFeature()
+      ChatFeature(messageUpdateQueue: messageUpdateQueue)
     }
   }
 
@@ -937,7 +947,12 @@ public struct AppFeature: Sendable {
         .cancel(id: CancelID.pipeline),
         .run { send in
           do {
-            try await history.updateMessage(conversationID, finalized)
+            try await messageUpdateQueue.save(
+              conversationID: conversationID,
+              messageID: finalized.id
+            ) {
+              try await history.updateMessage(conversationID, finalized)
+            }
             try await history.appendEvents(conversationID, finalized.id, lines)
             try await history.endTurnJournal(conversationID)
           } catch {
@@ -1010,6 +1025,7 @@ public struct AppFeature: Sendable {
         traceSteps: state.activeTurn?.trace ?? [],
         createdAt: now,
         devInfo: nil)
+      state.activeTurn?.resultPresentationPreference = provisional.resultPresentation
       if state.chat?.conversationID == conversationID {
         state.chat?.messages.append(provisional)
       }
@@ -1040,15 +1056,11 @@ public struct AppFeature: Sendable {
         .failure(message)
       }
     let assistantMessageID = active.provisionalAssistantMessageID ?? uuid()
-    let preservedResultPresentation =
-      state.chat?.conversationID == conversationID
-      ? state.chat?.messages[id: assistantMessageID]?.resultPresentation
-      : nil
     let assistantMessage = ChatMessage(
       id: assistantMessageID, role: .assistant, body: body,
       traceSteps: active.trace, createdAt: now,
       devInfo: telemetry,
-      resultPresentation: preservedResultPresentation)
+      resultPresentation: active.resultPresentationPreference)
     let lines = active.eventLines
     state.activeTurn = nil
 
@@ -1076,7 +1088,12 @@ public struct AppFeature: Sendable {
       .run { send in
         do {
           if replacesProvisional {
-            try await history.updateMessage(conversationID, assistantMessage)
+            try await messageUpdateQueue.save(
+              conversationID: conversationID,
+              messageID: assistantMessage.id
+            ) {
+              try await history.updateMessage(conversationID, assistantMessage)
+            }
           } else {
             try await history.appendMessage(conversationID, assistantMessage)
           }

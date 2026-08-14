@@ -30,6 +30,24 @@ import Testing
     #expect(CREGChartAdapter.aggregate(in: projections[1]) == .sum)
   }
 
+  @Test func topLevelProjectionParsingIgnoresSQLComments() {
+    let projections = CREGChartAdapter.topLevelProjections(
+      """
+      -- SELECT ignored FROM ignored
+      /* SELECT ignored_again FROM ignored_again */
+      SELECT p.name AS property,
+             /* FROM fake, ignored comma */
+             SUM(p.value) AS total_value,
+             p.city -- FROM fake, ignored comma
+      FROM properties p
+      """)
+
+    #expect(projections.count == 3)
+    #expect(projections[0].contains("p.name AS property"))
+    #expect(projections[1].contains("SUM(p.value) AS total_value"))
+    #expect(projections[2].contains("p.city"))
+  }
+
   @Test func schemaAndProjectionHintsPreserveIdentifiersUnitsDatesAndAggregates() {
     let result = QueryResult(
       columns: ["loan_id", "current_balance", "maturity_date"],
@@ -52,6 +70,26 @@ import Testing
     #expect(raw.aggregationSafety == .unknown)
   }
 
+  @Test func unitHintsTakePriorityOverExplicitYearDimensions() {
+    let percent = CREGChartAdapter.hints(
+      for: "year_over_year_growth_rate", projection: nil)
+    let currency = CREGChartAdapter.hints(for: "yearly_rent", projection: nil)
+    let area = CREGChartAdapter.hints(for: "yearly_square_feet", projection: nil)
+    let duration = CREGChartAdapter.hints(for: "year_over_year_months", projection: nil)
+    let year = CREGChartAdapter.hints(for: "year_built", projection: nil)
+
+    #expect(percent.unit == .percent(fractional: true))
+    #expect(percent.role == .measure)
+    #expect(currency.unit == .currency(code: "USD"))
+    #expect(currency.role == .measure)
+    #expect(area.unit == .area(unit: "sq ft"))
+    #expect(area.role == .measure)
+    #expect(duration.unit == .duration(unit: "months"))
+    #expect(duration.role == .measure)
+    #expect(year.semanticType == .ordinal)
+    #expect(year.role == .dimension)
+  }
+
   @Test(arguments: [
     ("Show the trend over time", "SELECT period_end, noi FROM property_financials", AutoChartGoal.trend),
     ("Which properties are unusual outliers?", "SELECT name, value FROM properties", .outlier),
@@ -64,6 +102,19 @@ import Testing
     question: String, sql: String, expected: AutoChartGoal
   ) {
     #expect(CREGChartAdapter.goal(question: question, sql: sql) == expected)
+  }
+
+  @Test func questionIntentTakesPriorityBeforeSQLFallback() {
+    #expect(
+      CREGChartAdapter.goal(
+        question: "Rank the top properties",
+        sql: "SELECT name FROM properties WHERE note = 'trend over time' ORDER BY value"
+      ) == .ranking)
+    #expect(
+      CREGChartAdapter.goal(
+        question: "Show the results",
+        sql: "SELECT name, value FROM properties ORDER BY value DESC"
+      ) == .ranking)
   }
 
   @Test func allStarterQueriesProduceTheExpectedPrimaryFamily() throws {
@@ -263,6 +314,7 @@ import Testing
     let databaseURL = FileManager.default.temporaryDirectory
       .appendingPathComponent("creg-chart-history-tests", isDirectory: true)
       .appendingPathComponent(UUID().uuidString + ".sqlite")
+    defer { try? FileManager.default.removeItem(at: databaseURL) }
     let history = try HistoryClient.live(databaseURL: databaseURL)
     let conversationID = UUID()
     let preference = ResultPresentationPreference(
@@ -275,6 +327,53 @@ import Testing
 
     let loaded = try await history.loadConversation(conversationID)
     #expect(loaded.messages.first?.resultPresentation == preference)
+  }
+
+  @Test func delayedPreferenceSaveCannotOverwriteTheLatestPreference() async throws {
+    let databaseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-chart-history-tests", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString + ".sqlite")
+    defer { try? FileManager.default.removeItem(at: databaseURL) }
+    let liveHistory = try HistoryClient.live(databaseURL: databaseURL)
+    let conversationID = UUID()
+    _ = try await liveHistory.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let message = Self.answerMessage()
+    try await liveHistory.appendMessage(conversationID, message)
+
+    let gate = FirstPreferenceSaveGate()
+    var delayedHistory = liveHistory
+    delayedHistory.updateMessage = { conversationID, message in
+      await gate.delayFirstSave()
+      try await liveHistory.updateMessage(conversationID, message)
+    }
+    var state = ChatFeature.State(conversationID: conversationID)
+    state.messages.append(message)
+    let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+      $0.historyClient = delayedHistory
+    }
+    let firstPreference = ResultPresentationPreference(mode: .chart)
+    let finalPreference = ResultPresentationPreference(
+      mode: .table, specificationID: "policy|bar|fund|value")
+
+    await store.send(
+      .resultPresentationChanged(
+        messageID: message.id, preference: firstPreference)
+    ) {
+      $0.messages[id: message.id]?.resultPresentation = firstPreference
+    }
+    await gate.waitUntilFirstSaveStarts()
+    await store.send(
+      .resultPresentationChanged(
+        messageID: message.id, preference: finalPreference)
+    ) {
+      $0.messages[id: message.id]?.resultPresentation = finalPreference
+    }
+    await gate.releaseFirstSave()
+    await store.finish()
+
+    let loaded = try await liveHistory.loadConversation(conversationID)
+    #expect(loaded.messages.first?.resultPresentation == finalPreference)
   }
 
   private static func answerMessage() -> ChatMessage {
@@ -313,6 +412,35 @@ import Testing
         sqlFingerprint: PreparedFollowUpIntegrity.fingerprint(sql: sql),
         resultFingerprint: PreparedFollowUpIntegrity.fingerprint(result: result)),
       createdAt: Date(timeIntervalSince1970: 2))
+  }
+}
+
+private actor FirstPreferenceSaveGate {
+  private var didStartFirstSave = false
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func delayFirstSave() async {
+    guard !didStartFirstSave else { return }
+    didStartFirstSave = true
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+    await withCheckedContinuation { continuation in
+      releaseContinuation = continuation
+    }
+  }
+
+  func waitUntilFirstSaveStarts() async {
+    guard !didStartFirstSave else { return }
+    await withCheckedContinuation { continuation in
+      startWaiters.append(continuation)
+    }
+  }
+
+  func releaseFirstSave() {
+    releaseContinuation?.resume()
+    releaseContinuation = nil
   }
 }
 

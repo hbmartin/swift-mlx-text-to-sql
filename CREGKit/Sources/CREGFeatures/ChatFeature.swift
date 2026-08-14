@@ -198,13 +198,21 @@ public struct ChatFeature: Sendable {
     let conversationID: UUID
   }
 
+  private let messageUpdateQueue: MessageUpdateQueue
+
   @Dependency(\.historyClient) var history
   @Dependency(\.readAloud) var readAloud
   @Dependency(\.date.now) var now
   @Dependency(\.continuousClock) var clock
   @Dependency(\.diagnostics) var diagnostics
 
-  public init() {}
+  public init() {
+    self.messageUpdateQueue = MessageUpdateQueue()
+  }
+
+  init(messageUpdateQueue: MessageUpdateQueue) {
+    self.messageUpdateQueue = messageUpdateQueue
+  }
 
   public var body: some Reducer<State, Action> {
     BindingReducer()
@@ -404,7 +412,12 @@ public struct ChatFeature: Sendable {
         let updatedMessage = message
         return .run { send in
           do {
-            try await history.updateMessage(conversationID, updatedMessage)
+            try await messageUpdateQueue.save(
+              conversationID: conversationID,
+              messageID: updatedMessage.id
+            ) {
+              try await history.updateMessage(conversationID, updatedMessage)
+            }
           } catch {
             await send(
               .operationFailed(.history(operation: .messageSave, error: error)))
@@ -614,5 +627,49 @@ public struct ChatFeature: Sendable {
       }
     }
     return turns
+  }
+}
+
+actor MessageUpdateQueue {
+  private struct Key: Hashable {
+    var conversationID: UUID
+    var messageID: UUID
+  }
+
+  private var active: Set<Key> = []
+  private var waiters: [Key: [CheckedContinuation<Void, Never>]] = [:]
+
+  func save(
+    conversationID: UUID,
+    messageID: UUID,
+    operation: @escaping @Sendable () async throws -> Void
+  ) async throws {
+    let key = Key(conversationID: conversationID, messageID: messageID)
+    if active.contains(key) {
+      await withCheckedContinuation { continuation in
+        waiters[key, default: []].append(continuation)
+      }
+    } else {
+      active.insert(key)
+    }
+
+    do {
+      try await operation()
+      finish(key)
+    } catch {
+      finish(key)
+      throw error
+    }
+  }
+
+  private func finish(_ key: Key) {
+    guard var queued = waiters[key], !queued.isEmpty else {
+      active.remove(key)
+      waiters[key] = nil
+      return
+    }
+    let next = queued.removeFirst()
+    waiters[key] = queued.isEmpty ? nil : queued
+    next.resume()
   }
 }

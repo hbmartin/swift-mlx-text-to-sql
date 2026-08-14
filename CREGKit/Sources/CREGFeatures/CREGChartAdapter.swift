@@ -139,13 +139,6 @@ enum CREGChartAdapter {
         aggregation: aggregation,
         aggregationSafety: safety)
     }
-    if normalized.contains("year") {
-      return AutoChartColumnHints(
-        semanticType: .ordinal,
-        role: .dimension,
-        aggregation: aggregation,
-        aggregationSafety: safety)
-    }
     if isPercent(normalized) {
       return AutoChartColumnHints(
         semanticType: .quantitative,
@@ -178,13 +171,25 @@ enum CREGChartAdapter {
         aggregation: aggregation,
         aggregationSafety: safety)
     }
+    if isYear(normalized) {
+      return AutoChartColumnHints(
+        semanticType: .ordinal,
+        role: .dimension,
+        aggregation: aggregation,
+        aggregationSafety: safety)
+    }
     return AutoChartColumnHints(
       aggregation: aggregation,
       aggregationSafety: safety)
   }
 
   static func goal(question: String?, sql: String) -> AutoChartGoal {
-    let text = "\(question ?? "") \(sql)".lowercased()
+    let questionGoal = classifiedGoal(in: (question ?? "").lowercased())
+    guard questionGoal == .overview else { return questionGoal }
+    return classifiedGoal(in: "\(question ?? "") \(sql)".lowercased())
+  }
+
+  private static func classifiedGoal(in text: String) -> AutoChartGoal {
     if containsAny(text, ["outlier", "unusual", "anomal"]) { return .outlier }
     if containsAny(text, ["correlat", "relationship", "related", " versus ", " vs "]) {
       return .relationship
@@ -237,6 +242,27 @@ enum CREGChartAdapter {
         index += 1
         continue
       }
+      if character == "-", index + 1 < characters.count,
+        characters[index + 1] == "-"
+      {
+        index += 2
+        while index < characters.count, !characters[index].isNewline {
+          index += 1
+        }
+        continue
+      }
+      if character == "/", index + 1 < characters.count,
+        characters[index + 1] == "*"
+      {
+        index += 2
+        while index + 1 < characters.count,
+          !(characters[index] == "*" && characters[index + 1] == "/")
+        {
+          index += 1
+        }
+        index = min(index + 2, characters.count)
+        continue
+      }
       if character == "'" || character == "\"" || character == "`" {
         quote = character
         index += 1
@@ -271,10 +297,39 @@ enum CREGChartAdapter {
     var depth = 0
     var quote: Character?
     var start = 0
-    for index in characters.indices {
+    var index = 0
+    while index < characters.count {
       let character = characters[index]
       if let activeQuote = quote {
-        if character == activeQuote { quote = nil }
+        if character == activeQuote {
+          if index + 1 < characters.count, characters[index + 1] == activeQuote {
+            index += 2
+            continue
+          }
+          quote = nil
+        }
+        index += 1
+        continue
+      }
+      if character == "-", index + 1 < characters.count,
+        characters[index + 1] == "-"
+      {
+        index += 2
+        while index < characters.count, !characters[index].isNewline {
+          index += 1
+        }
+        continue
+      }
+      if character == "/", index + 1 < characters.count,
+        characters[index + 1] == "*"
+      {
+        index += 2
+        while index + 1 < characters.count,
+          !(characters[index] == "*" && characters[index + 1] == "/")
+        {
+          index += 1
+        }
+        index = min(index + 2, characters.count)
         continue
       }
       if character == "'" || character == "\"" || character == "`" {
@@ -289,6 +344,7 @@ enum CREGChartAdapter {
         output.append(String(characters[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines))
         start = index + 1
       }
+      index += 1
     }
     if start < characters.count {
       output.append(String(characters[start...]).trimmingCharacters(in: .whitespacesAndNewlines))
@@ -297,14 +353,22 @@ enum CREGChartAdapter {
   }
 
   private static func parseISODate(_ text: String) -> Date? {
+    let dateOnlyStyle = Date.ISO8601FormatStyle(timeZone: .gmt)
+      .year().month().day()
+    if let date = try? Date(text, strategy: dateOnlyStyle) { return date }
     if let date = try? Date(text, strategy: .iso8601) { return date }
     let parts = text.split(separator: "-")
     guard parts.count == 3,
       let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
     else { return nil }
     var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    calendar.timeZone = .gmt
     return calendar.date(from: DateComponents(year: year, month: month, day: day))
+  }
+
+  private static func isYear(_ name: String) -> Bool {
+    name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+      .contains("year")
   }
 
   private static func isDate(_ name: String) -> Bool {

@@ -279,6 +279,8 @@ struct ResultPreviewView: View {
   let result: QueryResult
   let sql: String
   let question: String?
+  let chartTable: CREGChartTable
+  let chartRecommendations: [AutoChartRecommendation]
   let preference: ResultPresentationPreference?
   let setPreference: (ResultPresentationPreference) -> Void
   let open: () -> Void
@@ -289,6 +291,26 @@ struct ResultPreviewView: View {
   @State private var pinchHapticTrigger = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+  init(
+    result: QueryResult,
+    sql: String,
+    question: String?,
+    preference: ResultPresentationPreference?,
+    setPreference: @escaping (ResultPresentationPreference) -> Void,
+    open: @escaping () -> Void
+  ) {
+    let chart = CREGChartAdapter.recommendations(
+      result: result, sql: sql, question: question)
+    self.result = result
+    self.sql = sql
+    self.question = question
+    self.chartTable = chart.table
+    self.chartRecommendations = chart.set.chartRecommendations
+    self.preference = preference
+    self.setPreference = setPreference
+    self.open = open
+  }
 
   private var renderedScale: CGFloat {
     reduceMotion
@@ -303,10 +325,7 @@ struct ResultPreviewView: View {
         .foregroundStyle(.secondary)
         .padding(10)
     } else {
-      let chart = CREGChartAdapter.recommendations(
-        result: result, sql: sql, question: question)
-      let recommendations = chart.set.chartRecommendations
-      let selected = selectedRecommendation(in: recommendations)
+      let selected = selectedRecommendation(in: chartRecommendations)
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
         if selected != nil {
@@ -334,7 +353,7 @@ struct ResultPreviewView: View {
           VStack(alignment: .leading, spacing: 6) {
             if mode == .chart, let selected {
               AutoChartView(
-                table: chart.table,
+                table: chartTable,
                 recommendation: selected,
                 interaction: .preview,
                 height: 156)
@@ -595,11 +614,6 @@ struct ResultViewerView: View {
   }
 
   var body: some View {
-    let tableResult = filteredResult
-    let displayRows = ResultViewerLogic.displayRows(
-      result: tableResult, sort: sort, searchText: searchText)
-    let widths = columnWidths()
-    let selectedResultCell = selectedResultCell(in: displayRows)
     NavigationStack {
       VStack(spacing: 0) {
         if !chartRecommendations.isEmpty {
@@ -633,7 +647,12 @@ struct ResultViewerView: View {
             }
           }
           .accessibilityIdentifier("result-chart-explorer")
-        } else {
+        } else if resultMode == .table {
+          let tableResult = filteredResult
+          let displayRows = ResultViewerLogic.displayRows(
+            result: tableResult, sort: sort, searchText: searchText)
+          let widths = columnWidths()
+          let selectedResultCell = selectedResultCell(in: displayRows)
           searchable(
             VStack(spacing: 0) {
               table(displayRows: displayRows, widths: widths)
@@ -985,6 +1004,9 @@ struct ResultViewerView: View {
           sourceResult: sourceResult,
           selectionIsActive: selectionIsActive)
         Spacer(minLength: 0)
+        if selectionIsActive {
+          clearChartSelectionButton
+        }
         sortChip
       }
       VStack(alignment: .leading, spacing: 6) {
@@ -992,6 +1014,9 @@ struct ResultViewerView: View {
           displayedRowCount: displayedRowCount,
           sourceResult: sourceResult,
           selectionIsActive: selectionIsActive)
+        if selectionIsActive {
+          clearChartSelectionButton
+        }
         sortChip
       }
     }
@@ -999,6 +1024,17 @@ struct ResultViewerView: View {
     .padding(.vertical, 6)
     .background(Color.primary.opacity(0.025))
     .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: sort)
+  }
+
+  private var clearChartSelectionButton: some View {
+    Button {
+      chartSelection = nil
+    } label: {
+      Label("Clear chart filter", systemImage: "xmark.circle.fill")
+        .font(.caption.weight(.medium))
+    }
+    .buttonStyle(.bordered)
+    .accessibilityIdentifier("clear-chart-selection")
   }
 
   private func rowStatus(
