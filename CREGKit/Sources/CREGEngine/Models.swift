@@ -456,6 +456,7 @@ public enum PreparedCacheMissReason: String, Sendable, Equatable, Codable {
   case sqlFingerprint = "sql_fingerprint"
   case resultFingerprint = "result_fingerprint"
   case validationFailed = "validation_failed"
+  case validationTimedOut = "validation_timed_out"
 }
 
 public enum AmbiguityGateMode: String, Sendable, Equatable, Codable {

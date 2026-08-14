@@ -731,8 +731,16 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
       run: { _, _ in AsyncStream { $0.finish() } },
       prepareFollowUps: { _ in
         AsyncStream { continuation in
+          let telemetry = FollowUpRejectionTelemetry(
+            timeoutStage: "validation",
+            stageTimings: StageTimings(totalMicroseconds: 12_000))
           continuation.yield(
             .proposalFailed(reason: .generationTimedOut))
+          continuation.yield(
+            .rejected(
+              rank: 2,
+              reason: .validationTimedOut,
+              telemetry: telemetry))
           continuation.yield(.finished)
           continuation.finish()
         }
@@ -761,6 +769,12 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     let failure = events.first { $0.code == "follow_up_proposal_failed" }
     #expect(failure?.level == .error)
     #expect(failure?.context["reason"] == "generationTimedOut")
+    let rejection = events.first { $0.code == "follow_up_candidate_rejected" }
+    #expect(rejection?.context["rank"] == "2")
+    #expect(rejection?.context["reason"] == "validationTimedOut")
+    #expect(rejection?.context["timeout_stage"] == "validation")
+    #expect(rejection?.context["candidate_count"] == "0")
+    #expect(rejection?.context["elapsed_ms"] == "12.0")
     let rendered = events.map(String.init(describing:)).joined(separator: "\n")
     for privateValue in [
       privateSourceID.uuidString,

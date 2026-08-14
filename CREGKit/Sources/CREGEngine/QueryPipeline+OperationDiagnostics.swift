@@ -82,6 +82,15 @@ extension QueryPipeline {
                 context: baseContext.merging([
                   "candidate_count": String(candidateCount)
                 ]) { current, _ in current })
+            case .proposalRetrying(let attempt, let reason):
+              diagnostics.info(
+                category: .pipeline,
+                code: "follow_up_proposal_retrying",
+                summary: "Follow-up candidate proposal generation is retrying.",
+                context: baseContext.merging([
+                  "attempt": String(attempt),
+                  "reason": reason.rawValue,
+                ]) { current, _ in current })
             case .proposalFailed(let reason):
               diagnostics.record(
                 DiagnosticEvent(
@@ -110,15 +119,30 @@ extension QueryPipeline {
                 context: baseContext.merging(eventContext) { current, _ in
                   current
                 })
-            case .rejected(let rank, let reason):
+            case .rejected(let rank, let reason, let telemetry):
+              var rejectionContext = [
+                "rank": String(rank),
+                "reason": reason.rawValue,
+              ]
+              if let telemetry {
+                rejectionContext["candidate_count"] = String(
+                  telemetry.candidateCount)
+                rejectionContext["failed_candidate_count"] = String(
+                  telemetry.failedCandidateCount)
+                rejectionContext["repair_attempts"] = String(
+                  telemetry.repairAttempts)
+                rejectionContext["elapsed_ms"] = operationMilliseconds(
+                  telemetry.stageTimings.totalMicroseconds)
+                rejectionContext["timeout_stage"] = timeoutStage(
+                  telemetry.timeoutStage)
+              }
               diagnostics.info(
                 category: .pipeline,
                 code: "follow_up_candidate_rejected",
                 summary: "A follow-up candidate did not pass preparation.",
-                context: baseContext.merging([
-                  "rank": String(rank),
-                  "reason": reason.rawValue,
-                ]) { current, _ in current })
+                context: baseContext.merging(rejectionContext) {
+                  current, _ in current
+                })
             case .finished:
               finishedSeen = true
               diagnostics.info(

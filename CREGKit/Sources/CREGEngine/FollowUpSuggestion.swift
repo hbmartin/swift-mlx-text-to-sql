@@ -29,7 +29,7 @@ public struct FollowUpSuggestionContext: Sendable, Equatable, Codable {
 /// Versioned evidence that a prepared question, SQL statement, and cached
 /// result were produced by the currently bundled model and portfolio data.
 public struct PreparedQueryProvenance: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 2
+  public static let currentSchemaVersion = 3
 
   public var schemaVersion: Int
   public var modelKey: String
@@ -216,14 +216,61 @@ public enum FollowUpProposalFailure: String, Sendable, Equatable, Codable {
   case generationTimedOut
 }
 
+/// Payload-free preparation details retained when a candidate is rejected.
+/// This keeps timeout and candidate-stage diagnostics observable without
+/// persisting the generated SQL, result rows, or question a second time.
+public struct FollowUpRejectionTelemetry: Sendable, Equatable, Codable {
+  public var timeoutStage: String?
+  public var stageTimings: StageTimings
+  public var candidateCount: Int
+  public var failedCandidateCount: Int
+  public var repairAttempts: Int
+  public var lastCandidateRole: CandidateRole?
+  public var lastCandidateGeneratedSQL: Bool
+  public var lastCandidateProducedResult: Bool
+  public var lastCandidateErrorPresent: Bool
+  public var lastIssueKind: SQLValidationIssue.Kind?
+  public var lastIssueDisposition: SQLValidationDisposition?
+
+  public init(
+    timeoutStage: String? = nil,
+    stageTimings: StageTimings = StageTimings(),
+    candidateCount: Int = 0,
+    failedCandidateCount: Int = 0,
+    repairAttempts: Int = 0,
+    lastCandidateRole: CandidateRole? = nil,
+    lastCandidateGeneratedSQL: Bool = false,
+    lastCandidateProducedResult: Bool = false,
+    lastCandidateErrorPresent: Bool = false,
+    lastIssueKind: SQLValidationIssue.Kind? = nil,
+    lastIssueDisposition: SQLValidationDisposition? = nil
+  ) {
+    self.timeoutStage = timeoutStage
+    self.stageTimings = stageTimings
+    self.candidateCount = candidateCount
+    self.failedCandidateCount = failedCandidateCount
+    self.repairAttempts = repairAttempts
+    self.lastCandidateRole = lastCandidateRole
+    self.lastCandidateGeneratedSQL = lastCandidateGeneratedSQL
+    self.lastCandidateProducedResult = lastCandidateProducedResult
+    self.lastCandidateErrorPresent = lastCandidateErrorPresent
+    self.lastIssueKind = lastIssueKind
+    self.lastIssueDisposition = lastIssueDisposition
+  }
+}
+
 /// Background preparation events are separate from user-turn events. They can
 /// be persisted alongside the source answer without pretending the work was a
 /// user-visible turn.
 public enum FollowUpPreparationEvent: Sendable, Equatable, Codable {
   case started(candidateCount: Int)
+  case proposalRetrying(attempt: Int, reason: FollowUpProposalFailure)
   case proposalFailed(reason: FollowUpProposalFailure)
   case prepared(PreparedFollowUp)
-  case rejected(rank: Int, reason: FollowUpPreparationRejection)
+  case rejected(
+    rank: Int,
+    reason: FollowUpPreparationRejection,
+    telemetry: FollowUpRejectionTelemetry? = nil)
   case finished
 }
 

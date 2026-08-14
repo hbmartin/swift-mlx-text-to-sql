@@ -228,6 +228,7 @@ public struct AppFeature: Sendable {
     case answerReadyBannerTapped
     case answerReadyBannerTimedOut
     case pipelineEvent(conversationID: UUID, questionID: UUID, event: PipelineEvent)
+    case pipelineStreamEnded(conversationID: UUID, questionID: UUID)
     case followUpPreparationEvent(
       conversationID: UUID,
       sourceMessageID: UUID,
@@ -596,6 +597,12 @@ public struct AppFeature: Sendable {
           questionID: questionID,
           event: event)
 
+      case .pipelineStreamEnded(let conversationID, let questionID):
+        return recoverFromUnterminatedPipelineStream(
+          state: &state,
+          conversationID: conversationID,
+          questionID: questionID)
+
       case .followUpPreparationEvent(
         let conversationID, let sourceMessageID, let event):
         return handleFollowUpPreparationEvent(
@@ -857,13 +864,22 @@ public struct AppFeature: Sendable {
         case .preparedFollowUp(let prepared):
           pipeline.runPrepared(prepared, turns)
         }
+      var terminalEventSeen = false
       for await event in events {
+        if case .turnFinished = event {
+          terminalEventSeen = true
+        }
         await send(
           .pipelineEvent(
             conversationID: conversationID,
             questionID: questionID,
             event: event))
       }
+      guard !Task.isCancelled, !terminalEventSeen else { return }
+      await send(
+        .pipelineStreamEnded(
+          conversationID: conversationID,
+          questionID: questionID))
     }
     .cancellable(id: CancelID.pipeline, cancelInFlight: true)
   }
@@ -1128,6 +1144,68 @@ public struct AppFeature: Sendable {
     return .merge(effects)
   }
 
+  private func recoverFromUnterminatedPipelineStream(
+    state: inout State,
+    conversationID: UUID,
+    questionID: UUID
+  ) -> Effect<Action> {
+    guard
+      let active = state.activeTurn,
+      active.questionID == questionID,
+      active.conversationID == conversationID
+    else { return .none }
+
+    diagnostics.record(
+      DiagnosticEvent(
+        level: .error,
+        category: .pipeline,
+        code: "chat_pipeline_stream_recovered",
+        summary: "A pipeline stream ended without a terminal event.",
+        context: [
+          "query_origin": active.submission.source.queryOrigin.rawValue,
+          "provisional_result_visible": String(
+            active.provisionalAssistantMessageID != nil),
+        ]))
+
+    let outcome: TurnOutcome
+    var telemetry: TurnTelemetry
+    if active.provisionalAssistantMessageID != nil,
+      case .preparedFollowUp(let prepared) = active.submission.source
+    {
+      telemetry = prepared.preparationTelemetry
+      telemetry.originalQuestion = prepared.question
+      telemetry.standaloneQuestion = prepared.question
+      telemetry.queryOrigin = .preparedFollowUp
+      telemetry.executionPath = .preparedFollowUp
+      telemetry.preparedFollowUpID = prepared.id
+      telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID
+      telemetry.preparedCacheHit = true
+      telemetry.narrationUsedFM = false
+      telemetry.terminalError =
+        "The prepared-answer stream ended without a terminal event."
+      outcome = .answered(
+        result: prepared.result,
+        narration: PreparedAnswerFallback.narration(for: prepared.result),
+        sql: prepared.sql,
+        notice: nil)
+    } else {
+      telemetry = TurnTelemetry(
+        originalQuestion: active.question,
+        runtimeMode: state.modelPreparationReport?.mode ?? .evaluated)
+      telemetry.queryOrigin = active.submission.source.queryOrigin
+      telemetry.executionPath = active.submission.source.executionPath
+      telemetry.terminalError =
+        "The pipeline event stream ended without a terminal event."
+      outcome = .failed(
+        message: "CREG couldn’t finish that answer. Please try again.")
+    }
+    return handlePipelineEvent(
+      state: &state,
+      conversationID: conversationID,
+      questionID: questionID,
+      event: .turnFinished(outcome: outcome, telemetry: telemetry))
+  }
+
   private func startFollowUpPreparation(
     state: inout State,
     conversationID: UUID,
@@ -1217,7 +1295,7 @@ public struct AppFeature: Sendable {
       preparation.eventLines.append(line)
     }
     switch event {
-    case .started, .proposalFailed, .rejected:
+    case .started, .proposalRetrying, .proposalFailed, .rejected:
       state.followUpPreparation = preparation
       return .none
 
@@ -1460,6 +1538,14 @@ extension QuestionSubmissionSource {
     switch self {
     case .freeForm: .freeForm
     case .starter: .starter
+    case .preparedFollowUp: .preparedFollowUp
+    }
+  }
+
+  fileprivate var executionPath: QueryExecutionPath {
+    switch self {
+    case .freeForm: .generated
+    case .starter: .deterministicStarter
     case .preparedFollowUp: .preparedFollowUp
     }
   }
