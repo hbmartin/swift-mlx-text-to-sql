@@ -416,7 +416,8 @@ public struct ChatFeature: Sendable {
               conversationID: conversationID,
               messageID: updatedMessage.id
             ) {
-              try await history.updateMessage(conversationID, updatedMessage)
+              try await history.updateResultPresentation(
+                conversationID, updatedMessage)
             }
           } catch {
             await send(

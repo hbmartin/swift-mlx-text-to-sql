@@ -929,7 +929,8 @@ public struct AppFeature: Sendable {
           notice: nil),
         traceSteps: active.trace,
         createdAt: now,
-        devInfo: prepared.preparationTelemetry)
+        devInfo: prepared.preparationTelemetry,
+        resultPresentation: active.resultPresentationPreference)
       if state.chat?.conversationID == active.conversationID,
         let index = state.chat?.messages.index(id: provisionalID)
       {

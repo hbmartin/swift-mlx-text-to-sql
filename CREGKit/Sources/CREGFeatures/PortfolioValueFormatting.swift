@@ -7,7 +7,7 @@ import Foundation
 /// identity, voting, and CSV export never see these strings. Output is
 /// deterministic en-US so unit tests hold across device locales.
 public enum PortfolioValueFormatting {
-  enum Style {
+  enum Style: Equatable {
     /// Years and identifiers: digits without grouping ("2019", not "2,019").
     case plainDigits
     /// Counts such as `term_months`: default numeric display.
@@ -58,7 +58,6 @@ public enum PortfolioValueFormatting {
     }
 
     if has("id") { return .plainDigits }
-    if has("year") { return .plainDigits }
     if has("month", "months", "floor", "floors") { return .count }
     if has("psf") { return .currencyPerSquareFoot }
     if has("sqft", "sf", "square") { return .squareFeet }
@@ -76,6 +75,7 @@ public enum PortfolioValueFormatting {
     {
       return .percent
     }
+    if has("year") { return .plainDigits }
     return .plain
   }
 

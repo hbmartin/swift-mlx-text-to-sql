@@ -353,7 +353,7 @@ private enum FollowUpTestError: Error {
     #expect(events.last == .finished)
   }
 
-  @Test func transientProposalTimeoutRetriesOnce() async {
+  @Test func proposalTimeoutDoesNotQueueBehindTheCancelledInference() async {
     let calls = FollowUpCalls()
     let fm = FMClient(
       availability: { .available },
@@ -361,11 +361,9 @@ private enum FollowUpTestError: Error {
       gate: { _, _ in .proceed },
       narrate: { _, _ in "unused" },
       suggestFollowUps: { _, _ in
-        let attempt = await calls.proposed()
-        if attempt == 1 {
-          try await Task.sleep(for: .seconds(5))
-        }
-        return ["Recovered proposal?"]
+        _ = await calls.proposed()
+        try await Task.sleep(for: .seconds(5))
+        return ["Too late?"]
       })
     let pipeline = QueryPipeline.live(
       fm: fm,
@@ -384,14 +382,10 @@ private enum FollowUpTestError: Error {
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
+    #expect(events.contains(.proposalFailed(reason: .generationTimedOut)))
     #expect(
-      events.contains(
-        .proposalRetrying(
-          attempt: 2,
-          reason: .generationTimedOut)))
-    #expect(!events.contains(.proposalFailed(reason: .generationTimedOut)))
-    #expect(events.contains { if case .prepared = $0 { true } else { false } })
-    #expect(await calls.proposals == 2)
+      !events.contains { if case .proposalRetrying = $0 { true } else { false } })
+    #expect(await calls.proposals == 1)
     #expect(events.last == .finished)
   }
 
@@ -712,7 +706,7 @@ private enum FollowUpTestError: Error {
     }
     #expect(telemetry.preparedCacheHit == false)
     #expect(telemetry.preparedCacheMissReason == .validationTimedOut)
-    #expect(telemetry.timeoutStage == "validation")
+    #expect(telemetry.timeoutStage == nil)
     #expect(await calls.validations == 1)
   }
 

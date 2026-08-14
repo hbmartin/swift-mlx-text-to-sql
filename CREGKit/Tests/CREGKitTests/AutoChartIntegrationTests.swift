@@ -48,6 +48,32 @@ import Testing
     #expect(projections[2].contains("p.city"))
   }
 
+  @Test func aggregateDetectionUsesSQLTokensAndRejectsWindowedValues() {
+    #expect(CREGChartAdapter.aggregate(in: "COUNT(DISTINCT tenant_id)") == .countDistinct)
+    #expect(CREGChartAdapter.aggregate(in: "COALESCE(SUM(value), 0)") == .sum)
+    #expect(CREGChartAdapter.aggregate(in: "checksum(value)") == nil)
+    #expect(CREGChartAdapter.aggregate(in: "value /* SUM(fake) */") == nil)
+    #expect(CREGChartAdapter.aggregate(in: "'SUM(fake)' AS label") == nil)
+    #expect(
+      CREGChartAdapter.aggregate(
+        in: "SUM(value) OVER (PARTITION BY fund_id)") == nil)
+  }
+
+  @Test func wildcardOrMismatchedProjectionsSuppressPositionalHints() {
+    #expect(
+      CREGChartAdapter.alignedProjections(
+        "SELECT p.*, SUM(value) FROM properties p", columnCount: 4)
+        == [nil, nil, nil, nil])
+    #expect(
+      CREGChartAdapter.alignedProjections(
+        "SELECT name, value FROM properties", columnCount: 3)
+        == [nil, nil, nil])
+    #expect(
+      CREGChartAdapter.alignedProjections(
+        "SELECT name, SUM(value) FROM properties", columnCount: 2)[1]
+        == "SUM(value)")
+  }
+
   @Test func schemaAndProjectionHintsPreserveIdentifiersUnitsDatesAndAggregates() {
     let result = QueryResult(
       columns: ["loan_id", "current_balance", "maturity_date"],
@@ -88,6 +114,61 @@ import Testing
     #expect(duration.role == .measure)
     #expect(year.semanticType == .ordinal)
     #expect(year.role == .dimension)
+  }
+
+  @Test func frozenSchemaUnitsUseWordBoundariesAndSpecificUnitsFirst() {
+    let area = CREGChartAdapter.hints(for: "rentable_sqft", projection: nil)
+    let duration = CREGChartAdapter.hints(for: "free_rent_months", projection: nil)
+    let credit = CREGChartAdapter.hints(for: "credit_rating", projection: nil)
+
+    #expect(area.unit == .area(unit: "sq ft"))
+    #expect(duration.unit == .duration(unit: "months"))
+    #expect(credit.unit == nil)
+    #expect(credit.semanticType == nil)
+  }
+
+  @Test func temporalHintsRequireValidValuesAndDateOnlyParsingUsesLocalCalendar() throws {
+    let invalid = CREGChartTable(
+      result: QueryResult(
+        columns: ["maturity_date", "current_balance"],
+        rows: [[.text("not scheduled"), .real(10)]]),
+      sql: "SELECT maturity_date, current_balance FROM loans",
+      question: "Show the trend")
+    #expect(invalid.chartColumns[0].hints.semanticType != .temporal)
+    #expect(invalid.chartRows[0].chartValue(for: invalid.chartColumns[0].id).dateValue == nil)
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+    let date = try #require(
+      CREGChartAdapter.parseISODate("2027-03-15", calendar: calendar))
+    let components = calendar.dateComponents([.year, .month, .day], from: date)
+    #expect(components.year == 2027)
+    #expect(components.month == 3)
+    #expect(components.day == 15)
+    #expect(CREGChartAdapter.parseISODate("2027-02-31", calendar: calendar) == nil)
+  }
+
+  @Test @MainActor
+  func previewChartAnalysisIsCachedByMessageAndInvalidatedByInput() {
+    ResultPreviewChartCache.removeAll()
+    let messageID = UUID()
+    let result = QueryResult(
+      columns: ["fund", "current_market_value"],
+      rows: [[.text("Core"), .real(10)]])
+    let first = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    let second = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === second)
+
+    var changed = result
+    changed.rows.append([.text("Value-Add"), .real(8)])
+    let third = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: changed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first !== third)
   }
 
   @Test(arguments: [
@@ -168,7 +249,7 @@ import Testing
             [.text("Harbor Point"), .text("Bay Bank"), .real(25_000_000), .text("2027-04-01")],
             [.text("Eastgate"), .text("Union Credit"), .real(18_500_000), .text("2028-02-15")],
           ]),
-        .bubble
+        .line
       ),
     ]
 
@@ -289,7 +370,7 @@ import Testing
       mode: .table, specificationID: "policy|bar|fund|value")
     let recorder = PreferenceRecorder()
     var history = HistoryClient.noop()
-    history.updateMessage = { conversationID, updated in
+    history.updateResultPresentation = { conversationID, updated in
       recorder.record(conversationID: conversationID, message: updated)
     }
     var state = ChatFeature.State(conversationID: UUID())
@@ -343,9 +424,9 @@ import Testing
 
     let gate = FirstPreferenceSaveGate()
     var delayedHistory = liveHistory
-    delayedHistory.updateMessage = { conversationID, message in
+    delayedHistory.updateResultPresentation = { conversationID, message in
       await gate.delayFirstSave()
-      try await liveHistory.updateMessage(conversationID, message)
+      try await liveHistory.updateResultPresentation(conversationID, message)
     }
     var state = ChatFeature.State(conversationID: conversationID)
     state.messages.append(message)

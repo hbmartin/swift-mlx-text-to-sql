@@ -52,6 +52,7 @@ struct MessageCell: View {
         }
         .font(.subheadline)
         ResultPreviewView(
+          messageID: message.id,
           result: prepared.result,
           sql: prepared.sql,
           question: prepared.question,
@@ -94,6 +95,7 @@ struct MessageCell: View {
             .foregroundStyle(.orange)
         }
         ResultPreviewView(
+          messageID: message.id,
           result: result,
           sql: sql,
           question: message.devInfo?.originalQuestion,

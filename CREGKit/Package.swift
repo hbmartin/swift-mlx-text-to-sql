@@ -12,7 +12,9 @@ let package = Package(
     .library(name: "CREGFeatures", targets: ["CREGFeatures"]),
   ],
   dependencies: [
-    .package(path: "../../AutoTableCharts"),
+    .package(
+      url: "https://github.com/hbmartin/AutoTableCharts.git",
+      revision: "7e2b9facc84d92c63ecd92092b7921c01cd8bc55"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),

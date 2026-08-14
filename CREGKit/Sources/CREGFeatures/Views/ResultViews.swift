@@ -96,6 +96,19 @@ public enum ResultViewerLogic {
     return "\(displayedRowCount) of \(result.rowCount) returned rows"
   }
 
+  public static func selectedRowStatusLabel(
+    for result: QueryResult,
+    selectedRowCount: Int,
+    displayedRowCount: Int,
+    searchIsActive: Bool
+  ) -> String {
+    let selection = searchIsActive
+      ? "\(displayedRowCount) matching selected rows"
+      : "\(selectedRowCount) selected of \(result.rowCount) returned rows"
+    guard let truncation = truncationLabel(for: result) else { return selection }
+    return "\(truncation) · \(selection)"
+  }
+
   public static func runtimeMode(for message: ChatMessage) -> ModelRuntimeMode {
     if let mode = message.devInfo?.runtimeMode { return mode }
     if case .preparedAnswer(let prepared) = message.body {
@@ -273,14 +286,73 @@ private struct SelectedResultCell {
 
 // MARK: - Inline preview
 
+@MainActor
+final class ResultChartAnalysis {
+  let table: CREGChartTable
+  let recommendations: [AutoChartRecommendation]
+
+  init(result: QueryResult, sql: String, question: String?) {
+    let chart = CREGChartAdapter.recommendations(
+      result: result, sql: sql, question: question)
+    table = chart.table
+    recommendations = chart.set.chartRecommendations
+  }
+}
+
+@MainActor
+enum ResultPreviewChartCache {
+  private struct Entry {
+    var result: QueryResult
+    var sql: String
+    var question: String?
+    var analysis: ResultChartAnalysis
+  }
+
+  private static let limit = 64
+  private static var entries: [UUID: Entry] = [:]
+  private static var recency: [UUID] = []
+
+  static func analysis(
+    messageID: UUID,
+    result: QueryResult,
+    sql: String,
+    question: String?
+  ) -> ResultChartAnalysis {
+    if let entry = entries[messageID],
+      entry.result == result, entry.sql == sql, entry.question == question
+    {
+      markRecent(messageID)
+      return entry.analysis
+    }
+    let analysis = ResultChartAnalysis(
+      result: result, sql: sql, question: question)
+    entries[messageID] = Entry(
+      result: result, sql: sql, question: question, analysis: analysis)
+    markRecent(messageID)
+    while recency.count > limit {
+      entries[recency.removeFirst()] = nil
+    }
+    return analysis
+  }
+
+  static func removeAll() {
+    entries.removeAll()
+    recency.removeAll()
+  }
+
+  private static func markRecent(_ messageID: UUID) {
+    recency.removeAll { $0 == messageID }
+    recency.append(messageID)
+  }
+}
+
 /// The four-row Result Preview shown inline in the transcript; tapping it
 /// opens the full-screen Result Viewer.
 struct ResultPreviewView: View {
   let result: QueryResult
   let sql: String
   let question: String?
-  let chartTable: CREGChartTable
-  let chartRecommendations: [AutoChartRecommendation]
+  let chartAnalysis: ResultChartAnalysis
   let preference: ResultPresentationPreference?
   let setPreference: (ResultPresentationPreference) -> Void
   let open: () -> Void
@@ -293,6 +365,7 @@ struct ResultPreviewView: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   init(
+    messageID: UUID,
     result: QueryResult,
     sql: String,
     question: String?,
@@ -300,13 +373,11 @@ struct ResultPreviewView: View {
     setPreference: @escaping (ResultPresentationPreference) -> Void,
     open: @escaping () -> Void
   ) {
-    let chart = CREGChartAdapter.recommendations(
-      result: result, sql: sql, question: question)
     self.result = result
     self.sql = sql
     self.question = question
-    self.chartTable = chart.table
-    self.chartRecommendations = chart.set.chartRecommendations
+    self.chartAnalysis = ResultPreviewChartCache.analysis(
+      messageID: messageID, result: result, sql: sql, question: question)
     self.preference = preference
     self.setPreference = setPreference
     self.open = open
@@ -325,7 +396,7 @@ struct ResultPreviewView: View {
         .foregroundStyle(.secondary)
         .padding(10)
     } else {
-      let selected = selectedRecommendation(in: chartRecommendations)
+      let selected = selectedRecommendation(in: chartAnalysis.recommendations)
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
         if selected != nil {
@@ -353,7 +424,7 @@ struct ResultPreviewView: View {
           VStack(alignment: .leading, spacing: 6) {
             if mode == .chart, let selected {
               AutoChartView(
-                table: chartTable,
+                table: chartAnalysis.table,
                 recommendation: selected,
                 interaction: .preview,
                 height: 156)
@@ -687,6 +758,9 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .onChange(of: sort) { _, _ in
+      selectedCell = nil
+    }
+    .onChange(of: chartSelection) { _, _ in
       selectedCell = nil
     }
     .onChange(of: resultMode) { _, mode in
@@ -1044,9 +1118,11 @@ struct ResultViewerView: View {
   ) -> some View {
     let label =
       if selectionIsActive {
-        normalizedSearchText.isEmpty
-          ? "\(sourceResult.rowCount) selected of \(result.rowCount) returned rows"
-          : "\(displayedRowCount) matching selected rows"
+        ResultViewerLogic.selectedRowStatusLabel(
+          for: result,
+          selectedRowCount: sourceResult.rowCount,
+          displayedRowCount: displayedRowCount,
+          searchIsActive: !normalizedSearchText.isEmpty)
       } else {
         ResultViewerLogic.rowStatusLabel(
           for: result,

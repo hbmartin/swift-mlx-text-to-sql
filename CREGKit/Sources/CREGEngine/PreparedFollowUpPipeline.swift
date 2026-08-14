@@ -15,8 +15,6 @@ private struct FollowUpDeadlineExceeded: Error, Sendable {
   }
 }
 
-private let maximumFollowUpProposalAttempts = 2
-
 private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
   private typealias Continuation = CheckedContinuation<Value, any Error>
 
@@ -137,41 +135,33 @@ func preparedFollowUpStream(
       }
 
       let schema = (try? SQLGenClient.schemaPrompt()) ?? ""
-      var proposed: [String]?
-      for attempt in 1...maximumFollowUpProposalAttempts {
-        do {
-          proposed = try await withFollowUpDeadline(
-            seconds: configuration.deadlines.generationSeconds,
-            stage: "follow-up-suggestion"
-          ) {
-            try await serializer.run(operation: .followUpSuggestion) {
-              try await fm.suggestFollowUps(context, schema)
-            }
+      let proposed: [String]
+      do {
+        proposed = try await withFollowUpDeadline(
+          seconds: configuration.deadlines.generationSeconds,
+          stage: "follow-up-suggestion"
+        ) {
+          try await serializer.run(operation: .followUpSuggestion) {
+            try await fm.suggestFollowUps(context, schema)
           }
-          break
-        } catch is CancellationError {
-          guard !Task.isCancelled else { return }
-          continuation.yield(
-            .proposalFailed(reason: .generationFailed))
-          return
-        } catch is FollowUpDeadlineExceeded {
-          guard attempt == maximumFollowUpProposalAttempts else {
-            continuation.yield(
-              .proposalRetrying(
-                attempt: attempt + 1,
-                reason: .generationTimedOut))
-            continue
-          }
-          continuation.yield(
-            .proposalFailed(reason: .generationTimedOut))
-          return
-        } catch {
-          continuation.yield(
-            .proposalFailed(reason: .generationFailed))
-          return
         }
+      } catch is CancellationError {
+        guard !Task.isCancelled else { return }
+        continuation.yield(
+          .proposalFailed(reason: .generationFailed))
+        return
+      } catch is FollowUpDeadlineExceeded {
+        // A timed-out FM call may continue to own the FIFO serializer until it
+        // observes cancellation. Retrying here would either overlap inference
+        // or spend the retry deadline waiting behind the first call.
+        continuation.yield(
+          .proposalFailed(reason: .generationTimedOut))
+        return
+      } catch {
+        continuation.yield(
+          .proposalFailed(reason: .generationFailed))
+        return
       }
-      guard let proposed else { return }
 
       let questions = normalizedFollowUpQuestions(
         proposed,
@@ -545,19 +535,13 @@ func preparedAnswerStream(
     let task = Task {
       let started = ContinuousClock.now
       let mode = await runtimeMode()
-      func runFreeFormFallback(
-        reason: PreparedCacheMissReason,
-        timeoutStage: String? = nil
-      ) async {
+      func runFreeFormFallback(reason: PreparedCacheMissReason) async {
         for await event in fallback(prepared.question, history) {
           if case .turnFinished(let outcome, var telemetry) = event {
             telemetry.preparedFollowUpID = prepared.id
             telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID
             telemetry.preparedCacheHit = false
             telemetry.preparedCacheMissReason = reason
-            if telemetry.timeoutStage == nil {
-              telemetry.timeoutStage = timeoutStage
-            }
             continuation.yield(
               .turnFinished(outcome: outcome, telemetry: telemetry))
           } else {
@@ -616,10 +600,8 @@ func preparedAnswerStream(
         }
         continuation.finish()
         return
-      } catch let deadline as FollowUpDeadlineExceeded {
-        await runFreeFormFallback(
-          reason: .validationTimedOut,
-          timeoutStage: deadline.telemetryStage)
+      } catch is FollowUpDeadlineExceeded {
+        await runFreeFormFallback(reason: .validationTimedOut)
         return
       } catch {
         await runFreeFormFallback(reason: .validationFailed)

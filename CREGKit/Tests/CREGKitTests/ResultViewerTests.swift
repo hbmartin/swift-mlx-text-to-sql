@@ -125,6 +125,25 @@ import Testing
         == "First 4+ rows · 2 matching returned rows")
   }
 
+  @Test func chartSelectionPreservesTheTruncationWarning() {
+    var truncated = result
+    truncated.isTruncated = true
+    #expect(
+      ResultViewerLogic.selectedRowStatusLabel(
+        for: truncated,
+        selectedRowCount: 2,
+        displayedRowCount: 2,
+        searchIsActive: false)
+        == "First 4+ rows · 2 selected of 4 returned rows")
+    #expect(
+      ResultViewerLogic.selectedRowStatusLabel(
+        for: truncated,
+        selectedRowCount: 2,
+        displayedRowCount: 1,
+        searchIsActive: true)
+        == "First 4+ rows · 1 matching selected rows")
+  }
+
   // MARK: Pinch interaction
 
   @Test func pinchArmingUsesTheApprovedHysteresisThresholds() {

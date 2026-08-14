@@ -472,6 +472,53 @@ final class CallRecorder: @unchecked Sendable {
     #expect(writes.recorded.contains("table"))
   }
 
+  @Test func stoppingPreparedTurnPreservesPresentationPreference() async throws {
+    let prepared = Self.preparedFollowUp()
+    let questionID = UUID(90)
+    let provisionalID = UUID(91)
+    let preference = ResultPresentationPreference(
+      mode: .table, specificationID: "policy|table")
+    var state = Self.appState(selected: Self.conversationA)
+    var activeTurn = AppFeature.ActiveTurn(
+      questionID: questionID,
+      conversationID: Self.conversationA,
+      submission: QuestionSubmission(
+        question: prepared.question,
+        source: .preparedFollowUp(prepared)),
+      startedAt: Date(timeIntervalSince1970: 1))
+    activeTurn.provisionalAssistantMessageID = provisionalID
+    activeTurn.resultPresentationPreference = preference
+    state.activeTurn = activeTurn
+    state.chat?.messages.append(
+      ChatMessage(
+        id: provisionalID,
+        role: .assistant,
+        body: .preparedAnswer(prepared),
+        createdAt: Date(timeIntervalSince1970: 1),
+        resultPresentation: preference))
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, message in
+      writes.record(message.resultPresentation?.mode.rawValue ?? "nil")
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.stopActiveTurn)))
+    await store.finish()
+
+    let message = try #require(store.state.chat?.messages[id: provisionalID])
+    #expect(message.resultPresentation == preference)
+    #expect(writes.recorded.contains("table"))
+  }
+
   @Test func appInactivityCancelsPreparationAndPersistsItsEventsForResume() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
