@@ -6,6 +6,12 @@
 /// operations; this instead chains each operation onto the previous one's
 /// completion, giving strict arrival-order FIFO execution.
 public actor InferenceSerializer {
+  public enum SerializerError: Error, Sendable, Equatable {
+    /// A cancelled model call has not returned yet. Starting another call
+    /// would either overlap inference or wait behind work the user abandoned.
+    case cancelledOperationStillRunning
+  }
+
   public enum Operation: String, Sendable {
     case unspecified
     case modelPreparation = "model_preparation"
@@ -18,6 +24,9 @@ public actor InferenceSerializer {
 
   private var tail: Task<Void, Never>?
   private var pendingCount = 0
+  private var nextOperationID = 0
+  private var pendingOperationIDs: Set<Int> = []
+  private var abandonedOperationIDs: Set<Int> = []
   private let diagnostics: DiagnosticsClient
 
   public init(diagnostics: DiagnosticsClient = .noop) {
@@ -28,6 +37,21 @@ public actor InferenceSerializer {
     operation operationKind: Operation = .unspecified,
     _ operation: @escaping @Sendable () async throws -> T
   ) async throws -> T {
+    guard abandonedOperationIDs.isEmpty else {
+      diagnostics.record(DiagnosticEvent(
+        level: .error,
+        category: .inference,
+        code: "inference_rejected_while_cancelled_operation_runs",
+        summary: "Inference was rejected because a cancelled model call is still running.",
+        details:
+          "The shared model slot remains occupied until the cancelled operation returns.",
+        context: ["operation": operationKind.rawValue]))
+      throw SerializerError.cancelledOperationStillRunning
+    }
+
+    let operationID = nextOperationID
+    nextOperationID += 1
+    pendingOperationIDs.insert(operationID)
     let previous = tail
     let queuedAhead = pendingCount
     pendingCount += 1
@@ -44,6 +68,9 @@ public actor InferenceSerializer {
     }
     let task = Task<T, Error> {
       await previous?.value
+      // Cancellation can arrive while this operation is queued. Never start
+      // model work merely because the preceding FIFO entry eventually ended.
+      try Task.checkCancellation()
       let waitMicroseconds = waitStarted.duration(to: .now).microseconds
       self.diagnostics.info(
         category: .inference,
@@ -61,18 +88,25 @@ public actor InferenceSerializer {
         try await task.value
       } onCancel: {
         task.cancel()
+        Task {
+          await self.operationAbandoned(
+            id: operationID,
+            kind: operationKind)
+        }
       }
       // A model operation can finish at the same instant its deadline cancels
       // the parent task. Do not report that race as a successful inference or
       // allow its value to escape after cancellation.
       try Task.checkCancellation()
       operationCompleted(
+        id: operationID,
         kind: operationKind,
         error: nil,
         elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
       return result
     } catch {
       operationCompleted(
+        id: operationID,
         kind: operationKind,
         error: error,
         elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
@@ -81,10 +115,13 @@ public actor InferenceSerializer {
   }
 
   private func operationCompleted(
+    id: Int,
     kind: Operation,
     error: (any Error)?,
     elapsedMicroseconds: Int64
   ) {
+    pendingOperationIDs.remove(id)
+    abandonedOperationIDs.remove(id)
     pendingCount -= 1
     if pendingCount == 0 { tail = nil }
     var context = [
@@ -113,6 +150,20 @@ public actor InferenceSerializer {
         summary: "An inference operation released the shared model slot.",
         context: context)
     }
+  }
+
+  private func operationAbandoned(id: Int, kind: Operation) {
+    guard pendingOperationIDs.contains(id),
+      abandonedOperationIDs.insert(id).inserted
+    else { return }
+    diagnostics.record(DiagnosticEvent(
+      level: .error,
+      category: .inference,
+      code: "inference_cancelled_operation_still_running",
+      summary: "A cancelled inference operation still owns the shared model slot.",
+      details:
+        "New inference will fail fast until the cancelled model call returns.",
+      context: ["operation": kind.rawValue]))
   }
 
   private nonisolated static func milliseconds(_ microseconds: Int64) -> String {

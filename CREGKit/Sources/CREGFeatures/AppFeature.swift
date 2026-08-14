@@ -230,6 +230,7 @@ public struct AppFeature: Sendable {
     case answerReadyBannerTimedOut
     case pipelineEvent(conversationID: UUID, questionID: UUID, event: PipelineEvent)
     case pipelineStreamEnded(conversationID: UUID, questionID: UUID)
+    case dispatchNextIfIdle
     case followUpPreparationEvent(
       conversationID: UUID,
       sourceMessageID: UUID,
@@ -369,6 +370,7 @@ public struct AppFeature: Sendable {
           )
           state.modelReadiness = .failed(failure)
           state.modelPreparationReport = nil
+          syncSchedulerProjection(into: &state)
           diagnostics.record(
             DiagnosticEvent(
               level: .error,
@@ -383,6 +385,7 @@ public struct AppFeature: Sendable {
         }
         state.modelReadiness = .preparing
         state.modelPreparationInFlight = true
+        syncSchedulerProjection(into: &state)
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
@@ -403,6 +406,7 @@ public struct AppFeature: Sendable {
         state.modelReadiness = .preparing
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
+        syncSchedulerProjection(into: &state)
         return preparationEffect(mode: .evaluated)
 
       case .retryCompatibilityPreparation:
@@ -420,12 +424,14 @@ public struct AppFeature: Sendable {
         state.modelReadiness = .preparing
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
+        syncSchedulerProjection(into: &state)
         return preparationEffect(mode: .compatibility)
 
       case .modelPrepared(let report):
         state.modelPreparationInFlight = false
         state.modelReadiness = .ready
         state.modelPreparationReport = report
+        syncSchedulerProjection(into: &state)
         diagnostics.info(
           category: .submission,
           code: "chat_model_ready",
@@ -443,6 +449,7 @@ public struct AppFeature: Sendable {
         state.modelPreparationInFlight = false
         state.modelReadiness = .failed(failure)
         state.modelPreparationReport = nil
+        syncSchedulerProjection(into: &state)
         diagnostics.record(
           DiagnosticEvent(
             level: .error,
@@ -504,7 +511,12 @@ public struct AppFeature: Sendable {
           effects.append(
             .run { _ in
               for message in recovered {
-                try? await history.updateMessage(conversationID, message)
+                try? await messageUpdateQueue.save(
+                  conversationID: conversationID,
+                  messageID: message.id
+                ) {
+                  try await history.updateMessage(conversationID, message)
+                }
               }
               if !conversationOwnsActiveTurn {
                 try? await history.endTurnJournal(conversationID)
@@ -605,6 +617,9 @@ public struct AppFeature: Sendable {
           conversationID: conversationID,
           questionID: questionID)
 
+      case .dispatchNextIfIdle:
+        return dispatchNextIfIdle(state: &state)
+
       case .followUpPreparationEvent(
         let conversationID, let sourceMessageID, let event):
         return handleFollowUpPreparationEvent(
@@ -612,6 +627,13 @@ public struct AppFeature: Sendable {
           conversationID: conversationID,
           sourceMessageID: sourceMessageID,
           event: event)
+
+      case .chat(.preparedFollowUpTapped(_)):
+        // Refresh this projection before the child reducer sees the tap. This
+        // also protects against a stale view action racing a readiness change.
+        let isSubmissionEnabled = state.modelReadiness == .ready
+        state.chat?.isSubmissionEnabled = isSubmissionEnabled
+        return .none
 
       case .chat(.delegate(.submitQuestion(let submission))):
         guard state.modelReadiness == .ready, let chat = state.chat
@@ -960,8 +982,8 @@ public struct AppFeature: Sendable {
             await send(
               .operationFailed(.history(operation: .messageSave, error: error)))
           }
-        },
-        dispatchNextIfIdle(state: &state))
+          await send(.dispatchNextIfIdle)
+        })
     }
     let stoppedMessage = ChatMessage(
       id: uuid(), role: .assistant,
@@ -978,7 +1000,7 @@ public struct AppFeature: Sendable {
       context: ["partial_event_count": String(active.eventLines.count)])
     let conversationID = active.conversationID
     let lines = active.eventLines
-    var effects: [Effect<Action>] = [
+    let effects: [Effect<Action>] = [
       .cancel(id: CancelID.pipeline),
       .run { send in
         do {
@@ -989,9 +1011,9 @@ public struct AppFeature: Sendable {
           await send(
             .operationFailed(.history(operation: .messageSave, error: error)))
         }
+        await send(.dispatchNextIfIdle)
       },
     ]
-    effects.append(dispatchNextIfIdle(state: &state))
     return .merge(effects)
   }
 
@@ -1105,6 +1127,9 @@ public struct AppFeature: Sendable {
           await send(
             .operationFailed(.history(operation: .messageSave, error: error)))
         }
+        // The next queued turn must load history only after this answer is
+        // durable, otherwise its FM rewrite can miss the antecedent.
+        await send(.dispatchNextIfIdle)
       }
     ]
 
@@ -1142,8 +1167,6 @@ public struct AppFeature: Sendable {
       conversationID: conversationID,
       message: assistantMessage,
       replacing: replacesProvisional)
-    let nextUserWork = dispatchNextIfIdle(state: &state)
-    effects.append(nextUserWork)
     if state.activeTurn == nil, state.queue.isEmpty,
       case .answered(let result, let narration, _, _) = outcome
     {
@@ -1313,7 +1336,7 @@ public struct AppFeature: Sendable {
       preparation.eventLines.append(line)
     }
     switch event {
-    case .started, .proposalRetrying, .proposalFailed, .rejected:
+    case .started, .proposalFailed, .rejected:
       state.followUpPreparation = preparation
       return .none
 
@@ -1365,6 +1388,10 @@ public struct AppFeature: Sendable {
     state.conversations.remove(id: summary.id)
     state.pendingDeletion = PendingDeletion(summary: summary, index: index)
     state.queue.removeAll { $0.conversationID == summary.id }
+    effects.append(
+      .run { _ in
+        await MainActor.run { ResultPreviewChartCache.removeAll() }
+      })
 
     if state.activeTurn?.conversationID == summary.id {
       state.activeTurn = nil
@@ -1423,6 +1450,7 @@ public struct AppFeature: Sendable {
   /// parent-maintained projection fields.
   private func syncSchedulerProjection(into state: inout State) {
     guard var chat = state.chat else { return }
+    chat.isSubmissionEnabled = state.modelReadiness == .ready
     chat.queued = state.queue.filter { $0.conversationID == chat.conversationID }
     if let active = state.activeTurn,
       active.conversationID == chat.conversationID

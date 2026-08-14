@@ -488,7 +488,7 @@ struct ResultPreviewView: View {
     ScrollView(.horizontal) {
       Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 6) {
         GridRow {
-          ForEach(result.columns, id: \.self) { column in
+          ForEach(Array(result.columns.enumerated()), id: \.offset) { _, column in
             Text(column)
               .font(.caption.weight(.semibold))
               .foregroundStyle(.secondary)
@@ -585,6 +585,7 @@ struct ResultViewerView: View {
     result: QueryResult,
     runtimeMode: ModelRuntimeMode,
     textSize: Binding<ResultTableTextSize>,
+    messageID: UUID? = nil,
     sql: String = "",
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
@@ -593,15 +594,17 @@ struct ResultViewerView: View {
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection? = nil
   ) {
-    let chart = CREGChartAdapter.recommendations(
-      result: result, sql: sql, question: question)
-    let recommendations = chart.set.chartRecommendations
+    let analysis = messageID.map {
+      ResultPreviewChartCache.analysis(
+        messageID: $0, result: result, sql: sql, question: question)
+    } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
+    let recommendations = analysis.recommendations
     let selectedID = CREGChartAdapter.resolvedRecommendation(
       preferredID: preference?.specificationID,
       in: recommendations)?.id
     self.result = result
     self.runtimeMode = runtimeMode
-    self.chartTable = chart.table
+    self.chartTable = analysis.table
     self.chartRecommendations = recommendations
     self.persistPreference = persistPreference
     self._textSize = textSize
@@ -1308,6 +1311,7 @@ extension View {
           result: item.result,
           runtimeMode: item.runtimeMode,
           textSize: textSize,
+          messageID: item.messageID,
           sql: item.sql,
           question: item.question,
           preference: item.preference,
@@ -1323,6 +1327,7 @@ extension View {
           result: item.result,
           runtimeMode: item.runtimeMode,
           textSize: textSize,
+          messageID: item.messageID,
           sql: item.sql,
           question: item.question,
           preference: item.preference,

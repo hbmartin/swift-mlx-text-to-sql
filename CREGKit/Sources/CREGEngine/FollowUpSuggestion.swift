@@ -264,7 +264,6 @@ public struct FollowUpRejectionTelemetry: Sendable, Equatable, Codable {
 /// user-visible turn.
 public enum FollowUpPreparationEvent: Sendable, Equatable, Codable {
   case started(candidateCount: Int)
-  case proposalRetrying(attempt: Int, reason: FollowUpProposalFailure)
   case proposalFailed(reason: FollowUpProposalFailure)
   case prepared(PreparedFollowUp)
   case rejected(

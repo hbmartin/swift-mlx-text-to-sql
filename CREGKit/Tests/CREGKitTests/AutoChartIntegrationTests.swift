@@ -127,7 +127,51 @@ import Testing
     #expect(credit.semanticType == nil)
   }
 
-  @Test func temporalHintsRequireValidValuesAndDateOnlyParsingUsesLocalCalendar() throws {
+  @Test func textRateColumnsRemainNominalAndPercentScaleFollowsValues() {
+    let rateType = CREGChartAdapter.hints(
+      for: "rate_type",
+      projection: "rate_type",
+      values: [.text("Fixed"), .text("Floating")])
+    #expect(rateType.semanticType == nil)
+    #expect(rateType.role == nil)
+    #expect(rateType.unit == nil)
+
+    let fractions = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate",
+      values: [.real(0.62), .real(0.91)])
+    let points = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate * 100",
+      values: [.real(62), .real(91)])
+    let mixed = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate",
+      values: [.real(0.62), .real(91)])
+    #expect(fractions.unit == .percent(fractional: true))
+    #expect(points.unit == .percent(fractional: false))
+    #expect(mixed.unit == nil)
+  }
+
+  @Test func temporalAliasesAllowSparseInvalidValues() {
+    let table = CREGChartTable(
+      result: QueryResult(
+        columns: ["lease_commencement", "rent"],
+        rows: [
+          [.text("2025-01-01"), .real(10)],
+          [.text("2025-02-01"), .real(11)],
+          [.text("unknown"), .real(12)],
+          [.text("2025-04-01"), .real(13)],
+          [.text("2025-05-01"), .real(14)],
+        ]),
+      sql: "SELECT lease_commencement, rent FROM leases",
+      question: "Show lease starts")
+
+    #expect(table.chartColumns[0].hints.semanticType == .temporal)
+    #expect(table.chartColumns[0].hints.role == .intervalStart)
+  }
+
+  @Test func temporalHintsRequireValidValuesAndDateOnlyParsingUsesTheProvidedCalendar() throws {
     let invalid = CREGChartTable(
       result: QueryResult(
         columns: ["maturity_date", "current_balance"],
@@ -146,6 +190,20 @@ import Testing
     #expect(components.month == 3)
     #expect(components.day == 15)
     #expect(CREGChartAdapter.parseISODate("2027-02-31", calendar: calendar) == nil)
+  }
+
+  @Test func defaultDateOnlyParsingUsesGregorianGMT() throws {
+    let date = try #require(CREGChartAdapter.parseISODate("2027-03-15"))
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = .gmt
+    let components = calendar.dateComponents(
+      [.year, .month, .day, .hour, .minute, .second], from: date)
+    #expect(components.year == 2027)
+    #expect(components.month == 3)
+    #expect(components.day == 15)
+    #expect(components.hour == 0)
+    #expect(components.minute == 0)
+    #expect(components.second == 0)
   }
 
   @Test @MainActor
@@ -457,6 +515,30 @@ import Testing
     #expect(loaded.messages.first?.resultPresentation == finalPreference)
   }
 
+  @Test func reducerRevisionsRejectAnOlderEffectThatReachesTheActorLast() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let messageID = UUID()
+    let writes = PreferenceWriteRecorder()
+
+    try await queue.save(
+      conversationID: conversationID,
+      messageID: messageID,
+      revision: 2
+    ) {
+      writes.record("new")
+    }
+    try await queue.save(
+      conversationID: conversationID,
+      messageID: messageID,
+      revision: 1
+    ) {
+      writes.record("old")
+    }
+
+    #expect(writes.values == ["new"])
+  }
+
   private static func answerMessage() -> ChatMessage {
     ChatMessage(
       id: UUID(), role: .assistant,
@@ -547,6 +629,23 @@ private final class PreferenceRecorder: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return storedPreference
+  }
+}
+
+private final class PreferenceWriteRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedValues: [String] = []
+
+  func record(_ value: String) {
+    lock.lock()
+    storedValues.append(value)
+    lock.unlock()
+  }
+
+  var values: [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedValues
   }
 }
 

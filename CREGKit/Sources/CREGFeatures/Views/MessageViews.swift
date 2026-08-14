@@ -132,6 +132,7 @@ struct MessageCell: View {
         FollowUpSuggestionsView(
           suggestions: batch.suggestions,
           select: { store.send(.preparedFollowUpTapped($0)) })
+          .disabled(!store.isSubmissionEnabled)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

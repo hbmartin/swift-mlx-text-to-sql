@@ -29,8 +29,10 @@ public struct HistoryClient: Sendable {
   public var endTurnJournal: @Sendable (_ conversationID: UUID) async throws -> Void
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
-  /// Replaces an existing payload without changing transcript position, or
-  /// inserts it when finalization beats its provisional append to the store.
+  /// Replaces an existing body/telemetry payload without changing transcript
+  /// position, while preserving any newer result-presentation preference. It
+  /// inserts the supplied message when finalization beats its provisional
+  /// append to the store.
   public var updateMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   /// Updates only a message's result-presentation preference. The supplied
@@ -658,9 +660,23 @@ final class HistoryStore: Sendable {
   }
 
   func updateMessage(conversationID: UUID, message: ChatMessage) async throws {
-    let payload = String(
-      decoding: try Self.encoder.encode(message), as: UTF8.self)
     try await queue.write { db in
+      var mergedMessage = message
+      if let storedPayload = try String.fetchOne(
+        db,
+        sql: """
+          SELECT payload FROM message
+          WHERE id = ? AND conversation_id = ?
+          """,
+        arguments: [message.id.uuidString, conversationID.uuidString])
+      {
+        let storedMessage = try Self.decoder.decode(
+          ChatMessage.self, from: Data(storedPayload.utf8))
+        mergedMessage.resultPresentation =
+          storedMessage.resultPresentation ?? message.resultPresentation
+      }
+      let payload = String(
+        decoding: try Self.encoder.encode(mergedMessage), as: UTF8.self)
       try db.execute(
         sql: """
           UPDATE message SET payload = ?
@@ -703,7 +719,7 @@ final class HistoryStore: Sendable {
       try db.execute(
         sql: "DELETE FROM search_index WHERE conversation_id = ? AND message_id = ?",
         arguments: [conversationID.uuidString, message.id.uuidString])
-      if let entry = Self.searchEntry(for: message) {
+      if let entry = Self.searchEntry(for: mergedMessage) {
         try db.execute(
           sql: """
             INSERT INTO search_index (content, conversation_id, message_id, kind)

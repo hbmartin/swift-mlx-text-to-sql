@@ -147,15 +147,17 @@ enum CREGChartAdapter {
         aggregation: aggregation,
         aggregationSafety: safety)
     }
-    if style == .percent {
+    if style == .percent, values.isEmpty || hasQuantitativeValues(values) {
       return AutoChartColumnHints(
         semanticType: .quantitative,
         role: .measure,
-        unit: .percent(fractional: true),
+        unit: percentUnit(for: values),
         aggregation: aggregation,
         aggregationSafety: safety)
     }
-    if style == .currency || style == .currencyPerSquareFoot {
+    if (style == .currency || style == .currencyPerSquareFoot),
+      values.isEmpty || hasQuantitativeValues(values)
+    {
       return AutoChartColumnHints(
         semanticType: .quantitative,
         role: .measure,
@@ -163,7 +165,7 @@ enum CREGChartAdapter {
         aggregation: aggregation,
         aggregationSafety: safety)
     }
-    if style == .squareFeet {
+    if style == .squareFeet, values.isEmpty || hasQuantitativeValues(values) {
       return AutoChartColumnHints(
         semanticType: .quantitative,
         role: .measure,
@@ -171,7 +173,9 @@ enum CREGChartAdapter {
         aggregation: aggregation,
         aggregationSafety: safety)
     }
-    if style == .count, containsWord(normalized, ["month", "months"]) {
+    if style == .count, containsWord(normalized, ["month", "months"]),
+      values.isEmpty || hasQuantitativeValues(values)
+    {
       return AutoChartColumnHints(
         semanticType: .quantitative,
         role: .measure,
@@ -179,7 +183,7 @@ enum CREGChartAdapter {
         aggregation: aggregation,
         aggregationSafety: safety)
     }
-    if style == .ratio {
+    if style == .ratio, values.isEmpty || hasQuantitativeValues(values) {
       return AutoChartColumnHints(
         semanticType: .quantitative,
         role: .measure,
@@ -393,7 +397,7 @@ enum CREGChartAdapter {
 
   static func parseISODate(
     _ text: String,
-    calendar: Calendar = .autoupdatingCurrent
+    calendar: Calendar = gregorianGMTCalendar
   ) -> Date? {
     let parts = text.split(
       separator: "-", maxSplits: 2, omittingEmptySubsequences: false)
@@ -493,10 +497,40 @@ enum CREGChartAdapter {
   private static func hasValidTemporalValues(_ values: [SQLValue]) -> Bool {
     let nonNull = values.filter { if case .null = $0 { false } else { true } }
     guard !nonNull.isEmpty else { return false }
-    return nonNull.allSatisfy { value in
-      guard case .text(let text) = value else { return false }
-      return parseISODate(text) != nil
+    let validCount = nonNull.reduce(into: 0) { count, value in
+      guard case .text(let text) = value, parseISODate(text) != nil else { return }
+      count += 1
     }
+    return validCount == nonNull.count
+      || (validCount >= 2 && Double(validCount) / Double(nonNull.count) >= 0.8)
+  }
+
+  private static func hasQuantitativeValues(_ values: [SQLValue]) -> Bool {
+    let nonNull = values.filter { if case .null = $0 { false } else { true } }
+    guard !nonNull.isEmpty else { return false }
+    return nonNull.allSatisfy { value in
+      switch value {
+      case .integer, .real: true
+      case .null, .text, .blob: false
+      }
+    }
+  }
+
+  private static func percentUnit(
+    for values: [SQLValue]
+  ) -> AutoChartUnit? {
+    let numeric = values.compactMap { value -> Double? in
+      switch value {
+      case .integer(let value): Double(value)
+      case .real(let value): value
+      case .null, .text, .blob: nil
+      }
+    }
+    guard !numeric.isEmpty else { return .percent(fractional: true) }
+    let fractional = numeric.allSatisfy { abs($0) <= 1.5 }
+    let pointScaled = numeric.allSatisfy { abs($0) > 1.5 }
+    guard fractional || pointScaled else { return nil }
+    return .percent(fractional: fractional)
   }
 
   private static func containsWord(_ value: String, _ words: [String]) -> Bool {
@@ -506,4 +540,10 @@ enum CREGChartAdapter {
   private static func containsAny(_ value: String, _ needles: [String]) -> Bool {
     needles.contains { value.contains($0) }
   }
+
+  private static let gregorianGMTCalendar: Calendar = {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = .gmt
+    return calendar
+  }()
 }

@@ -535,13 +535,22 @@ func preparedAnswerStream(
     let task = Task {
       let started = ContinuousClock.now
       let mode = await runtimeMode()
-      func runFreeFormFallback(reason: PreparedCacheMissReason) async {
-        for await event in fallback(prepared.question, history) {
+      func runFreeFormFallback(
+        reason: PreparedCacheMissReason,
+        timeoutStage: String? = nil
+      ) async {
+        // Prepared suggestions are generated and preflighted as standalone
+        // questions. An empty history prevents the free-form pipeline from
+        // spending another FM call rewriting the chip label.
+        for await event in fallback(prepared.question, []) {
           if case .turnFinished(let outcome, var telemetry) = event {
             telemetry.preparedFollowUpID = prepared.id
             telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID
             telemetry.preparedCacheHit = false
             telemetry.preparedCacheMissReason = reason
+            if telemetry.timeoutStage == nil {
+              telemetry.timeoutStage = timeoutStage
+            }
             continuation.yield(
               .turnFinished(outcome: outcome, telemetry: telemetry))
           } else {
@@ -600,8 +609,10 @@ func preparedAnswerStream(
         }
         continuation.finish()
         return
-      } catch is FollowUpDeadlineExceeded {
-        await runFreeFormFallback(reason: .validationTimedOut)
+      } catch let deadline as FollowUpDeadlineExceeded {
+        await runFreeFormFallback(
+          reason: .validationTimedOut,
+          timeoutStage: deadline.telemetryStage)
         return
       } catch {
         await runFreeFormFallback(reason: .validationFailed)
