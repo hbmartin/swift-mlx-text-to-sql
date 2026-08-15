@@ -650,6 +650,9 @@ actor MessageUpdateQueue {
   private var active: Set<Key> = []
   private var waiters: [Key: [CheckedContinuation<Void, Never>]] = [:]
   private var latestRevisions: [Key: UInt64] = [:]
+  /// Blocks saves as soon as a confirmed delete begins, before SQLite removal
+  /// can race an already-scheduled reducer effect.
+  private var deletingConversationIDs: Set<UUID> = []
 
   func save(
     conversationID: UUID,
@@ -658,6 +661,7 @@ actor MessageUpdateQueue {
     operation: @escaping @Sendable () async throws -> Void
   ) async throws {
     let key = Key(conversationID: conversationID, messageID: messageID)
+    guard !deletingConversationIDs.contains(conversationID) else { return }
     if let revision {
       guard revision > (latestRevisions[key] ?? 0) else { return }
       latestRevisions[key] = revision
@@ -665,6 +669,10 @@ actor MessageUpdateQueue {
     if active.contains(key) {
       await withCheckedContinuation { continuation in
         waiters[key, default: []].append(continuation)
+      }
+      guard !deletingConversationIDs.contains(conversationID) else {
+        finish(key)
+        return
       }
     } else {
       active.insert(key)
@@ -675,17 +683,28 @@ actor MessageUpdateQueue {
       finish(key)
     } catch {
       finish(key)
+      if deletingConversationIDs.contains(conversationID) { return }
       throw error
     }
   }
 
+  func beginDeletingConversation(_ conversationID: UUID) {
+    deletingConversationIDs.insert(conversationID)
+  }
+
   /// Revision tombstones are needed while a message can still receive a late
   /// save, but a permanently deleted conversation can never be reconstructed
-  /// under the same UUID.
-  func removeConversation(_ conversationID: UUID) {
+  /// under the same UUID. Keeping the deletion tombstone also prevents a save
+  /// that reaches this actor after pruning from recreating revision state.
+  func confirmConversationDeletion(_ conversationID: UUID) {
+    deletingConversationIDs.insert(conversationID)
     latestRevisions = latestRevisions.filter {
       $0.key.conversationID != conversationID
     }
+  }
+
+  func cancelConversationDeletion(_ conversationID: UUID) {
+    deletingConversationIDs.remove(conversationID)
   }
 
   func retainedRevisionCount() -> Int {

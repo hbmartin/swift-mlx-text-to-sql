@@ -193,7 +193,7 @@ extension QueryPipeline {
             context: [
               "runtime_mode": mode.rawValue,
               "elapsed_ms": operationMilliseconds(
-                started.duration(to: .now).microseconds)
+                started.duration(to: .now).microseconds),
             ])
           return report
         } catch {
@@ -207,7 +207,7 @@ extension QueryPipeline {
               context: [
                 "runtime_mode": mode.rawValue,
                 "elapsed_ms": operationMilliseconds(
-                  started.duration(to: .now).microseconds)
+                  started.duration(to: .now).microseconds),
               ]))
           throw error
         }
@@ -221,13 +221,13 @@ extension QueryPipeline {
           starterQueryID: nil,
           events: source.run(question, history))
       },
-      runStarter: { starter, history in
+      runStarter: { starter in
         observed(
           question: starter.question,
-          history: history,
+          history: [],
           queryOrigin: .starter,
           starterQueryID: starter,
-          events: source.runStarter(starter, history))
+          events: source.runStarter(starter))
       },
       prepareFollowUps: { context in
         observedPreparation(
