@@ -52,9 +52,9 @@ public actor InferenceSerializer {
           "queued_ahead": String(queuedAhead),
         ])
     }
-    let resultRelay = InferenceResultRelay<T>()
-    let completionRelay = InferenceCompletionRelay()
-    let task = Task<T, Error> {
+    let callerResultRelay = InferenceOneShotRelay<Result<T, any Error>>()
+    let callerDispositionRelay = InferenceOneShotRelay<(any Error)?>()
+    let task = Task<InferenceRawCompletion<T>, Never> {
       let outcome: Result<T, any Error>
       do {
         await previous?.value
@@ -78,23 +78,45 @@ public actor InferenceSerializer {
       } catch {
         outcome = .failure(error)
       }
-      resultRelay.resolve(outcome)
-      let reportedError = await completionRelay.value()
-      self.operationCompleted(
-        id: operationID,
+      let elapsedMicroseconds = waitStarted.duration(to: .now).microseconds
+      let remainingOperations = self.operationReleased(id: operationID)
+      let completion = InferenceRawCompletion(
+        result: outcome,
+        remainingOperations: remainingOperations,
+        elapsedMicroseconds: elapsedMicroseconds)
+      callerResultRelay.resolve(outcome)
+      return completion
+    }
+    // FIFO ownership ends with the raw model operation. Diagnostics may still
+    // wait for the caller's cancellation decision, but that must not keep the
+    // now-idle model slot from advancing.
+    tail = Task { _ = await task.value }
+    let diagnosticsTask = Task {
+      let completion = await task.value
+      let callerError = await callerDispositionRelay.value()
+      let reportedError: (any Error)?
+      switch completion.result {
+      case .failure(let operationError):
+        // A genuine model failure remains primary even when parent
+        // cancellation races its delivery.
+        reportedError = operationError
+      case .success:
+        reportedError = callerError
+      }
+      self.reportOperationCompletion(
         kind: operationKind,
         error: reportedError,
-        elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
-      return try outcome.get()
+        remainingOperations: completion.remainingOperations,
+        elapsedMicroseconds: completion.elapsedMicroseconds)
     }
-    tail = Task { _ = try? await task.value }
     do {
       let result = try await withTaskCancellationHandler {
-        try await resultRelay.value()
+        try await callerResultRelay.value().get()
       } onCancel: {
         task.cancel()
-        resultRelay.cancel()
-        completionRelay.resolve(CancellationError())
+        let cancellation = CancellationError()
+        callerResultRelay.resolve(.failure(cancellation))
+        callerDispositionRelay.resolve(cancellation)
         Task {
           await self.operationAbandoned(
             id: operationID,
@@ -105,31 +127,42 @@ public actor InferenceSerializer {
       // the parent task. The caller decides the reported outcome so a rejected
       // value is never diagnosed as a successful inference.
       try Task.checkCancellation()
-      completionRelay.resolve(nil)
-      _ = try await task.value
+      callerDispositionRelay.resolve(nil)
+      await diagnosticsTask.value
       return result
     } catch {
-      completionRelay.resolve(error)
+      callerDispositionRelay.resolve(error)
+      // Ordinary completion keeps the historical contract that terminal
+      // diagnostics are observable when `run` returns. A cancelled caller must
+      // still be released immediately when model work ignores cancellation;
+      // its eventual diagnostic is emitted by `diagnosticsTask` after the raw
+      // operation finishes.
       if !Task.isCancelled {
-        _ = try? await task.value
+        await diagnosticsTask.value
       }
       throw error
     }
   }
 
-  private func operationCompleted(
-    id: Int,
-    kind: Operation,
-    error: (any Error)?,
-    elapsedMicroseconds: Int64
-  ) {
+  private func operationReleased(
+    id: Int
+  ) -> Int {
     pendingOperationIDs.remove(id)
     if activeOperationID == id { activeOperationID = nil }
     pendingCount -= 1
     if pendingCount == 0 { tail = nil }
+    return pendingCount
+  }
+
+  private func reportOperationCompletion(
+    kind: Operation,
+    error: (any Error)?,
+    remainingOperations: Int,
+    elapsedMicroseconds: Int64
+  ) {
     var context = [
       "operation": kind.rawValue,
-      "remaining_operations": String(pendingCount),
+      "remaining_operations": String(remainingOperations),
       "total_elapsed_ms": Self.milliseconds(elapsedMicroseconds),
     ]
     if let error {
@@ -182,114 +215,57 @@ public actor InferenceSerializer {
   }
 }
 
-/// Lets a cancelled caller stop waiting immediately while the serializer's
-/// private FIFO task remains chained behind any still-running model operation.
-private final class InferenceResultRelay<Value: Sendable>: @unchecked Sendable {
+private struct InferenceRawCompletion<Value: Sendable>: Sendable {
+  var result: Result<Value, any Error>
+  var remainingOperations: Int
+  var elapsedMicroseconds: Int64
+}
+
+/// A lock-backed one-shot value used for raw completion, caller delivery, and
+/// caller disposition without duplicating three subtly different state
+/// machines. The first resolver wins and the value may be awaited once.
+private final class InferenceOneShotRelay<Value: Sendable>: @unchecked Sendable {
   private enum State {
     case pending
-    case waiting(CheckedContinuation<Value, any Error>)
-    case resolved(Result<Value, any Error>)
-    case cancelled
+    case waiting(CheckedContinuation<Value, Never>)
+    case resolved(Value)
   }
 
   private let lock = NSLock()
   private var state: State = .pending
 
-  func value() async throws -> Value {
-    try await withCheckedThrowingContinuation { continuation in
-      var immediate: Result<Value, any Error>?
+  func value() async -> Value {
+    await withCheckedContinuation { continuation in
+      var immediate: State?
       lock.lock()
       switch state {
       case .pending:
         state = .waiting(continuation)
-      case .resolved(let result):
-        immediate = result
-      case .cancelled:
-        immediate = .failure(CancellationError())
+      case .resolved(let value):
+        immediate = .resolved(value)
       case .waiting:
-        preconditionFailure("Inference result may only be awaited once.")
+        preconditionFailure("Inference relay may only be awaited once.")
       }
       lock.unlock()
-      if let immediate { continuation.resume(with: immediate) }
-    }
-  }
-
-  func resolve(_ result: Result<Value, any Error>) {
-    var continuation: CheckedContinuation<Value, any Error>?
-    lock.lock()
-    switch state {
-    case .pending:
-      state = .resolved(result)
-    case .waiting(let waiting):
-      state = .resolved(result)
-      continuation = waiting
-    case .cancelled, .resolved:
-      break
-    }
-    lock.unlock()
-    continuation?.resume(with: result)
-  }
-
-  func cancel() {
-    var continuation: CheckedContinuation<Value, any Error>?
-    lock.lock()
-    switch state {
-    case .pending:
-      state = .cancelled
-    case .waiting(let waiting):
-      state = .cancelled
-      continuation = waiting
-    case .cancelled, .resolved:
-      break
-    }
-    lock.unlock()
-    continuation?.resume(throwing: CancellationError())
-  }
-}
-
-/// Delays completion diagnostics until the caller has applied its own
-/// cancellation check, while the private FIFO task continues to own the model
-/// slot until cancellation-insensitive work actually returns.
-private final class InferenceCompletionRelay: @unchecked Sendable {
-  private enum State {
-    case pending
-    case waiting(CheckedContinuation<(any Error)?, Never>)
-    case resolved((any Error)?)
-  }
-
-  private let lock = NSLock()
-  private var state = State.pending
-
-  func value() async -> (any Error)? {
-    await withCheckedContinuation { continuation in
-      lock.lock()
-      switch state {
-      case .pending:
-        state = .waiting(continuation)
-        lock.unlock()
-      case .resolved(let error):
-        lock.unlock()
-        continuation.resume(returning: error)
-      case .waiting:
-        lock.unlock()
-        preconditionFailure("Inference completion may only be awaited once.")
+      if case .resolved(let value) = immediate {
+        continuation.resume(returning: value)
       }
     }
   }
 
-  func resolve(_ error: (any Error)?) {
-    var continuation: CheckedContinuation<(any Error)?, Never>?
+  func resolve(_ value: Value) {
+    var continuation: CheckedContinuation<Value, Never>?
     lock.lock()
     switch state {
     case .pending:
-      state = .resolved(error)
+      state = .resolved(value)
     case .waiting(let waiting):
-      state = .resolved(error)
+      state = .resolved(value)
       continuation = waiting
     case .resolved:
       break
     }
     lock.unlock()
-    continuation?.resume(returning: error)
+    continuation?.resume(returning: value)
   }
 }

@@ -653,9 +653,20 @@ actor MessageUpdateQueue {
     var messageID: UUID
   }
 
-  private var active: Set<Key> = []
-  private var waiters: [Key: [CheckedContinuation<Void, Never>]] = [:]
+  private enum OnceSaveState {
+    case active(
+      [CheckedContinuation<Result<SaveOutcome, any Error>, Never>]
+    )
+    case resolved(Result<SaveOutcome, any Error>)
+  }
+
+  /// Every history mutation in one conversation shares a FIFO. Message-level
+  /// revisions still suppress stale preference effects, but distinct message
+  /// IDs can no longer overtake each other in the durable transcript.
+  private var activeConversationIDs: Set<UUID> = []
+  private var waiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
   private var latestRevisions: [Key: UInt64] = [:]
+  private var onceSaves: [Key: OnceSaveState] = [:]
   /// Saves that arrive during deletion wait for its outcome. A failed delete
   /// resumes them; a confirmed delete permanently rejects late scheduled work.
   private var deletingConversationIDs: Set<UUID> = []
@@ -680,13 +691,13 @@ actor MessageUpdateQueue {
     }
 
     while true {
-      await acquire(key)
+      await acquire(conversationID)
       if deletedConversationIDs.contains(conversationID) {
-        finish(key)
+        finish(conversationID)
         return .discardedDuringDeletion
       }
       guard deletingConversationIDs.contains(conversationID) else { break }
-      finish(key)
+      finish(conversationID)
       guard await waitForDeletionResolutionIfNeeded(conversationID) else {
         return .discardedDuringDeletion
       }
@@ -697,10 +708,10 @@ actor MessageUpdateQueue {
 
     do {
       try await operation()
-      finish(key)
+      finish(conversationID)
       return .saved
     } catch {
-      finish(key)
+      finish(conversationID)
       guard await waitForDeletionResolutionIfNeeded(conversationID) else {
         return .discardedDuringDeletion
       }
@@ -708,9 +719,59 @@ actor MessageUpdateQueue {
     }
   }
 
+  /// Coalesces logically identical saves. Stop and the dispatch effect both
+  /// use this for the user-message prerequisite, so whichever reaches the
+  /// actor first performs the write and every other caller observes its exact
+  /// outcome without retrying or overtaking it.
+  @discardableResult
+  func saveOnce(
+    conversationID: UUID,
+    messageID: UUID,
+    operation: @escaping @Sendable () async throws -> Void
+  ) async throws -> SaveOutcome {
+    let key = Key(conversationID: conversationID, messageID: messageID)
+    if let state = onceSaves[key] {
+      let result: Result<SaveOutcome, any Error>
+      switch state {
+      case .resolved(let resolved):
+        result = resolved
+      case .active:
+        result = await withCheckedContinuation { continuation in
+          guard case .active(var continuations) = onceSaves[key] else {
+            if case .resolved(let resolved) = onceSaves[key] {
+              continuation.resume(returning: resolved)
+            }
+            return
+          }
+          continuations.append(continuation)
+          onceSaves[key] = .active(continuations)
+        }
+      }
+      return try result.get()
+    }
+
+    onceSaves[key] = .active([])
+    let result: Result<SaveOutcome, any Error>
+    do {
+      result = .success(
+        try await save(
+          conversationID: conversationID,
+          messageID: messageID,
+          operation: operation))
+    } catch {
+      result = .failure(error)
+    }
+    resolveOnceSave(key, with: result)
+    return try result.get()
+  }
+
+  func forgetOnceSave(conversationID: UUID, messageID: UUID) {
+    onceSaves[Key(conversationID: conversationID, messageID: messageID)] = nil
+  }
+
   func beginDeletingConversation(_ conversationID: UUID) async {
     deletingConversationIDs.insert(conversationID)
-    guard active.contains(where: { $0.conversationID == conversationID }) else {
+    guard activeConversationIDs.contains(conversationID) else {
       return
     }
     await withCheckedContinuation { continuation in
@@ -728,6 +789,9 @@ actor MessageUpdateQueue {
     latestRevisions = latestRevisions.filter {
       $0.key.conversationID != conversationID
     }
+    onceSaves = onceSaves.filter {
+      $0.key.conversationID != conversationID
+    }
     resolveDeletionWaiters(conversationID, shouldSave: false)
   }
 
@@ -740,17 +804,19 @@ actor MessageUpdateQueue {
     latestRevisions.count
   }
 
-  func isDeletingConversation(_ conversationID: UUID) -> Bool {
-    deletingConversationIDs.contains(conversationID)
-  }
+  #if DEBUG
+    func isDeletingConversation(_ conversationID: UUID) -> Bool {
+      deletingConversationIDs.contains(conversationID)
+    }
+  #endif
 
-  private func acquire(_ key: Key) async {
-    if active.contains(key) {
+  private func acquire(_ conversationID: UUID) async {
+    if activeConversationIDs.contains(conversationID) {
       await withCheckedContinuation { continuation in
-        waiters[key, default: []].append(continuation)
+        waiters[conversationID, default: []].append(continuation)
       }
     } else {
-      active.insert(key)
+      activeConversationIDs.insert(conversationID)
     }
   }
 
@@ -777,7 +843,7 @@ actor MessageUpdateQueue {
   }
 
   private func resumeDeletionDrainIfReady(_ conversationID: UUID) {
-    guard !active.contains(where: { $0.conversationID == conversationID }) else {
+    guard !activeConversationIDs.contains(conversationID) else {
       return
     }
     let continuations =
@@ -788,15 +854,35 @@ actor MessageUpdateQueue {
     }
   }
 
-  private func finish(_ key: Key) {
-    guard var queued = waiters[key], !queued.isEmpty else {
-      active.remove(key)
-      waiters[key] = nil
-      resumeDeletionDrainIfReady(key.conversationID)
+  private func resolveOnceSave(
+    _ key: Key,
+    with result: Result<SaveOutcome, any Error>
+  ) {
+    let continuations: [CheckedContinuation<Result<SaveOutcome, any Error>, Never>]
+    if case .active(let activeContinuations) = onceSaves[key] {
+      continuations = activeContinuations
+    } else {
+      continuations = []
+    }
+    if deletedConversationIDs.contains(key.conversationID) {
+      onceSaves[key] = nil
+    } else {
+      onceSaves[key] = .resolved(result)
+    }
+    for continuation in continuations {
+      continuation.resume(returning: result)
+    }
+  }
+
+  private func finish(_ conversationID: UUID) {
+    guard var queued = waiters[conversationID], !queued.isEmpty else {
+      activeConversationIDs.remove(conversationID)
+      waiters[conversationID] = nil
+      resumeDeletionDrainIfReady(conversationID)
       return
     }
     let next = queued.removeFirst()
-    waiters[key] = queued.isEmpty ? nil : queued
+    waiters[conversationID] = queued.isEmpty ? nil : queued
     next.resume()
   }
 }

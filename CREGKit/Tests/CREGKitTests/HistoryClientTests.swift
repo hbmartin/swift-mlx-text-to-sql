@@ -561,6 +561,16 @@ import Testing
     snapshot = try await client.loadConversation(conversationID)
     #expect(snapshot.messages == [question, answer])
     #expect(snapshot.interruptedTurn == nil)
+
+    // A Stop path can win the race to persist this user message. A late copy
+    // of the original effect must remain idempotent and must not reopen the
+    // journal that terminal persistence just closed.
+    try await client.persistUserTurn(
+      conversationID, question, "Which fund leads?", question.createdAt)
+    snapshot = try await client.loadConversation(conversationID)
+    #expect(snapshot.messages == [question, answer])
+    #expect(snapshot.interruptedTurn == nil)
+
     let exportURL = try await client.exportJSONL(conversationID)
     #expect(
       try String(contentsOf: exportURL, encoding: .utf8)

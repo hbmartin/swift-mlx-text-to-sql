@@ -175,6 +175,10 @@ import Testing
 }
 
 @Suite struct InferenceSerializerTests {
+  private enum ProbeError: Error, Sendable {
+    case failed
+  }
+
   @Test func operationsNeverOverlap() async throws {
     let serializer = InferenceSerializer()
     actor Overlap {
@@ -225,6 +229,30 @@ import Testing
     await recorder.wait(for: "inference_failed")
 
     #expect(!recorder.contains("inference_finished"))
+  }
+
+  @Test func modelFailureRemainsPrimaryWhenCallerCancellationRacesIt() async {
+    let recorder = InferenceSerializerEventRecorder()
+    let serializer = InferenceSerializer(diagnostics: recorder.client)
+    let gate = CancellationInsensitiveInferenceGate()
+    let operation = Task {
+      try await serializer.run(operation: .rewrite) { () async throws -> Int in
+        await gate.holdUntilReleased()
+        throw ProbeError.failed
+      }
+    }
+    await gate.waitUntilStarted()
+
+    operation.cancel()
+    await #expect(throws: CancellationError.self) {
+      _ = try await operation.value
+    }
+    await gate.release()
+    await recorder.wait(for: "inference_failed")
+
+    let failure = recorder.event(for: "inference_failed")
+    #expect(failure?.context["is_cancellation"] == "false")
+    #expect(failure?.context["error_type"]?.contains("ProbeError") == true)
   }
 
   @Test func nextOperationWaitsWhileCancelledInferenceStillRuns() async throws {
@@ -331,25 +359,31 @@ private actor CancellationInsensitiveInferenceGate {
 
 private final class InferenceSerializerEventRecorder: @unchecked Sendable {
   private let lock = NSLock()
-  private var codes: [String] = []
+  private var events: [DiagnosticEvent] = []
   private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
   var client: DiagnosticsClient {
     DiagnosticsClient { [weak self] event in
-      self?.record(event.code)
+      self?.record(event)
     }
   }
 
   func contains(_ code: String) -> Bool {
     lock.lock()
     defer { lock.unlock() }
-    return codes.contains(code)
+    return events.contains { $0.code == code }
+  }
+
+  func event(for code: String) -> DiagnosticEvent? {
+    lock.lock()
+    defer { lock.unlock() }
+    return events.first { $0.code == code }
   }
 
   func wait(for code: String) async {
     await withCheckedContinuation { continuation in
       lock.lock()
-      if codes.contains(code) {
+      if events.contains(where: { $0.code == code }) {
         lock.unlock()
         continuation.resume()
       } else {
@@ -359,10 +393,10 @@ private final class InferenceSerializerEventRecorder: @unchecked Sendable {
     }
   }
 
-  private func record(_ code: String) {
+  private func record(_ event: DiagnosticEvent) {
     lock.lock()
-    codes.append(code)
-    let continuations = waiters.removeValue(forKey: code) ?? []
+    events.append(event)
+    let continuations = waiters.removeValue(forKey: event.code) ?? []
     lock.unlock()
     for continuation in continuations {
       continuation.resume()
