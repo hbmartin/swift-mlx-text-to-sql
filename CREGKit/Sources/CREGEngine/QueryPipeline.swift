@@ -1046,6 +1046,8 @@ extension QueryPipeline {
           uuid: uuid,
           now: now)
       },
+      // Prepared execution is history-independent; its retained history
+      // argument is intentionally ignored.
       runPrepared: { prepared, _ in
         preparedAnswerStream(
           prepared: prepared,

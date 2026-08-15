@@ -308,6 +308,7 @@ public struct AppFeature: Sendable {
           code: "app_appeared",
           summary: "The app surface appeared.",
           context: ["has_selection": String(state.chat != nil)])
+        syncSchedulerProjection(into: &state)
         var effects: [Effect<Action>] = []
         if !state.didRequestPreparationJournalInspection {
           state.didRequestPreparationJournalInspection = true
@@ -393,6 +394,7 @@ public struct AppFeature: Sendable {
         }
         state.modelReadiness = .preparing
         state.modelPreparationInFlight = true
+        syncSchedulerProjection(into: &state)
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
