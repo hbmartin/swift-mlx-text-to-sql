@@ -204,7 +204,39 @@ import Testing
     #expect(await overlap.order.count == 5)
   }
 
-  @Test func nextOperationFailsFastWhileCancelledInferenceStillRuns() async throws {
+  @Test func nextOperationWaitsWhileCancelledInferenceStillRuns() async throws {
+    let recorder = InferenceSerializerEventRecorder()
+    let serializer = InferenceSerializer(diagnostics: recorder.client)
+    let gate = CancellationInsensitiveInferenceGate()
+    let nextStarted = AsyncFlag()
+    let first = Task {
+      try await serializer.run(operation: .rewrite) {
+        await gate.holdUntilReleased()
+        return 1
+      }
+    }
+    await gate.waitUntilStarted()
+
+    first.cancel()
+    await recorder.wait(for: "inference_cancelled_operation_still_running")
+    #expect(recorder.contains("inference_cancelled_operation_still_running"))
+
+    let next = Task {
+      try await serializer.run(operation: .sqlGeneration) {
+        await nextStarted.set()
+        return 2
+      }
+    }
+    await recorder.wait(for: "inference_queued")
+    #expect(await nextStarted.value == false)
+
+    await gate.release()
+    _ = try? await first.value
+    #expect(try await next.value == 2)
+    #expect(await nextStarted.value)
+  }
+
+  @Test func cancellingQueuedOperationDoesNotOccupyModelSlot() async throws {
     let recorder = InferenceSerializerEventRecorder()
     let serializer = InferenceSerializer(diagnostics: recorder.client)
     let gate = CancellationInsensitiveInferenceGate()
@@ -216,24 +248,30 @@ import Testing
     }
     await gate.waitUntilStarted()
 
-    first.cancel()
-    for _ in 0..<100
-    where !recorder.contains("inference_cancelled_operation_still_running") {
-      await Task.yield()
+    let queued = Task {
+      try await serializer.run(operation: .gate) { 2 }
     }
-    #expect(recorder.contains("inference_cancelled_operation_still_running"))
+    await recorder.wait(for: "inference_queued")
+    queued.cancel()
+    await recorder.wait(for: "inference_queued_operation_cancelled")
+    #expect(!recorder.contains("inference_cancelled_operation_still_running"))
 
-    await #expect(
-      throws: InferenceSerializer.SerializerError.cancelledOperationStillRunning
-    ) {
-      _ = try await serializer.run(operation: .sqlGeneration) { 2 }
+    let next = Task {
+      try await serializer.run(operation: .sqlGeneration) { 3 }
     }
-
     await gate.release()
-    _ = try? await first.value
-    let recovered = try await serializer.run(operation: .sqlGeneration) { 3 }
-    #expect(recovered == 3)
+    #expect(try await first.value == 1)
+    await #expect(throws: CancellationError.self) {
+      _ = try await queued.value
+    }
+    #expect(try await next.value == 3)
   }
+}
+
+private actor AsyncFlag {
+  var value = false
+
+  func set() { value = true }
 }
 
 private actor CancellationInsensitiveInferenceGate {
@@ -267,6 +305,7 @@ private actor CancellationInsensitiveInferenceGate {
 private final class InferenceSerializerEventRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var codes: [String] = []
+  private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
   var client: DiagnosticsClient {
     DiagnosticsClient { [weak self] event in
@@ -280,10 +319,27 @@ private final class InferenceSerializerEventRecorder: @unchecked Sendable {
     return codes.contains(code)
   }
 
+  func wait(for code: String) async {
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      if codes.contains(code) {
+        lock.unlock()
+        continuation.resume()
+      } else {
+        waiters[code, default: []].append(continuation)
+        lock.unlock()
+      }
+    }
+  }
+
   private func record(_ code: String) {
     lock.lock()
     codes.append(code)
+    let continuations = waiters.removeValue(forKey: code) ?? []
     lock.unlock()
+    for continuation in continuations {
+      continuation.resume()
+    }
   }
 }
 

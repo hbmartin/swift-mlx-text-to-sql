@@ -27,7 +27,8 @@ struct MessageCell: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .background(
-          CREGBrand.userBubble, in: RoundedRectangle(cornerRadius: 18))
+          CREGBrand.userBubble, in: RoundedRectangle(cornerRadius: 18)
+        )
         .foregroundStyle(CREGBrand.userBubbleText)
     }
   }
@@ -53,6 +54,7 @@ struct MessageCell: View {
         .font(.subheadline)
         ResultPreviewView(
           messageID: message.id,
+          resultFingerprint: message.resultFingerprint,
           result: prepared.result,
           sql: prepared.sql,
           question: prepared.question,
@@ -96,6 +98,7 @@ struct MessageCell: View {
         }
         ResultPreviewView(
           messageID: message.id,
+          resultFingerprint: message.resultFingerprint,
           result: result,
           sql: sql,
           question: message.devInfo?.originalQuestion,
@@ -131,8 +134,9 @@ struct MessageCell: View {
       {
         FollowUpSuggestionsView(
           suggestions: batch.suggestions,
-          select: { store.send(.preparedFollowUpTapped($0)) })
-          .disabled(!store.isSubmissionEnabled)
+          select: { store.send(.preparedFollowUpTapped($0)) }
+        )
+        .disabled(!store.isSubmissionEnabled)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -176,7 +180,8 @@ struct FollowUpSuggestionsView: View {
           .padding(.vertical, 12)
           .background(
             .quaternary.opacity(0.5),
-            in: RoundedRectangle(cornerRadius: 14))
+            in: RoundedRectangle(cornerRadius: 14)
+          )
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -269,10 +274,12 @@ struct AnswerActionsRow: View {
     }
     .buttonStyle(.plain)
     .foregroundStyle(
-      feedback?.verdict == .helpful ? CREGBrand.blue : Color.secondary)
+      feedback?.verdict == .helpful ? CREGBrand.blue : Color.secondary
+    )
     .accessibilityLabel("Helpful")
     .accessibilityAddTraits(
-      feedback?.verdict == .helpful ? [.isSelected] : [])
+      feedback?.verdict == .helpful ? [.isSelected] : []
+    )
     .cregLargeContentViewer("Helpful", systemImage: "hand.thumbsup")
   }
 
@@ -288,10 +295,12 @@ struct AnswerActionsRow: View {
     }
     .buttonStyle(.plain)
     .foregroundStyle(
-      feedback?.verdict == .notRight ? Color.orange : Color.secondary)
+      feedback?.verdict == .notRight ? Color.orange : Color.secondary
+    )
     .accessibilityLabel("Not right")
     .accessibilityAddTraits(
-      feedback?.verdict == .notRight ? [.isSelected] : [])
+      feedback?.verdict == .notRight ? [.isSelected] : []
+    )
     .cregLargeContentViewer("Not right", systemImage: "hand.thumbsdown")
   }
 
@@ -354,9 +363,10 @@ public enum AnswerExport {
     result: QueryResult,
     runtimeMode: ModelRuntimeMode? = nil
   ) -> String {
-    let metadata = runtimeMode.map {
-      "Runtime mode: \($0.rawValue) · Evaluated: \($0.isEvaluated)\n\n"
-    } ?? ""
+    let metadata =
+      runtimeMode.map {
+        "Runtime mode: \($0.rawValue) · Evaluated: \($0.isEvaluated)\n\n"
+      } ?? ""
     guard !result.rows.isEmpty || !result.columns.isEmpty else {
       return metadata + narration + "\n"
     }

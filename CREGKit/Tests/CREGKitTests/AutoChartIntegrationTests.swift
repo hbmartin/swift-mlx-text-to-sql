@@ -163,9 +163,35 @@ import Testing
       for: "occupancy_rate",
       projection: "occupancy_rate",
       values: [.real(0.62), .real(91)])
+    let fractionsWithZero = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate",
+      values: [.real(0), .real(0.62)])
+    let pointsWithZero = CREGChartAdapter.hints(
+      for: "occupancy_rate",
+      projection: "occupancy_rate * 100",
+      values: [.real(0), .real(62)])
     #expect(fractions.unit == .percent(fractional: true))
     #expect(points.unit == .percent(fractional: false))
     #expect(mixed.unit == nil)
+    #expect(fractionsWithZero.unit == .percent(fractional: true))
+    #expect(pointsWithZero.unit == .percent(fractional: false))
+  }
+
+  @Test func lifecyclePrefixesDoNotHideNumericUnits() {
+    let acquisitionPrice = CREGChartAdapter.hints(
+      for: "acquisition_price",
+      projection: "acquisition_price",
+      values: [.real(12_000_000)])
+    let expirationYear = CREGChartAdapter.hints(
+      for: "expiration_year",
+      projection: "expiration_year",
+      values: [.integer(2028)])
+
+    #expect(acquisitionPrice.unit == .currency(code: "USD"))
+    #expect(acquisitionPrice.semanticType == .quantitative)
+    #expect(expirationYear.semanticType == .ordinal)
+    #expect(expirationYear.role == .dimension)
   }
 
   @Test func hintValuesAreMaterializedOnlyForValueAwareStyles() {
@@ -210,6 +236,19 @@ import Testing
     #expect(table.chartColumns[0].hints.role == .intervalStart)
   }
 
+  @Test func emptyResultsPreserveTemporalHints() {
+    let table = CREGChartTable(
+      result: QueryResult(
+        columns: ["period_end", "net_operating_income"],
+        rows: []),
+      sql: "SELECT period_end, net_operating_income FROM property_financials",
+      question: "Show NOI over time")
+
+    #expect(table.chartColumns[0].hints.semanticType == .temporal)
+    #expect(table.chartColumns[0].hints.role == .intervalEnd)
+    #expect(table.chartColumns[1].hints.semanticType == .quantitative)
+  }
+
   @Test func temporalHintsRequireValidValuesAndDateOnlyParsingUsesTheProvidedCalendar() throws {
     let invalid = CREGChartTable(
       result: QueryResult(
@@ -246,43 +285,82 @@ import Testing
   }
 
   @Test @MainActor
-  func previewChartAnalysisIsCachedByMessageAndInvalidatedByInput() {
+  func previewChartAnalysisSurvivesUndoAndIsInvalidatedByInput() async {
     ResultPreviewChartCache.removeAll()
+    defer { ResultPreviewChartCache.removeAll() }
     let messageID = UUID()
     let result = QueryResult(
       columns: ["fund", "current_market_value"],
       rows: [[.text("Core"), .real(10)]])
+    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
     let first = ResultPreviewChartCache.analysis(
-      messageID: messageID, result: result,
+      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     let second = ResultPreviewChartCache.analysis(
-      messageID: messageID, result: result,
+      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(first === second)
 
     var retimed = result
     retimed.elapsedMicroseconds = 42_000
     let equivalent = ResultPreviewChartCache.analysis(
-      messageID: messageID, result: retimed,
+      messageID: messageID, resultFingerprint: resultFingerprint, result: retimed,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(first === equivalent)
 
+    let selectedID = UUID()
+    let deletedID = UUID()
+    var state = AppFeature.State(
+      debugModelIdentity: nil, launchBenchmarkQuestion: nil)
+    state.modelReadiness = .ready
+    state.chat = ChatFeature.State(conversationID: selectedID)
+    state.conversations = [
+      ConversationSummary(
+        id: selectedID, title: "Selected",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 2)),
+      ConversationSummary(
+        id: deletedID, title: "Deleted then restored",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 1)),
+    ]
+    let clock = TestClock()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.historyClient = .noop()
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(deletedID))
+    await store.send(.undoDeleteTapped)
+    await store.finish()
+    let afterUndo = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === afterUndo)
+
     var changed = result
     changed.rows.append([.text("Value-Add"), .real(8)])
+    let changedFingerprint = PreparedFollowUpIntegrity.fingerprint(result: changed)
     let third = ResultPreviewChartCache.analysis(
-      messageID: messageID, result: changed,
+      messageID: messageID, resultFingerprint: changedFingerprint, result: changed,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(first !== third)
 
     ResultPreviewChartCache.removeAll()
     let afterRelease = ResultPreviewChartCache.analysis(
-      messageID: messageID, result: changed,
+      messageID: messageID, resultFingerprint: changedFingerprint, result: changed,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(third !== afterRelease)
   }
 
   @Test(arguments: [
-    ("Show the trend over time", "SELECT period_end, noi FROM property_financials", AutoChartGoal.trend),
+    (
+      "Show the trend over time", "SELECT period_end, noi FROM property_financials",
+      AutoChartGoal.trend
+    ),
     ("Which properties are unusual outliers?", "SELECT name, value FROM properties", .outlier),
     ("How are value and balance related?", "SELECT value, balance FROM loans", .relationship),
     ("What share is in each fund?", "SELECT fund, value FROM holdings", .composition),
@@ -336,8 +414,14 @@ import Testing
         QueryResult(
           columns: ["lease_id", "tenant", "property", "suite", "expiration_date", "status"],
           rows: [
-            [.integer(1), .text("Atlas Data"), .text("Harbor Point"), .text("210"), .text("2026-10-01"), .text("Active")],
-            [.integer(2), .text("Béa Café"), .text("Meridian Plaza"), .text("105"), .text("2027-01-15"), .text("Active")],
+            [
+              .integer(1), .text("Atlas Data"), .text("Harbor Point"), .text("210"),
+              .text("2026-10-01"), .text("Active"),
+            ],
+            [
+              .integer(2), .text("Béa Café"), .text("Meridian Plaza"), .text("105"),
+              .text("2027-01-15"), .text("Active"),
+            ],
           ]),
         .range
       ),
@@ -387,7 +471,8 @@ import Testing
       isTruncated: true)
     let recommendations = CREGChartAdapter.recommendations(
       result: result,
-      sql: "SELECT property_type, status, SUM(annual_base_rent) AS annual_rent_roll FROM leases GROUP BY property_type, status",
+      sql:
+        "SELECT property_type, status, SUM(annual_base_rent) AS annual_rent_roll FROM leases GROUP BY property_type, status",
       question: "Show the rent roll breakdown"
     ).set.chartRecommendations
     let families = Set(recommendations.map(\.specification.family))
@@ -462,6 +547,7 @@ import Testing
     let decoded = try JSONDecoder().decode(
       ChatMessage.self, from: JSONEncoder().encode(message))
     #expect(decoded.resultPresentation == preference)
+    #expect(decoded.resultFingerprint == message.resultFingerprint)
 
     let prepared = Self.preparedFollowUp()
     let provisional = ChatMessage(
@@ -485,7 +571,9 @@ import Testing
     }
     var state = ChatFeature.State(conversationID: UUID())
     state.messages.append(message)
-    let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
       $0.historyClient = history
     }
 
@@ -540,7 +628,9 @@ import Testing
     }
     var state = ChatFeature.State(conversationID: conversationID)
     state.messages.append(message)
-    let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
       $0.historyClient = delayedHistory
     }
     let firstPreference = ResultPresentationPreference(mode: .chart)
@@ -589,6 +679,27 @@ import Testing
     }
 
     #expect(writes.values == ["new"])
+  }
+
+  @Test func confirmedConversationDeletionPrunesRevisionTombstones() async throws {
+    let queue = MessageUpdateQueue()
+    let deletedConversationID = UUID()
+    let retainedConversationID = UUID()
+    try await queue.save(
+      conversationID: deletedConversationID,
+      messageID: UUID(),
+      revision: 1
+    ) {}
+    try await queue.save(
+      conversationID: retainedConversationID,
+      messageID: UUID(),
+      revision: 2
+    ) {}
+    #expect(await queue.retainedRevisionCount() == 2)
+
+    await queue.removeConversation(deletedConversationID)
+
+    #expect(await queue.retainedRevisionCount() == 1)
   }
 
   private static func answerMessage() -> ChatMessage {
@@ -701,8 +812,8 @@ private final class PreferenceWriteRecorder: @unchecked Sendable {
   }
 }
 
-private extension AutoChartValue {
-  var dateValue: Date? {
+extension AutoChartValue {
+  fileprivate var dateValue: Date? {
     guard case .date(let value) = self else { return nil }
     return value
   }

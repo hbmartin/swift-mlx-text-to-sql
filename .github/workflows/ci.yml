@@ -31,6 +31,15 @@ jobs:
         working-directory: CREGKit
         run: swift test
 
+      - name: Verify checked-in Swift package resolutions
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project CREG.xcodeproj \
+            -scheme CREG
+          git diff --exit-code -- \
+            CREGKit/Package.resolved \
+            CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
   python:
     name: Python tests and corpus determinism
     runs-on: macos-26

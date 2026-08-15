@@ -129,6 +129,9 @@ public struct AppFeature: Sendable {
     public var pendingDeletion: PendingDeletion?
     public var modelReadiness: ModelReadiness = .preparing
     public var activeTurn: ActiveTurn?
+    /// The completed turn whose history write currently gates queue dispatch.
+    /// A watchdog clears this barrier if local persistence stops responding.
+    public var pendingTurnPersistenceID: UUID?
     public var followUpPreparation: FollowUpPreparationState?
     /// Session-only Queued Questions across all Conversations, oldest first.
     public var queue: [QueuedQuestion] = []
@@ -230,6 +233,8 @@ public struct AppFeature: Sendable {
     case answerReadyBannerTimedOut
     case pipelineEvent(conversationID: UUID, questionID: UUID, event: PipelineEvent)
     case pipelineStreamEnded(conversationID: UUID, questionID: UUID)
+    case turnPersistenceFinished(UUID)
+    case turnPersistenceTimedOut(UUID)
     case dispatchNextIfIdle
     case followUpPreparationEvent(
       conversationID: UUID,
@@ -253,6 +258,10 @@ public struct AppFeature: Sendable {
     case bannerTimeout
     case iconRead
     case modelPreparation
+  }
+
+  private struct TurnPersistenceTimeoutID: Hashable {
+    var questionID: UUID
   }
 
   @Dependency(\.queryPipeline) var pipeline
@@ -303,7 +312,6 @@ public struct AppFeature: Sendable {
         if !state.didRequestPreparationJournalInspection {
           state.didRequestPreparationJournalInspection = true
           state.modelReadiness = .preparing
-          syncSchedulerProjection(into: &state)
           effects.append(
             .run { send in
               await send(
@@ -371,7 +379,6 @@ public struct AppFeature: Sendable {
           )
           state.modelReadiness = .failed(failure)
           state.modelPreparationReport = nil
-          syncSchedulerProjection(into: &state)
           diagnostics.record(
             DiagnosticEvent(
               level: .error,
@@ -386,7 +393,6 @@ public struct AppFeature: Sendable {
         }
         state.modelReadiness = .preparing
         state.modelPreparationInFlight = true
-        syncSchedulerProjection(into: &state)
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
@@ -407,7 +413,6 @@ public struct AppFeature: Sendable {
         state.modelReadiness = .preparing
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
-        syncSchedulerProjection(into: &state)
         return preparationEffect(mode: .evaluated)
 
       case .retryCompatibilityPreparation:
@@ -425,14 +430,12 @@ public struct AppFeature: Sendable {
         state.modelReadiness = .preparing
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
-        syncSchedulerProjection(into: &state)
         return preparationEffect(mode: .compatibility)
 
       case .modelPrepared(let report):
         state.modelPreparationInFlight = false
         state.modelReadiness = .ready
         state.modelPreparationReport = report
-        syncSchedulerProjection(into: &state)
         diagnostics.info(
           category: .submission,
           code: "chat_model_ready",
@@ -450,7 +453,6 @@ public struct AppFeature: Sendable {
         state.modelPreparationInFlight = false
         state.modelReadiness = .failed(failure)
         state.modelPreparationReport = nil
-        syncSchedulerProjection(into: &state)
         diagnostics.record(
           DiagnosticEvent(
             level: .error,
@@ -588,6 +590,7 @@ public struct AppFeature: Sendable {
         return .run { send in
           do {
             try await history.deleteConversation(id)
+            await messageUpdateQueue.removeConversation(id)
           } catch {
             await send(
               .operationFailed(.history(operation: .delete, error: error)))
@@ -618,6 +621,26 @@ public struct AppFeature: Sendable {
           conversationID: conversationID,
           questionID: questionID)
 
+      case .turnPersistenceFinished(let questionID):
+        guard state.pendingTurnPersistenceID == questionID else { return .none }
+        state.pendingTurnPersistenceID = nil
+        return .merge(
+          .cancel(id: TurnPersistenceTimeoutID(questionID: questionID)),
+          .send(.dispatchNextIfIdle))
+
+      case .turnPersistenceTimedOut(let questionID):
+        guard state.pendingTurnPersistenceID == questionID else { return .none }
+        state.pendingTurnPersistenceID = nil
+        diagnostics.record(
+          DiagnosticEvent(
+            level: .error,
+            category: .history,
+            code: "turn_persistence_barrier_timed_out",
+            summary:
+              "Queue dispatch resumed after a completed-turn history write stopped responding.",
+            context: ["question_id": questionID.uuidString]))
+        return .send(.dispatchNextIfIdle)
+
       case .dispatchNextIfIdle:
         return dispatchNextIfIdle(state: &state)
 
@@ -647,7 +670,9 @@ public struct AppFeature: Sendable {
           }
           try? await history.clearFollowUpBatch(conversationID)
         }
-        if state.activeTurn == nil {
+        if state.activeTurn == nil, state.queue.isEmpty,
+          state.pendingTurnPersistenceID == nil
+        {
           let userTurn = dispatch(
             state: &state,
             conversationID: conversationID,
@@ -808,6 +833,10 @@ public struct AppFeature: Sendable {
         return .none
       }
     }
+    .onChange(of: \.modelReadiness) { _, state in
+      syncSchedulerProjection(into: &state)
+      return .none
+    }
     .ifLet(\.chat, action: \.chat) {
       ChatFeature(messageUpdateQueue: messageUpdateQueue)
     }
@@ -865,8 +894,16 @@ public struct AppFeature: Sendable {
     return .run { send in
       // Dispatch against the conversation's latest completed history
       // (ADR 0008), loaded before this turn's user message lands.
-      let snapshot = try? await history.loadConversation(conversationID)
-      let turns = ChatFeature.conversationTurns(from: snapshot?.messages ?? [])
+      let turns: [ConversationTurn]
+      switch submission.source {
+      case .preparedFollowUp:
+        // Prepared chips are already standalone and their fallback deliberately
+        // skips conversational rewriting, so avoid an unnecessary history read.
+        turns = []
+      case .freeForm, .starter:
+        let snapshot = try? await history.loadConversation(conversationID)
+        turns = ChatFeature.conversationTurns(from: snapshot?.messages ?? [])
+      }
       // Unstructured so a Stop cancellation cannot abort the user-message
       // write; the pipeline starts only after the write settles so turn
       // records land in transcript order.
@@ -888,7 +925,7 @@ public struct AppFeature: Sendable {
         case .starter(let starter):
           pipeline.runStarter(starter, turns)
         case .preparedFollowUp(let prepared):
-          pipeline.runPrepared(prepared, turns)
+          pipeline.runPrepared(prepared, [])
         }
       var terminalEventSeen = false
       for await event in events {
@@ -913,7 +950,8 @@ public struct AppFeature: Sendable {
   /// Visible-conversation priority: the oldest Queued Question in the
   /// selected Conversation, else the globally oldest.
   private func dispatchNextIfIdle(state: inout State) -> Effect<Action> {
-    guard state.activeTurn == nil, state.modelReadiness == .ready
+    guard state.activeTurn == nil, state.pendingTurnPersistenceID == nil,
+      state.modelReadiness == .ready
     else { return .none }
     let visibleID = state.chat?.conversationID
     let next =
@@ -927,11 +965,38 @@ public struct AppFeature: Sendable {
       submission: next.submission)
   }
 
+  /// Keeps queue dispatch behind the completed turn's durable history write,
+  /// while a separate watchdog guarantees a stuck local write cannot hold the
+  /// process-wide scheduler forever.
+  private func turnPersistenceEffect(
+    questionID: UUID,
+    operation: @escaping @Sendable () async throws -> Void
+  ) -> Effect<Action> {
+    .merge(
+      .run { send in
+        do {
+          try await operation()
+        } catch {
+          await send(
+            .operationFailed(.history(operation: .messageSave, error: error)))
+        }
+        await send(.turnPersistenceFinished(questionID))
+      },
+      .run { send in
+        try await clock.sleep(for: .seconds(5))
+        await send(.turnPersistenceTimedOut(questionID))
+      }
+      .cancellable(
+        id: TurnPersistenceTimeoutID(questionID: questionID),
+        cancelInFlight: true))
+  }
+
   private func stopActiveTurn(state: inout State) -> Effect<Action> {
     guard let active = state.activeTurn,
       active.conversationID == state.chat?.conversationID
     else { return .none }
     state.activeTurn = nil
+    state.pendingTurnPersistenceID = active.questionID
     if let provisionalID = active.provisionalAssistantMessageID,
       case .preparedFollowUp(let prepared) = active.submission.source
     {
@@ -962,21 +1027,15 @@ public struct AppFeature: Sendable {
       let lines = active.eventLines
       return .merge(
         .cancel(id: CancelID.pipeline),
-        .run { send in
-          do {
-            try await messageUpdateQueue.save(
-              conversationID: conversationID,
-              messageID: finalized.id
-            ) {
-              try await history.updateMessage(conversationID, finalized)
-            }
-            try await history.appendEvents(conversationID, finalized.id, lines)
-            try await history.endTurnJournal(conversationID)
-          } catch {
-            await send(
-              .operationFailed(.history(operation: .messageSave, error: error)))
+        turnPersistenceEffect(questionID: active.questionID) {
+          try await messageUpdateQueue.save(
+            conversationID: conversationID,
+            messageID: finalized.id
+          ) {
+            try await history.updateMessage(conversationID, finalized)
           }
-          await send(.dispatchNextIfIdle)
+          try await history.appendEvents(conversationID, finalized.id, lines)
+          try await history.endTurnJournal(conversationID)
         })
     }
     let stoppedMessage = ChatMessage(
@@ -996,16 +1055,10 @@ public struct AppFeature: Sendable {
     let lines = active.eventLines
     let effects: [Effect<Action>] = [
       .cancel(id: CancelID.pipeline),
-      .run { send in
-        do {
-          try await history.appendMessage(conversationID, stoppedMessage)
-          try await history.appendEvents(conversationID, stoppedMessage.id, lines)
-          try await history.endTurnJournal(conversationID)
-        } catch {
-          await send(
-            .operationFailed(.history(operation: .messageSave, error: error)))
-        }
-        await send(.dispatchNextIfIdle)
+      turnPersistenceEffect(questionID: active.questionID) {
+        try await history.appendMessage(conversationID, stoppedMessage)
+        try await history.appendEvents(conversationID, stoppedMessage.id, lines)
+        try await history.endTurnJournal(conversationID)
       },
     ]
     return .merge(effects)
@@ -1080,6 +1133,7 @@ public struct AppFeature: Sendable {
       resultPresentation: active.resultPresentationPreference)
     let lines = active.eventLines
     state.activeTurn = nil
+    state.pendingTurnPersistenceID = active.questionID
 
     diagnostics.info(
       category: .submission,
@@ -1102,28 +1156,20 @@ public struct AppFeature: Sendable {
 
     let replacesProvisional = active.provisionalAssistantMessageID != nil
     var effects: [Effect<Action>] = [
-      .run { send in
-        do {
-          if replacesProvisional {
-            try await messageUpdateQueue.save(
-              conversationID: conversationID,
-              messageID: assistantMessage.id
-            ) {
-              try await history.updateMessage(conversationID, assistantMessage)
-            }
-          } else {
-            try await history.appendMessage(conversationID, assistantMessage)
+      turnPersistenceEffect(questionID: active.questionID) {
+        if replacesProvisional {
+          try await messageUpdateQueue.save(
+            conversationID: conversationID,
+            messageID: assistantMessage.id
+          ) {
+            try await history.updateMessage(conversationID, assistantMessage)
           }
-          try await history.appendEvents(
-            conversationID, assistantMessage.id, lines)
-          try await history.endTurnJournal(conversationID)
-        } catch {
-          await send(
-            .operationFailed(.history(operation: .messageSave, error: error)))
+        } else {
+          try await history.appendMessage(conversationID, assistantMessage)
         }
-        // The next queued turn must load history only after this answer is
-        // durable, otherwise its FM rewrite can miss the antecedent.
-        await send(.dispatchNextIfIdle)
+        try await history.appendEvents(
+          conversationID, assistantMessage.id, lines)
+        try await history.endTurnJournal(conversationID)
       }
     ]
 
@@ -1375,18 +1421,22 @@ public struct AppFeature: Sendable {
     if let previous = state.pendingDeletion {
       let id = previous.summary.id
       effects.append(
-        .run { _ in try? await history.deleteConversation(id) })
+        .run { _ in
+          do {
+            try await history.deleteConversation(id)
+            await messageUpdateQueue.removeConversation(id)
+          } catch {
+            // The countdown path reports deletion failures. Preserve the
+            // existing best-effort behavior when a second delete commits the
+            // first immediately, but retain its revision tombstones on failure.
+          }
+        })
     }
 
     let index = state.conversations.index(id: summary.id) ?? 0
     state.conversations.remove(id: summary.id)
     state.pendingDeletion = PendingDeletion(summary: summary, index: index)
     state.queue.removeAll { $0.conversationID == summary.id }
-    effects.append(
-      .run { _ in
-        await MainActor.run { ResultPreviewChartCache.removeAll() }
-      })
-
     if state.activeTurn?.conversationID == summary.id {
       state.activeTurn = nil
       effects.append(.cancel(id: CancelID.pipeline))
@@ -1549,6 +1599,7 @@ public struct AppFeature: Sendable {
   private func canStartModelPreparation(state: State) -> Bool {
     !state.modelPreparationInFlight
       && state.activeTurn == nil
+      && state.pendingTurnPersistenceID == nil
       && state.queue.isEmpty
       && state.followUpPreparation == nil
   }

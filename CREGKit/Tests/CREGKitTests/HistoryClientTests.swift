@@ -483,6 +483,36 @@ import Testing
     #expect(sql == "SELECT 2")
   }
 
+  @Test func wholeMessageUpdateRepairsAnUndecodableStoredPayload() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let original = answerMessage(narration: "Legacy narration.", at: 10)
+    try await client.appendMessage(conversationID, original)
+
+    let database = try DatabaseQueue(path: url.path)
+    try await database.write { db in
+      try db.execute(
+        sql: "UPDATE message SET payload = ? WHERE id = ?",
+        arguments: ["{not-valid-json", original.id.uuidString])
+    }
+
+    var final = original
+    final.body = .answer(
+      result: QueryResult(columns: ["n"], rows: [[.integer(2)]]),
+      narration: "Recovered final narration.",
+      sql: "SELECT 2",
+      notice: nil)
+    try await client.updateMessage(conversationID, final)
+
+    let stored = try #require(
+      try await client.loadConversation(conversationID).messages.last)
+    #expect(stored == final)
+    #expect(try await client.search("recovered final").count == 1)
+  }
+
   @Test func preparedSuggestionTextAndProvisionalResultsAreNotSearchable() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()

@@ -40,7 +40,8 @@ struct CREGChartTable: AutoChartTable {
             column.id,
             CREGChartAdapter.value(
               value,
-              temporal: column.hints.semanticType == .temporal))
+              temporal: column.hints.semanticType == .temporal)
+          )
         })
       return CREGChartRow(
         chartRowID: AutoChartRowID(rawValue: "row-\(rowIndex)"),
@@ -56,10 +57,11 @@ struct CREGChartTable: AutoChartTable {
 
   func sourceRowIndexes(for selection: AutoChartSelection?) -> Set<Int>? {
     guard let selection else { return nil }
-    return Set(selection.sourceRowIDs.compactMap { id in
-      guard id.rawValue.hasPrefix("row-") else { return nil }
-      return Int(id.rawValue.dropFirst(4))
-    })
+    return Set(
+      selection.sourceRowIDs.compactMap { id in
+        guard id.rawValue.hasPrefix("row-") else { return nil }
+        return Int(id.rawValue.dropFirst(4))
+      })
   }
 }
 
@@ -72,7 +74,8 @@ enum CREGChartAdapter {
     let table = CREGChartTable(result: result, sql: sql, question: question)
     return (
       table,
-      AutoChartEngine.recommendations(for: table, context: table.context))
+      AutoChartEngine.recommendations(for: table, context: table.context)
+    )
   }
 
   static func columnID(index: Int, name: String) -> AutoChartColumnID {
@@ -100,8 +103,7 @@ enum CREGChartAdapter {
     case .integer(let value): .integer(value)
     case .real(let value): .double(value)
     case .text(let value):
-      if temporal, let date = parseISODate(value) { .date(date) }
-      else { .text(value) }
+      if temporal, let date = parseISODate(value) { .date(date) } else { .text(value) }
     case .blob(let value): .binary(value)
     }
   }
@@ -113,7 +115,8 @@ enum CREGChartAdapter {
   ) -> AutoChartColumnHints {
     let normalized = name.lowercased()
     let aggregation = aggregate(in: projection)
-    let safety: AutoChartAggregationSafety = aggregation == nil
+    let safety: AutoChartAggregationSafety =
+      aggregation == nil
       ? .unknown : .alreadyAggregated
 
     if normalized == "id" || normalized.hasSuffix("_id") {
@@ -124,15 +127,22 @@ enum CREGChartAdapter {
         aggregationSafety: .unsafe)
     }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
-    if style == .date, hasValidTemporalValues(values()) {
+    let temporalValues = style == .date ? values() : []
+    if style == .date,
+      temporalValues.isEmpty || hasValidTemporalValues(temporalValues)
+    {
       let role: AutoChartAnalyticRole =
-        containsWord(normalized, [
-          "commencement", "origination", "acquisition", "inception", "start",
-        ])
+        containsWord(
+          normalized,
+          [
+            "commencement", "origination", "acquisition", "inception", "start",
+          ])
         ? .intervalStart
-        : containsWord(normalized, [
-          "expiration", "maturity", "disposition", "end", "period_end",
-        ])
+        : containsWord(
+          normalized,
+          [
+            "expiration", "maturity", "disposition", "end",
+          ])
           ? .intervalEnd : .dimension
       return AutoChartColumnHints(
         semanticType: .temporal,
@@ -273,8 +283,16 @@ enum CREGChartAdapter {
         index = next
         continue
       }
-      if character == "(" { depth += 1; index += 1; continue }
-      if character == ")" { depth = max(0, depth - 1); index += 1; continue }
+      if character == "(" {
+        depth += 1
+        index += 1
+        continue
+      }
+      if character == ")" {
+        depth = max(0, depth - 1)
+        index += 1
+        continue
+      }
       if depth == 0, character.isLetter {
         let wordStart = index
         while index < characters.count,
@@ -316,7 +334,8 @@ enum CREGChartAdapter {
       } else if character == ")" {
         depth = max(0, depth - 1)
       } else if character == ",", depth == 0 {
-        output.append(String(characters[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines))
+        output.append(
+          String(characters[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines))
         start = index + 1
       }
       index += 1
@@ -499,8 +518,11 @@ enum CREGChartAdapter {
       }
     }
     guard !numeric.isEmpty else { return .percent(fractional: true) }
-    let fractional = numeric.allSatisfy { abs($0) <= 1.5 }
-    let pointScaled = numeric.allSatisfy { abs($0) > 1.5 }
+    // Zero carries no scale information, so it never decides the unit.
+    let scaled = numeric.filter { $0 != 0 }
+    guard !scaled.isEmpty else { return .percent(fractional: true) }
+    let fractional = scaled.allSatisfy { abs($0) <= 1.5 }
+    let pointScaled = scaled.allSatisfy { abs($0) > 1.5 }
     guard fractional || pointScaled else { return nil }
     return .percent(fractional: fractional)
   }
