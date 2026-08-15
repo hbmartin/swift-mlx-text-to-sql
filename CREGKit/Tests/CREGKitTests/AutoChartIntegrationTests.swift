@@ -683,6 +683,70 @@ import Testing
     #expect(oldOutcome == .superseded)
   }
 
+  @Test func distinctMessagesSerializeWithinOneConversation() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let gate = FirstPreferenceSaveGate()
+    let writes = PreferenceWriteRecorder()
+    let first = Task {
+      try await queue.save(
+        conversationID: conversationID,
+        messageID: UUID()
+      ) {
+        writes.record("first-started")
+        await gate.delayFirstSave()
+        writes.record("first-finished")
+      }
+    }
+    await gate.waitUntilFirstSaveStarts()
+
+    let second = Task {
+      try await queue.save(
+        conversationID: conversationID,
+        messageID: UUID()
+      ) {
+        writes.record("second")
+      }
+    }
+    await gate.releaseFirstSave()
+
+    _ = try await first.value
+    _ = try await second.value
+    #expect(writes.values == ["first-started", "first-finished", "second"])
+  }
+
+  @Test func onceSaveCoalescesConcurrentUserTurnWriters() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let messageID = UUID()
+    let gate = FirstPreferenceSaveGate()
+    let writes = PreferenceWriteRecorder()
+    let first = Task {
+      try await queue.saveOnce(
+        conversationID: conversationID,
+        messageID: messageID
+      ) {
+        writes.record("write")
+        await gate.delayFirstSave()
+      }
+    }
+    await gate.waitUntilFirstSaveStarts()
+
+    let second = Task {
+      try await queue.saveOnce(
+        conversationID: conversationID,
+        messageID: messageID
+      ) {
+        writes.record("duplicate")
+      }
+    }
+    await gate.releaseFirstSave()
+
+    #expect(try await first.value == .saved)
+    #expect(try await second.value == .saved)
+    #expect(writes.values == ["write"])
+  }
+
   @Test func confirmedConversationDeletionPrunesRevisionTombstones() async throws {
     let queue = MessageUpdateQueue()
     let deletedConversationID = UUID()

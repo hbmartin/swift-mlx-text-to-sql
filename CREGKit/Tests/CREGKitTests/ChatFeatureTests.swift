@@ -61,6 +61,45 @@ private actor AssistantPersistenceGate {
   }
 }
 
+private actor UserPersistenceOrderingGate {
+  private var events: [String] = []
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdUserWrite() async {
+    events.append("user-started")
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
+    await withCheckedContinuation { continuation in
+      releaseContinuation = continuation
+    }
+    events.append("user-finished")
+  }
+
+  func waitUntilUserWriteStarts() async {
+    guard !events.isEmpty else {
+      await withCheckedContinuation { continuation in
+        startWaiters.append(continuation)
+      }
+      return
+    }
+  }
+
+  func recordTerminalWrite() {
+    events.append("terminal")
+  }
+
+  func releaseUserWrite() {
+    releaseContinuation?.resume()
+    releaseContinuation = nil
+  }
+
+  var recordedEvents: [String] { events }
+}
+
 @MainActor
 @Suite struct AppFeatureSchedulerTests {
   static let conversationA = UUID(10)
@@ -234,7 +273,97 @@ private actor AssistantPersistenceGate {
     #expect(runs.recorded.isEmpty)
     #expect(store.state.activeTurn == nil)
     #expect(store.state.chat?.processing == nil)
-    #expect(store.state.chat?.messages.count == 1)
+    #expect(store.state.chat?.messages.isEmpty == true)
+    #expect(store.state.chat?.title.isEmpty == true)
+    #expect(store.state.conversations[id: Self.conversationA]?.title.isEmpty == true)
+    #expect(store.state.conversations[id: Self.conversationA]?.messageCount == 0)
+    #expect(
+      store.state.conversations[id: Self.conversationA]?.lastActivityAt
+        == Date(timeIntervalSince1970: 20))
+    #expect(store.state.presentedFailure?.code == "history_message_save_failed")
+  }
+
+  @Test func stopWaitsForTheUserWriteBeforePersistingItsTerminalMessage() async {
+    let gate = UserPersistenceOrderingGate()
+    var history = HistoryClient.noop()
+    history.persistUserTurn = { _, _, _, _ in
+      await gate.holdUserWrite()
+    }
+    history.persistTerminalTurn = { _, _, _, _ in
+      await gate.recordTerminalWrite()
+    }
+    let clock = TestClock()
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: "Persist me before stopping")))))
+    await gate.waitUntilUserWriteStarts()
+
+    await store.send(.chat(.delegate(.stopActiveTurn)))
+    #expect(await gate.recordedEvents == ["user-started"])
+
+    await gate.releaseUserWrite()
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(
+      await gate.recordedEvents
+        == ["user-started", "user-finished", "terminal"])
+    #expect(store.state.pendingTurnPersistence == nil)
+  }
+
+  @Test func stopRollsBackItsTranscriptWhenTheUserWriteFails() async {
+    let gate = UserPersistenceOrderingGate()
+    var history = HistoryClient.noop()
+    history.persistUserTurn = { _, _, _, _ in
+      await gate.holdUserWrite()
+      throw SchedulerPersistenceTestError.failed
+    }
+    history.persistTerminalTurn = { _, _, _, _ in
+      await gate.recordTerminalWrite()
+    }
+    let clock = TestClock()
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: "This write will fail")))))
+    await gate.waitUntilUserWriteStarts()
+    await store.send(.chat(.delegate(.stopActiveTurn)))
+    #expect(store.state.chat?.messages.count == 2)
+
+    await gate.releaseUserWrite()
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(await gate.recordedEvents == ["user-started", "user-finished"])
+    #expect(store.state.chat?.messages.isEmpty == true)
+    #expect(store.state.chat?.title.isEmpty == true)
+    #expect(store.state.conversations[id: Self.conversationA]?.messageCount == 0)
+    #expect(store.state.pendingTurnPersistence == nil)
     #expect(store.state.presentedFailure?.code == "history_message_save_failed")
   }
 
@@ -848,7 +977,6 @@ private actor AssistantPersistenceGate {
         "CREG is still saving this conversation. New questions will remain paused to keep your history in order. Restart CREG if saving does not recover.",
       diagnostic:
         "The completed-turn history write exceeded the five-second persistence watchdog.")
-    await store.receive(.operationFailed(timeoutFailure))
     #expect(store.state.pendingTurnPersistenceID == activeID)
     #expect(store.state.pendingTurnPersistence?.didTimeOut == true)
     #expect(store.state.activeTurn == nil)
@@ -870,6 +998,31 @@ private actor AssistantPersistenceGate {
     await store.skipReceivedActions()
   }
 
+  @Test func persistenceTimeoutDoesNotResetUnrelatedFailureOrSupportExport() async {
+    var state = Self.appState()
+    let questionID = UUID(95)
+    state.pendingTurnPersistence = AppFeature.PendingTurnPersistence(
+      questionID: questionID,
+      conversationID: Self.conversationA)
+    state.isBuildingSupportBundle = true
+    let existingFailure = FailurePresentation(
+      code: "existing_failure",
+      title: "Existing failure",
+      message: "Keep this presentation.",
+      diagnostic: "existing")
+    state.presentedFailure = existingFailure
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.turnPersistenceTimedOut(questionID))
+
+    #expect(store.state.pendingTurnPersistence?.didTimeOut == true)
+    #expect(store.state.presentedFailure == existingFailure)
+    #expect(store.state.isBuildingSupportBundle)
+  }
+
   @Test func stopPreservesAnExistingPersistenceBarrier() async {
     var state = Self.appState()
     let activeID = UUID(96)
@@ -881,6 +1034,10 @@ private actor AssistantPersistenceGate {
       question: "running",
       startedAt: Date(timeIntervalSince1970: 0))
     state.pendingTurnPersistence = pending
+    state.chat?.processing = ChatFeature.ProcessingState(
+      questionID: activeID,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
     let store = TestStore(initialState: state) {
       AppFeature()
     }
@@ -890,9 +1047,10 @@ private actor AssistantPersistenceGate {
 
     #expect(store.state.activeTurn == nil)
     #expect(store.state.pendingTurnPersistence == pending)
+    #expect(store.state.chat?.processing == nil)
   }
 
-  @Test func terminalOutcomeDuringPersistenceBarrierIsIgnoredAndDiagnosed() async {
+  @Test func terminalOutcomeDuringPersistenceBarrierIsDeferredAndReplayed() async {
     var state = Self.appState()
     let activeID = UUID(98)
     let pending = AppFeature.PendingTurnPersistence(
@@ -903,13 +1061,22 @@ private actor AssistantPersistenceGate {
       question: "running",
       startedAt: Date(timeIntervalSince1970: 0))
     state.pendingTurnPersistence = pending
+    state.chat?.processing = ChatFeature.ProcessingState(
+      questionID: activeID,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
     let diagnosticCodes = CallRecorder()
+    let clock = TestClock()
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
       $0.diagnostics = DiagnosticsClient { event in
         diagnosticCodes.record(event.code)
       }
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = clock
     }
     store.exhaustivity = .off
 
@@ -919,12 +1086,27 @@ private actor AssistantPersistenceGate {
         questionID: activeID,
         event: Self.finishedEvent()))
 
-    #expect(store.state.activeTurn == nil)
+    #expect(store.state.activeTurn?.questionID == activeID)
     #expect(store.state.pendingTurnPersistence == pending)
+    #expect(store.state.deferredTerminalEvent?.questionID == activeID)
     #expect(store.state.chat?.messages.isEmpty == true)
     #expect(
       diagnosticCodes.recorded.contains(
-        "terminal_outcome_ignored_during_persistence_barrier"))
+        "terminal_outcome_deferred_during_persistence_barrier"))
+
+    await store.send(.turnPersistenceFinished(pending.questionID))
+    await store.receive(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.deferredTerminalEvent == nil)
+    #expect(store.state.chat?.processing == nil)
+    #expect(store.state.chat?.messages.count == 1)
+    await store.finish()
+    await store.skipReceivedActions()
   }
 
   @Test func backgroundCompletionMarksUnreadWithoutChangingSelection() async {
