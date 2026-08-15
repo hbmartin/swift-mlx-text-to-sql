@@ -23,9 +23,6 @@ public struct HistoryClient: Sendable {
     @Sendable (_ conversationID: UUID, _ feedback: AnswerFeedback) async throws -> Void
   public var clearFeedback:
     @Sendable (_ conversationID: UUID, _ messageID: UUID) async throws -> Void
-  /// Records the active turn so termination can reopen it with Ask Again.
-  public var beginTurnJournal:
-    @Sendable (_ conversationID: UUID, _ question: String, _ startedAt: Date) async throws -> Void
   public var endTurnJournal: @Sendable (_ conversationID: UUID) async throws -> Void
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
@@ -124,9 +121,6 @@ extension HistoryClient {
       search: { try await store.search(query: $0) },
       saveFeedback: { try await store.saveFeedback(conversationID: $0, feedback: $1) },
       clearFeedback: { try await store.clearFeedback(conversationID: $0, messageID: $1) },
-      beginTurnJournal: {
-        try await store.beginTurnJournal(conversationID: $0, question: $1, startedAt: $2)
-      },
       endTurnJournal: { try await store.endTurnJournal(conversationID: $0) },
       appendMessage: { try await store.appendMessage(conversationID: $0, message: $1) },
       updateMessage: { try await store.updateMessage(conversationID: $0, message: $1) },
@@ -159,11 +153,20 @@ extension HistoryClient {
 /// `message`/`event` tables) is adopted by the baseline migration and rebuilt
 /// with typed columns without losing a message.
 final class HistoryStore: Sendable {
+  private enum TerminalMessageWrite: Sendable {
+    case update
+    case append(payload: String)
+  }
+
   private let queue: DatabaseQueue
   private static let encoder = JSONEncoder()
   private static let decoder = JSONDecoder()
   /// Auto-titles cap at this many characters (first user question).
   static let titleLimit = 80
+
+  private static func encodedPayload(for message: ChatMessage) throws -> String {
+    String(decoding: try encoder.encode(message), as: UTF8.self)
+  }
 
   init(databaseURL: URL) throws {
     queue = try DatabaseQueue(path: databaseURL.path)
@@ -596,22 +599,6 @@ final class HistoryStore: Sendable {
 
   // MARK: Interruption journal
 
-  func beginTurnJournal(
-    conversationID: UUID, question: String, startedAt: Date
-  ) async throws {
-    try await queue.write { db in
-      try db.execute(
-        sql: """
-          INSERT OR REPLACE INTO turn_journal
-            (conversation_id, question, started_at)
-          VALUES (?, ?, ?)
-          """,
-        arguments: [
-          conversationID.uuidString, question, startedAt.timeIntervalSince1970,
-        ])
-    }
-  }
-
   func endTurnJournal(conversationID: UUID) async throws {
     try await queue.write { db in
       try db.execute(
@@ -623,18 +610,22 @@ final class HistoryStore: Sendable {
   // MARK: Messages and events
 
   func appendMessage(conversationID: UUID, message: ChatMessage) async throws {
+    let payload = try Self.encodedPayload(for: message)
     try await queue.write { db in
-      try Self.appendMessage(db, conversationID: conversationID, message: message)
+      try Self.appendMessage(
+        db,
+        conversationID: conversationID,
+        message: message,
+        payload: payload)
     }
   }
 
   private static func appendMessage(
     _ db: Database,
     conversationID: UUID,
-    message: ChatMessage
+    message: ChatMessage,
+    payload: String
   ) throws {
-    let payload = String(
-      decoding: try Self.encoder.encode(message), as: UTF8.self)
     let position =
       try Int.fetchOne(
         db,
@@ -917,8 +908,13 @@ final class HistoryStore: Sendable {
     question: String,
     startedAt: Date
   ) async throws {
+    let payload = try Self.encodedPayload(for: message)
     try await queue.write { db in
-      try Self.appendMessage(db, conversationID: conversationID, message: message)
+      try Self.appendMessage(
+        db,
+        conversationID: conversationID,
+        message: message,
+        payload: payload)
       try db.execute(
         sql: """
           INSERT OR REPLACE INTO turn_journal
@@ -937,11 +933,22 @@ final class HistoryStore: Sendable {
     replacesExisting: Bool,
     lines: [String]
   ) async throws {
+    let messageWrite: TerminalMessageWrite
+    if replacesExisting {
+      messageWrite = .update
+    } else {
+      messageWrite = .append(payload: try Self.encodedPayload(for: message))
+    }
     try await queue.write { db in
-      if replacesExisting {
+      switch messageWrite {
+      case .update:
         try Self.updateMessage(db, conversationID: conversationID, message: message)
-      } else {
-        try Self.appendMessage(db, conversationID: conversationID, message: message)
+      case .append(let payload):
+        try Self.appendMessage(
+          db,
+          conversationID: conversationID,
+          message: message,
+          payload: payload)
       }
       try Self.appendEvents(
         db, conversationID: conversationID, messageID: message.id, lines: lines)
@@ -1156,7 +1163,6 @@ extension HistoryClient {
       search: { _ in [] },
       saveFeedback: { _, _ in },
       clearFeedback: { _, _ in },
-      beginTurnJournal: { _, _, _ in },
       endTurnJournal: { _ in },
       appendMessage: { _, _ in },
       updateMessage: { _, _ in },
@@ -1198,7 +1204,6 @@ extension HistoryClient {
       search: { _ in throw error },
       saveFeedback: { _, _ in throw error },
       clearFeedback: { _, _ in throw error },
-      beginTurnJournal: { _, _, _ in throw error },
       endTurnJournal: { _ in throw error },
       appendMessage: { _, _ in throw error },
       updateMessage: { _, _ in throw error },

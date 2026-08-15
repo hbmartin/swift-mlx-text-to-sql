@@ -96,23 +96,23 @@ struct MessageCell: View {
             .font(.caption)
             .foregroundStyle(.orange)
         }
-        ResultPreviewView(
-          messageID: message.id,
-          resultFingerprint:
-            message.resultFingerprint
-            ?? PreparedFollowUpIntegrity.fingerprint(result: result),
-          result: result,
-          sql: sql,
-          question: message.devInfo?.originalQuestion,
-          preference: message.resultPresentation,
-          setPreference: {
-            store.send(
-              .resultPresentationChanged(
-                messageID: message.id, preference: $0))
-          },
-          open: {
-            store.send(.resultViewerPresented(messageID: message.id))
-          })
+        if let resultFingerprint = message.resultFingerprint {
+          ResultPreviewView(
+            messageID: message.id,
+            resultFingerprint: resultFingerprint,
+            result: result,
+            sql: sql,
+            question: message.devInfo?.originalQuestion,
+            preference: message.resultPresentation,
+            setPreference: {
+              store.send(
+                .resultPresentationChanged(
+                  messageID: message.id, preference: $0))
+            },
+            open: {
+              store.send(.resultViewerPresented(messageID: message.id))
+            })
+        }
         AnswerActionsRow(
           messageID: message.id,
           narration: narration,

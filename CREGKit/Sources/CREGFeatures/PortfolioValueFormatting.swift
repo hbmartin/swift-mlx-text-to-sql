@@ -99,7 +99,7 @@ public enum PortfolioValueFormatting {
   /// "rate" matches "avg(cap_rate)" but not "credit_rating".
   static func containsWord(_ label: String, word: String) -> Bool {
     containsBoundedOccurrence(label, word: word) { remaining in
-      remaining.isEmpty || !remaining.first!.isWordCharacter
+      remaining.first?.isWordCharacter != true
     }
   }
 

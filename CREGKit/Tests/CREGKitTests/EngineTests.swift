@@ -204,6 +204,29 @@ import Testing
     #expect(await overlap.order.count == 5)
   }
 
+  @Test func cancelledActiveInferenceIsNeverReportedAsFinished() async {
+    let recorder = InferenceSerializerEventRecorder()
+    let serializer = InferenceSerializer(diagnostics: recorder.client)
+    let gate = CancellationInsensitiveInferenceGate()
+    let operation = Task {
+      try await serializer.run(operation: .rewrite) {
+        await gate.holdUntilReleased()
+        return 1
+      }
+    }
+    await gate.waitUntilStarted()
+
+    operation.cancel()
+    await recorder.wait(for: "inference_cancelled_operation_still_running")
+    await #expect(throws: CancellationError.self) {
+      _ = try await operation.value
+    }
+    await gate.release()
+    await recorder.wait(for: "inference_failed")
+
+    #expect(!recorder.contains("inference_finished"))
+  }
+
   @Test func nextOperationWaitsWhileCancelledInferenceStillRuns() async throws {
     let recorder = InferenceSerializerEventRecorder()
     let serializer = InferenceSerializer(diagnostics: recorder.client)

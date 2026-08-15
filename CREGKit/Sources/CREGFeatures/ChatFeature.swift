@@ -656,9 +656,12 @@ actor MessageUpdateQueue {
   private var active: Set<Key> = []
   private var waiters: [Key: [CheckedContinuation<Void, Never>]] = [:]
   private var latestRevisions: [Key: UInt64] = [:]
-  /// Blocks saves as soon as a confirmed delete begins, before SQLite removal
-  /// can race an already-scheduled reducer effect.
+  /// Saves that arrive during deletion wait for its outcome. A failed delete
+  /// resumes them; a confirmed delete permanently rejects late scheduled work.
   private var deletingConversationIDs: Set<UUID> = []
+  private var deletedConversationIDs: Set<UUID> = []
+  private var deletionResolutionWaiters: [UUID: [CheckedContinuation<Bool, Never>]] = [:]
+  private var deletionDrainWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
 
   @discardableResult
   func save(
@@ -668,23 +671,28 @@ actor MessageUpdateQueue {
     operation: @escaping @Sendable () async throws -> Void
   ) async throws -> SaveOutcome {
     let key = Key(conversationID: conversationID, messageID: messageID)
-    guard !deletingConversationIDs.contains(conversationID) else {
+    guard await waitForDeletionResolutionIfNeeded(conversationID) else {
       return .discardedDuringDeletion
     }
     if let revision {
       guard revision > (latestRevisions[key] ?? 0) else { return .superseded }
       latestRevisions[key] = revision
     }
-    if active.contains(key) {
-      await withCheckedContinuation { continuation in
-        waiters[key, default: []].append(continuation)
-      }
-      guard !deletingConversationIDs.contains(conversationID) else {
+
+    while true {
+      await acquire(key)
+      if deletedConversationIDs.contains(conversationID) {
         finish(key)
         return .discardedDuringDeletion
       }
-    } else {
-      active.insert(key)
+      guard deletingConversationIDs.contains(conversationID) else { break }
+      finish(key)
+      guard await waitForDeletionResolutionIfNeeded(conversationID) else {
+        return .discardedDuringDeletion
+      }
+      if let revision, revision < (latestRevisions[key] ?? 0) {
+        return .superseded
+      }
     }
 
     do {
@@ -693,15 +701,21 @@ actor MessageUpdateQueue {
       return .saved
     } catch {
       finish(key)
-      if deletingConversationIDs.contains(conversationID) {
+      guard await waitForDeletionResolutionIfNeeded(conversationID) else {
         return .discardedDuringDeletion
       }
       throw error
     }
   }
 
-  func beginDeletingConversation(_ conversationID: UUID) {
+  func beginDeletingConversation(_ conversationID: UUID) async {
     deletingConversationIDs.insert(conversationID)
+    guard active.contains(where: { $0.conversationID == conversationID }) else {
+      return
+    }
+    await withCheckedContinuation { continuation in
+      deletionDrainWaiters[conversationID, default: []].append(continuation)
+    }
   }
 
   /// Revision tombstones are needed while a message can still receive a late
@@ -709,24 +723,76 @@ actor MessageUpdateQueue {
   /// under the same UUID. Keeping the deletion tombstone also prevents a save
   /// that reaches this actor after pruning from recreating revision state.
   func confirmConversationDeletion(_ conversationID: UUID) {
-    deletingConversationIDs.insert(conversationID)
+    deletingConversationIDs.remove(conversationID)
+    deletedConversationIDs.insert(conversationID)
     latestRevisions = latestRevisions.filter {
       $0.key.conversationID != conversationID
     }
+    resolveDeletionWaiters(conversationID, shouldSave: false)
   }
 
   func cancelConversationDeletion(_ conversationID: UUID) {
     deletingConversationIDs.remove(conversationID)
+    resolveDeletionWaiters(conversationID, shouldSave: true)
   }
 
   func retainedRevisionCount() -> Int {
     latestRevisions.count
   }
 
+  func isDeletingConversation(_ conversationID: UUID) -> Bool {
+    deletingConversationIDs.contains(conversationID)
+  }
+
+  private func acquire(_ key: Key) async {
+    if active.contains(key) {
+      await withCheckedContinuation { continuation in
+        waiters[key, default: []].append(continuation)
+      }
+    } else {
+      active.insert(key)
+    }
+  }
+
+  private func waitForDeletionResolutionIfNeeded(
+    _ conversationID: UUID
+  ) async -> Bool {
+    if deletedConversationIDs.contains(conversationID) { return false }
+    guard deletingConversationIDs.contains(conversationID) else { return true }
+    return await withCheckedContinuation { continuation in
+      deletionResolutionWaiters[conversationID, default: []].append(continuation)
+    }
+  }
+
+  private func resolveDeletionWaiters(
+    _ conversationID: UUID,
+    shouldSave: Bool
+  ) {
+    let continuations =
+      deletionResolutionWaiters.removeValue(
+        forKey: conversationID) ?? []
+    for continuation in continuations {
+      continuation.resume(returning: shouldSave)
+    }
+  }
+
+  private func resumeDeletionDrainIfReady(_ conversationID: UUID) {
+    guard !active.contains(where: { $0.conversationID == conversationID }) else {
+      return
+    }
+    let continuations =
+      deletionDrainWaiters.removeValue(
+        forKey: conversationID) ?? []
+    for continuation in continuations {
+      continuation.resume()
+    }
+  }
+
   private func finish(_ key: Key) {
     guard var queued = waiters[key], !queued.isEmpty else {
       active.remove(key)
       waiters[key] = nil
+      resumeDeletionDrainIfReady(key.conversationID)
       return
     }
     let next = queued.removeFirst()

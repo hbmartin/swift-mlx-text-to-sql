@@ -7,6 +7,10 @@ import Testing
 
 private let answer = QueryResult(columns: ["name"], rows: [[.text("Sable Tower")]])
 
+private enum SchedulerPersistenceTestError: Error, Sendable {
+  case failed
+}
+
 final class CallRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var values: [String] = []
@@ -200,6 +204,38 @@ private actor AssistantPersistenceGate {
     #expect(
       store.state.conversations[id: Self.conversationA]?.latestMessagePreview
         == "One property found.")
+  }
+
+  @Test func failedUserTurnPersistenceDoesNotStartThePipeline() async {
+    let runs = CallRecorder()
+    var history = HistoryClient.noop()
+    history.persistUserTurn = { _, _, _, _ in
+      throw SchedulerPersistenceTestError.failed
+    }
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: "Will this be persisted?")))))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(runs.recorded.isEmpty)
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.chat?.processing == nil)
+    #expect(store.state.chat?.messages.count == 1)
+    #expect(store.state.presentedFailure?.code == "history_message_save_failed")
   }
 
   @Test func streamEndingWithoutTerminalEventClearsTheActiveTurn() async {
@@ -809,7 +845,7 @@ private actor AssistantPersistenceGate {
       code: "turn_persistence_barrier_timed_out",
       title: "Saving is taking longer than expected",
       message:
-        "CREG is still saving this conversation. New questions will remain paused to keep your history in order.",
+        "CREG is still saving this conversation. New questions will remain paused to keep your history in order. Restart CREG if saving does not recover.",
       diagnostic:
         "The completed-turn history write exceeded the five-second persistence watchdog.")
     await store.receive(.operationFailed(timeoutFailure))
@@ -1045,6 +1081,42 @@ private actor AssistantPersistenceGate {
     #expect(deletes.count == 0)
   }
 
+  @Test func undoSurfacesATerminalWriteFailureDeferredDuringDeletion() async {
+    var state = Self.appState()
+    let questionID = UUID(96)
+    state.pendingTurnPersistence = AppFeature.PendingTurnPersistence(
+      questionID: questionID,
+      conversationID: Self.conversationB)
+    let failure = FailurePresentation(
+      code: "history_message_save_failed",
+      title: "Conversation not saved",
+      message: "The write failed.",
+      diagnostic: "test failure")
+    let clock = TestClock()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(Self.conversationB))
+    await store.send(
+      .turnPersistenceFailed(
+        conversationID: Self.conversationB,
+        questionID: questionID,
+        failure: failure))
+    #expect(store.state.presentedFailure == nil)
+    #expect(store.state.pendingDeletion?.deferredFailure == failure)
+
+    await store.send(.undoDeleteTapped)
+    await store.receive(.operationFailed(failure))
+
+    #expect(store.state.conversations[id: Self.conversationB] != nil)
+    #expect(store.state.presentedFailure == failure)
+    await store.finish()
+  }
+
   @Test func deleteCommitsAfterFiveSecondUndoWindow() async {
     let deletes = CallRecorder()
     var history = HistoryClient.noop()
@@ -1090,8 +1162,7 @@ private actor AssistantPersistenceGate {
 
     await store.send(.deleteCountdownFinished)
     #expect(deletes.recorded.isEmpty)
-    #expect(
-      store.state.deletionsAwaitingTurnPersistence == [Self.conversationB])
+    #expect(store.state.deletionAwaitingTurnPersistence == Self.conversationB)
 
     await store.send(.turnPersistenceFinished(questionID))
     await store.finish()
@@ -1290,6 +1361,61 @@ private actor AssistantPersistenceGate {
 
     #expect(runs.recorded == ["Use the previous answer", "Late question"])
     #expect(store.state.queue.isEmpty)
+  }
+
+  @Test func followUpPreparationWaitsForTerminalPersistence() async {
+    var state = Self.appState()
+    let activeID = UUID(97)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Which property leads?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let gate = AssistantPersistenceGate()
+    let preparations = CallRecorder()
+    let clock = TestClock()
+    var history = HistoryClient.noop()
+    history.persistTerminalTurn = { _, _, _, _ in
+      await gate.holdFirstAssistant()
+    }
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        preparations.record("started")
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history, pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = clock
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent(question: "Which property leads?")))
+    await gate.waitUntilHeld()
+
+    #expect(preparations.recorded.isEmpty)
+    #expect(store.state.pendingTurnPersistenceID == activeID)
+    #expect(store.state.followUpPreparation == nil)
+
+    await gate.release()
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(preparations.recorded == ["started"])
+    #expect(store.state.pendingTurnPersistence == nil)
   }
 
   @Test func debugLaunchBenchmarkWaitsForReadinessAndRunsStandalone() async {

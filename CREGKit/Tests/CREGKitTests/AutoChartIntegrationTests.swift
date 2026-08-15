@@ -747,10 +747,47 @@ import Testing
     }
     await gate.waitUntilFirstSaveStarts()
 
-    await queue.beginDeletingConversation(conversationID)
+    let deletion = Task {
+      await queue.beginDeletingConversation(conversationID)
+    }
+    while !(await queue.isDeletingConversation(conversationID)) {
+      await Task.yield()
+    }
     await gate.releaseFirstSave()
+    await deletion.value
+    await queue.confirmConversationDeletion(conversationID)
 
     #expect(try await save.value == .discardedDuringDeletion)
+  }
+
+  @Test func failedDeleteRestoresTheOriginalInFlightSaveError() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let gate = FirstPreferenceSaveGate()
+    let save = Task {
+      try await queue.save(
+        conversationID: conversationID,
+        messageID: UUID()
+      ) {
+        await gate.delayFirstSave()
+        throw PreferenceSaveTestError.failed
+      }
+    }
+    await gate.waitUntilFirstSaveStarts()
+
+    let deletion = Task {
+      await queue.beginDeletingConversation(conversationID)
+    }
+    while !(await queue.isDeletingConversation(conversationID)) {
+      await Task.yield()
+    }
+    await gate.releaseFirstSave()
+    await deletion.value
+    await queue.cancelConversationDeletion(conversationID)
+
+    await #expect(throws: PreferenceSaveTestError.failed) {
+      _ = try await save.value
+    }
   }
 
   private static func answerMessage() -> ChatMessage {
