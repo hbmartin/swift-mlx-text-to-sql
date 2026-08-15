@@ -393,7 +393,13 @@ private actor AssistantPersistenceGate {
       suggestions: [prepared],
       updatedAt: Date(timeIntervalSince1970: 1))
     let writes = CallRecorder()
+    let historyLoads = CallRecorder()
+    let snapshotSummary = state.conversations[id: Self.conversationA]!
     var history = HistoryClient.noop()
+    history.loadConversation = { id in
+      historyLoads.record(id.uuidString)
+      return ConversationSnapshot(summary: snapshotSummary)
+    }
     history.appendMessage = { _, message in
       let kind =
         if case .preparedAnswer = message.body {
@@ -471,6 +477,7 @@ private actor AssistantPersistenceGate {
     #expect(provisional != nil)
     #expect(provisional == final)
     #expect(!writes.recorded.contains { $0.hasPrefix("append:assistant:") })
+    #expect(historyLoads.recorded.isEmpty)
   }
 
   @Test func backgroundPreparedCompletionPreservesPresentationPreference() async throws {
@@ -687,6 +694,7 @@ private actor AssistantPersistenceGate {
         question: "newer question in visible A",
         submittedAt: Date(timeIntervalSince1970: 2)),
     ]
+    let clock = TestClock()
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
@@ -694,7 +702,7 @@ private actor AssistantPersistenceGate {
       $0.historyClient = .noop()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 5))
-      $0.continuousClock = ImmediateClock()
+      $0.continuousClock = clock
       $0.haptics = .noop
     }
     store.exhaustivity = .off
@@ -704,11 +712,62 @@ private actor AssistantPersistenceGate {
         conversationID: Self.conversationB,
         questionID: activeID,
         event: Self.finishedEvent()))
+    await store.receive(.turnPersistenceFinished(activeID))
     await store.receive(.dispatchNextIfIdle)
 
     #expect(store.state.activeTurn?.question == "newer question in visible A")
     #expect(store.state.activeTurn?.conversationID == Self.conversationA)
     #expect(store.state.queue.map(\.question) == ["older question in B"])
+
+    await store.send(.chat(.stopTapped))
+    await store.skipInFlightEffects()
+    await store.skipReceivedActions()
+  }
+
+  @Test func persistenceTimeoutReleasesQueuedQuestion() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let activeID = UUID(93)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(94), conversationID: Self.conversationA,
+        question: "waiting behind persistence",
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    let clock = TestClock()
+    var history = HistoryClient.noop()
+    history.appendMessage = { _, _ in
+      try await clock.sleep(for: .seconds(30))
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = clock
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+    #expect(store.state.pendingTurnPersistenceID == activeID)
+    #expect(store.state.activeTurn == nil)
+
+    await clock.advance(by: .seconds(5))
+    await store.receive(.turnPersistenceTimedOut(activeID))
+    await store.receive(.dispatchNextIfIdle)
+    #expect(store.state.pendingTurnPersistenceID == nil)
+    #expect(store.state.activeTurn?.question == "waiting behind persistence")
 
     await store.send(.chat(.stopTapped))
     await store.skipInFlightEffects()
@@ -1011,7 +1070,7 @@ private actor AssistantPersistenceGate {
     #expect(store.state.queue.isEmpty)
   }
 
-  @Test func queuedTurnWaitsForThePreviousAssistantToPersist() async {
+  @Test func queuedTurnWaitsForThePreviousAssistantToPersistAndPreservesOrder() async {
     var state = Self.appState()
     let activeID = UUID(90)
     state.activeTurn = AppFeature.ActiveTurn(
@@ -1028,6 +1087,7 @@ private actor AssistantPersistenceGate {
     ]
     let gate = AssistantPersistenceGate()
     let runs = CallRecorder()
+    let clock = TestClock()
     var history = HistoryClient.noop()
     history.appendMessage = { _, message in
       if message.role == .assistant {
@@ -1041,7 +1101,7 @@ private actor AssistantPersistenceGate {
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 5))
-      $0.continuousClock = ImmediateClock()
+      $0.continuousClock = clock
     }
     store.exhaustivity = .off
 
@@ -1056,11 +1116,21 @@ private actor AssistantPersistenceGate {
     #expect(store.state.queue.count == 1)
     #expect(store.state.activeTurn == nil)
 
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(QuestionSubmission(question: "Late question")))))
+    #expect(runs.recorded.isEmpty)
+    #expect(
+      store.state.queue.map(\.question)
+        == ["Use the previous answer", "Late question"])
+    #expect(store.state.activeTurn == nil)
+
     await gate.release()
     await store.finish()
     await store.skipReceivedActions()
 
-    #expect(runs.recorded == ["Use the previous answer"])
+    #expect(runs.recorded == ["Use the previous answer", "Late question"])
     #expect(store.state.queue.isEmpty)
   }
 

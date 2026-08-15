@@ -102,7 +102,8 @@ public enum ResultViewerLogic {
     displayedRowCount: Int,
     searchIsActive: Bool
   ) -> String {
-    let selection = searchIsActive
+    let selection =
+      searchIsActive
       ? "\(displayedRowCount) matching selected row\(displayedRowCount == 1 ? "" : "s")"
       : "\(selectedRowCount) selected of \(result.rowCount) returned rows"
     guard let truncation = truncationLabel(for: result) else { return selection }
@@ -314,11 +315,11 @@ enum ResultPreviewChartCache {
 
   static func analysis(
     messageID: UUID,
+    resultFingerprint: String,
     result: QueryResult,
     sql: String,
     question: String?
   ) -> ResultChartAnalysis {
-    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
     if let entry = entries[messageID],
       entry.resultFingerprint == resultFingerprint,
       entry.sql == sql,
@@ -372,6 +373,7 @@ struct ResultPreviewView: View {
 
   init(
     messageID: UUID,
+    resultFingerprint: String?,
     result: QueryResult,
     sql: String,
     question: String?,
@@ -382,8 +384,15 @@ struct ResultPreviewView: View {
     self.result = result
     self.sql = sql
     self.question = question
-    self.chartAnalysis = ResultPreviewChartCache.analysis(
-      messageID: messageID, result: result, sql: sql, question: question)
+    self.chartAnalysis =
+      resultFingerprint.map {
+        ResultPreviewChartCache.analysis(
+          messageID: messageID,
+          resultFingerprint: $0,
+          result: result,
+          sql: sql,
+          question: question)
+      } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
     self.preference = preference
     self.setPreference = setPreference
     self.open = open
@@ -592,6 +601,7 @@ struct ResultViewerView: View {
     runtimeMode: ModelRuntimeMode,
     textSize: Binding<ResultTableTextSize>,
     messageID: UUID? = nil,
+    resultFingerprint: String? = nil,
     sql: String = "",
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
@@ -600,10 +610,17 @@ struct ResultViewerView: View {
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection? = nil
   ) {
-    let analysis = messageID.map {
-      ResultPreviewChartCache.analysis(
-        messageID: $0, result: result, sql: sql, question: question)
-    } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
+    let analysis =
+      messageID.flatMap { messageID in
+        resultFingerprint.map { resultFingerprint in
+          ResultPreviewChartCache.analysis(
+            messageID: messageID,
+            resultFingerprint: resultFingerprint,
+            result: result,
+            sql: sql,
+            question: question)
+        }
+      } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
     let recommendations = analysis.recommendations
     let selectedID = CREGChartAdapter.resolvedRecommendation(
       preferredID: preference?.specificationID,
@@ -716,8 +733,9 @@ struct ResultViewerView: View {
               recommendation: selectedRecommendation,
               selection: $chartSelection,
               interaction: .explore,
-              height: 360)
-              .padding()
+              height: 360
+            )
+            .padding()
             if let reason = selectedRecommendation.rationale.first {
               Label(reason, systemImage: "lightbulb")
                 .font(.caption)
@@ -1140,8 +1158,8 @@ struct ResultViewerView: View {
           searchIsActive: !normalizedSearchText.isEmpty)
       }
     return Text(label)
-    .font(.caption)
-    .foregroundStyle(result.isTruncated ? .orange : .secondary)
+      .font(.caption)
+      .foregroundStyle(result.isTruncated ? .orange : .secondary)
   }
 
   @ViewBuilder
@@ -1301,6 +1319,7 @@ extension View {
         }
         return ResultViewerItem(
           messageID: id,
+          resultFingerprint: message.resultFingerprint,
           result: result,
           runtimeMode: ResultViewerLogic.runtimeMode(for: message),
           sql: sql,
@@ -1319,6 +1338,7 @@ extension View {
           runtimeMode: item.runtimeMode,
           textSize: textSize,
           messageID: item.messageID,
+          resultFingerprint: item.resultFingerprint,
           sql: item.sql,
           question: item.question,
           preference: item.preference,
@@ -1335,6 +1355,7 @@ extension View {
           runtimeMode: item.runtimeMode,
           textSize: textSize,
           messageID: item.messageID,
+          resultFingerprint: item.resultFingerprint,
           sql: item.sql,
           question: item.question,
           preference: item.preference,
@@ -1350,6 +1371,7 @@ extension View {
 
 struct ResultViewerItem: Identifiable, Equatable {
   var messageID: UUID
+  var resultFingerprint: String?
   var result: QueryResult
   var runtimeMode: ModelRuntimeMode
   var sql: String

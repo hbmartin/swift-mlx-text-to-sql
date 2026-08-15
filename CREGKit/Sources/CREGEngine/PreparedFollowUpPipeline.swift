@@ -520,7 +520,6 @@ extension GroundingReport {
 
 func preparedAnswerStream(
   prepared: PreparedFollowUp,
-  history: [ConversationTurn],
   fm: FMClient,
   db: DatabaseClient,
   serializer: InferenceSerializer,

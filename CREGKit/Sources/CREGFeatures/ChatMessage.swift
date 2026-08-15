@@ -35,7 +35,12 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
 
   public var id: UUID
   public var role: Role
-  public var body: Body
+  public var body: Body {
+    didSet { resultFingerprint = Self.fingerprint(for: body) }
+  }
+  /// Stable result identity computed once when message content is created or
+  /// decoded, rather than repeatedly during SwiftUI view construction.
+  public private(set) var resultFingerprint: String?
   /// Plain-English thinking-trace lines (never SQL) shown in the disclosure.
   public var traceSteps: [String]
   public var createdAt: Date
@@ -52,6 +57,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     self.id = id
     self.role = role
     self.body = body
+    self.resultFingerprint = Self.fingerprint(for: body)
     self.traceSteps = traceSteps
     self.createdAt = createdAt
     self.devInfo = devInfo
@@ -70,6 +76,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     id = try values.decode(UUID.self, forKey: .id)
     role = try values.decode(Role.self, forKey: .role)
     body = try values.decode(Body.self, forKey: .body)
+    resultFingerprint = Self.fingerprint(for: body)
     traceSteps =
       try values.decodeIfPresent([String].self, forKey: .traceSteps) ?? []
     createdAt = try values.decode(Date.self, forKey: .createdAt)
@@ -77,6 +84,17 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
       TurnTelemetry.self, forKey: .devInfo)
     resultPresentation = try? values.decodeIfPresent(
       ResultPresentationPreference.self, forKey: .resultPresentation)
+  }
+
+  private static func fingerprint(for body: Body) -> String? {
+    switch body {
+    case .preparedAnswer(let prepared):
+      prepared.provenance.resultFingerprint
+    case .answer(let result, _, _, _):
+      PreparedFollowUpIntegrity.fingerprint(result: result)
+    case .text, .clarification, .failure:
+      nil
+    }
   }
 }
 

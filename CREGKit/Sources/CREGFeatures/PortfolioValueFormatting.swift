@@ -56,13 +56,16 @@ public enum PortfolioValueFormatting {
     func has(_ hints: String...) -> Bool {
       hints.contains { containsWord(normalized, word: $0) }
     }
+    func hasTerminal(_ hints: String...) -> Bool {
+      hints.contains { containsTerminalWord(normalized, word: $0) }
+    }
 
     if has("id") { return .plainDigits }
     if has("month", "months", "floor", "floors") { return .count }
     if has("psf") { return .currencyPerSquareFoot }
     if has("sqft", "sf", "square") { return .squareFeet }
     if has("dscr") { return .ratio }
-    if has(
+    if hasTerminal(
       "date", "period_end", "commencement", "expiration", "maturity",
       "origination", "acquisition", "disposition", "inception")
     {
@@ -104,6 +107,23 @@ public enum PortfolioValueFormatting {
         range.upperBound == label.endIndex
         || !label[range.upperBound].isWordCharacter
       if beforeOK && afterOK { return true }
+      search = label.index(after: range.lowerBound)
+    }
+    return false
+  }
+
+  /// True when `word` is the final semantic token in `label`. Trailing SQL
+  /// punctuation is allowed, but another identifier token is not.
+  static func containsTerminalWord(_ label: String, word: String) -> Bool {
+    var search = label.startIndex
+    while let range = label.range(of: word, range: search..<label.endIndex) {
+      let beforeOK =
+        range.lowerBound == label.startIndex
+        || !label[label.index(before: range.lowerBound)].isWordCharacter
+      let remaining = label[range.upperBound...]
+      if beforeOK, !remaining.contains(where: \.isWordCharacter) {
+        return true
+      }
       search = label.index(after: range.lowerBound)
     }
     return false

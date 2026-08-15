@@ -2,6 +2,14 @@
   "originHash" : "6de1b6cfa2296517f5f43b647729ffe490a6439004b6362df57a812397c85376",
   "pins" : [
     {
+      "identity" : "autotablecharts",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/hbmartin/AutoTableCharts.git",
+      "state" : {
+        "revision" : "7e2b9facc84d92c63ecd92092b7921c01cd8bc55"
+      }
+    },
+    {
       "identity" : "combine-schedulers",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/combine-schedulers",

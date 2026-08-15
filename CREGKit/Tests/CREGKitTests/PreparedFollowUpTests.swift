@@ -615,9 +615,10 @@ private enum FollowUpTestError: Error {
     for await event in pipeline.runPrepared(prepared, []) {
       events.append(event)
     }
-    let previewIndex = try #require(events.firstIndex {
-      if case .preparedResultReady = $0 { true } else { false }
-    })
+    let previewIndex = try #require(
+      events.firstIndex {
+        if case .preparedResultReady = $0 { true } else { false }
+      })
     let narrationIndex = try #require(
       events.firstIndex(of: .narrationStarted))
     #expect(previewIndex < narrationIndex)
@@ -664,11 +665,6 @@ private enum FollowUpTestError: Error {
     let calls = FollowUpCalls()
     var prepared = Self.prepared(question: "Which fund owns it?", rank: 1)
     prepared.provenance.schemaVersion = 2
-    let priorTurns = [
-      ConversationTurn(
-        question: "Which property leads?",
-        answerSummary: "Sable Tower leads.")
-    ]
     let db = DatabaseClient(
       fingerprint: "snapshot-v1",
       validate: { _ in SQLValidationReport() },
@@ -677,7 +673,6 @@ private enum FollowUpTestError: Error {
     let events = await Array(
       preparedAnswerStream(
         prepared: prepared,
-        history: priorTurns,
         fm: .fallback(),
         db: db,
         serializer: InferenceSerializer(),
@@ -725,7 +720,6 @@ private enum FollowUpTestError: Error {
     let events = await Array(
       preparedAnswerStream(
         prepared: prepared,
-        history: [],
         fm: .fallback(),
         db: db,
         serializer: InferenceSerializer(),

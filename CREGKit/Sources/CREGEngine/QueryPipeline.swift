@@ -1046,10 +1046,9 @@ extension QueryPipeline {
           uuid: uuid,
           now: now)
       },
-      runPrepared: { prepared, history in
+      runPrepared: { prepared, _ in
         preparedAnswerStream(
           prepared: prepared,
-          history: history,
           fm: fm,
           db: db,
           serializer: serializer,

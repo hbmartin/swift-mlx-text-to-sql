@@ -128,6 +128,17 @@ import Testing
         == .currencyPerSquareFoot)
     #expect(PortfolioValueFormatting.style(forColumn: "free_rent_months") == .count)
     #expect(PortfolioValueFormatting.style(forColumn: "vacancy_loss") == .currency)
+    #expect(
+      PortfolioValueFormatting.style(forColumn: "acquisition_price")
+        == .currency)
+    #expect(
+      PortfolioValueFormatting.style(forColumn: "expiration_year")
+        == .plainDigits)
+    #expect(fmt(.integer(12_000_000), "acquisition_price") == "$12,000,000")
+    #expect(fmt(.integer(2028), "expiration_year") == "2028")
+    #expect(
+      PortfolioValueFormatting.style(forColumn: "avg(acquisition_date)")
+        == .date)
   }
 }
 

@@ -670,10 +670,10 @@ final class HistoryStore: Sendable {
           """,
         arguments: [message.id.uuidString, conversationID.uuidString])
       {
-        let storedMessage = try Self.decoder.decode(
+        let storedMessage = try? Self.decoder.decode(
           ChatMessage.self, from: Data(storedPayload.utf8))
         mergedMessage.resultPresentation =
-          storedMessage.resultPresentation ?? message.resultPresentation
+          storedMessage?.resultPresentation ?? message.resultPresentation
       }
       let payload = String(
         decoding: try Self.encoder.encode(mergedMessage), as: UTF8.self)

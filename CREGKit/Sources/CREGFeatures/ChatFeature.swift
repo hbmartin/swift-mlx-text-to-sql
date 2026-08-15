@@ -679,6 +679,19 @@ actor MessageUpdateQueue {
     }
   }
 
+  /// Revision tombstones are needed while a message can still receive a late
+  /// save, but a permanently deleted conversation can never be reconstructed
+  /// under the same UUID.
+  func removeConversation(_ conversationID: UUID) {
+    latestRevisions = latestRevisions.filter {
+      $0.key.conversationID != conversationID
+    }
+  }
+
+  func retainedRevisionCount() -> Int {
+    latestRevisions.count
+  }
+
   private func finish(_ key: Key) {
     guard var queued = waiters[key], !queued.isEmpty else {
       active.remove(key)
