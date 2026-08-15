@@ -175,6 +175,48 @@ import Testing
 
 @MainActor
 @Suite struct ModelPreparationFeatureTests {
+  @Test func appearanceSynchronizesExistingChatWhilePreparing() async {
+    var state = AppFeature.State()
+    state.chat = ChatFeature.State(conversationID: UUID(9))
+    state.didRequestPreparationJournalInspection = true
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.onAppear)
+    await store.finish()
+
+    #expect(store.state.chat?.isSubmissionEnabled == false)
+  }
+
+  @Test func journalStartupSynchronizesExistingChatWhilePreparing() async {
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = AppFeature.State()
+    state.chat = ChatFeature.State(conversationID: UUID(9))
+    state.didRequestPreparationJournalInspection = true
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(.preparationJournalLoaded(nil)) {
+      $0.didHandlePreparationJournalInspection = true
+      $0.modelPreparationInFlight = true
+      $0.chat?.isSubmissionEnabled = false
+    }
+    await store.receive(\.modelPrepared)
+    await store.finish()
+  }
+
   @Test func developerModeSurvivesStateReconstruction() {
     let defaults = UserDefaults.inMemory
     defaults.set(true, forKey: DeveloperModePreference.storageKey)

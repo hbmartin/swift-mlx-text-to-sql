@@ -697,9 +697,36 @@ import Testing
     ) {}
     #expect(await queue.retainedRevisionCount() == 2)
 
-    await queue.removeConversation(deletedConversationID)
+    await queue.beginDeletingConversation(deletedConversationID)
+    await queue.confirmConversationDeletion(deletedConversationID)
 
     #expect(await queue.retainedRevisionCount() == 1)
+  }
+
+  @Test func lateSaveCannotRecreateDeletedConversationRevisionState() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let writes = PreferenceWriteRecorder()
+    try await queue.save(
+      conversationID: conversationID,
+      messageID: UUID(),
+      revision: 1
+    ) {
+      writes.record("initial")
+    }
+
+    await queue.beginDeletingConversation(conversationID)
+    await queue.confirmConversationDeletion(conversationID)
+    try await queue.save(
+      conversationID: conversationID,
+      messageID: UUID(),
+      revision: 2
+    ) {
+      writes.record("late")
+    }
+
+    #expect(writes.values == ["initial"])
+    #expect(await queue.retainedRevisionCount() == 0)
   }
 
   private static func answerMessage() -> ChatMessage {
@@ -751,7 +778,9 @@ private actor FirstPreferenceSaveGate {
     didStartFirstSave = true
     let waiters = startWaiters
     startWaiters.removeAll()
-    waiters.forEach { $0.resume() }
+    for waiter in waiters {
+      waiter.resume()
+    }
     await withCheckedContinuation { continuation in
       releaseContinuation = continuation
     }

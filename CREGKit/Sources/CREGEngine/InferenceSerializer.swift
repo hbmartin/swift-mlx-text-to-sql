@@ -1,3 +1,5 @@
+import Foundation
+
 /// Owns every model call — Apple FM and the bundled MLX model alike — and
 /// guarantees no two inferences ever overlap, so active-inference peak memory
 /// is max(FM, bundled), not the sum. See PRD §7.1.
@@ -23,7 +25,6 @@ public actor InferenceSerializer {
   /// The FIFO entry that has crossed the queue boundary and invoked model work.
   /// Queued entries deliberately never appear here.
   private var activeOperationID: Int?
-  private var reportedActiveCancellations: Set<Int> = []
   private let diagnostics: DiagnosticsClient
 
   public init(diagnostics: DiagnosticsClient = .noop) {
@@ -51,52 +52,56 @@ public actor InferenceSerializer {
           "queued_ahead": String(queuedAhead),
         ])
     }
+    let resultRelay = InferenceResultRelay<T>()
     let task = Task<T, Error> {
-      await previous?.value
-      // Cancellation can arrive while this operation is queued. Never start
-      // model work merely because the preceding FIFO entry eventually ended.
-      try Task.checkCancellation()
-      self.activeOperationID = operationID
-      let waitMicroseconds = waitStarted.duration(to: .now).microseconds
-      self.diagnostics.info(
-        category: .inference,
-        code: "inference_started",
-        summary: "An inference operation acquired the shared model slot.",
-        context: [
-          "operation": operationKind.rawValue,
-          "wait_ms": Self.milliseconds(waitMicroseconds),
-        ])
-      return try await operation()
+      do {
+        await previous?.value
+        // The queue task remains chained for FIFO ownership, but its caller is
+        // released independently when cancelled. Once the prior entry settles,
+        // this check drops cancelled queued work without invoking the model.
+        try Task.checkCancellation()
+        self.activeOperationID = operationID
+        let waitMicroseconds = waitStarted.duration(to: .now).microseconds
+        self.diagnostics.info(
+          category: .inference,
+          code: "inference_started",
+          summary: "An inference operation acquired the shared model slot.",
+          context: [
+            "operation": operationKind.rawValue,
+            "wait_ms": Self.milliseconds(waitMicroseconds),
+          ])
+        let result = try await operation()
+        try Task.checkCancellation()
+        self.operationCompleted(
+          id: operationID,
+          kind: operationKind,
+          error: nil,
+          elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
+        resultRelay.resolve(.success(result))
+        return result
+      } catch {
+        self.operationCompleted(
+          id: operationID,
+          kind: operationKind,
+          error: error,
+          elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
+        resultRelay.resolve(.failure(error))
+        throw error
+      }
     }
     tail = Task { _ = try? await task.value }
-    do {
-      let result = try await withTaskCancellationHandler {
-        try await task.value
-      } onCancel: {
-        task.cancel()
-        Task {
-          await self.operationAbandoned(
-            id: operationID,
-            kind: operationKind)
-        }
-      }
-      // A model operation can finish at the same instant its deadline cancels
-      // the parent task. Do not report that race as a successful inference or
-      // allow its value to escape after cancellation.
+    return try await withTaskCancellationHandler {
+      let result = try await resultRelay.value()
       try Task.checkCancellation()
-      operationCompleted(
-        id: operationID,
-        kind: operationKind,
-        error: nil,
-        elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
       return result
-    } catch {
-      operationCompleted(
-        id: operationID,
-        kind: operationKind,
-        error: error,
-        elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
-      throw error
+    } onCancel: {
+      task.cancel()
+      resultRelay.cancel()
+      Task {
+        await self.operationAbandoned(
+          id: operationID,
+          kind: operationKind)
+      }
     }
   }
 
@@ -108,7 +113,6 @@ public actor InferenceSerializer {
   ) {
     pendingOperationIDs.remove(id)
     if activeOperationID == id { activeOperationID = nil }
-    reportedActiveCancellations.remove(id)
     pendingCount -= 1
     if pendingCount == 0 { tail = nil }
     var context = [
@@ -150,7 +154,6 @@ public actor InferenceSerializer {
         context: ["operation": kind.rawValue])
       return
     }
-    guard reportedActiveCancellations.insert(id).inserted else { return }
     diagnostics.record(
       DiagnosticEvent(
         level: .error,
@@ -164,5 +167,70 @@ public actor InferenceSerializer {
 
   private nonisolated static func milliseconds(_ microseconds: Int64) -> String {
     String(format: "%.1f", Double(microseconds) / 1_000)
+  }
+}
+
+/// Lets a cancelled caller stop waiting immediately while the serializer's
+/// private FIFO task remains chained behind any still-running model operation.
+private final class InferenceResultRelay<Value: Sendable>: @unchecked Sendable {
+  private enum State {
+    case pending
+    case waiting(CheckedContinuation<Value, any Error>)
+    case resolved(Result<Value, any Error>)
+    case cancelled
+  }
+
+  private let lock = NSLock()
+  private var state: State = .pending
+
+  func value() async throws -> Value {
+    try await withCheckedThrowingContinuation { continuation in
+      var immediate: Result<Value, any Error>?
+      lock.lock()
+      switch state {
+      case .pending:
+        state = .waiting(continuation)
+      case .resolved(let result):
+        immediate = result
+      case .cancelled:
+        immediate = .failure(CancellationError())
+      case .waiting:
+        preconditionFailure("Inference result may only be awaited once.")
+      }
+      lock.unlock()
+      if let immediate { continuation.resume(with: immediate) }
+    }
+  }
+
+  func resolve(_ result: Result<Value, any Error>) {
+    var continuation: CheckedContinuation<Value, any Error>?
+    lock.lock()
+    switch state {
+    case .pending:
+      state = .resolved(result)
+    case .waiting(let waiting):
+      state = .resolved(result)
+      continuation = waiting
+    case .cancelled, .resolved:
+      break
+    }
+    lock.unlock()
+    continuation?.resume(with: result)
+  }
+
+  func cancel() {
+    var continuation: CheckedContinuation<Value, any Error>?
+    lock.lock()
+    switch state {
+    case .pending:
+      state = .cancelled
+    case .waiting(let waiting):
+      state = .cancelled
+      continuation = waiting
+    case .cancelled, .resolved:
+      break
+    }
+    lock.unlock()
+    continuation?.resume(throwing: CancellationError())
   }
 }

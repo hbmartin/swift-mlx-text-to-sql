@@ -27,18 +27,19 @@ jobs:
       - name: Select Xcode 26.3
         run: sudo xcode-select --switch /Applications/Xcode_26.3.app
 
-      - name: Test Swift packages
-        working-directory: CREGKit
-        run: swift test
-
       - name: Verify checked-in Swift package resolutions
         run: |
+          swift package --package-path CREGKit resolve
           xcodebuild -resolvePackageDependencies \
             -project CREG.xcodeproj \
             -scheme CREG
           git diff --exit-code -- \
             CREGKit/Package.resolved \
             CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+      - name: Test Swift packages
+        working-directory: CREGKit
+        run: swift test
 
   python:
     name: Python tests and corpus determinism

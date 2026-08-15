@@ -1179,15 +1179,18 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
     #expect(summaries.map { $0.context["candidate_sequence"] } == ["1", "2", "3"])
     let repairInputs = events.filter { $0.code == "pipeline_repair_input" }
     #expect(repairInputs.count == 2)
-    #expect(repairInputs.allSatisfy {
-      $0.context["guidance_present"] == "true"
-    })
-    #expect(repairInputs.allSatisfy {
-      $0.context["possible_owner_count"] == "2"
-    })
-    #expect(repairInputs.allSatisfy {
-      $0.context["relevant_foreign_key_count"] == "2"
-    })
+    #expect(
+      repairInputs.allSatisfy {
+        $0.context["guidance_present"] == "true"
+      })
+    #expect(
+      repairInputs.allSatisfy {
+        $0.context["possible_owner_count"] == "2"
+      })
+    #expect(
+      repairInputs.allSatisfy {
+        $0.context["relevant_foreign_key_count"] == "2"
+      })
 
     let initialSummary = summaries[0].context
     #expect(initialSummary["validation_state"] == "invalid")
@@ -1385,7 +1388,10 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
   @Test func messageSaveFailureIsLoggedAndPresented() async {
     let recorder = DiagnosticEventRecorder()
     var history = HistoryClient.noop()
-    history.appendMessage = { _, _ in
+    history.persistUserTurn = { _, _, _, _ in
+      throw DiagnosticsTestError.failed("message write failed")
+    }
+    history.persistTerminalTurn = { _, _, _, _ in
       throw DiagnosticsTestError.failed("message write failed")
     }
     let store = TestStore(initialState: Self.appState()) {

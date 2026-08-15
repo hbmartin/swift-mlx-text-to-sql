@@ -44,6 +44,19 @@ public struct HistoryClient: Sendable {
   public var appendEvents:
     @Sendable (_ conversationID: UUID, _ messageID: UUID, _ jsonLines: [String]) async throws ->
       Void
+  /// Atomically appends a user message and opens its interruption journal.
+  public var persistUserTurn:
+    @Sendable (
+      _ conversationID: UUID, _ message: ChatMessage, _ question: String,
+      _ startedAt: Date
+    ) async throws -> Void
+  /// Atomically appends or finalizes an assistant message, records its events,
+  /// and closes the interruption journal.
+  public var persistTerminalTurn:
+    @Sendable (
+      _ conversationID: UUID, _ message: ChatMessage, _ replacesExisting: Bool,
+      _ jsonLines: [String]
+    ) async throws -> Void
   /// Writes the conversation's full JSONL event log to a temp file for export.
   public var exportJSONL: @Sendable (_ conversationID: UUID) async throws -> URL
   /// Gathers everything the Support Bundle includes from the history store.
@@ -122,6 +135,14 @@ extension HistoryClient {
       },
       appendEvents: {
         try await store.appendEvents(conversationID: $0, messageID: $1, lines: $2)
+      },
+      persistUserTurn: {
+        try await store.persistUserTurn(
+          conversationID: $0, message: $1, question: $2, startedAt: $3)
+      },
+      persistTerminalTurn: {
+        try await store.persistTerminalTurn(
+          conversationID: $0, message: $1, replacesExisting: $2, lines: $3)
       },
       exportJSONL: { try await store.exportJSONL(conversationID: $0) },
       supportBundleSource: { try await store.supportBundleSource() },
@@ -602,9 +623,111 @@ final class HistoryStore: Sendable {
   // MARK: Messages and events
 
   func appendMessage(conversationID: UUID, message: ChatMessage) async throws {
+    try await queue.write { db in
+      try Self.appendMessage(db, conversationID: conversationID, message: message)
+    }
+  }
+
+  private static func appendMessage(
+    _ db: Database,
+    conversationID: UUID,
+    message: ChatMessage
+  ) throws {
     let payload = String(
       decoding: try Self.encoder.encode(message), as: UTF8.self)
+    let position =
+      try Int.fetchOne(
+        db,
+        sql: """
+          SELECT COALESCE(MAX(position), 0) + 1 FROM message
+          WHERE conversation_id = ?
+          """,
+        arguments: [conversationID.uuidString]) ?? 1
+    try db.execute(
+      sql: """
+        INSERT OR IGNORE INTO message (id, conversation_id, position, payload)
+        VALUES (?, ?, ?, ?)
+        """,
+      arguments: [
+        message.id.uuidString, conversationID.uuidString, position, payload,
+      ])
+    // A prepared result and its final narration are persisted by separate
+    // effects. If the final update wins that race, a late provisional append
+    // must not replace it or move it to the end of the transcript.
+    guard db.changesCount == 1 else { return }
+    try db.execute(
+      sql: "UPDATE conversation SET last_activity_at = ? WHERE id = ?",
+      arguments: [
+        message.createdAt.timeIntervalSince1970, conversationID.uuidString,
+      ])
+
+    // First question becomes the title unless a manual rename won already.
+    if message.role == .user, case .text = message.body {
+      let title = Self.autoTitle(from: message.previewText)
+      try db.execute(
+        sql: """
+          UPDATE conversation SET title = ?
+          WHERE id = ? AND is_manually_titled = 0 AND title = ''
+          """,
+        arguments: [title, conversationID.uuidString])
+      if db.changesCount > 0 {
+        try Self.replaceTitleSearchRow(
+          db, conversationID: conversationID.uuidString, title: title)
+      }
+    }
+    if let entry = Self.searchEntry(for: message) {
+      try db.execute(
+        sql: """
+          INSERT INTO search_index (content, conversation_id, message_id, kind)
+          VALUES (?, ?, ?, ?)
+          """,
+        arguments: [
+          entry.content, conversationID.uuidString,
+          message.id.uuidString, entry.kind,
+        ])
+    }
+  }
+
+  func updateMessage(conversationID: UUID, message: ChatMessage) async throws {
     try await queue.write { db in
+      try Self.updateMessage(db, conversationID: conversationID, message: message)
+    }
+  }
+
+  private static func updateMessage(
+    _ db: Database,
+    conversationID: UUID,
+    message: ChatMessage
+  ) throws {
+    var mergedMessage = message
+    if let storedPayload = try String.fetchOne(
+      db,
+      sql: """
+        SELECT payload FROM message
+        WHERE id = ? AND conversation_id = ?
+        """,
+      arguments: [message.id.uuidString, conversationID.uuidString])
+    {
+      let storedMessage = try? Self.decoder.decode(
+        ChatMessage.self, from: Data(storedPayload.utf8))
+      mergedMessage.resultPresentation =
+        storedMessage?.resultPresentation ?? message.resultPresentation
+    }
+    let payload = String(
+      decoding: try Self.encoder.encode(mergedMessage), as: UTF8.self)
+    try db.execute(
+      sql: """
+        UPDATE message SET payload = ?
+        WHERE id = ? AND conversation_id = ?
+        """,
+      arguments: [
+        payload, message.id.uuidString, conversationID.uuidString,
+      ])
+    if db.changesCount != 1 {
+      // A prepared-result preview and its final narration are emitted by
+      // separate reducer effects. If finalization reaches the store first,
+      // insert the final message directly; the late provisional append is
+      // INSERT OR IGNORE and therefore cannot regress it.
       let position =
         try Int.fetchOne(
           db,
@@ -621,115 +744,29 @@ final class HistoryStore: Sendable {
         arguments: [
           message.id.uuidString, conversationID.uuidString, position, payload,
         ])
-      // A prepared result and its final narration are persisted by separate
-      // effects. If the final update wins that race, a late provisional append
-      // must not replace it or move it to the end of the transcript.
-      guard db.changesCount == 1 else { return }
+      guard db.changesCount == 1 else {
+        throw HistoryStoreError.messageNotFound
+      }
       try db.execute(
         sql: "UPDATE conversation SET last_activity_at = ? WHERE id = ?",
         arguments: [
-          message.createdAt.timeIntervalSince1970, conversationID.uuidString,
+          message.createdAt.timeIntervalSince1970,
+          conversationID.uuidString,
         ])
-
-      // First question becomes the title unless a manual rename won already.
-      if message.role == .user, case .text = message.body {
-        let title = Self.autoTitle(from: message.previewText)
-        try db.execute(
-          sql: """
-            UPDATE conversation SET title = ?
-            WHERE id = ? AND is_manually_titled = 0 AND title = ''
-            """,
-          arguments: [title, conversationID.uuidString])
-        if db.changesCount > 0 {
-          try Self.replaceTitleSearchRow(
-            db, conversationID: conversationID.uuidString, title: title)
-        }
-      }
-      if let entry = Self.searchEntry(for: message) {
-        try db.execute(
-          sql: """
-            INSERT INTO search_index (content, conversation_id, message_id, kind)
-            VALUES (?, ?, ?, ?)
-            """,
-          arguments: [
-            entry.content, conversationID.uuidString,
-            message.id.uuidString, entry.kind,
-          ])
-      }
     }
-  }
-
-  func updateMessage(conversationID: UUID, message: ChatMessage) async throws {
-    try await queue.write { db in
-      var mergedMessage = message
-      if let storedPayload = try String.fetchOne(
-        db,
-        sql: """
-          SELECT payload FROM message
-          WHERE id = ? AND conversation_id = ?
-          """,
-        arguments: [message.id.uuidString, conversationID.uuidString])
-      {
-        let storedMessage = try? Self.decoder.decode(
-          ChatMessage.self, from: Data(storedPayload.utf8))
-        mergedMessage.resultPresentation =
-          storedMessage?.resultPresentation ?? message.resultPresentation
-      }
-      let payload = String(
-        decoding: try Self.encoder.encode(mergedMessage), as: UTF8.self)
+    try db.execute(
+      sql: "DELETE FROM search_index WHERE conversation_id = ? AND message_id = ?",
+      arguments: [conversationID.uuidString, message.id.uuidString])
+    if let entry = Self.searchEntry(for: mergedMessage) {
       try db.execute(
         sql: """
-          UPDATE message SET payload = ?
-          WHERE id = ? AND conversation_id = ?
+          INSERT INTO search_index (content, conversation_id, message_id, kind)
+          VALUES (?, ?, ?, ?)
           """,
         arguments: [
-          payload, message.id.uuidString, conversationID.uuidString,
+          entry.content, conversationID.uuidString,
+          message.id.uuidString, entry.kind,
         ])
-      if db.changesCount != 1 {
-        // A prepared-result preview and its final narration are emitted by
-        // separate reducer effects. If finalization reaches the store first,
-        // insert the final message directly; the late provisional append is
-        // INSERT OR IGNORE and therefore cannot regress it.
-        let position =
-          try Int.fetchOne(
-            db,
-            sql: """
-              SELECT COALESCE(MAX(position), 0) + 1 FROM message
-              WHERE conversation_id = ?
-              """,
-            arguments: [conversationID.uuidString]) ?? 1
-        try db.execute(
-          sql: """
-            INSERT OR IGNORE INTO message (id, conversation_id, position, payload)
-            VALUES (?, ?, ?, ?)
-            """,
-          arguments: [
-            message.id.uuidString, conversationID.uuidString, position, payload,
-          ])
-        guard db.changesCount == 1 else {
-          throw HistoryStoreError.messageNotFound
-        }
-        try db.execute(
-          sql: "UPDATE conversation SET last_activity_at = ? WHERE id = ?",
-          arguments: [
-            message.createdAt.timeIntervalSince1970,
-            conversationID.uuidString,
-          ])
-      }
-      try db.execute(
-        sql: "DELETE FROM search_index WHERE conversation_id = ? AND message_id = ?",
-        arguments: [conversationID.uuidString, message.id.uuidString])
-      if let entry = Self.searchEntry(for: mergedMessage) {
-        try db.execute(
-          sql: """
-            INSERT INTO search_index (content, conversation_id, message_id, kind)
-            VALUES (?, ?, ?, ?)
-            """,
-          arguments: [
-            entry.content, conversationID.uuidString,
-            message.id.uuidString, entry.kind,
-          ])
-      }
     }
   }
 
@@ -749,8 +786,9 @@ final class HistoryStore: Sendable {
         arguments: [message.id.uuidString, conversationID.uuidString])
 
       if let storedPayload {
-        var storedMessage = try Self.decoder.decode(
-          ChatMessage.self, from: Data(storedPayload.utf8))
+        var storedMessage =
+          (try? Self.decoder.decode(
+            ChatMessage.self, from: Data(storedPayload.utf8))) ?? message
         storedMessage.resultPresentation = message.resultPresentation
         let patchedPayload = String(
           decoding: try Self.encoder.encode(storedMessage), as: UTF8.self)
@@ -844,22 +882,72 @@ final class HistoryStore: Sendable {
     conversationID: UUID, messageID: UUID, lines: [String]
   ) async throws {
     try await queue.write { db in
-      let base =
-        try Int.fetchOne(
-          db,
-          sql: "SELECT COALESCE(MAX(seq), 0) FROM event WHERE conversation_id = ?",
-          arguments: [conversationID.uuidString]) ?? 0
-      for (offset, line) in lines.enumerated() {
-        try db.execute(
-          sql: """
-            INSERT INTO event (conversation_id, message_id, seq, line)
-            VALUES (?, ?, ?, ?)
-            """,
-          arguments: [
-            conversationID.uuidString, messageID.uuidString,
-            base + offset + 1, line,
-          ])
+      try Self.appendEvents(
+        db, conversationID: conversationID, messageID: messageID, lines: lines)
+    }
+  }
+
+  private static func appendEvents(
+    _ db: Database,
+    conversationID: UUID,
+    messageID: UUID,
+    lines: [String]
+  ) throws {
+    let base =
+      try Int.fetchOne(
+        db,
+        sql: "SELECT COALESCE(MAX(seq), 0) FROM event WHERE conversation_id = ?",
+        arguments: [conversationID.uuidString]) ?? 0
+    for (offset, line) in lines.enumerated() {
+      try db.execute(
+        sql: """
+          INSERT INTO event (conversation_id, message_id, seq, line)
+          VALUES (?, ?, ?, ?)
+          """,
+        arguments: [
+          conversationID.uuidString, messageID.uuidString,
+          base + offset + 1, line,
+        ])
+    }
+  }
+
+  func persistUserTurn(
+    conversationID: UUID,
+    message: ChatMessage,
+    question: String,
+    startedAt: Date
+  ) async throws {
+    try await queue.write { db in
+      try Self.appendMessage(db, conversationID: conversationID, message: message)
+      try db.execute(
+        sql: """
+          INSERT OR REPLACE INTO turn_journal
+            (conversation_id, question, started_at)
+          VALUES (?, ?, ?)
+          """,
+        arguments: [
+          conversationID.uuidString, question, startedAt.timeIntervalSince1970,
+        ])
+    }
+  }
+
+  func persistTerminalTurn(
+    conversationID: UUID,
+    message: ChatMessage,
+    replacesExisting: Bool,
+    lines: [String]
+  ) async throws {
+    try await queue.write { db in
+      if replacesExisting {
+        try Self.updateMessage(db, conversationID: conversationID, message: message)
+      } else {
+        try Self.appendMessage(db, conversationID: conversationID, message: message)
       }
+      try Self.appendEvents(
+        db, conversationID: conversationID, messageID: message.id, lines: lines)
+      try db.execute(
+        sql: "DELETE FROM turn_journal WHERE conversation_id = ?",
+        arguments: [conversationID.uuidString])
     }
   }
 
@@ -1074,6 +1162,8 @@ extension HistoryClient {
       updateMessage: { _, _ in },
       updateResultPresentation: { _, _ in },
       appendEvents: { _, _, _ in },
+      persistUserTurn: { _, _, _, _ in },
+      persistTerminalTurn: { _, _, _, _ in },
       exportJSONL: { _ in FileManager.default.temporaryDirectory },
       supportBundleSource: {
         SupportBundleSource(
@@ -1114,6 +1204,8 @@ extension HistoryClient {
       updateMessage: { _, _ in throw error },
       updateResultPresentation: { _, _ in throw error },
       appendEvents: { _, _, _ in throw error },
+      persistUserTurn: { _, _, _, _ in throw error },
+      persistTerminalTurn: { _, _, _, _ in throw error },
       exportJSONL: { _ in throw error },
       supportBundleSource: { throw error },
       saveFollowUpBatch: { _, _ in throw error },

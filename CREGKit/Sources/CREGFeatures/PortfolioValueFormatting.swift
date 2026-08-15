@@ -98,32 +98,31 @@ public enum PortfolioValueFormatting {
   /// True when `word` occurs in `label` bounded by non-alphanumerics, so
   /// "rate" matches "avg(cap_rate)" but not "credit_rating".
   static func containsWord(_ label: String, word: String) -> Bool {
-    var search = label.startIndex
-    while let range = label.range(of: word, range: search..<label.endIndex) {
-      let beforeOK =
-        range.lowerBound == label.startIndex
-        || !label[label.index(before: range.lowerBound)].isWordCharacter
-      let afterOK =
-        range.upperBound == label.endIndex
-        || !label[range.upperBound].isWordCharacter
-      if beforeOK && afterOK { return true }
-      search = label.index(after: range.lowerBound)
+    containsBoundedOccurrence(label, word: word) { remaining in
+      remaining.isEmpty || !remaining.first!.isWordCharacter
     }
-    return false
   }
 
   /// True when `word` is the final semantic token in `label`. Trailing SQL
   /// punctuation is allowed, but another identifier token is not.
   static func containsTerminalWord(_ label: String, word: String) -> Bool {
+    containsBoundedOccurrence(label, word: word) { remaining in
+      !remaining.contains(where: \.isWordCharacter)
+    }
+  }
+
+  private static func containsBoundedOccurrence(
+    _ label: String,
+    word: String,
+    acceptsRemainder: (Substring) -> Bool
+  ) -> Bool {
     var search = label.startIndex
     while let range = label.range(of: word, range: search..<label.endIndex) {
       let beforeOK =
         range.lowerBound == label.startIndex
         || !label[label.index(before: range.lowerBound)].isWordCharacter
       let remaining = label[range.upperBound...]
-      if beforeOK, !remaining.contains(where: \.isWordCharacter) {
-        return true
-      }
+      if beforeOK, acceptsRemainder(remaining) { return true }
       search = label.index(after: range.lowerBound)
     }
     return false

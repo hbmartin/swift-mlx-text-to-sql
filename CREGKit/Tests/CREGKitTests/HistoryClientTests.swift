@@ -513,6 +513,59 @@ import Testing
     #expect(try await client.search("recovered final").count == 1)
   }
 
+  @Test func resultPresentationUpdateRepairsAnUndecodableStoredPayload() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    var message = answerMessage(narration: "Recovered presentation.", at: 10)
+    try await client.appendMessage(conversationID, message)
+    let messageID = message.id
+
+    let database = try DatabaseQueue(path: url.path)
+    try await database.write { db in
+      try db.execute(
+        sql: "UPDATE message SET payload = ? WHERE id = ?",
+        arguments: ["{not-valid-json", messageID.uuidString])
+    }
+
+    message.resultPresentation = ResultPresentationPreference(
+      mode: .table, specificationID: "policy|table")
+    try await client.updateResultPresentation(conversationID, message)
+
+    let stored = try #require(
+      try await client.loadConversation(conversationID).messages.last)
+    #expect(stored == message)
+    #expect(try await client.search("recovered presentation").count == 1)
+  }
+
+  @Test func turnPersistenceCommitsTranscriptEventsAndJournalAtomically() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let question = userMessage("Which fund leads?", at: 10)
+    try await client.persistUserTurn(
+      conversationID, question, "Which fund leads?", question.createdAt)
+
+    var snapshot = try await client.loadConversation(conversationID)
+    #expect(snapshot.messages == [question])
+    #expect(snapshot.interruptedTurn?.question == "Which fund leads?")
+
+    let answer = answerMessage(narration: "Core leads.", at: 20)
+    try await client.persistTerminalTurn(
+      conversationID, answer, false, ["{\"turn\":\"finished\"}"])
+
+    snapshot = try await client.loadConversation(conversationID)
+    #expect(snapshot.messages == [question, answer])
+    #expect(snapshot.interruptedTurn == nil)
+    let exportURL = try await client.exportJSONL(conversationID)
+    #expect(
+      try String(contentsOf: exportURL, encoding: .utf8)
+        == "{\"turn\":\"finished\"}\n")
+  }
+
   @Test func preparedSuggestionTextAndProvisionalResultsAreNotSearchable() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()

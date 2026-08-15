@@ -65,7 +65,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case id, role, body, traceSteps, createdAt, devInfo, resultPresentation
+    case id, role, body, resultFingerprint, traceSteps, createdAt, devInfo,
+      resultPresentation
   }
 
   /// Old histories stored a mutable six-field developer summary under
@@ -76,7 +77,9 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     id = try values.decode(UUID.self, forKey: .id)
     role = try values.decode(Role.self, forKey: .role)
     body = try values.decode(Body.self, forKey: .body)
-    resultFingerprint = Self.fingerprint(for: body)
+    resultFingerprint =
+      (try? values.decodeIfPresent(String.self, forKey: .resultFingerprint))
+      ?? Self.fingerprint(for: body)
     traceSteps =
       try values.decodeIfPresent([String].self, forKey: .traceSteps) ?? []
     createdAt = try values.decode(Date.self, forKey: .createdAt)

@@ -54,7 +54,7 @@ struct MessageCell: View {
         .font(.subheadline)
         ResultPreviewView(
           messageID: message.id,
-          resultFingerprint: message.resultFingerprint,
+          resultFingerprint: prepared.provenance.resultFingerprint,
           result: prepared.result,
           sql: prepared.sql,
           question: prepared.question,
@@ -98,7 +98,9 @@ struct MessageCell: View {
         }
         ResultPreviewView(
           messageID: message.id,
-          resultFingerprint: message.resultFingerprint,
+          resultFingerprint:
+            message.resultFingerprint
+            ?? PreparedFollowUpIntegrity.fingerprint(result: result),
           result: result,
           sql: sql,
           question: message.devInfo?.originalQuestion,

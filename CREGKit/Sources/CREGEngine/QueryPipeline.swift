@@ -65,9 +65,7 @@ public struct QueryPipeline: Sendable {
   public var run:
     @Sendable (_ question: String, _ history: [ConversationTurn])
       -> AsyncStream<PipelineEvent>
-  public var runStarter:
-    @Sendable (_ starter: StarterQueryID, _ history: [ConversationTurn])
-      -> AsyncStream<PipelineEvent>
+  public var runStarter: @Sendable (_ starter: StarterQueryID) -> AsyncStream<PipelineEvent>
   public var prepareFollowUps:
     @Sendable (_ context: FollowUpSuggestionContext)
       -> AsyncStream<FollowUpPreparationEvent>
@@ -81,8 +79,7 @@ public struct QueryPipeline: Sendable {
       @escaping @Sendable (String, [ConversationTurn])
       -> AsyncStream<PipelineEvent>,
     runStarter: (
-      @Sendable (StarterQueryID, [ConversationTurn])
-        -> AsyncStream<PipelineEvent>
+      @Sendable (StarterQueryID) -> AsyncStream<PipelineEvent>
     )? = nil,
     prepareFollowUps: (
       @Sendable (FollowUpSuggestionContext)
@@ -104,8 +101,8 @@ public struct QueryPipeline: Sendable {
     self.readRuntimeMode = { .evaluated }
     self.run = run
     self.runStarter =
-      runStarter ?? { starter, history in
-        run(starter.question, history)
+      runStarter ?? { starter in
+        run(starter.question, [])
       }
     self.prepareFollowUps =
       prepareFollowUps ?? { _ in
@@ -126,8 +123,7 @@ public struct QueryPipeline: Sendable {
       @escaping @Sendable (String, [ConversationTurn])
       -> AsyncStream<PipelineEvent>,
     runStarter: (
-      @Sendable (StarterQueryID, [ConversationTurn])
-        -> AsyncStream<PipelineEvent>
+      @Sendable (StarterQueryID) -> AsyncStream<PipelineEvent>
     )? = nil,
     prepareFollowUps: (
       @Sendable (FollowUpSuggestionContext)
@@ -142,8 +138,8 @@ public struct QueryPipeline: Sendable {
     self.readRuntimeMode = runtimeMode
     self.run = run
     self.runStarter =
-      runStarter ?? { starter, history in
-        run(starter.question, history)
+      runStarter ?? { starter in
+        run(starter.question, [])
       }
     self.prepareFollowUps =
       prepareFollowUps ?? { _ in
@@ -1023,7 +1019,7 @@ extension QueryPipeline {
       },
       runtimeMode: { await sqlGen.runtimeMode() },
       run: runFreeForm,
-      runStarter: { starter, _ in
+      runStarter: { starter in
         deterministicStarterStream(
           starter: starter,
           fm: fm,
@@ -1046,6 +1042,8 @@ extension QueryPipeline {
           uuid: uuid,
           now: now)
       },
+      // Prepared execution is history-independent; its retained history
+      // argument is intentionally ignored.
       runPrepared: { prepared, _ in
         preparedAnswerStream(
           prepared: prepared,

@@ -220,6 +220,9 @@ import Testing
     first.cancel()
     await recorder.wait(for: "inference_cancelled_operation_still_running")
     #expect(recorder.contains("inference_cancelled_operation_still_running"))
+    await #expect(throws: CancellationError.self) {
+      _ = try await first.value
+    }
 
     let next = Task {
       try await serializer.run(operation: .sqlGeneration) {
@@ -231,7 +234,6 @@ import Testing
     #expect(await nextStarted.value == false)
 
     await gate.release()
-    _ = try? await first.value
     #expect(try await next.value == 2)
     #expect(await nextStarted.value)
   }
@@ -255,15 +257,15 @@ import Testing
     queued.cancel()
     await recorder.wait(for: "inference_queued_operation_cancelled")
     #expect(!recorder.contains("inference_cancelled_operation_still_running"))
+    await #expect(throws: CancellationError.self) {
+      _ = try await queued.value
+    }
 
     let next = Task {
       try await serializer.run(operation: .sqlGeneration) { 3 }
     }
     await gate.release()
     #expect(try await first.value == 1)
-    await #expect(throws: CancellationError.self) {
-      _ = try await queued.value
-    }
     #expect(try await next.value == 3)
   }
 }
@@ -283,7 +285,9 @@ private actor CancellationInsensitiveInferenceGate {
     started = true
     let waiters = startWaiters
     startWaiters.removeAll()
-    waiters.forEach { $0.resume() }
+    for waiter in waiters {
+      waiter.resume()
+    }
     await withCheckedContinuation { continuation in
       releaseContinuation = continuation
     }
@@ -916,8 +920,7 @@ private final class InferenceSerializerEventRecorder: @unchecked Sendable {
       configuration: Self.config())
 
     let events = await Array(
-      pipeline.runStarter(
-        .leaseExpirationsNextTwelveMonthsV1, []))
+      pipeline.runStarter(.leaseExpirationsNextTwelveMonthsV1))
     #expect(await calls.generations == 0)
     #expect(!events.contains { if case .generationStarted = $0 { true } else { false } })
     guard case .turnFinished(.answered(_, _, let sql, _), let telemetry) = events.last

@@ -36,7 +36,9 @@ private actor AssistantPersistenceGate {
     isHolding = true
     let waiters = startWaiters
     startWaiters.removeAll()
-    waiters.forEach { $0.resume() }
+    for waiter in waiters {
+      waiter.resume()
+    }
     await withCheckedContinuation { continuation in
       releaseContinuation = continuation
     }
@@ -82,7 +84,7 @@ private actor AssistantPersistenceGate {
           continuation.finish()
         }
       },
-      runStarter: { starter, _ in
+      runStarter: { starter in
         starterRuns.record(starter.rawValue)
         return AsyncStream { continuation in
           let telemetry = TurnTelemetry(originalQuestion: starter.question)
@@ -404,15 +406,17 @@ private actor AssistantPersistenceGate {
       let kind =
         if case .preparedAnswer = message.body {
           "provisional"
-        } else if message.role == .user {
-          "user"
         } else {
           "assistant"
         }
       writes.record("append:\(kind):\(message.id.uuidString)")
     }
-    history.updateMessage = { _, message in
-      writes.record("update:final:\(message.id.uuidString)")
+    history.persistUserTurn = { _, message, _, _ in
+      writes.record("append:user:\(message.id.uuidString)")
+    }
+    history.persistTerminalTurn = { _, message, replacesExisting, _ in
+      writes.record(
+        "\(replacesExisting ? "update:final" : "append:assistant"):\(message.id.uuidString)")
     }
     let pipeline = QueryPipeline(
       run: { _, _ in AsyncStream { $0.finish() } },
@@ -493,7 +497,7 @@ private actor AssistantPersistenceGate {
       startedAt: Date(timeIntervalSince1970: 1))
     let writes = CallRecorder()
     var history = HistoryClient.noop()
-    history.updateMessage = { _, message in
+    history.persistTerminalTurn = { _, message, _, _ in
       if case .answer = message.body {
         writes.record(message.resultPresentation?.mode.rawValue ?? "nil")
       }
@@ -564,7 +568,7 @@ private actor AssistantPersistenceGate {
         resultPresentation: preference))
     let writes = CallRecorder()
     var history = HistoryClient.noop()
-    history.updateMessage = { _, message in
+    history.persistTerminalTurn = { _, message, _, _ in
       writes.record(message.resultPresentation?.mode.rawValue ?? "nil")
     }
     let store = TestStore(initialState: state) {
@@ -724,7 +728,43 @@ private actor AssistantPersistenceGate {
     await store.skipReceivedActions()
   }
 
-  @Test func persistenceTimeoutReleasesQueuedQuestion() async {
+  @Test func deletingTheActiveConversationDispatchesRemainingQueuedWork() async {
+    var state = Self.appState(selected: Self.conversationA)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: UUID(93),
+      conversationID: Self.conversationB,
+      question: "running in deleted conversation",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(94),
+        conversationID: Self.conversationA,
+        question: "still eligible",
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    let clock = TestClock()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(Self.conversationB))
+    await store.receive(.dispatchNextIfIdle)
+
+    #expect(store.state.activeTurn?.conversationID == Self.conversationA)
+    #expect(store.state.activeTurn?.question == "still eligible")
+    #expect(store.state.queue.isEmpty)
+
+    await store.skipInFlightEffects()
+  }
+
+  @Test func persistenceTimeoutKeepsQueuedQuestionBehindTheLiveWrite() async {
     var state = Self.appState(selected: Self.conversationA)
     let activeID = UUID(93)
     state.activeTurn = AppFeature.ActiveTurn(
@@ -740,7 +780,7 @@ private actor AssistantPersistenceGate {
     ]
     let clock = TestClock()
     var history = HistoryClient.noop()
-    history.appendMessage = { _, _ in
+    history.persistTerminalTurn = { _, _, _, _ in
       try await clock.sleep(for: .seconds(30))
     }
     let store = TestStore(initialState: state) {
@@ -765,6 +805,13 @@ private actor AssistantPersistenceGate {
 
     await clock.advance(by: .seconds(5))
     await store.receive(.turnPersistenceTimedOut(activeID))
+    #expect(store.state.pendingTurnPersistenceID == activeID)
+    #expect(store.state.pendingTurnPersistence?.didTimeOut == true)
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.queue.map(\.question) == ["waiting behind persistence"])
+
+    await clock.advance(by: .seconds(25))
+    await store.receive(.turnPersistenceFinished(activeID))
     await store.receive(.dispatchNextIfIdle)
     #expect(store.state.pendingTurnPersistenceID == nil)
     #expect(store.state.activeTurn?.question == "waiting behind persistence")
@@ -950,6 +997,39 @@ private actor AssistantPersistenceGate {
     await store.finish()
   }
 
+  @Test func confirmedDeleteWaitsForTheConversationPersistenceBarrier() async {
+    var state = Self.appState()
+    let deletedSummary = state.conversations[id: Self.conversationB]!
+    state.conversations.remove(id: Self.conversationB)
+    state.pendingDeletion = AppFeature.PendingDeletion(
+      summary: deletedSummary, index: 1)
+    let questionID = UUID(95)
+    state.pendingTurnPersistence = AppFeature.PendingTurnPersistence(
+      questionID: questionID,
+      conversationID: Self.conversationB)
+    let deletes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.deleteConversation = { id in deletes.record(id.uuidString) }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteCountdownFinished)
+    #expect(deletes.recorded.isEmpty)
+    #expect(
+      store.state.deletionsAwaitingTurnPersistence == [Self.conversationB])
+
+    await store.send(.turnPersistenceFinished(questionID))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(deletes.recorded == [Self.conversationB.uuidString])
+  }
+
   @Test func deletingSelectedConversationSelectsMostRecentRemaining() async {
     var history = HistoryClient.noop()
     history.loadConversation = { id in
@@ -1047,11 +1127,18 @@ private actor AssistantPersistenceGate {
         submittedAt: Date(timeIntervalSince1970: 1))
     ]
     let starterRuns = CallRecorder()
+    let historyLoads = CallRecorder()
+    let summary = state.conversations[id: Self.conversationA]!
+    var history = HistoryClient.noop()
+    history.loadConversation = { id in
+      historyLoads.record(id.uuidString)
+      return ConversationSnapshot(summary: summary)
+    }
     let store = TestStore(initialState: state) {
       AppFeature()
-    } withDependencies: {
+    } withDependencies: { [history] in
       $0.queryPipeline = Self.scriptedPipeline(starterRuns: starterRuns)
-      $0.historyClient = .noop()
+      $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 5))
       $0.continuousClock = ImmediateClock()
@@ -1067,6 +1154,7 @@ private actor AssistantPersistenceGate {
     await store.skipReceivedActions()
 
     #expect(starterRuns.recorded == [StarterQueryID.portfolioValueByFundV1.rawValue])
+    #expect(historyLoads.recorded.isEmpty)
     #expect(store.state.queue.isEmpty)
   }
 
@@ -1089,7 +1177,7 @@ private actor AssistantPersistenceGate {
     let runs = CallRecorder()
     let clock = TestClock()
     var history = HistoryClient.noop()
-    history.appendMessage = { _, message in
+    history.persistTerminalTurn = { _, message, _, _ in
       if message.role == .assistant {
         await gate.holdFirstAssistant()
       }

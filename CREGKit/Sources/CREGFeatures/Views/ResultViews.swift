@@ -373,7 +373,7 @@ struct ResultPreviewView: View {
 
   init(
     messageID: UUID,
-    resultFingerprint: String?,
+    resultFingerprint: String,
     result: QueryResult,
     sql: String,
     question: String?,
@@ -384,15 +384,12 @@ struct ResultPreviewView: View {
     self.result = result
     self.sql = sql
     self.question = question
-    self.chartAnalysis =
-      resultFingerprint.map {
-        ResultPreviewChartCache.analysis(
-          messageID: messageID,
-          resultFingerprint: $0,
-          result: result,
-          sql: sql,
-          question: question)
-      } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
+    self.chartAnalysis = ResultPreviewChartCache.analysis(
+      messageID: messageID,
+      resultFingerprint: resultFingerprint,
+      result: result,
+      sql: sql,
+      question: question)
     self.preference = preference
     self.setPreference = setPreference
     self.open = open
@@ -596,12 +593,17 @@ struct ResultViewerView: View {
   @ScaledMetric(relativeTo: .caption) private var baseMaximumWidth = 240.0
   @ScaledMetric(relativeTo: .caption) private var baseRowVerticalPadding = 8.0
 
+  private struct CacheIdentity {
+    var messageID: UUID
+    var resultFingerprint: String
+  }
+
+  /// Cacheless harness/preview initializer for results that are not backed by
+  /// a transcript message.
   init(
     result: QueryResult,
     runtimeMode: ModelRuntimeMode,
     textSize: Binding<ResultTableTextSize>,
-    messageID: UUID? = nil,
-    resultFingerprint: String? = nil,
     sql: String = "",
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
@@ -610,16 +612,72 @@ struct ResultViewerView: View {
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection? = nil
   ) {
+    self.init(
+      result: result,
+      runtimeMode: runtimeMode,
+      textSize: textSize,
+      cacheIdentity: nil,
+      sql: sql,
+      question: question,
+      preference: preference,
+      persistPreference: persistPreference,
+      initialSearchText: initialSearchText,
+      initialSelection: initialSelection,
+      initialChartSelection: initialChartSelection)
+  }
+
+  /// Transcript initializer. Cache identity is required, so a caller cannot
+  /// silently turn repeated chart analysis back on by omitting a fingerprint.
+  init(
+    result: QueryResult,
+    runtimeMode: ModelRuntimeMode,
+    textSize: Binding<ResultTableTextSize>,
+    messageID: UUID,
+    resultFingerprint: String,
+    sql: String = "",
+    question: String? = nil,
+    preference: ResultPresentationPreference? = nil,
+    persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
+    initialSearchText: String = "",
+    initialSelection: ResultCellSelection? = nil,
+    initialChartSelection: AutoChartSelection? = nil
+  ) {
+    self.init(
+      result: result,
+      runtimeMode: runtimeMode,
+      textSize: textSize,
+      cacheIdentity: CacheIdentity(
+        messageID: messageID, resultFingerprint: resultFingerprint),
+      sql: sql,
+      question: question,
+      preference: preference,
+      persistPreference: persistPreference,
+      initialSearchText: initialSearchText,
+      initialSelection: initialSelection,
+      initialChartSelection: initialChartSelection)
+  }
+
+  private init(
+    result: QueryResult,
+    runtimeMode: ModelRuntimeMode,
+    textSize: Binding<ResultTableTextSize>,
+    cacheIdentity: CacheIdentity?,
+    sql: String,
+    question: String?,
+    preference: ResultPresentationPreference?,
+    persistPreference: @escaping (ResultPresentationPreference) -> Void,
+    initialSearchText: String,
+    initialSelection: ResultCellSelection?,
+    initialChartSelection: AutoChartSelection?
+  ) {
     let analysis =
-      messageID.flatMap { messageID in
-        resultFingerprint.map { resultFingerprint in
-          ResultPreviewChartCache.analysis(
-            messageID: messageID,
-            resultFingerprint: resultFingerprint,
-            result: result,
-            sql: sql,
-            question: question)
-        }
+      cacheIdentity.map {
+        ResultPreviewChartCache.analysis(
+          messageID: $0.messageID,
+          resultFingerprint: $0.resultFingerprint,
+          result: result,
+          sql: sql,
+          question: question)
       } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
     let recommendations = analysis.recommendations
     let selectedID = CREGChartAdapter.resolvedRecommendation(
@@ -1303,15 +1361,20 @@ extension View {
           let message = store.messages[id: id]
         else { return nil }
         let result: QueryResult
+        let resultFingerprint: String
         let sql: String
         let question: String?
         switch message.body {
         case .answer(let answerResult, _, let answerSQL, _):
           result = answerResult
+          resultFingerprint =
+            message.resultFingerprint
+            ?? PreparedFollowUpIntegrity.fingerprint(result: answerResult)
           sql = answerSQL
           question = message.devInfo?.originalQuestion
         case .preparedAnswer(let prepared):
           result = prepared.result
+          resultFingerprint = prepared.provenance.resultFingerprint
           sql = prepared.sql
           question = prepared.question
         default:
@@ -1319,7 +1382,7 @@ extension View {
         }
         return ResultViewerItem(
           messageID: id,
-          resultFingerprint: message.resultFingerprint,
+          resultFingerprint: resultFingerprint,
           result: result,
           runtimeMode: ResultViewerLogic.runtimeMode(for: message),
           sql: sql,
@@ -1371,7 +1434,7 @@ extension View {
 
 struct ResultViewerItem: Identifiable, Equatable {
   var messageID: UUID
-  var resultFingerprint: String?
+  var resultFingerprint: String
   var result: QueryResult
   var runtimeMode: ModelRuntimeMode
   var sql: String
