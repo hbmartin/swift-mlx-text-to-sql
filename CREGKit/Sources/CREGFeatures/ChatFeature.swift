@@ -642,6 +642,12 @@ public struct ChatFeature: Sendable {
 }
 
 actor MessageUpdateQueue {
+  enum SaveOutcome: Equatable, Sendable {
+    case saved
+    case superseded
+    case discardedDuringDeletion
+  }
+
   private struct Key: Hashable {
     var conversationID: UUID
     var messageID: UUID
@@ -654,16 +660,19 @@ actor MessageUpdateQueue {
   /// can race an already-scheduled reducer effect.
   private var deletingConversationIDs: Set<UUID> = []
 
+  @discardableResult
   func save(
     conversationID: UUID,
     messageID: UUID,
     revision: UInt64? = nil,
     operation: @escaping @Sendable () async throws -> Void
-  ) async throws {
+  ) async throws -> SaveOutcome {
     let key = Key(conversationID: conversationID, messageID: messageID)
-    guard !deletingConversationIDs.contains(conversationID) else { return }
+    guard !deletingConversationIDs.contains(conversationID) else {
+      return .discardedDuringDeletion
+    }
     if let revision {
-      guard revision > (latestRevisions[key] ?? 0) else { return }
+      guard revision > (latestRevisions[key] ?? 0) else { return .superseded }
       latestRevisions[key] = revision
     }
     if active.contains(key) {
@@ -672,7 +681,7 @@ actor MessageUpdateQueue {
       }
       guard !deletingConversationIDs.contains(conversationID) else {
         finish(key)
-        return
+        return .discardedDuringDeletion
       }
     } else {
       active.insert(key)
@@ -681,9 +690,12 @@ actor MessageUpdateQueue {
     do {
       try await operation()
       finish(key)
+      return .saved
     } catch {
       finish(key)
-      if deletingConversationIDs.contains(conversationID) { return }
+      if deletingConversationIDs.contains(conversationID) {
+        return .discardedDuringDeletion
+      }
       throw error
     }
   }

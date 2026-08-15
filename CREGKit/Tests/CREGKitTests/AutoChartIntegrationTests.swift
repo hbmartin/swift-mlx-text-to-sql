@@ -663,14 +663,14 @@ import Testing
     let messageID = UUID()
     let writes = PreferenceWriteRecorder()
 
-    try await queue.save(
+    let newOutcome = try await queue.save(
       conversationID: conversationID,
       messageID: messageID,
       revision: 2
     ) {
       writes.record("new")
     }
-    try await queue.save(
+    let oldOutcome = try await queue.save(
       conversationID: conversationID,
       messageID: messageID,
       revision: 1
@@ -679,6 +679,8 @@ import Testing
     }
 
     #expect(writes.values == ["new"])
+    #expect(newOutcome == .saved)
+    #expect(oldOutcome == .superseded)
   }
 
   @Test func confirmedConversationDeletionPrunesRevisionTombstones() async throws {
@@ -717,7 +719,7 @@ import Testing
 
     await queue.beginDeletingConversation(conversationID)
     await queue.confirmConversationDeletion(conversationID)
-    try await queue.save(
+    let outcome = try await queue.save(
       conversationID: conversationID,
       messageID: UUID(),
       revision: 2
@@ -727,6 +729,28 @@ import Testing
 
     #expect(writes.values == ["initial"])
     #expect(await queue.retainedRevisionCount() == 0)
+    #expect(outcome == .discardedDuringDeletion)
+  }
+
+  @Test func failedInFlightSaveReportsDiscardWhenDeletionBegins() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let gate = FirstPreferenceSaveGate()
+    let save = Task {
+      try await queue.save(
+        conversationID: conversationID,
+        messageID: UUID()
+      ) {
+        await gate.delayFirstSave()
+        throw PreferenceSaveTestError.failed
+      }
+    }
+    await gate.waitUntilFirstSaveStarts()
+
+    await queue.beginDeletingConversation(conversationID)
+    await gate.releaseFirstSave()
+
+    #expect(try await save.value == .discardedDuringDeletion)
   }
 
   private static func answerMessage() -> ChatMessage {
@@ -797,6 +821,10 @@ private actor FirstPreferenceSaveGate {
     releaseContinuation?.resume()
     releaseContinuation = nil
   }
+}
+
+private enum PreferenceSaveTestError: Error, Sendable {
+  case failed
 }
 
 private final class PreferenceRecorder: @unchecked Sendable {

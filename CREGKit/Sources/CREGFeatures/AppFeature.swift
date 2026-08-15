@@ -537,7 +537,7 @@ public struct AppFeature: Sendable {
           effects.append(
             .run { _ in
               for message in recovered {
-                try? await messageUpdateQueue.save(
+                _ = try? await messageUpdateQueue.save(
                   conversationID: conversationID,
                   messageID: message.id
                 ) {
@@ -678,7 +678,15 @@ public struct AppFeature: Sendable {
             summary:
               "Queue dispatch remains paused because a completed-turn history write stopped responding.",
             context: ["question_id": questionID.uuidString]))
-        return .none
+        return .send(
+          .operationFailed(
+            FailurePresentation(
+              code: "turn_persistence_barrier_timed_out",
+              title: "Saving is taking longer than expected",
+              message:
+                "CREG is still saving this conversation. New questions will remain paused to keep your history in order.",
+              diagnostic:
+                "The completed-turn history write exceeded the five-second persistence watchdog.")))
 
       case .dispatchNextIfIdle:
         return dispatchNextIfIdle(state: &state)
@@ -885,9 +893,12 @@ public struct AppFeature: Sendable {
     conversationID: UUID,
     submission: QuestionSubmission
   ) -> Effect<Action> {
-    precondition(
+    assert(
       state.activeTurn == nil && state.pendingTurnPersistence == nil,
       "Dispatch requires an idle scheduler and a settled transcript write.")
+    guard state.activeTurn == nil, state.pendingTurnPersistence == nil else {
+      return .none
+    }
     let question = submission.question
     let questionID = uuid()
     let startedAt = now
@@ -1038,9 +1049,7 @@ public struct AppFeature: Sendable {
       active.conversationID == state.chat?.conversationID
     else { return .none }
     state.activeTurn = nil
-    precondition(
-      state.pendingTurnPersistence == nil,
-      "An active turn cannot complete while another persistence barrier exists.")
+    guard state.pendingTurnPersistence == nil else { return .none }
     state.pendingTurnPersistence = PendingTurnPersistence(
       questionID: active.questionID,
       conversationID: active.conversationID)
@@ -1161,6 +1170,17 @@ public struct AppFeature: Sendable {
     guard case .turnFinished(let outcome, let telemetry) = event,
       let active = state.activeTurn
     else { return .none }
+    guard state.pendingTurnPersistence == nil else {
+      state.activeTurn = nil
+      diagnostics.record(
+        DiagnosticEvent(
+          level: .error,
+          category: .submission,
+          code: "terminal_outcome_ignored_during_persistence_barrier",
+          summary:
+            "A terminal pipeline outcome was ignored because another transcript write still owns the scheduler barrier."))
+      return .none
+    }
 
     let body: ChatMessage.Body =
       switch outcome {
@@ -1179,9 +1199,6 @@ public struct AppFeature: Sendable {
       resultPresentation: active.resultPresentationPreference)
     let lines = active.eventLines
     state.activeTurn = nil
-    precondition(
-      state.pendingTurnPersistence == nil,
-      "An active turn cannot complete while another persistence barrier exists.")
     state.pendingTurnPersistence = PendingTurnPersistence(
       questionID: active.questionID,
       conversationID: conversationID)

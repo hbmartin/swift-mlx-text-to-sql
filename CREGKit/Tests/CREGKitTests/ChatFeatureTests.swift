@@ -805,10 +805,23 @@ private actor AssistantPersistenceGate {
 
     await clock.advance(by: .seconds(5))
     await store.receive(.turnPersistenceTimedOut(activeID))
+    let timeoutFailure = FailurePresentation(
+      code: "turn_persistence_barrier_timed_out",
+      title: "Saving is taking longer than expected",
+      message:
+        "CREG is still saving this conversation. New questions will remain paused to keep your history in order.",
+      diagnostic:
+        "The completed-turn history write exceeded the five-second persistence watchdog.")
+    await store.receive(.operationFailed(timeoutFailure))
     #expect(store.state.pendingTurnPersistenceID == activeID)
     #expect(store.state.pendingTurnPersistence?.didTimeOut == true)
     #expect(store.state.activeTurn == nil)
     #expect(store.state.queue.map(\.question) == ["waiting behind persistence"])
+    #expect(store.state.presentedFailure == timeoutFailure)
+
+    await store.send(.dismissFailure)
+    await store.send(.turnPersistenceTimedOut(activeID))
+    #expect(store.state.presentedFailure == nil)
 
     await clock.advance(by: .seconds(25))
     await store.receive(.turnPersistenceFinished(activeID))
@@ -819,6 +832,63 @@ private actor AssistantPersistenceGate {
     await store.send(.chat(.stopTapped))
     await store.skipInFlightEffects()
     await store.skipReceivedActions()
+  }
+
+  @Test func stopPreservesAnExistingPersistenceBarrier() async {
+    var state = Self.appState()
+    let activeID = UUID(96)
+    let pending = AppFeature.PendingTurnPersistence(
+      questionID: UUID(97), conversationID: Self.conversationB)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.pendingTurnPersistence = pending
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.stopActiveTurn)))
+
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.pendingTurnPersistence == pending)
+  }
+
+  @Test func terminalOutcomeDuringPersistenceBarrierIsIgnoredAndDiagnosed() async {
+    var state = Self.appState()
+    let activeID = UUID(98)
+    let pending = AppFeature.PendingTurnPersistence(
+      questionID: UUID(99), conversationID: Self.conversationB)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.pendingTurnPersistence = pending
+    let diagnosticCodes = CallRecorder()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.diagnostics = DiagnosticsClient { event in
+        diagnosticCodes.record(event.code)
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.pendingTurnPersistence == pending)
+    #expect(store.state.chat?.messages.isEmpty == true)
+    #expect(
+      diagnosticCodes.recorded.contains(
+        "terminal_outcome_ignored_during_persistence_barrier"))
   }
 
   @Test func backgroundCompletionMarksUnreadWithoutChangingSelection() async {
