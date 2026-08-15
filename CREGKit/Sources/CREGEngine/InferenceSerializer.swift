@@ -53,7 +53,9 @@ public actor InferenceSerializer {
         ])
     }
     let resultRelay = InferenceResultRelay<T>()
+    let completionRelay = InferenceCompletionRelay()
     let task = Task<T, Error> {
+      let outcome: Result<T, any Error>
       do {
         await previous?.value
         // The queue task remains chained for FIFO ownership, but its caller is
@@ -72,36 +74,46 @@ public actor InferenceSerializer {
           ])
         let result = try await operation()
         try Task.checkCancellation()
-        self.operationCompleted(
-          id: operationID,
-          kind: operationKind,
-          error: nil,
-          elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
-        resultRelay.resolve(.success(result))
-        return result
+        outcome = .success(result)
       } catch {
-        self.operationCompleted(
-          id: operationID,
-          kind: operationKind,
-          error: error,
-          elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
-        resultRelay.resolve(.failure(error))
-        throw error
+        outcome = .failure(error)
       }
+      resultRelay.resolve(outcome)
+      let reportedError = await completionRelay.value()
+      self.operationCompleted(
+        id: operationID,
+        kind: operationKind,
+        error: reportedError,
+        elapsedMicroseconds: waitStarted.duration(to: .now).microseconds)
+      return try outcome.get()
     }
     tail = Task { _ = try? await task.value }
-    return try await withTaskCancellationHandler {
-      let result = try await resultRelay.value()
-      try Task.checkCancellation()
-      return result
-    } onCancel: {
-      task.cancel()
-      resultRelay.cancel()
-      Task {
-        await self.operationAbandoned(
-          id: operationID,
-          kind: operationKind)
+    do {
+      let result = try await withTaskCancellationHandler {
+        try await resultRelay.value()
+      } onCancel: {
+        task.cancel()
+        resultRelay.cancel()
+        completionRelay.resolve(CancellationError())
+        Task {
+          await self.operationAbandoned(
+            id: operationID,
+            kind: operationKind)
+        }
       }
+      // A model operation can finish at the same instant its deadline cancels
+      // the parent task. The caller decides the reported outcome so a rejected
+      // value is never diagnosed as a successful inference.
+      try Task.checkCancellation()
+      completionRelay.resolve(nil)
+      _ = try await task.value
+      return result
+    } catch {
+      completionRelay.resolve(error)
+      if !Task.isCancelled {
+        _ = try? await task.value
+      }
+      throw error
     }
   }
 
@@ -232,5 +244,52 @@ private final class InferenceResultRelay<Value: Sendable>: @unchecked Sendable {
     }
     lock.unlock()
     continuation?.resume(throwing: CancellationError())
+  }
+}
+
+/// Delays completion diagnostics until the caller has applied its own
+/// cancellation check, while the private FIFO task continues to own the model
+/// slot until cancellation-insensitive work actually returns.
+private final class InferenceCompletionRelay: @unchecked Sendable {
+  private enum State {
+    case pending
+    case waiting(CheckedContinuation<(any Error)?, Never>)
+    case resolved((any Error)?)
+  }
+
+  private let lock = NSLock()
+  private var state = State.pending
+
+  func value() async -> (any Error)? {
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      switch state {
+      case .pending:
+        state = .waiting(continuation)
+        lock.unlock()
+      case .resolved(let error):
+        lock.unlock()
+        continuation.resume(returning: error)
+      case .waiting:
+        lock.unlock()
+        preconditionFailure("Inference completion may only be awaited once.")
+      }
+    }
+  }
+
+  func resolve(_ error: (any Error)?) {
+    var continuation: CheckedContinuation<(any Error)?, Never>?
+    lock.lock()
+    switch state {
+    case .pending:
+      state = .resolved(error)
+    case .waiting(let waiting):
+      state = .resolved(error)
+      continuation = waiting
+    case .resolved:
+      break
+    }
+    lock.unlock()
+    continuation?.resume(returning: error)
   }
 }

@@ -1366,10 +1366,9 @@ extension View {
         let question: String?
         switch message.body {
         case .answer(let answerResult, _, let answerSQL, _):
+          guard let fingerprint = message.resultFingerprint else { return nil }
           result = answerResult
-          resultFingerprint =
-            message.resultFingerprint
-            ?? PreparedFollowUpIntegrity.fingerprint(result: answerResult)
+          resultFingerprint = fingerprint
           sql = answerSQL
           question = message.devInfo?.originalQuestion
         case .preparedAnswer(let prepared):

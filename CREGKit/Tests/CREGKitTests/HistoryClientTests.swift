@@ -300,8 +300,9 @@ import Testing
     let id = UUID()
     _ = try await client.createConversation(id, Date(timeIntervalSince1970: 0))
 
-    try await client.beginTurnJournal(
-      id, "Which loans mature soonest?", Date(timeIntervalSince1970: 50))
+    let message = userMessage("Which loans mature soonest?", at: 50)
+    try await client.persistUserTurn(
+      id, message, "Which loans mature soonest?", message.createdAt)
     var snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn?.question == "Which loans mature soonest?")
     #expect(
