@@ -15,6 +15,7 @@ struct CREGChartTable: AutoChartTable {
   var chartColumns: [AutoChartColumn]
   var chartRows: [CREGChartRow]
   var chartMetadata: AutoChartTableMetadata
+  var chartDataVersion: String?
   var context: AutoChartContext
 
   init(result: QueryResult, sql: String, question: String?) {
@@ -50,6 +51,7 @@ struct CREGChartTable: AutoChartTable {
     chartMetadata = AutoChartTableMetadata(
       isTruncated: result.isTruncated,
       provenance: "CREG query result")
+    chartDataVersion = PreparedFollowUpIntegrity.fingerprint(result: result)
     context = AutoChartContext(
       goal: CREGChartAdapter.goal(question: question, sql: sql),
       title: question)

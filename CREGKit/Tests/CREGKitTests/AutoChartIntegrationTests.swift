@@ -111,6 +111,35 @@ import Testing
     #expect(raw.aggregationSafety == .unknown)
   }
 
+  @Test func chartDataVersionTracksCanonicalResultContents() {
+    let result = QueryResult(
+      columns: ["fund", "current_market_value"],
+      rows: [[.text("Core"), .real(10)]],
+      elapsedMicroseconds: 50)
+    let table = CREGChartTable(
+      result: result,
+      sql: "SELECT fund, current_market_value FROM properties",
+      question: "Show value by fund")
+
+    var retimed = result
+    retimed.elapsedMicroseconds = 9_999
+    let retimedTable = CREGChartTable(
+      result: retimed,
+      sql: "SELECT fund, current_market_value FROM properties",
+      question: "Show value by fund")
+
+    var changed = result
+    changed.rows[0][1] = .real(11)
+    let changedTable = CREGChartTable(
+      result: changed,
+      sql: "SELECT fund, current_market_value FROM properties",
+      question: "Show value by fund")
+
+    #expect(table.chartDataVersion == PreparedFollowUpIntegrity.fingerprint(result: result))
+    #expect(retimedTable.chartDataVersion == table.chartDataVersion)
+    #expect(changedTable.chartDataVersion != table.chartDataVersion)
+  }
+
   @Test func unitHintsTakePriorityOverExplicitYearDimensions() {
     let percent = CREGChartAdapter.hints(
       for: "year_over_year_growth_rate", projection: nil)
@@ -443,7 +472,7 @@ import Testing
             [.text("Harbor Point"), .text("Bay Bank"), .real(25_000_000), .text("2027-04-01")],
             [.text("Eastgate"), .text("Union Credit"), .real(18_500_000), .text("2028-02-15")],
           ]),
-        .line
+        .range
       ),
     ]
 
