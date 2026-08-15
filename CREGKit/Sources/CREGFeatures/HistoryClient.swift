@@ -153,11 +153,20 @@ extension HistoryClient {
 /// `message`/`event` tables) is adopted by the baseline migration and rebuilt
 /// with typed columns without losing a message.
 final class HistoryStore: Sendable {
+  private enum TerminalMessageWrite: Sendable {
+    case update
+    case append(payload: String)
+  }
+
   private let queue: DatabaseQueue
   private static let encoder = JSONEncoder()
   private static let decoder = JSONDecoder()
   /// Auto-titles cap at this many characters (first user question).
   static let titleLimit = 80
+
+  private static func encodedPayload(for message: ChatMessage) throws -> String {
+    String(decoding: try encoder.encode(message), as: UTF8.self)
+  }
 
   init(databaseURL: URL) throws {
     queue = try DatabaseQueue(path: databaseURL.path)
@@ -601,9 +610,10 @@ final class HistoryStore: Sendable {
   // MARK: Messages and events
 
   func appendMessage(conversationID: UUID, message: ChatMessage) async throws {
+    let payload = try Self.encodedPayload(for: message)
     try await queue.write { db in
       _ = try Self.appendMessage(
-        db, conversationID: conversationID, message: message)
+        db, conversationID: conversationID, message: message, payload: payload)
     }
   }
 
@@ -611,10 +621,9 @@ final class HistoryStore: Sendable {
   private static func appendMessage(
     _ db: Database,
     conversationID: UUID,
-    message: ChatMessage
+    message: ChatMessage,
+    payload: String
   ) throws -> Bool {
-    let payload = String(
-      decoding: try encoder.encode(message), as: UTF8.self)
     let position =
       try Int.fetchOne(
         db,
@@ -898,9 +907,10 @@ final class HistoryStore: Sendable {
     question: String,
     startedAt: Date
   ) async throws {
+    let payload = try Self.encodedPayload(for: message)
     try await queue.write { db in
       let inserted = try Self.appendMessage(
-        db, conversationID: conversationID, message: message)
+        db, conversationID: conversationID, message: message, payload: payload)
       // A Stop path may have already persisted and completed this exact turn.
       // A late duplicate user write must not reopen its interruption journal.
       guard inserted else { return }
@@ -922,12 +932,17 @@ final class HistoryStore: Sendable {
     replacesExisting: Bool,
     lines: [String]
   ) async throws {
+    let messageWrite: TerminalMessageWrite =
+      replacesExisting
+      ? .update
+      : .append(payload: try Self.encodedPayload(for: message))
     try await queue.write { db in
-      if replacesExisting {
+      switch messageWrite {
+      case .update:
         try Self.updateMessage(db, conversationID: conversationID, message: message)
-      } else {
+      case .append(let payload):
         try Self.appendMessage(
-          db, conversationID: conversationID, message: message)
+          db, conversationID: conversationID, message: message, payload: payload)
       }
       try Self.appendEvents(
         db, conversationID: conversationID, messageID: message.id, lines: lines)

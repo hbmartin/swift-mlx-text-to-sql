@@ -735,14 +735,8 @@ actor MessageUpdateQueue {
       switch state {
       case .resolved(let resolved):
         result = resolved
-      case .active:
+      case .active(var continuations):
         result = await withCheckedContinuation { continuation in
-          guard case .active(var continuations) = onceSaves[key] else {
-            if case .resolved(let resolved) = onceSaves[key] {
-              continuation.resume(returning: resolved)
-            }
-            return
-          }
           continuations.append(continuation)
           onceSaves[key] = .active(continuations)
         }
@@ -766,7 +760,9 @@ actor MessageUpdateQueue {
   }
 
   func forgetOnceSave(conversationID: UUID, messageID: UUID) {
-    onceSaves[Key(conversationID: conversationID, messageID: messageID)] = nil
+    let key = Key(conversationID: conversationID, messageID: messageID)
+    guard case .resolved = onceSaves[key] else { return }
+    onceSaves[key] = nil
   }
 
   func beginDeletingConversation(_ conversationID: UUID) async {
@@ -789,8 +785,13 @@ actor MessageUpdateQueue {
     latestRevisions = latestRevisions.filter {
       $0.key.conversationID != conversationID
     }
+    // An active once-save can outlive the conversation FIFO while its owner
+    // waits for deletion resolution. Retain it until `resolveOnceSave` resumes
+    // every coalesced caller; resolved cache entries can be pruned immediately.
     onceSaves = onceSaves.filter {
-      $0.key.conversationID != conversationID
+      guard $0.key.conversationID == conversationID else { return true }
+      if case .active = $0.value { return true }
+      return false
     }
     resolveDeletionWaiters(conversationID, shouldSave: false)
   }
@@ -804,11 +805,15 @@ actor MessageUpdateQueue {
     latestRevisions.count
   }
 
-  #if DEBUG
-    func isDeletingConversation(_ conversationID: UUID) -> Bool {
-      deletingConversationIDs.contains(conversationID)
-    }
-  #endif
+  func onceSaveWaiterCount(conversationID: UUID, messageID: UUID) -> Int {
+    let key = Key(conversationID: conversationID, messageID: messageID)
+    guard case .active(let continuations) = onceSaves[key] else { return 0 }
+    return continuations.count
+  }
+
+  func isDeletingConversation(_ conversationID: UUID) -> Bool {
+    deletingConversationIDs.contains(conversationID)
+  }
 
   private func acquire(_ conversationID: UUID) async {
     if activeConversationIDs.contains(conversationID) {
