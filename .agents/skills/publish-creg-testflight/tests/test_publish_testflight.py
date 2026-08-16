@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "publish_testflight.py"
 MISSING = object()
@@ -57,6 +58,52 @@ def inspector_report(
             artifact("ipa", ipa_build),
         ],
     }
+
+
+class VerifyModelInputsTests(unittest.TestCase):
+    def test_rejects_non_object_manifest_sections_with_release_errors(self) -> None:
+        invalid_sections = (
+            ("outputs", [], "Training manifest outputs"),
+            (
+                "checkpoint_evaluation",
+                "invalid",
+                "Training manifest checkpoint_evaluation",
+            ),
+            (
+                "selected",
+                [],
+                "Training manifest checkpoint_evaluation.selected",
+            ),
+            ("experiment", None, "Training manifest experiment"),
+        )
+        for section, invalid_value, description in invalid_sections:
+            manifest: dict[str, Any] = {
+                "run_id": "training-run",
+                "outputs": {"adapter": "models/adapters/training-run"},
+                "checkpoint_evaluation": {
+                    "selected": {
+                        "checkpoint_path": (
+                            "models/adapters/training-run/model.safetensors"
+                        )
+                    }
+                },
+                "experiment": {"model_key": "model"},
+            }
+            if section == "selected":
+                manifest["checkpoint_evaluation"]["selected"] = invalid_value
+            else:
+                manifest[section] = invalid_value
+
+            with (
+                self.subTest(section=section),
+                patch.object(publisher, "require_directory"),
+                patch.object(publisher, "require_file"),
+                patch.object(publisher, "load_json", return_value=manifest),
+                self.assertRaises(publisher.ReleaseError) as caught,
+            ):
+                publisher.verify_model_inputs(Path("/repo"), "training-run")
+
+            self.assertEqual(str(caught.exception), f"{description} must be an object")
 
 
 class RequireInspectorReportTests(unittest.TestCase):
