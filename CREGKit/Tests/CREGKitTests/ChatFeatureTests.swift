@@ -283,6 +283,80 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.presentedFailure?.code == "history_message_save_failed")
   }
 
+  @Test func backgroundPersistenceRollbackPreservesTheLoadedConversationTitle() async {
+    let gate = UserPersistenceOrderingGate()
+    var state = Self.appState(selected: Self.conversationA)
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(89),
+        conversationID: Self.conversationB,
+        question: "Fail in the background",
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    var history = HistoryClient.noop()
+    history.persistUserTurn = { _, _, _, _ in
+      await gate.holdUserWrite()
+      throw SchedulerPersistenceTestError.failed
+    }
+    let clock = TestClock()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.dispatchNextIfIdle)
+    await gate.waitUntilUserWriteStarts()
+    #expect(
+      store.state.activeTurn?.optimisticUserTurn?.previousChatTitle
+        == "Lease expirations")
+
+    let loadedSummary = state.conversations[id: Self.conversationB]!
+    await store.send(
+      .conversationLoaded(ConversationSnapshot(summary: loadedSummary)))
+    #expect(store.state.chat?.title == "Lease expirations")
+
+    await gate.releaseUserWrite()
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.chat?.conversationID == Self.conversationB)
+    #expect(store.state.chat?.title == "Lease expirations")
+    #expect(store.state.chat?.messages.isEmpty == true)
+  }
+
+  @Test func staleUserPersistenceFailureRemovesItsExactOptimisticMessage() async {
+    var state = Self.appState()
+    let message = ChatMessage(
+      id: UUID(89), role: .user, body: .text("Never persisted"),
+      createdAt: Date(timeIntervalSince1970: 2))
+    state.chat?.messages.append(message)
+    let optimisticTurn = AppFeature.OptimisticUserTurn(
+      message: message,
+      previousSummary: state.conversations[id: Self.conversationA],
+      previousChatTitle: state.chat?.title)
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .userTurnPersistenceFailed(
+        conversationID: Self.conversationA,
+        questionID: UUID(90),
+        optimisticTurn: optimisticTurn,
+        failure: nil))
+    await store.finish()
+
+    #expect(store.state.chat?.messages[id: message.id] == nil)
+  }
+
   @Test func stopWaitsForTheUserWriteBeforePersistingItsTerminalMessage() async {
     let gate = UserPersistenceOrderingGate()
     var history = HistoryClient.noop()
@@ -1038,16 +1112,39 @@ private actor UserPersistenceOrderingGate {
       questionID: activeID,
       question: "running",
       startedAt: Date(timeIntervalSince1970: 0))
+    let terminalWrites = CallRecorder()
+    var history = HistoryClient.noop()
+    history.persistTerminalTurn = { _, _, _, _ in
+      terminalWrites.record("terminal")
+    }
+    let clock = TestClock()
     let store = TestStore(initialState: state) {
       AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = clock
     }
     store.exhaustivity = .off
 
     await store.send(.chat(.delegate(.stopActiveTurn)))
 
-    #expect(store.state.activeTurn == nil)
+    #expect(store.state.activeTurn?.questionID == activeID)
     #expect(store.state.pendingTurnPersistence == pending)
+    #expect(store.state.deferredStopQuestionID == activeID)
+    #expect(store.state.chat?.processing?.questionID == activeID)
+
+    await store.send(.turnPersistenceFinished(pending.questionID))
+    await store.receive(.resumeDeferredStop(activeID))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.pendingTurnPersistence == nil)
+    #expect(store.state.deferredStopQuestionID == nil)
     #expect(store.state.chat?.processing == nil)
+    #expect(terminalWrites.recorded == ["terminal"])
   }
 
   @Test func terminalOutcomeDuringPersistenceBarrierIsDeferredAndReplayed() async {
@@ -1066,14 +1163,22 @@ private actor UserPersistenceOrderingGate {
       question: "running",
       startedAt: Date(timeIntervalSince1970: 0))
     let diagnosticCodes = CallRecorder()
+    let eventWrites = CallRecorder()
+    let terminalEvent = Self.finishedEvent()
+    var history = HistoryClient.noop()
+    history.persistTerminalTurn = { _, _, _, lines in
+      for line in lines {
+        eventWrites.record(line)
+      }
+    }
     let clock = TestClock()
     let store = TestStore(initialState: state) {
       AppFeature()
-    } withDependencies: {
+    } withDependencies: { [history] in
       $0.diagnostics = DiagnosticsClient { event in
         diagnosticCodes.record(event.code)
       }
-      $0.historyClient = .noop()
+      $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 5))
       $0.continuousClock = clock
@@ -1084,7 +1189,7 @@ private actor UserPersistenceOrderingGate {
       .pipelineEvent(
         conversationID: Self.conversationA,
         questionID: activeID,
-        event: Self.finishedEvent()))
+        event: terminalEvent))
 
     #expect(store.state.activeTurn?.questionID == activeID)
     #expect(store.state.pendingTurnPersistence == pending)
@@ -1099,7 +1204,7 @@ private actor UserPersistenceOrderingGate {
       .pipelineEvent(
         conversationID: Self.conversationA,
         questionID: activeID,
-        event: Self.finishedEvent()))
+        event: terminalEvent))
 
     #expect(store.state.activeTurn == nil)
     #expect(store.state.deferredTerminalEvent == nil)
@@ -1107,6 +1212,8 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.chat?.messages.count == 1)
     await store.finish()
     await store.skipReceivedActions()
+    let terminalLine = try? terminalEvent.jsonLine()
+    #expect(eventWrites.recorded.filter { $0 == terminalLine }.count == 1)
   }
 
   @Test func backgroundCompletionMarksUnreadWithoutChangingSelection() async {

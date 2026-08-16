@@ -747,6 +747,86 @@ import Testing
     #expect(writes.values == ["write"])
   }
 
+  @Test func forgettingAnActiveOnceSaveDoesNotAbandonItsWaiters() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let messageID = UUID()
+    let gate = FirstPreferenceSaveGate()
+    let writes = PreferenceWriteRecorder()
+    let first = Task {
+      try await queue.saveOnce(
+        conversationID: conversationID,
+        messageID: messageID
+      ) {
+        writes.record("write")
+        await gate.delayFirstSave()
+      }
+    }
+    await gate.waitUntilFirstSaveStarts()
+    let second = Task {
+      try await queue.saveOnce(
+        conversationID: conversationID,
+        messageID: messageID
+      ) {
+        writes.record("duplicate")
+      }
+    }
+    while await queue.onceSaveWaiterCount(
+      conversationID: conversationID, messageID: messageID) == 0
+    {
+      await Task.yield()
+    }
+
+    await queue.forgetOnceSave(
+      conversationID: conversationID, messageID: messageID)
+    await gate.releaseFirstSave()
+
+    #expect(try await first.value == .saved)
+    #expect(try await second.value == .saved)
+    #expect(writes.values == ["write"])
+  }
+
+  @Test func confirmedDeletionResumesCoalescedOnceSaveCallers() async throws {
+    let queue = MessageUpdateQueue()
+    let conversationID = UUID()
+    let messageID = UUID()
+    let gate = FirstPreferenceSaveGate()
+    let first = Task {
+      try await queue.saveOnce(
+        conversationID: conversationID,
+        messageID: messageID
+      ) {
+        await gate.delayFirstSave()
+        throw PreferenceSaveTestError.failed
+      }
+    }
+    await gate.waitUntilFirstSaveStarts()
+    let second = Task {
+      try await queue.saveOnce(
+        conversationID: conversationID,
+        messageID: messageID
+      ) {}
+    }
+    while await queue.onceSaveWaiterCount(
+      conversationID: conversationID, messageID: messageID) == 0
+    {
+      await Task.yield()
+    }
+
+    let deletion = Task {
+      await queue.beginDeletingConversation(conversationID)
+    }
+    while !(await queue.isDeletingConversation(conversationID)) {
+      await Task.yield()
+    }
+    await gate.releaseFirstSave()
+    await deletion.value
+    await queue.confirmConversationDeletion(conversationID)
+
+    #expect(try await first.value == .discardedDuringDeletion)
+    #expect(try await second.value == .discardedDuringDeletion)
+  }
+
   @Test func confirmedConversationDeletionPrunesRevisionTombstones() async throws {
     let queue = MessageUpdateQueue()
     let deletedConversationID = UUID()
