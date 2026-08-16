@@ -660,14 +660,18 @@ def require_inspector_report(
         raise ReleaseError("Artifact inspector report must contain archive and IPA")
     archive = by_kind["archive"]
     ipa = by_kind["ipa"]
+    archive_build = archive.get("build_number")
+    ipa_build = ipa.get("build_number")
+    if not all(
+        isinstance(build_number, str) and build_number
+        for build_number in (archive_build, ipa_build)
+    ):
+        raise ReleaseError("Artifact inspector report is missing a build number")
     for artifact in (archive, ipa):
         if artifact.get("bundle_identifier") != BUNDLE_IDENTIFIER:
             raise ReleaseError("Verified artifact has an unexpected bundle identifier")
         if artifact.get("build_channel") != BUILD_CHANNEL:
             raise ReleaseError("Verified artifact is not a Beta build")
-        build_number = artifact.get("build_number")
-        if not isinstance(build_number, str) or not build_number:
-            raise ReleaseError("Verified artifact build number is missing")
         candidate = artifact.get("debug_candidate")
         if (
             not isinstance(candidate, dict)
@@ -678,7 +682,7 @@ def require_inspector_report(
         metal = artifact.get("metal")
         if not isinstance(metal, dict) or not metal:
             raise ReleaseError("Verified artifact is missing Metal resource verification")
-    if archive.get("build_number") != ipa.get("build_number"):
+    if archive_build != ipa_build:
         raise ReleaseError("Archive and IPA build numbers do not match")
     if archive.get("debug_candidate") != ipa.get("debug_candidate"):
         raise ReleaseError("Archive and IPA candidate identities do not match")
@@ -720,7 +724,7 @@ def require_inspector_report(
     if archive.get("metal") != ipa.get("metal"):
         raise ReleaseError("Archive and IPA Metal resource verification does not match")
     return {
-        "build_number": archive["build_number"],
+        "build_number": archive_build,
         "debug_candidate": archive["debug_candidate"],
         "model": {key: archive_model[key] for key in model_keys},
         "metal": archive["metal"],
