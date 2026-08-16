@@ -296,13 +296,15 @@ final class ResultChartAnalysis {
     result: QueryResult,
     sql: String,
     question: String?,
-    resultFingerprint: String? = nil
+    resultFingerprint: String? = nil,
+    dataIdentity: String? = nil
   ) {
     let chart = CREGChartAdapter.recommendations(
       result: result,
       sql: sql,
       question: question,
-      resultFingerprint: resultFingerprint)
+      resultFingerprint: resultFingerprint,
+      dataIdentity: dataIdentity)
     table = chart.table
     recommendations = chart.set.chartRecommendations
   }
@@ -340,7 +342,8 @@ enum ResultPreviewChartCache {
       result: result,
       sql: sql,
       question: question,
-      resultFingerprint: resultFingerprint)
+      resultFingerprint: resultFingerprint,
+      dataIdentity: "CREG.Result.v1:\(messageID.uuidString.lowercased())")
     entries[messageID] = Entry(
       resultFingerprint: resultFingerprint,
       sql: sql,

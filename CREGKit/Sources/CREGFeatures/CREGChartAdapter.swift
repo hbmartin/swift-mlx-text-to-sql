@@ -15,6 +15,7 @@ struct CREGChartTable: AutoChartTable {
   var chartColumns: [AutoChartColumn]
   var chartRows: [CREGChartRow]
   var chartMetadata: AutoChartTableMetadata
+  var chartDataIdentity: String?
   var chartDataVersion: String?
   var context: AutoChartContext
 
@@ -22,7 +23,8 @@ struct CREGChartTable: AutoChartTable {
     result: QueryResult,
     sql: String,
     question: String?,
-    resultFingerprint: String? = nil
+    resultFingerprint: String? = nil,
+    dataIdentity: String? = nil
   ) {
     let projections = CREGChartAdapter.alignedProjections(
       sql, columnCount: result.columns.count)
@@ -56,6 +58,7 @@ struct CREGChartTable: AutoChartTable {
     chartMetadata = AutoChartTableMetadata(
       isTruncated: result.isTruncated,
       provenance: "CREG query result")
+    chartDataIdentity = dataIdentity
     chartDataVersion = [
       "CREG.ChartData.v1",
       resultFingerprint ?? PreparedFollowUpIntegrity.fingerprint(result: result),
@@ -81,13 +84,15 @@ enum CREGChartAdapter {
     result: QueryResult,
     sql: String,
     question: String?,
-    resultFingerprint: String? = nil
+    resultFingerprint: String? = nil,
+    dataIdentity: String? = nil
   ) -> (table: CREGChartTable, set: AutoChartRecommendationSet) {
     let table = CREGChartTable(
       result: result,
       sql: sql,
       question: question,
-      resultFingerprint: resultFingerprint)
+      resultFingerprint: resultFingerprint,
+      dataIdentity: dataIdentity)
     return (
       table,
       AutoChartEngine.recommendations(for: table, context: table.context)
