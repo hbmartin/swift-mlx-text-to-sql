@@ -69,6 +69,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
       resultPresentation
   }
 
+  /// SQLite patches this field without decoding the full payload. Derive the
+  /// path from the durable Codable key so schema changes update both together.
+  static let persistedResultPresentationJSONPath =
+    "$.\(CodingKeys.resultPresentation.stringValue)"
+
   /// Old histories stored a mutable six-field developer summary under
   /// `devInfo`. If that legacy shape cannot decode as TurnTelemetry, the
   /// message still loads and retains all user-visible content.

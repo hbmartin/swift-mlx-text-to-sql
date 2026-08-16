@@ -805,17 +805,15 @@ actor MessageUpdateQueue {
     latestRevisions.count
   }
 
-  #if DEBUG
-    func onceSaveWaiterCount(conversationID: UUID, messageID: UUID) -> Int {
-      let key = Key(conversationID: conversationID, messageID: messageID)
-      guard case .active(let continuations) = onceSaves[key] else { return 0 }
-      return continuations.count
-    }
+  func onceSaveWaiterCount(conversationID: UUID, messageID: UUID) -> Int {
+    let key = Key(conversationID: conversationID, messageID: messageID)
+    guard case .active(let continuations) = onceSaves[key] else { return 0 }
+    return continuations.count
+  }
 
-    func isDeletingConversation(_ conversationID: UUID) -> Bool {
-      deletingConversationIDs.contains(conversationID)
-    }
-  #endif
+  func isDeletingConversation(_ conversationID: UUID) -> Bool {
+    deletingConversationIDs.contains(conversationID)
+  }
 
   private func acquire(_ conversationID: UUID) async {
     if activeConversationIDs.contains(conversationID) {

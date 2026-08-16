@@ -699,11 +699,28 @@ public struct AppFeature: Sendable {
           if state.chat?.conversationID == conversationID {
             state.chat?.messages.remove(id: optimisticTurn.message.id)
           }
-          return .run { _ in
-            await messageUpdateQueue.forgetOnceSave(
-              conversationID: conversationID,
-              messageID: optimisticTurn.message.id)
+          var effects: [Effect<Action>] = [
+            .run { _ in
+              await messageUpdateQueue.forgetOnceSave(
+                conversationID: conversationID,
+                messageID: optimisticTurn.message.id)
+            }
+          ]
+          if let failure {
+            let alreadyDeferredForDeletion =
+              state.pendingDeletion?.summary.id == conversationID
+              && state.pendingDeletion?.deferredFailure != nil
+            if !alreadyDeferredForDeletion,
+              state.presentedFailure != failure
+            {
+              effects.append(
+                handleConversationWriteFailure(
+                  state: &state,
+                  conversationID: conversationID,
+                  failure: failure))
+            }
           }
+          return .merge(effects)
         }
         rollBackOptimisticUserTurn(
           state: &state,

@@ -485,6 +485,40 @@ import Testing
     #expect(sql == "SELECT 2")
   }
 
+  @Test func wholeMessageUpdatePreservesANewerPresentationPreference() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let original = answerMessage(
+      narration: "Initial narration.", at: 10)
+    try await client.appendMessage(conversationID, original)
+
+    var preferenceWrite = original
+    preferenceWrite.resultPresentation = ResultPresentationPreference(
+      mode: .table, specificationID: "policy|table")
+    try await client.updateResultPresentation(conversationID, preferenceWrite)
+
+    var staleWholeMessage = original
+    staleWholeMessage.body = .answer(
+      result: QueryResult(columns: ["n"], rows: [[.integer(2)]]),
+      narration: "Recovered final narration.",
+      sql: "SELECT 2",
+      notice: nil)
+    try await client.updateMessage(conversationID, staleWholeMessage)
+
+    let stored = try #require(
+      try await client.loadConversation(conversationID).messages.last)
+    #expect(stored.resultPresentation == preferenceWrite.resultPresentation)
+    guard case .answer(let result, let narration, let sql, _) = stored.body else {
+      Issue.record("Expected the recovered whole-message body")
+      return
+    }
+    #expect(result.rows == [[.integer(2)]])
+    #expect(narration == "Recovered final narration.")
+    #expect(sql == "SELECT 2")
+  }
+
   @Test func wholeMessageUpdateRepairsAnUndecodableStoredPayload() async throws {
     let url = temporaryDatabaseURL()
     let client = try makeClient(url)

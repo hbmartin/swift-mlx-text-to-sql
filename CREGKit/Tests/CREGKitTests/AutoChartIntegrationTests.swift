@@ -111,30 +111,38 @@ import Testing
     #expect(raw.aggregationSafety == .unknown)
   }
 
-  @Test func chartDataVersionTracksEveryAdaptedTableInput() {
+  @Test func chartCacheKeysTrackIdentityAndEveryAdaptedTableInput() {
     let result = QueryResult(
       columns: ["fund", "current_market_value"],
       rows: [[.text("Core"), .real(10)]],
       elapsedMicroseconds: 50)
+    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
     let directSQL = "SELECT fund, current_market_value FROM properties"
     let table = CREGChartTable(
       result: result,
       sql: directSQL,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: resultFingerprint,
+      dataIdentity: "CREG.Result.v1:message-1")
 
     var retimed = result
     retimed.elapsedMicroseconds = 9_999
     let retimedTable = CREGChartTable(
       result: retimed,
       sql: directSQL,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: resultFingerprint,
+      dataIdentity: "CREG.Result.v1:message-1")
 
     var changed = result
     changed.rows[0][1] = .real(11)
+    let changedFingerprint = PreparedFollowUpIntegrity.fingerprint(result: changed)
     let changedTable = CREGChartTable(
       result: changed,
       sql: directSQL,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: changedFingerprint,
+      dataIdentity: "CREG.Result.v1:message-1")
 
     let aggregatedTable = CREGChartTable(
       result: result,
@@ -143,8 +151,20 @@ import Testing
         FROM properties
         GROUP BY fund
         """,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: resultFingerprint,
+      dataIdentity: "CREG.Result.v1:message-1")
+    let distinctTable = CREGChartTable(
+      result: result,
+      sql: directSQL,
+      question: "Show value by fund",
+      resultFingerprint: resultFingerprint,
+      dataIdentity: "CREG.Result.v1:message-2")
 
+    #expect(retimedTable.chartDataIdentity == table.chartDataIdentity)
+    #expect(changedTable.chartDataIdentity == table.chartDataIdentity)
+    #expect(distinctTable.chartDataIdentity != table.chartDataIdentity)
+    #expect(distinctTable.chartDataVersion == table.chartDataVersion)
     #expect(retimedTable.chartDataVersion == table.chartDataVersion)
     #expect(changedTable.chartDataVersion != table.chartDataVersion)
     #expect(aggregatedTable.chartColumns != table.chartColumns)
@@ -340,6 +360,9 @@ import Testing
       messageID: messageID, resultFingerprint: resultFingerprint, result: result,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(first === second)
+    #expect(
+      first.table.chartDataIdentity
+        == "CREG.Result.v1:\(messageID.uuidString.lowercased())")
 
     var retimed = result
     retimed.elapsedMicroseconds = 42_000
@@ -388,6 +411,7 @@ import Testing
       messageID: messageID, resultFingerprint: changedFingerprint, result: changed,
       sql: "SELECT fund, current_market_value FROM properties", question: nil)
     #expect(first !== third)
+    #expect(third.table.chartDataIdentity == first.table.chartDataIdentity)
 
     ResultPreviewChartCache.removeAll()
     let afterRelease = ResultPreviewChartCache.analysis(

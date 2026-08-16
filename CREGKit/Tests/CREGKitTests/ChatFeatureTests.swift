@@ -342,14 +342,16 @@ private actor UserPersistenceOrderingGate {
       title: "Couldn’t delete conversation",
       message: "The conversation was restored.",
       diagnostic: "delete failed")
-    state.pendingDeletion = AppFeature.PendingDeletion(
-      summary: state.conversations[id: Self.conversationA]!,
-      index: 0,
-      deferredFailure: deferredDeletionFailure)
+    let deletedSummary = state.conversations[id: Self.conversationA]!
     let optimisticTurn = AppFeature.OptimisticUserTurn(
       message: message,
-      previousSummary: state.conversations[id: Self.conversationA],
+      previousSummary: deletedSummary,
       previousChatTitle: state.chat?.title)
+    state.conversations.remove(id: Self.conversationA)
+    state.pendingDeletion = AppFeature.PendingDeletion(
+      summary: deletedSummary,
+      index: 0,
+      deferredFailure: deferredDeletionFailure)
     let store = TestStore(initialState: state) {
       AppFeature()
     }
@@ -370,6 +372,78 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.chat?.messages[id: message.id] == nil)
     #expect(store.state.presentedFailure == nil)
     #expect(store.state.pendingDeletion?.deferredFailure == deferredDeletionFailure)
+  }
+
+  @Test func staleUserPersistenceFailureIsDeferredDuringUndoWindow() async {
+    var state = Self.appState()
+    let message = ChatMessage(
+      id: UUID(91), role: .user, body: .text("Never persisted"),
+      createdAt: Date(timeIntervalSince1970: 2))
+    state.chat?.messages.append(message)
+    let deletedSummary = state.conversations[id: Self.conversationA]!
+    let optimisticTurn = AppFeature.OptimisticUserTurn(
+      message: message,
+      previousSummary: deletedSummary,
+      previousChatTitle: state.chat?.title)
+    state.conversations.remove(id: Self.conversationA)
+    state.pendingDeletion = AppFeature.PendingDeletion(
+      summary: deletedSummary, index: 0)
+    let failure = FailurePresentation(
+      code: "history_message_save_failed",
+      title: "Couldn’t save message",
+      message: "Try again.",
+      diagnostic: "first failure during deletion")
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .userTurnPersistenceFailed(
+        conversationID: Self.conversationA,
+        questionID: UUID(92),
+        optimisticTurn: optimisticTurn,
+        failure: failure))
+    await store.finish()
+
+    #expect(store.state.chat?.messages[id: message.id] == nil)
+    #expect(store.state.presentedFailure == nil)
+    #expect(store.state.pendingDeletion?.deferredFailure == failure)
+  }
+
+  @Test func staleUserPersistenceFailureAfterUndoIsPresented() async {
+    var state = Self.appState()
+    let message = ChatMessage(
+      id: UUID(93), role: .user, body: .text("Never persisted"),
+      createdAt: Date(timeIntervalSince1970: 2))
+    state.chat?.messages.append(message)
+    let optimisticTurn = AppFeature.OptimisticUserTurn(
+      message: message,
+      previousSummary: state.conversations[id: Self.conversationA],
+      previousChatTitle: state.chat?.title)
+    let failure = FailurePresentation(
+      code: "history_message_save_failed",
+      title: "Couldn’t save message",
+      message: "Try again.",
+      diagnostic: "failure after undo")
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .userTurnPersistenceFailed(
+        conversationID: Self.conversationA,
+        questionID: UUID(94),
+        optimisticTurn: optimisticTurn,
+        failure: failure))
+    await store.receive(.operationFailed(failure)) {
+      $0.presentedFailure = failure
+    }
+    await store.finish()
+
+    #expect(store.state.chat?.messages[id: message.id] == nil)
+    #expect(store.state.presentedFailure == failure)
   }
 
   @Test func stopWaitsForTheUserWriteBeforePersistingItsTerminalMessage() async {
