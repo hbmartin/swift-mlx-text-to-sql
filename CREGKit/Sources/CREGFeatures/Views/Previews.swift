@@ -26,6 +26,25 @@ enum PreviewFixtures {
     isTruncated: false,
     elapsedMicroseconds: 5_800)
 
+  static let loanMaturityResult = QueryResult(
+    columns: ["property", "lender", "current_balance", "maturity_date"],
+    rows: [
+      [
+        .text("Harbor Point Tower"), .text("Bay Bank"), .real(25_000_000),
+        .text("2027-04-01"),
+      ],
+      [
+        .text("Eastgate Industrial"), .text("Union Credit"), .real(18_500_000),
+        .text("2027-11-15"),
+      ],
+      [
+        .text("Meridian Plaza"), .text("Pacific Trust"), .real(40_700_000),
+        .text("2028-02-15"),
+      ],
+    ],
+    isTruncated: false,
+    elapsedMicroseconds: 7_200)
+
   static let leaseListingResult: QueryResult = {
     let tenants = ["Northwind Logistics", "Cascade Legal Group", "Béa Café", "Atlas Data"]
     let properties = ["Harbor Point Tower", "Meridian Plaza", "Eastgate Industrial"]
@@ -478,6 +497,17 @@ enum PreviewFixtures {
     sql: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql,
     question: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.question)
     .frame(width: 402, height: 874)
+}
+
+#Preview("Result Viewer — Loan Maturities — Range Chart") {
+  ResultViewerView(
+    result: PreviewFixtures.loanMaturityResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.standard),
+    sql: StarterQueryID.loanMaturitiesNextTwentyFourMonthsV1.sql,
+    question: StarterQueryID.loanMaturitiesNextTwentyFourMonthsV1.question
+  )
+  .frame(width: 402, height: 874)
 }
 
 #Preview("Result Viewer — Bar Chart — Light") {

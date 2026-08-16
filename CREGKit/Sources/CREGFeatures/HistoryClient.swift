@@ -153,11 +153,6 @@ extension HistoryClient {
 /// `message`/`event` tables) is adopted by the baseline migration and rebuilt
 /// with typed columns without losing a message.
 final class HistoryStore: Sendable {
-  private enum TerminalMessageWrite: Sendable {
-    case update
-    case append(payload: String)
-  }
-
   private let queue: DatabaseQueue
   private static let encoder = JSONEncoder()
   private static let decoder = JSONDecoder()
@@ -679,40 +674,45 @@ final class HistoryStore: Sendable {
   }
 
   func updateMessage(conversationID: UUID, message: ChatMessage) async throws {
+    let payload = try Self.encodedPayload(for: message)
     try await queue.write { db in
-      try Self.updateMessage(db, conversationID: conversationID, message: message)
+      try Self.updateMessage(
+        db,
+        conversationID: conversationID,
+        message: message,
+        payload: payload)
     }
   }
 
   private static func updateMessage(
     _ db: Database,
     conversationID: UUID,
-    message: ChatMessage
+    message: ChatMessage,
+    payload: String
   ) throws {
-    var mergedMessage = message
-    if let storedPayload = try String.fetchOne(
-      db,
-      sql: """
-        SELECT payload FROM message
-        WHERE id = ? AND conversation_id = ?
-        """,
-      arguments: [message.id.uuidString, conversationID.uuidString])
-    {
-      let storedMessage = try? Self.decoder.decode(
-        ChatMessage.self, from: Data(storedPayload.utf8))
-      mergedMessage.resultPresentation =
-        storedMessage?.resultPresentation ?? message.resultPresentation
-    }
-    let payload = String(
-      decoding: try Self.encoder.encode(mergedMessage), as: UTF8.self)
+    // A chart/table preference can race final narration. Merge that one field
+    // in SQLite so the large message is encoded before acquiring the writer
+    // and never decoded or re-encoded while the transaction is open.
     try db.execute(
       sql: """
-        UPDATE message SET payload = ?
+        UPDATE message
+        SET payload = CASE
+          WHEN json_valid(payload) THEN
+            CASE
+              WHEN json_type(payload, '$.resultPresentation') = 'object'
+              THEN json_set(
+                ?, '$.resultPresentation',
+                json_extract(payload, '$.resultPresentation'))
+              ELSE ?
+            END
+          ELSE ?
+        END
         WHERE id = ? AND conversation_id = ?
         """,
-      arguments: [
-        payload, message.id.uuidString, conversationID.uuidString,
-      ])
+        arguments: [
+          payload, payload, payload,
+          message.id.uuidString, conversationID.uuidString,
+        ])
     if db.changesCount != 1 {
       // A prepared-result preview and its final narration are emitted by
       // separate reducer effects. If finalization reaches the store first,
@@ -747,7 +747,7 @@ final class HistoryStore: Sendable {
     try db.execute(
       sql: "DELETE FROM search_index WHERE conversation_id = ? AND message_id = ?",
       arguments: [conversationID.uuidString, message.id.uuidString])
-    if let entry = Self.searchEntry(for: mergedMessage) {
+    if let entry = Self.searchEntry(for: message) {
       try db.execute(
         sql: """
           INSERT INTO search_index (content, conversation_id, message_id, kind)
@@ -932,15 +932,15 @@ final class HistoryStore: Sendable {
     replacesExisting: Bool,
     lines: [String]
   ) async throws {
-    let messageWrite: TerminalMessageWrite =
-      replacesExisting
-      ? .update
-      : .append(payload: try Self.encodedPayload(for: message))
+    let payload = try Self.encodedPayload(for: message)
     try await queue.write { db in
-      switch messageWrite {
-      case .update:
-        try Self.updateMessage(db, conversationID: conversationID, message: message)
-      case .append(let payload):
+      if replacesExisting {
+        try Self.updateMessage(
+          db,
+          conversationID: conversationID,
+          message: message,
+          payload: payload)
+      } else {
         try Self.appendMessage(
           db, conversationID: conversationID, message: message, payload: payload)
       }

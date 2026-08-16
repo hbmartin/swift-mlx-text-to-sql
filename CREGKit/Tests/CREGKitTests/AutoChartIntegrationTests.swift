@@ -111,6 +111,46 @@ import Testing
     #expect(raw.aggregationSafety == .unknown)
   }
 
+  @Test func chartDataVersionTracksEveryAdaptedTableInput() {
+    let result = QueryResult(
+      columns: ["fund", "current_market_value"],
+      rows: [[.text("Core"), .real(10)]],
+      elapsedMicroseconds: 50)
+    let directSQL = "SELECT fund, current_market_value FROM properties"
+    let table = CREGChartTable(
+      result: result,
+      sql: directSQL,
+      question: "Show value by fund")
+
+    var retimed = result
+    retimed.elapsedMicroseconds = 9_999
+    let retimedTable = CREGChartTable(
+      result: retimed,
+      sql: directSQL,
+      question: "Show value by fund")
+
+    var changed = result
+    changed.rows[0][1] = .real(11)
+    let changedTable = CREGChartTable(
+      result: changed,
+      sql: directSQL,
+      question: "Show value by fund")
+
+    let aggregatedTable = CREGChartTable(
+      result: result,
+      sql: """
+        SELECT fund, SUM(current_market_value) AS current_market_value
+        FROM properties
+        GROUP BY fund
+        """,
+      question: "Show value by fund")
+
+    #expect(retimedTable.chartDataVersion == table.chartDataVersion)
+    #expect(changedTable.chartDataVersion != table.chartDataVersion)
+    #expect(aggregatedTable.chartColumns != table.chartColumns)
+    #expect(aggregatedTable.chartDataVersion != table.chartDataVersion)
+  }
+
   @Test func unitHintsTakePriorityOverExplicitYearDimensions() {
     let percent = CREGChartAdapter.hints(
       for: "year_over_year_growth_rate", projection: nil)
@@ -443,7 +483,7 @@ import Testing
             [.text("Harbor Point"), .text("Bay Bank"), .real(25_000_000), .text("2027-04-01")],
             [.text("Eastgate"), .text("Union Credit"), .real(18_500_000), .text("2028-02-15")],
           ]),
-        .line
+        .range
       ),
     ]
 
