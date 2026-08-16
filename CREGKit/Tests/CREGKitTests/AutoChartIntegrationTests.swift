@@ -116,25 +116,30 @@ import Testing
       columns: ["fund", "current_market_value"],
       rows: [[.text("Core"), .real(10)]],
       elapsedMicroseconds: 50)
+    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
     let directSQL = "SELECT fund, current_market_value FROM properties"
     let table = CREGChartTable(
       result: result,
       sql: directSQL,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: resultFingerprint)
 
     var retimed = result
     retimed.elapsedMicroseconds = 9_999
     let retimedTable = CREGChartTable(
       result: retimed,
       sql: directSQL,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: resultFingerprint)
 
     var changed = result
     changed.rows[0][1] = .real(11)
+    let changedFingerprint = PreparedFollowUpIntegrity.fingerprint(result: changed)
     let changedTable = CREGChartTable(
       result: changed,
       sql: directSQL,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: changedFingerprint)
 
     let aggregatedTable = CREGChartTable(
       result: result,
@@ -143,7 +148,8 @@ import Testing
         FROM properties
         GROUP BY fund
         """,
-      question: "Show value by fund")
+      question: "Show value by fund",
+      resultFingerprint: resultFingerprint)
 
     #expect(retimedTable.chartDataVersion == table.chartDataVersion)
     #expect(changedTable.chartDataVersion != table.chartDataVersion)

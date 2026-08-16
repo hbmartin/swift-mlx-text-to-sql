@@ -693,26 +693,26 @@ final class HistoryStore: Sendable {
     // A chart/table preference can race final narration. Merge that one field
     // in SQLite so the large message is encoded before acquiring the writer
     // and never decoded or re-encoded while the transaction is open.
+    let presentationPath = ChatMessage.persistedResultPresentationJSONPath
     try db.execute(
       sql: """
         UPDATE message
         SET payload = CASE
           WHEN json_valid(payload) THEN
             CASE
-              WHEN json_type(payload, '$.resultPresentation') = 'object'
+              WHEN json_type(payload, '\(presentationPath)') = 'object'
               THEN json_set(
-                ?, '$.resultPresentation',
-                json_extract(payload, '$.resultPresentation'))
-              ELSE ?
+                ?1, '\(presentationPath)',
+                json_extract(payload, '\(presentationPath)'))
+              ELSE ?1
             END
-          ELSE ?
+          ELSE ?1
         END
-        WHERE id = ? AND conversation_id = ?
+        WHERE id = ?2 AND conversation_id = ?3
         """,
-        arguments: [
-          payload, payload, payload,
-          message.id.uuidString, conversationID.uuidString,
-        ])
+      arguments: [
+        payload, message.id.uuidString, conversationID.uuidString,
+      ])
     if db.changesCount != 1 {
       // A prepared-result preview and its final narration are emitted by
       // separate reducer effects. If finalization reaches the store first,
