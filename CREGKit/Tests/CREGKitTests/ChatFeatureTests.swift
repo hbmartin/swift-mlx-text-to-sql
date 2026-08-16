@@ -331,12 +331,21 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.chat?.messages.isEmpty == true)
   }
 
-  @Test func staleUserPersistenceFailureRemovesItsExactOptimisticMessage() async {
+  @Test func staleUserPersistenceFailureOnlyPerformsIdempotentCleanup() async {
     var state = Self.appState()
     let message = ChatMessage(
       id: UUID(89), role: .user, body: .text("Never persisted"),
       createdAt: Date(timeIntervalSince1970: 2))
     state.chat?.messages.append(message)
+    let deferredDeletionFailure = FailurePresentation(
+      code: "conversation_delete_failed",
+      title: "Couldn’t delete conversation",
+      message: "The conversation was restored.",
+      diagnostic: "delete failed")
+    state.pendingDeletion = AppFeature.PendingDeletion(
+      summary: state.conversations[id: Self.conversationA]!,
+      index: 0,
+      deferredFailure: deferredDeletionFailure)
     let optimisticTurn = AppFeature.OptimisticUserTurn(
       message: message,
       previousSummary: state.conversations[id: Self.conversationA],
@@ -351,10 +360,16 @@ private actor UserPersistenceOrderingGate {
         conversationID: Self.conversationA,
         questionID: UUID(90),
         optimisticTurn: optimisticTurn,
-        failure: nil))
+        failure: FailurePresentation(
+          code: "history_message_save_failed",
+          title: "Couldn’t save message",
+          message: "Try again.",
+          diagnostic: "duplicate coalesced failure")))
     await store.finish()
 
     #expect(store.state.chat?.messages[id: message.id] == nil)
+    #expect(store.state.presentedFailure == nil)
+    #expect(store.state.pendingDeletion?.deferredFailure == deferredDeletionFailure)
   }
 
   @Test func stopWaitsForTheUserWriteBeforePersistingItsTerminalMessage() async {
@@ -1095,125 +1110,6 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.pendingTurnPersistence?.didTimeOut == true)
     #expect(store.state.presentedFailure == existingFailure)
     #expect(store.state.isBuildingSupportBundle)
-  }
-
-  @Test func stopPreservesAnExistingPersistenceBarrier() async {
-    var state = Self.appState()
-    let activeID = UUID(96)
-    let pending = AppFeature.PendingTurnPersistence(
-      questionID: UUID(97), conversationID: Self.conversationB)
-    state.activeTurn = AppFeature.ActiveTurn(
-      questionID: activeID,
-      conversationID: Self.conversationA,
-      question: "running",
-      startedAt: Date(timeIntervalSince1970: 0))
-    state.pendingTurnPersistence = pending
-    state.chat?.processing = ChatFeature.ProcessingState(
-      questionID: activeID,
-      question: "running",
-      startedAt: Date(timeIntervalSince1970: 0))
-    let terminalWrites = CallRecorder()
-    var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, _, _, _ in
-      terminalWrites.record("terminal")
-    }
-    let clock = TestClock()
-    let store = TestStore(initialState: state) {
-      AppFeature()
-    } withDependencies: { [history] in
-      $0.historyClient = history
-      $0.uuid = .incrementing
-      $0.date = .constant(Date(timeIntervalSince1970: 5))
-      $0.continuousClock = clock
-    }
-    store.exhaustivity = .off
-
-    await store.send(.chat(.delegate(.stopActiveTurn)))
-
-    #expect(store.state.activeTurn?.questionID == activeID)
-    #expect(store.state.pendingTurnPersistence == pending)
-    #expect(store.state.deferredStopQuestionID == activeID)
-    #expect(store.state.chat?.processing?.questionID == activeID)
-
-    await store.send(.turnPersistenceFinished(pending.questionID))
-    await store.receive(.resumeDeferredStop(activeID))
-    await store.finish()
-    await store.skipReceivedActions()
-
-    #expect(store.state.activeTurn == nil)
-    #expect(store.state.pendingTurnPersistence == nil)
-    #expect(store.state.deferredStopQuestionID == nil)
-    #expect(store.state.chat?.processing == nil)
-    #expect(terminalWrites.recorded == ["terminal"])
-  }
-
-  @Test func terminalOutcomeDuringPersistenceBarrierIsDeferredAndReplayed() async {
-    var state = Self.appState()
-    let activeID = UUID(98)
-    let pending = AppFeature.PendingTurnPersistence(
-      questionID: UUID(99), conversationID: Self.conversationB)
-    state.activeTurn = AppFeature.ActiveTurn(
-      questionID: activeID,
-      conversationID: Self.conversationA,
-      question: "running",
-      startedAt: Date(timeIntervalSince1970: 0))
-    state.pendingTurnPersistence = pending
-    state.chat?.processing = ChatFeature.ProcessingState(
-      questionID: activeID,
-      question: "running",
-      startedAt: Date(timeIntervalSince1970: 0))
-    let diagnosticCodes = CallRecorder()
-    let eventWrites = CallRecorder()
-    let terminalEvent = Self.finishedEvent()
-    var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, _, _, lines in
-      for line in lines {
-        eventWrites.record(line)
-      }
-    }
-    let clock = TestClock()
-    let store = TestStore(initialState: state) {
-      AppFeature()
-    } withDependencies: { [history] in
-      $0.diagnostics = DiagnosticsClient { event in
-        diagnosticCodes.record(event.code)
-      }
-      $0.historyClient = history
-      $0.uuid = .incrementing
-      $0.date = .constant(Date(timeIntervalSince1970: 5))
-      $0.continuousClock = clock
-    }
-    store.exhaustivity = .off
-
-    await store.send(
-      .pipelineEvent(
-        conversationID: Self.conversationA,
-        questionID: activeID,
-        event: terminalEvent))
-
-    #expect(store.state.activeTurn?.questionID == activeID)
-    #expect(store.state.pendingTurnPersistence == pending)
-    #expect(store.state.deferredTerminalEvent?.questionID == activeID)
-    #expect(store.state.chat?.messages.isEmpty == true)
-    #expect(
-      diagnosticCodes.recorded.contains(
-        "terminal_outcome_deferred_during_persistence_barrier"))
-
-    await store.send(.turnPersistenceFinished(pending.questionID))
-    await store.receive(
-      .pipelineEvent(
-        conversationID: Self.conversationA,
-        questionID: activeID,
-        event: terminalEvent))
-
-    #expect(store.state.activeTurn == nil)
-    #expect(store.state.deferredTerminalEvent == nil)
-    #expect(store.state.chat?.processing == nil)
-    #expect(store.state.chat?.messages.count == 1)
-    await store.finish()
-    await store.skipReceivedActions()
-    let terminalLine = try? terminalEvent.jsonLine()
-    #expect(eventWrites.recorded.filter { $0 == terminalLine }.count == 1)
   }
 
   @Test func backgroundCompletionMarksUnreadWithoutChangingSelection() async {

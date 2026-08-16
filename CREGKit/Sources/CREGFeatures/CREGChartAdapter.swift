@@ -51,7 +51,11 @@ struct CREGChartTable: AutoChartTable {
     chartMetadata = AutoChartTableMetadata(
       isTruncated: result.isTruncated,
       provenance: "CREG query result")
-    chartDataVersion = PreparedFollowUpIntegrity.fingerprint(result: result)
+    chartDataVersion = [
+      "CREG.ChartData.v1",
+      PreparedFollowUpIntegrity.fingerprint(result: result),
+      PreparedFollowUpIntegrity.fingerprint(sql: sql),
+    ].joined(separator: ":")
     context = AutoChartContext(
       goal: CREGChartAdapter.goal(question: question, sql: sql),
       title: question)

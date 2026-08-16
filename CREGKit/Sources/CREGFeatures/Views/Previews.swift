@@ -499,6 +499,17 @@ enum PreviewFixtures {
     .frame(width: 402, height: 874)
 }
 
+#Preview("Result Viewer — Loan Maturities — Range Chart") {
+  ResultViewerView(
+    result: PreviewFixtures.loanMaturityResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.standard),
+    sql: StarterQueryID.loanMaturitiesNextTwentyFourMonthsV1.sql,
+    question: StarterQueryID.loanMaturitiesNextTwentyFourMonthsV1.question
+  )
+  .frame(width: 402, height: 874)
+}
+
 #Preview("Result Viewer — Bar Chart — Light") {
   ResultViewerView(
     result: PreviewFixtures.fundValueResult,

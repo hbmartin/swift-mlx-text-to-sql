@@ -450,7 +450,7 @@ import Testing
     #expect(try await client.search("finalized narration").count == 1)
   }
 
-  @Test func wholeMessageUpdatePreservesANewerPresentationPreference() async throws {
+  @Test func terminalUpdatePreservesANewerPresentationPreference() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()
     _ = try await client.createConversation(
@@ -470,7 +470,8 @@ import Testing
       narration: "Recovered final narration.",
       sql: "SELECT 2",
       notice: nil)
-    try await client.updateMessage(conversationID, staleWholeMessage)
+    try await client.persistTerminalTurn(
+      conversationID, staleWholeMessage, true, [])
 
     let stored = try #require(
       try await client.loadConversation(conversationID).messages.last)

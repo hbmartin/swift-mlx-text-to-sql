@@ -111,33 +111,44 @@ import Testing
     #expect(raw.aggregationSafety == .unknown)
   }
 
-  @Test func chartDataVersionTracksCanonicalResultContents() {
+  @Test func chartDataVersionTracksEveryAdaptedTableInput() {
     let result = QueryResult(
       columns: ["fund", "current_market_value"],
       rows: [[.text("Core"), .real(10)]],
       elapsedMicroseconds: 50)
+    let directSQL = "SELECT fund, current_market_value FROM properties"
     let table = CREGChartTable(
       result: result,
-      sql: "SELECT fund, current_market_value FROM properties",
+      sql: directSQL,
       question: "Show value by fund")
 
     var retimed = result
     retimed.elapsedMicroseconds = 9_999
     let retimedTable = CREGChartTable(
       result: retimed,
-      sql: "SELECT fund, current_market_value FROM properties",
+      sql: directSQL,
       question: "Show value by fund")
 
     var changed = result
     changed.rows[0][1] = .real(11)
     let changedTable = CREGChartTable(
       result: changed,
-      sql: "SELECT fund, current_market_value FROM properties",
+      sql: directSQL,
       question: "Show value by fund")
 
-    #expect(table.chartDataVersion == PreparedFollowUpIntegrity.fingerprint(result: result))
+    let aggregatedTable = CREGChartTable(
+      result: result,
+      sql: """
+        SELECT fund, SUM(current_market_value) AS current_market_value
+        FROM properties
+        GROUP BY fund
+        """,
+      question: "Show value by fund")
+
     #expect(retimedTable.chartDataVersion == table.chartDataVersion)
     #expect(changedTable.chartDataVersion != table.chartDataVersion)
+    #expect(aggregatedTable.chartColumns != table.chartColumns)
+    #expect(aggregatedTable.chartDataVersion != table.chartDataVersion)
   }
 
   @Test func unitHintsTakePriorityOverExplicitYearDimensions() {
