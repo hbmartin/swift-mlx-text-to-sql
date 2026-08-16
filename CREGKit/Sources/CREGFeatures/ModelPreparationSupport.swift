@@ -8,16 +8,11 @@ public enum BuildChannel: String, Sendable, Equatable, Codable {
   case release
 
   public static let infoKey = "CREGBuildChannel"
-  public static let experimentalTrainingRunInfoKey =
-    "CREGExperimentalTrainingRun"
 
   public enum Error: Swift.Error, Sendable, Equatable {
     case missing
     case unknown(String)
     case candidateForbidden
-    case candidateRequired
-    case trainingRunMissing
-    case trainingRunMismatch(expected: String, actual: String)
     case boundedPolicyRequired
   }
 
@@ -42,21 +37,8 @@ public enum BuildChannel: String, Sendable, Equatable, Codable {
     info: [String: Any]
   ) throws {
     switch self {
-    case .debug:
+    case .debug, .beta:
       break
-    case .beta:
-      guard let identity = configuration.debugModelIdentity else {
-        throw Error.candidateRequired
-      }
-      guard
-        let expected = info[Self.experimentalTrainingRunInfoKey] as? String,
-        !expected.isEmpty
-      else { throw Error.trainingRunMissing }
-      guard expected == identity.trainingRunID else {
-        throw Error.trainingRunMismatch(
-          expected: expected,
-          actual: identity.trainingRunID)
-      }
     case .release:
       guard configuration.debugModelIdentity == nil else {
         throw Error.candidateForbidden
@@ -81,12 +63,6 @@ extension BuildChannel.Error: CustomStringConvertible {
       "Unknown CREGBuildChannel value: \(value)"
     case .candidateForbidden:
       "Release refuses Debug candidate model identities"
-    case .candidateRequired:
-      "Beta requires a Debug candidate model identity"
-    case .trainingRunMissing:
-      "Beta is missing CREGExperimentalTrainingRun"
-    case .trainingRunMismatch(let expected, let actual):
-      "Beta training run mismatch (expected \(expected), actual \(actual))"
     case .boundedPolicyRequired:
       "Release requires schema-v3 bounded-policy evidence"
     }

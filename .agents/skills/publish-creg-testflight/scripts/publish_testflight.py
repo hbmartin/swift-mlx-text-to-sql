@@ -14,7 +14,6 @@ import subprocess
 import sys
 import uuid
 import xml.etree.ElementTree as ET
-import zipfile
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +29,7 @@ BUILD_CHANNEL = "beta"
 OUTPUT_ROOT = Path("build/testflight")
 TRAINING_RUNS = Path("eval/training-runs")
 MODEL_MANIFEST = Path("model-manifest.json")
+MODEL_RUNTIME_CONTRACT = Path("model-runtime-contract.json")
 INSPECTOR = Path("fine-tuning/tools/inspect_release_bundle.py")
 SCHEME_FILE = Path("CREG.xcodeproj/xcshareddata/xcschemes/CREG.xcscheme")
 INFO_PLIST = Path("CREG/Info.plist")
@@ -361,6 +361,27 @@ def verify_model_inputs(repo: Path, training_run: str) -> dict[str, str]:
     }
 
 
+def verify_candidate_inputs(repo: Path, selector: str) -> dict[str, str]:
+    if selector != "latest-local-v3":
+        return verify_model_inputs(repo, selector)
+    models = repo / "models"
+    adapters = models / "adapters"
+    fused = models / "debug-fused"
+    training_runs = repo / TRAINING_RUNS
+    require_directory(models, "local model cache")
+    require_directory(adapters, "adapter cache")
+    require_directory(fused, "fused-model cache")
+    require_directory(training_runs, "local training runs")
+    if not any(path.is_dir() for path in training_runs.iterdir()):
+        raise ReleaseError("latest-local-v3 requires at least one local training run")
+    return {
+        "candidate_selector": selector,
+        "training_runs": str(training_runs),
+        "adapter_cache": str(adapters),
+        "fused_cache": str(fused),
+    }
+
+
 def verify_source_contract(repo: Path) -> None:
     scheme_path = repo / SCHEME_FILE
     require_file(scheme_path, "shared CREG scheme")
@@ -385,7 +406,9 @@ def verify_source_contract(repo: Path) -> None:
         "Stamp Distribution Build Number",
         "date -u +%Y%m%d%H%M%S",
         "CREG_BUILD_CHANNEL = beta;",
-        "CREG_EXPERIMENTAL_TRAINING_RUN",
+        'CREG_CANDIDATE_TRAINING_RUN = "latest-local-v3";',
+        "model-runtime-contract.json",
+        "materialize_bundled_model.sh",
     )
     missing = [fragment for fragment in required_fragments if fragment not in project_text]
     if missing:
@@ -400,6 +423,7 @@ def collect_preflight(
     *,
     tools: dict[str, str],
     attempt: Path,
+    source_revision: str,
 ) -> dict[str, Any]:
     verify_source_contract(repo)
     xcode_version = run_command(
@@ -427,10 +451,14 @@ def collect_preflight(
     require_setting(settings, "DEVELOPMENT_TEAM", DEVELOPMENT_TEAM)
     require_setting(settings, "CODE_SIGN_STYLE", "Automatic")
     require_setting(settings, "CREG_BUILD_CHANNEL", BUILD_CHANNEL)
-    training_run = require_setting(settings, "CREG_EXPERIMENTAL_TRAINING_RUN")
+    candidate_selector = settings.get("CREG_CANDIDATE_TRAINING_RUN", "").strip()
     marketing_version = require_setting(settings, "MARKETING_VERSION")
     source_build_number = require_setting(settings, "CURRENT_PROJECT_VERSION")
-    model_inputs = verify_model_inputs(repo, training_run)
+    model_inputs = (
+        verify_candidate_inputs(repo, candidate_selector)
+        if candidate_selector
+        else {"selection": "verified-production"}
+    )
     uv_version = run_command(
         [tools["uv"], "--version"],
         cwd=repo,
@@ -447,7 +475,8 @@ def collect_preflight(
         "marketing_version": marketing_version,
         "source_build_number": source_build_number,
         "build_number": None,
-        "training_run": training_run,
+        "candidate_selector": candidate_selector,
+        "source_revision": source_revision,
         "xcode_version": xcode_version,
         "uv_version": uv_version,
         "model_inputs": model_inputs,
@@ -477,7 +506,7 @@ def release_commands(
     attempt: Path,
     tools: dict[str, str],
     run_id: str,
-    training_run: str,
+    source_revision: str,
 ) -> dict[str, list[str]]:
     archive = attempt / "CREG-beta.xcarchive"
     export = attempt / "beta-export"
@@ -485,6 +514,7 @@ def release_commands(
     export_plist = attempt / "ExportOptions-export.plist"
     upload_plist = attempt / "ExportOptions-upload.plist"
     verification = attempt / "verification"
+    derived_data = attempt / "DerivedData"
     return {
         "archive": [
             tools["xcodebuild"],
@@ -500,6 +530,8 @@ def release_commands(
             "-skipMacroValidation",
             "-archivePath",
             str(archive),
+            "-derivedDataPath",
+            str(derived_data),
             "-allowProvisioningUpdates",
             "archive",
         ],
@@ -524,8 +556,8 @@ def release_commands(
             CONFIGURATION,
             "--run-id",
             run_id,
-            "--expected-training-run",
-            training_run,
+            "--expected-source-revision",
+            source_revision,
             "--archive",
             str(archive),
             "--ipa",
@@ -589,48 +621,6 @@ def sole_ipa(export_directory: Path) -> Path:
     return candidates[0]
 
 
-def ipa_info(ipa: Path) -> dict[str, str]:
-    try:
-        with zipfile.ZipFile(ipa) as archive:
-            info_paths = [
-                name
-                for name in archive.namelist()
-                if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", name)
-            ]
-            if len(info_paths) != 1:
-                raise ReleaseError(
-                    f"IPA must contain exactly one Payload/*.app/Info.plist: {ipa}"
-                )
-            info = plistlib.loads(archive.read(info_paths[0]))
-    except (OSError, plistlib.InvalidFileException, zipfile.BadZipFile) as error:
-        raise ReleaseError(f"Cannot parse IPA Info.plist: {error}") from error
-    if not isinstance(info, dict):
-        raise ReleaseError(f"IPA Info.plist must contain a dictionary: {ipa}")
-    return {
-        "bundle_identifier": str(info.get("CFBundleIdentifier", "")),
-        "marketing_version": str(info.get("CFBundleShortVersionString", "")),
-        "build_number": str(info.get("CFBundleVersion", "")),
-    }
-
-
-def require_matching_distribution_identity(
-    actual: dict[str, str], expected: dict[str, str], description: str
-) -> None:
-    identity_fields = {
-        "bundle_identifier": "CFBundleIdentifier",
-        "marketing_version": "CFBundleShortVersionString",
-        "build_number": "CFBundleVersion",
-    }
-    for key, plist_key in identity_fields.items():
-        value = actual.get(key, "")
-        if not value:
-            raise ReleaseError(f"{description} {plist_key} is missing")
-        if value != expected.get(key):
-            raise ReleaseError(
-                f"{description} {plist_key} does not match the archived app"
-            )
-
-
 def parse_json_output(output: str, description: str) -> dict[str, Any]:
     try:
         value = json.loads(output)
@@ -642,14 +632,14 @@ def parse_json_output(output: str, description: str) -> dict[str, Any]:
 
 
 def require_inspector_report(
-    report: dict[str, Any], *, training_run: str
+    report: dict[str, Any], *, source_revision: str
 ) -> dict[str, Any]:
     if (
-        report.get("schema_version") != 2
+        report.get("schema_version") != 3
         or report.get("status") != "complete"
         or report.get("configuration") != CONFIGURATION
     ):
-        raise ReleaseError("Artifact inspector did not emit a complete Beta schema-v2 report")
+        raise ReleaseError("Artifact inspector did not emit a complete Beta schema-v3 report")
     artifacts = report.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) != 2:
         raise ReleaseError("Artifact inspector must report exactly archive and IPA artifacts")
@@ -660,74 +650,76 @@ def require_inspector_report(
         raise ReleaseError("Artifact inspector report must contain archive and IPA")
     archive = by_kind["archive"]
     ipa = by_kind["ipa"]
-    archive_build = archive.get("build_number")
-    ipa_build = ipa.get("build_number")
-    if not all(
-        isinstance(build_number, str) and build_number
-        for build_number in (archive_build, ipa_build)
-    ):
-        raise ReleaseError("Artifact inspector report is missing a build number")
+    identity_keys = (
+        "bundle_identifier",
+        "marketing_version",
+        "build_number",
+        "build_channel",
+        "model_runtime_contract",
+        "production",
+        "debug_candidate",
+        "model",
+        "executable",
+        "metal",
+        "inputs",
+    )
     for artifact in (archive, ipa):
         if artifact.get("bundle_identifier") != BUNDLE_IDENTIFIER:
             raise ReleaseError("Verified artifact has an unexpected bundle identifier")
         if artifact.get("build_channel") != BUILD_CHANNEL:
             raise ReleaseError("Verified artifact is not a Beta build")
-        candidate = artifact.get("debug_candidate")
-        if (
-            not isinstance(candidate, dict)
-            or not candidate
-            or candidate.get("training_run_id") != training_run
+        build_number = artifact.get("build_number")
+        if not isinstance(build_number, str) or not build_number:
+            raise ReleaseError("Artifact inspector report is missing a build number")
+        contract = artifact.get("model_runtime_contract")
+        if contract != {
+            "version": 1,
+            "source_revision": source_revision,
+            "source_dirty": False,
+        }:
+            raise ReleaseError("Verified artifact has invalid source provenance")
+        executable = artifact.get("executable")
+        if not isinstance(executable, dict) or not executable.get("sha256"):
+            raise ReleaseError("Artifact inspector report is missing executable verification")
+        model = artifact.get("model")
+        if not isinstance(model, dict):
+            raise ReleaseError("Artifact inspector report is missing model verification")
+        if model.get("verified_directory_sha256") != model.get(
+            "expected_directory_sha256"
         ):
-            raise ReleaseError("Verified artifact has the wrong pinned training run")
+            raise ReleaseError("Verified model digest does not match the expected digest")
+        if not model.get("receipt_directory_sha256"):
+            raise ReleaseError("Verified model receipt digest is missing")
+        inputs = artifact.get("inputs")
+        if not isinstance(inputs, dict) or any(
+            re.fullmatch(r"[0-9a-f]{64}", str(inputs.get(key, ""))) is None
+            for key in ("bundled_manifest_sha256", "production_receipt_sha256")
+        ):
+            raise ReleaseError("Artifact inspector report is missing input hashes")
         metal = artifact.get("metal")
-        if not isinstance(metal, dict) or not metal:
-            raise ReleaseError("Verified artifact is missing Metal resource verification")
-    if archive_build != ipa_build:
+        if not isinstance(metal, dict) or not metal.get("sha256"):
+            raise ReleaseError("Artifact inspector report is missing Metal verification")
+    if archive.get("build_number") != ipa.get("build_number"):
         raise ReleaseError("Archive and IPA build numbers do not match")
-    if archive.get("debug_candidate") != ipa.get("debug_candidate"):
-        raise ReleaseError("Archive and IPA candidate identities do not match")
-    model_keys = (
-        "key",
-        "expected_directory_sha256",
-        "verified_directory_sha256",
-        "receipt_directory_sha256",
-        "verified_file_count",
-        "receipt_file_count",
-    )
-    archive_model = archive.get("model")
-    ipa_model = ipa.get("model")
-    if not isinstance(archive_model, dict) or not isinstance(ipa_model, dict):
-        raise ReleaseError("Artifact inspector report is missing model verification")
-    for model in (archive_model, ipa_model):
-        missing_model_keys = [
-            key
-            for key in model_keys
-            if (
-                isinstance(model.get(key), bool)
-                or not isinstance(model.get(key), (str, int))
-                or not model.get(key)
-            )
-        ]
-        if missing_model_keys:
-            raise ReleaseError(
-                "Artifact inspector report has missing model verification fields: "
-                + ", ".join(missing_model_keys)
-            )
-    if any(archive_model.get(key) != ipa_model.get(key) for key in model_keys):
-        raise ReleaseError("Archive and IPA verified model identities do not match")
+    mismatched = [key for key in identity_keys if archive.get(key) != ipa.get(key)]
+    if mismatched:
+        raise ReleaseError(
+            "Archive and IPA verification disagree: " + ", ".join(mismatched)
+        )
+    archive_model = archive["model"]
     if archive_model.get("verified_directory_sha256") != archive_model.get(
         "expected_directory_sha256"
     ):
         raise ReleaseError("Verified model digest does not match the expected digest")
-    if not archive_model.get("receipt_directory_sha256"):
-        raise ReleaseError("Verified model receipt digest is missing")
-    if archive.get("metal") != ipa.get("metal"):
-        raise ReleaseError("Archive and IPA Metal resource verification does not match")
     return {
-        "build_number": archive_build,
-        "debug_candidate": archive["debug_candidate"],
-        "model": {key: archive_model[key] for key in model_keys},
-        "metal": archive["metal"],
+        "build_number": archive["build_number"],
+        "model_runtime_contract": archive["model_runtime_contract"],
+        "debug_candidate": archive.get("debug_candidate"),
+        "production": archive["production"],
+        "model": archive_model,
+        "executable": archive["executable"],
+        "metal": archive.get("metal"),
+        "inputs": archive["inputs"],
     }
 
 
@@ -755,6 +747,7 @@ def main() -> int:
     repo = args.repo_root.expanduser().resolve()
     required_files = (
         (repo / MODEL_MANIFEST, "model manifest"),
+        (repo / MODEL_RUNTIME_CONTRACT, "model runtime contract"),
         (repo / INSPECTOR, "release-bundle inspector"),
         (repo / PROJECT_FILE, "Xcode project file"),
     )
@@ -792,7 +785,10 @@ def main() -> int:
         atomic_write_json(release_path, state)
         require_clean_git(tools["git"], repo)
         state["preflight"] = collect_preflight(
-            repo, tools=tools, attempt=attempt
+            repo,
+            tools=tools,
+            attempt=attempt,
+            source_revision=git["commit"],
         )
         state["status"] = "preflight_passed"
         atomic_write_json(release_path, state)
@@ -811,7 +807,7 @@ def main() -> int:
             attempt,
             tools,
             run_id,
-            state["preflight"]["training_run"],
+            state["preflight"]["source_revision"],
         )
         state["commands"] = {
             key: command_text(value) for key, value in commands.items()
@@ -864,7 +860,7 @@ def main() -> int:
         inspector_report = parse_json_output(inspection.stdout, "Artifact inspector")
         verified = require_inspector_report(
             inspector_report,
-            training_run=state["preflight"]["training_run"],
+            source_revision=state["preflight"]["source_revision"],
         )
         if verified["build_number"] != archived["build_number"]:
             raise ReleaseError("Inspector and archive build numbers do not match")
@@ -880,15 +876,10 @@ def main() -> int:
             cwd=repo,
             log_path=attempt / "logs/upload.log",
         )
-        upload_ipa = sole_ipa(attempt / "upload-export")
-        state["artifacts"]["upload_ipa"] = str(upload_ipa)
-        uploaded = ipa_info(upload_ipa)
-        require_matching_distribution_identity(uploaded, archived, "Upload-export IPA")
         state["upload"] = {
             "status": "accepted",
             "accepted_at": datetime.now(UTC).isoformat(),
             "internal_only": True,
-            "artifact": uploaded,
         }
         state["app_store_connect"] = {
             "status": "verification_required",
@@ -903,7 +894,7 @@ def main() -> int:
         print(json.dumps(state, indent=2, sort_keys=True))
         print(f"Release state: {release_path}")
         return 0
-    except Exception as error:  # noqa: BLE001 - every release failure must persist state
+    except (OSError, ReleaseError) as error:
         state["status"] = "failed"
         state["failed_at"] = datetime.now(UTC).isoformat()
         state["error"] = sanitize_text(str(error))

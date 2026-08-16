@@ -725,6 +725,10 @@ import Testing
         appVersion: "2.0",
         buildNumber: "42",
         buildChannel: "beta",
+        modelRuntimeContract: ModelRuntimeContract(
+          version: 1,
+          sourceRevision: String(repeating: "a", count: 40),
+          sourceDirty: false),
         modelIdentity: (key: "test-model", revision: "deadbeef"),
         runtimeMode: .compatibility,
         createdAt: Date(timeIntervalSince1970: 100)),
@@ -742,6 +746,9 @@ import Testing
     #expect(export.manifest.appVersion == "2.0")
     #expect(export.manifest.modelKey == "test-model")
     #expect(export.manifest.buildChannel == "beta")
+    #expect(export.manifest.modelRuntimeContractVersion == 1)
+    #expect(export.manifest.sourceRevision == String(repeating: "a", count: 40))
+    #expect(export.manifest.sourceDirty == false)
     #expect(export.manifest.runtimeMode == .compatibility)
     #expect(!export.manifest.isEvaluated)
     #expect(export.manifest.conversationCount == 1)

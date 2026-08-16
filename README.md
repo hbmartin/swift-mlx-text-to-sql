@@ -195,7 +195,8 @@ uv run --frozen python tools/fetch_model.py --production
 The Xcode build phase runs the model materializer through the frozen `uv`
 environment and writes the exact bundled manifest into the app.
 
-- Debug defaults `CREG_DEBUG_TRAINING_RUN` to `latest-local-v3`. It selects the
+- Debug and Beta share `CREG_CANDIDATE_TRAINING_RUN`, which defaults to
+  `latest-local-v3`. They select the
   newest locally eligible reliability-v3 run, verifies finite training,
   three-snapshot checkpoint selection, the selected adapter hash, and the
   manifest-pinned base bytes, then fuses and bundles that checkpoint. This
@@ -203,14 +204,12 @@ environment and writes the exact bundled manifest into the app.
   manifest is marked `debug-candidate`, uses deterministic single-shot
   generation, and displays a permanent experimental-model banner. Set the
   build setting to an immutable run ID/path to pin a particular run, or set it
-  to an empty value to use the historical manifest-selected Debug model.
-- Beta is the TestFlight configuration: Release-level optimization, but it
-  bundles the checkpoint pinned by `CREG_EXPERIMENTAL_TRAINING_RUN` through the
-  same bundle-receipt-verified materialization path as Debug (neither
-  configuration requires a W&B receipt), and shows the same
-  experimental-model banner. It pins one immutable run rather than resolving
-  `latest-local-v3`, ignores the launch-benchmark and wired-memory hooks, and
-  still refuses to run without a receipt that matches the bundled bytes. See
+  to an empty value to use the verified manifest production selection.
+- Beta is the TestFlight configuration: Release-level optimization with the
+  same model selection and runtime gating as Debug. It accepts either a local
+  candidate or verified production selection, ignores the launch-benchmark
+  and wired-memory hooks, and still refuses to run without a receipt that
+  matches the bundled bytes. See
   [`docs/testflight-release.md`](./docs/testflight-release.md).
 - Release requires a newly finalized bounded-policy selection, downloads or
   reuses cache, transactionally verifies the complete snapshot, and bundles
@@ -231,7 +230,7 @@ xcodebuild -project CREG.xcodeproj -scheme CREG \
 # Pin one immutable local run instead of selecting the newest eligible run.
 xcodebuild -project CREG.xcodeproj -scheme CREG \
   -configuration Debug -destination 'generic/platform=iOS' \
-  CREG_DEBUG_TRAINING_RUN='<run-id-or-directory>' build
+  CREG_CANDIDATE_TRAINING_RUN='<run-id-or-directory>' build
 
 # TestFlight. Product > Archive uses this configuration.
 xcodebuild -project CREG.xcodeproj -scheme CREG \

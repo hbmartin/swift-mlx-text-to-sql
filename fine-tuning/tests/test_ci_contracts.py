@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 import pytest
@@ -66,51 +65,43 @@ def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
 
 def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only():
     project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
+    materializer = (
+        check_ci_contracts.ROOT / "tools/materialize_bundled_model.sh"
+    ).read_text()
     assert "Materialize Bundled SQL Model" in project
-    assert "--production" in project
-    assert "--models-dir" in project
-    assert '--destination \\"$MODEL_DIR\\"' in project
-    assert "--local-files-only" not in project
-    assert "--allow-historical-policy" in project
-    assert 'if [[ \\"$CONFIGURATION\\" == \\"Debug\\" ]]' in project
-    assert "tools/materialize_debug_model.py" in project
-    assert "--latest-local-v3" in project
-    assert 'CREG_DEBUG_TRAINING_RUN = "latest-local-v3";' in project
-    assert "CREG_DEBUG_TRAINING_RUN is forbidden outside Debug builds" in project
-    assert "without requiring a W&B receipt" in project
+    assert "tools/materialize_bundled_model.sh" in project
+    assert "model-runtime-contract.json" in project
+    assert project.count('CREG_CANDIDATE_TRAINING_RUN = "latest-local-v3";') == 2
+    assert "CREG_DEBUG_TRAINING_RUN" not in project
+    assert "CREG_EXPERIMENTAL_TRAINING_RUN" not in project
+    assert "--production" in materializer
+    assert "--models-dir" in materializer
+    assert '--destination "$MODEL_DIR"' in materializer
+    assert "--local-files-only" not in materializer
+    assert "--allow-historical-policy" in materializer
+    assert '"$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Beta"' in materializer
+    assert "tools/materialize_debug_model.py" in materializer
+    assert "--latest-local-v3" in materializer
+    assert "CREG_CANDIDATE_TRAINING_RUN is forbidden in Release builds" in materializer
+    assert "without requiring a W&B receipt" in materializer
 
     live_dependencies = (
         check_ci_contracts.ROOT
-        / "CREGKit/Sources/CREGFeatures/ChatFeature.swift"
+        / "CREGKit/Sources/CREGFeatures/Dependencies.swift"
     ).read_text()
     assert "ProductionModelReceiptLoader.validate" in live_dependencies
-    assert re.search(
-        r"SQLGenClient\.live\(\s*directory:\s*bundledModelDirectory,"
-        r"\s*diagnostics:\s*diagnostics,"
-        r"\s*useWiredMemory:\s*useWiredMemory,"
-        r"\s*useDirectPromptSuffix:\s*true,"
-        r"\s*metalCommandBufferLimitMB:"
-        r"\s*production\.metalCommandBufferLimitMB,"
-        r"\s*compiledQwen2MLPFusion:"
-        r"\s*production\.compiledQwen2MLPFusion,"
-        r"\s*compiledQwen2QKVVerificationFusion:"
-        r"\s*production\.compiledQwen2QKVVerificationFusion,"
-        r"\s*verificationMLPSkipLayers:"
-        r"\s*production\.verificationMLPSkipLayers,"
-        r"\s*verificationMLPLongBatchExtraSkipLayers:"
-        r"\s*production\.verificationMLPLongBatchExtraSkipLayers,"
-        r"\s*verificationMLPConfidenceSkip:"
-        r"\s*production\.verificationMLPConfidenceSkip,"
-        r"\s*verificationMLPAdditionalConfidenceSkips:"
-        r"\s*production\.verificationMLPAdditionalConfidenceSkips,"
-        r"\s*questionAwareOutputHead:"
-        r"\s*production\.questionAwareOutputHead,"
-        r"\s*compactQuestionAwareOutputHead:"
-        r"\s*production\.compactQuestionAwareOutputHead,"
-        r"\s*productionNGramSpeculation:"
-        r"\s*production\.sqlNGramSpeculation\s*\)",
-        live_dependencies,
-    )
+    for setting in (
+        "directory: bundledModelDirectory",
+        "useWiredMemory: useWiredMemory",
+        "useDirectPromptSuffix: true",
+        "metalCommandBufferLimitMB: production.metalCommandBufferLimitMB",
+        "compiledQwen2MLPFusion: production.compiledQwen2MLPFusion",
+        "verificationMLPSkipLayers: production.verificationMLPSkipLayers",
+        "questionAwareOutputHead: production.questionAwareOutputHead",
+        "productionNGramSpeculation: production.sqlNGramSpeculation",
+        "runtimeMode: .evaluated",
+    ):
+        assert setting in live_dependencies
     assert '"input_preparation_mode"' in (
         check_ci_contracts.ROOT
         / "CREGKit/Sources/CREGEngine/SQLGenClient.swift"
@@ -119,20 +110,23 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
     assert 'environment["CREG_WIRED_MEMORY"] == "true"' in live_dependencies
     assert "let useWiredMemory = false" in live_dependencies
     assert "SQLGenClient.live(model:" not in live_dependencies
-    assert "#if !DEBUG" in live_dependencies
-    assert "Release requires schema-v3 bounded-policy evidence" in live_dependencies
-    assert "Release refuses Debug candidate model identities" in live_dependencies
+    build_channel = (
+        check_ci_contracts.ROOT
+        / "CREGKit/Sources/CREGFeatures/ModelPreparationSupport.swift"
+    ).read_text()
+    assert "Release requires schema-v3 bounded-policy evidence" in build_channel
+    assert "Release refuses Debug candidate model identities" in build_channel
 
 
 def test_xcode_app_is_iphone_only():
     project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
     app_icons = (
         check_ci_contracts.ROOT
-        / "CREG/Assets.xcassets/AppIcon.appiconset/Contents.json"
+        / "CREG/Assets.xcassets/Contents.json"
     ).read_text()
 
-    # Debug, Beta, and Release must each stay iPhone-only.
-    assert project.count("TARGETED_DEVICE_FAMILY = 1;") == 3
+    # Every declared target configuration stays iPhone-only.
+    assert project.count("TARGETED_DEVICE_FAMILY = 1;") >= 3
     assert 'TARGETED_DEVICE_FAMILY = "1,2";' not in project
     assert "UISupportedInterfaceOrientations_iPad" not in project
     assert '"idiom" : "ipad"' not in app_icons

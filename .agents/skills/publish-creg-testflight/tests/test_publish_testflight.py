@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "publish_testflight.py"
 MISSING = object()
+SOURCE_REVISION = "a" * 40
 
 
 def load_publisher() -> ModuleType:
@@ -40,17 +41,37 @@ def inspector_report(
         value: dict[str, Any] = {
             "artifact_kind": kind,
             "bundle_identifier": publisher.BUNDLE_IDENTIFIER,
+            "marketing_version": "1.0",
             "build_channel": publisher.BUILD_CHANNEL,
-            "debug_candidate": {"training_run_id": "training-run"},
+            "model_runtime_contract": {
+                "version": 1,
+                "source_revision": SOURCE_REVISION,
+                "source_dirty": False,
+            },
+            "production": {"model_key": "model"},
+            "debug_candidate": {
+                "model_key": "model",
+                "base_model_key": "base",
+                "training_run_id": "training-run",
+                "selected_iteration": 600,
+                "selected_checkpoint_sha256": "b" * 64,
+                "local_evidence_status": "complete",
+                "wandb_receipt_required": False,
+            },
             "model": model.copy(),
-            "metal": {"verified": True},
+            "executable": {"sha256": "c" * 64, "bytes": 10},
+            "metal": {"sha256": "d" * 64, "bytes": 5},
+            "inputs": {
+                "bundled_manifest_sha256": "e" * 64,
+                "production_receipt_sha256": "f" * 64,
+            },
         }
         if build_number is not MISSING:
             value["build_number"] = build_number
         return value
 
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "complete",
         "configuration": publisher.CONFIGURATION,
         "artifacts": [
@@ -124,7 +145,7 @@ class RequireInspectorReportTests(unittest.TestCase):
             ):
                 publisher.require_inspector_report(
                     inspector_report(archive_build, ipa_build),
-                    training_run="training-run",
+                    source_revision=SOURCE_REVISION,
                 )
 
     def test_rejects_mismatched_build_numbers(self) -> None:
@@ -134,7 +155,7 @@ class RequireInspectorReportTests(unittest.TestCase):
         ):
             publisher.require_inspector_report(
                 inspector_report("20260816093000", "20260816093001"),
-                training_run="training-run",
+                source_revision=SOURCE_REVISION,
             )
 
     def test_returns_matching_build_number(self) -> None:
@@ -142,10 +163,64 @@ class RequireInspectorReportTests(unittest.TestCase):
 
         verified = publisher.require_inspector_report(
             inspector_report(build_number, build_number),
-            training_run="training-run",
+            source_revision=SOURCE_REVISION,
         )
 
         self.assertEqual(verified["build_number"], build_number)
+
+    def test_rejects_archive_ipa_executable_mismatch(self) -> None:
+        report = inspector_report("20260816093000", "20260816093000")
+        report["artifacts"][1]["executable"]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(
+            publisher.ReleaseError,
+            "Archive and IPA verification disagree: executable",
+        ):
+            publisher.require_inspector_report(
+                report, source_revision=SOURCE_REVISION
+            )
+
+    def test_rejects_wrong_or_dirty_source_provenance(self) -> None:
+        for mutation in ("wrong-revision", "dirty"):
+            report = inspector_report("20260816093000", "20260816093000")
+            for artifact in report["artifacts"]:
+                contract = artifact["model_runtime_contract"]
+                if mutation == "wrong-revision":
+                    contract["source_revision"] = "9" * 40
+                else:
+                    contract["source_dirty"] = True
+            with (
+                self.subTest(mutation=mutation),
+                self.assertRaisesRegex(
+                    publisher.ReleaseError,
+                    "Verified artifact has invalid source provenance",
+                ),
+            ):
+                publisher.require_inspector_report(
+                    report, source_revision=SOURCE_REVISION
+                )
+
+
+class ReleaseCommandsTests(unittest.TestCase):
+    def test_uses_isolated_derived_data_and_revision_based_inspection(self) -> None:
+        attempt = Path("/tmp/attempt")
+        commands = publisher.release_commands(
+            attempt,
+            {"xcodebuild": "xcodebuild", "uv": "uv"},
+            "run-id",
+            SOURCE_REVISION,
+        )
+
+        self.assertEqual(
+            commands["archive"][commands["archive"].index("-derivedDataPath") + 1],
+            str(attempt / "DerivedData"),
+        )
+        self.assertNotIn("--expected-training-run", commands["inspect"])
+        self.assertEqual(
+            commands["inspect"][
+                commands["inspect"].index("--expected-source-revision") + 1
+            ],
+            SOURCE_REVISION,
+        )
 
 
 if __name__ == "__main__":

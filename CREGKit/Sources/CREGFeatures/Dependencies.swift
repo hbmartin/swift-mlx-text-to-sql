@@ -417,14 +417,18 @@ enum LiveDependencies {
         "has_receipt": String(bundledReceipt != nil),
       ])
     let channel: BuildChannel
+    let runtimeContract: ModelRuntimeContract
     let production: ProductionGenerationConfiguration
     do {
-      channel = try BuildChannel.load(bundle: bundle)
+      let info = bundle.infoDictionary ?? [:]
+      channel = try BuildChannel.load(info: info)
+      runtimeContract = try ModelRuntimeContract.load(info: info)
       guard let bundledManifest else { throw ModelManifestError.missing }
       production = try ModelManifestLoader.production(
         url: bundledManifest,
-        allowDebugCandidate: channel.allowsDebugCandidate)
-      try channel.validate(production, info: bundle.infoDictionary ?? [:])
+        allowDebugCandidate: channel.allowsDebugCandidate,
+        requiredRuntimeContract: runtimeContract)
+      try channel.validate(production, info: info)
       diagnostics.info(
         category: .configuration,
         code: "production_configuration_loaded",
@@ -437,6 +441,9 @@ enum LiveDependencies {
           "gcd": production.gcd.rawValue,
           "max_tokens": String(production.maxTokens),
           "runtime_policy_version": production.runtimePolicyVersion ?? "legacy",
+          "runtime_contract_version": String(runtimeContract.version),
+          "source_revision": runtimeContract.sourceRevision,
+          "source_dirty": String(runtimeContract.sourceDirty),
         ])
     } catch {
       let presentation = FailurePresentation.productionConfiguration(error)
@@ -555,6 +562,12 @@ enum LiveDependencies {
           try currentChannel.validate(
             production,
             info: bundle.infoDictionary ?? [:])
+          guard
+            try ModelRuntimeContract.load(
+              info: bundle.infoDictionary ?? [:]) == runtimeContract
+          else {
+            throw ModelManifestError.runtimeProvenanceMismatch
+          }
         }
         try await preparationPreflight(
           stage: .receiptValidation,
@@ -634,6 +647,9 @@ enum LiveDependencies {
         "policy_version": production.policyVersion ?? "legacy",
         "runtime_policy_version": production.runtimePolicyVersion ?? "legacy",
         "debug_training_run": production.debugModelIdentity?.trainingRunID ?? "none",
+        "runtime_contract_version": String(runtimeContract.version),
+        "source_revision": runtimeContract.sourceRevision,
+        "source_dirty": String(runtimeContract.sourceDirty),
       ])
     return QueryPipeline.live(
       fm: .live(),
