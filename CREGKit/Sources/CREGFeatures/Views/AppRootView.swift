@@ -7,20 +7,19 @@ import SwiftUI
   import UIKit
 #endif
 
-/// The app's single entry point; owns the root store so the app shell
-/// needs no TCA import.
+/// The feature shell accepts a lazy store factory so accessibility and
+/// unsupported-device paths never construct the live model graph.
 public struct RootView: View {
-  @MainActor
-  static let store = Store(initialState: AppFeature.State()) {
-    AppFeature()
+  private let storeFactory: @MainActor () -> StoreOf<AppFeature>
+
+  public init(
+    storeFactory: @escaping @MainActor () -> StoreOf<AppFeature>
+  ) {
+    self.storeFactory = storeFactory
   }
 
-  public init() {}
-
   /// Hardware below the ``DeviceCapability`` floor never reaches
-  /// ``AppRootView``. `store` is a `static let`, so leaving it unreferenced on
-  /// this path means the reducer, `LiveDependencies`, and the 1.75 GB model
-  /// load are never constructed at all.
+  /// ``AppRootView``. The factory is not invoked on either alternate path.
   @ViewBuilder
   public var body: some View {
     #if DEBUG
@@ -37,7 +36,7 @@ public struct RootView: View {
   @ViewBuilder
   private var liveRoot: some View {
     if DeviceCapability.isCurrentDeviceSupported {
-      AppRootView(store: Self.store)
+      AppRootView(store: storeFactory())
     } else {
       UnsupportedDeviceView()
     }
