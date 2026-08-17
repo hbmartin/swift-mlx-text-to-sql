@@ -1,4 +1,4 @@
-import CREGFeatures
+import CREGApplication
 import SwiftUI
 
 @main

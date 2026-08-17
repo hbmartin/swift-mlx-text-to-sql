@@ -10,7 +10,7 @@
 		C4E60000000000000000000D /* CREGApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000005 /* CREGApp.swift */; };
 		C4E60000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000006 /* Assets.xcassets */; };
 		C4E60000000000000000000F /* creg.sqlite in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000007 /* creg.sqlite */; };
-		C4E60000000000000000001A /* CREGFeatures in Frameworks */ = {isa = PBXBuildFile; productRef = C4E600000000000000000012 /* CREGFeatures */; };
+		C4E60000000000000000001A /* CREGApplication in Frameworks */ = {isa = PBXBuildFile; productRef = C4E600000000000000000012 /* CREGApplication */; };
 		C4E600000000000000000023 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000022 /* PrivacyInfo.xcprivacy */; };
 		C4E60000000000000000002A /* AppIconMidnight.icon in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000027 /* AppIconMidnight.icon */; };
 		C4E60000000000000000002B /* AppIconIndigo.icon in Resources */ = {isa = PBXBuildFile; fileRef = C4E600000000000000000028 /* AppIconIndigo.icon */; };
@@ -48,7 +48,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C4E60000000000000000001A /* CREGFeatures in Frameworks */,
+				C4E60000000000000000001A /* CREGApplication in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -123,7 +123,7 @@
 			);
 			name = CREG;
 			packageProductDependencies = (
-				C4E600000000000000000012 /* CREGFeatures */,
+				C4E600000000000000000012 /* CREGApplication */,
 			);
 			productName = CREG;
 			productReference = C4E600000000000000000008 /* CREG.app */;
@@ -554,9 +554,9 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		C4E600000000000000000012 /* CREGFeatures */ = {
+		C4E600000000000000000012 /* CREGApplication */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = CREGFeatures;
+			productName = CREGApplication;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

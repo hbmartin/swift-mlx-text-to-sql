@@ -5,11 +5,12 @@ let package = Package(
   name: "CREGKit",
   platforms: [.iOS("26.0"), .macOS("15.0")],
   products: [
-    // Inference + pipeline engine, no UI and no TCA — shared by the app and
-    // the creg-eval-cli parity harness (docs/adr/0003-hybrid-eval-harness.md).
+    .library(name: "CREGCore", targets: ["CREGCore"]),
+    .library(name: "CREGData", targets: ["CREGData"]),
+    .library(name: "CREGInference", targets: ["CREGInference"]),
     .library(name: "CREGEngine", targets: ["CREGEngine"]),
-    // TCA features + SwiftUI chat surface consumed by the app shell.
     .library(name: "CREGFeatures", targets: ["CREGFeatures"]),
+    .library(name: "CREGApplication", targets: ["CREGApplication"]),
   ],
   dependencies: [
     .package(
@@ -38,9 +39,21 @@ let package = Package(
     .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0"),
   ],
   targets: [
+    .target(name: "CREGCore"),
     .target(
-      name: "CREGEngine",
+      name: "CREGData",
       dependencies: [
+        "CREGCore",
+        .product(name: "GRDB", package: "GRDB.swift"),
+      ],
+      resources: [
+        .copy("Resources/schema_catalog.json"),
+      ]
+    ),
+    .target(
+      name: "CREGInference",
+      dependencies: [
+        "CREGCore",
         .product(name: "MLX", package: "mlx-swift"),
         .product(name: "MLXNN", package: "mlx-swift"),
         .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -48,39 +61,86 @@ let package = Package(
         .product(name: "HuggingFace", package: "swift-huggingface"),
         .product(name: "Tokenizers", package: "swift-transformers"),
         .product(name: "MLXStructured", package: "mlx-swift-structured"),
-        .product(name: "GRDB", package: "GRDB.swift"),
       ],
       resources: [
         .copy("Resources/sql_grammar.ebnf"),
         .copy("Resources/schema_prompt.txt"),
-        .copy("Resources/schema_catalog.json"),
         .copy("Resources/system_prompt_template.txt"),
         .copy("Resources/repair_prompt_template.txt"),
-        .copy("Resources/canonical_result_fixtures.json"),
-        .copy("Resources/sqlite_text_fixtures.json"),
-        .copy("Resources/sql_cutter_fixtures.json"),
         .copy("Resources/sql_draft_corpus.json"),
+      ]
+    ),
+    .target(
+      name: "CREGEngine",
+      dependencies: [
+        "CREGCore",
+        "CREGData",
       ]
     ),
     .target(
       name: "CREGFeatures",
       dependencies: [
+        "CREGCore",
         "CREGEngine",
         .product(name: "AutoTableCharts", package: "AutoTableCharts"),
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+        .product(name: "GRDB", package: "GRDB.swift"),
+      ]
+    ),
+    .target(
+      name: "CREGApplication",
+      dependencies: [
+        "CREGCore",
+        "CREGData",
+        "CREGInference",
+        "CREGEngine",
+        "CREGFeatures",
+        .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
       ]
     ),
     .executableTarget(
       name: "creg-eval-cli",
-      dependencies: ["CREGEngine"]
+      dependencies: ["CREGCore", "CREGData", "CREGInference", "CREGEngine"]
     ),
     .testTarget(
-      name: "CREGKitTests",
+      name: "CREGCoreTests",
+      dependencies: ["CREGCore"],
+      resources: [.copy("Resources/canonical_result_fixtures.json")]
+    ),
+    .testTarget(
+      name: "CREGDataTests",
       dependencies: [
+        "CREGCore",
+        "CREGData",
+        .product(name: "GRDB", package: "GRDB.swift"),
+      ],
+      resources: [.copy("Resources/sqlite_text_fixtures.json")]
+    ),
+    .testTarget(
+      name: "CREGInferenceTests",
+      dependencies: [
+        "CREGCore",
+        "CREGData",
+        "CREGInference",
+        .product(name: "GRDB", package: "GRDB.swift"),
+      ],
+      resources: [.copy("Resources/sql_cutter_fixtures.json")]
+    ),
+    .testTarget(
+      name: "CREGEngineTests",
+      dependencies: ["CREGCore", "CREGData", "CREGEngine"]
+    ),
+    .testTarget(
+      name: "CREGFeaturesTests",
+      dependencies: [
+        "CREGCore",
+        "CREGData",
+        "CREGInference",
         "CREGEngine",
         "CREGFeatures",
         .product(name: "AutoTableCharts", package: "AutoTableCharts"),
+        .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
       ]
     ),
   ]

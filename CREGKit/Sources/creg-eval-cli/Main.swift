@@ -1,4 +1,7 @@
+import CREGCore
+import CREGData
 import CREGEngine
+import CREGInference
 import CryptoKit
 import Foundation
 import SQLite3

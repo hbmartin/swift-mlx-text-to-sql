@@ -252,7 +252,7 @@ extension DependencyValues {
 }
 
 extension ModelPreparationProgress {
-  static var liveJournaled: ModelPreparationProgress {
+  package static var liveJournaled: ModelPreparationProgress {
     let journal = ModelPreparationJournalClient.live()
     return ModelPreparationProgress(
       stageStarted: journal.stageStarted,
@@ -261,10 +261,10 @@ extension ModelPreparationProgress {
   }
 }
 
-enum ModelPreparationEnvironment {
-  static func snapshot(bundle: Bundle = .main) -> [String: String] {
+package enum ModelPreparationEnvironment {
+  package static func snapshot(bundle: Bundle = .main) -> [String: String] {
     let info = bundle.infoDictionary ?? [:]
-    var context = ModelRuntimeDiagnostics.deviceContext()
+    var context: [String: String] = [:]
     context["build_channel"] =
       (try? BuildChannel.load(info: info).rawValue) ?? "invalid"
     context["app_version"] =
@@ -293,8 +293,8 @@ enum ModelPreparationEnvironment {
   }
 }
 
-enum MetalResourcePreflight {
-  static func resourceURL(bundle: Bundle = .main) -> URL? {
+package enum MetalResourcePreflight {
+  package static func resourceURL(bundle: Bundle = .main) -> URL? {
     guard
       let resourceBundle = bundle.url(
         forResource: "mlx-swift_Cmlx", withExtension: "bundle")
@@ -307,7 +307,30 @@ enum MetalResourcePreflight {
     return metallib
   }
 
-  static func isPresent(bundle: Bundle = .main) -> Bool {
+  package static func isPresent(bundle: Bundle = .main) -> Bool {
     resourceURL(bundle: bundle) != nil
+  }
+}
+
+public struct ModelPreparationEnvironmentClient: Sendable {
+  public var snapshot: @Sendable () -> [String: String]
+
+  public init(snapshot: @escaping @Sendable () -> [String: String]) {
+    self.snapshot = snapshot
+  }
+}
+
+extension ModelPreparationEnvironmentClient: DependencyKey {
+  public static var testValue: Self {
+    Self(snapshot: { ModelPreparationEnvironment.snapshot() })
+  }
+
+  public static var liveValue: Self { testValue }
+}
+
+extension DependencyValues {
+  public var modelPreparationEnvironment: ModelPreparationEnvironmentClient {
+    get { self[ModelPreparationEnvironmentClient.self] }
+    set { self[ModelPreparationEnvironmentClient.self] = newValue }
   }
 }
