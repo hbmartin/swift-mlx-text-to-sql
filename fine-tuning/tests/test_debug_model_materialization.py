@@ -12,6 +12,7 @@ from tools.fetch_model import LOCK_FILE, directory_digest, directory_inventory
 from tools.materialize_debug_model import (
     ArtifactError,
     materialize_debug_model,
+    preflight_debug_candidate,
     select_latest_local_v3,
 )
 
@@ -132,6 +133,7 @@ def fixture(tmp_path: Path) -> dict[str, Path]:
         "manifest": model_manifest,
         "run": run,
         "training_runs": run.parent,
+        "checkpoint": checkpoint,
     }
 
 
@@ -255,6 +257,25 @@ def test_debug_materialization_accepts_local_evidence_without_wandb_receipt(tmp_
     lock = json.loads((cache / LOCK_FILE).read_text())
     assert lock["source_fused_directory_sha256"] == source_digest
     assert lock["directory_sha256"] == debug_artifact["snapshot_directory_sha256"]
+
+
+def test_candidate_preflight_resolves_and_validates_the_exact_run(tmp_path):
+    paths = fixture(tmp_path)
+
+    result = preflight_debug_candidate(
+        select_latest_local_v3(paths["training_runs"]),
+        model_manifest_path=paths["manifest"],
+        models_dir=paths["models"],
+        fused_cache=paths["models"] / "debug-fused",
+    )
+
+    assert result["status"] == "debug_candidate_preflight_complete"
+    assert result["training_run_id"] == "run-new"
+    assert result["training_run_directory"] == str(paths["run"])
+    assert result["selected_iteration"] == 600
+    assert result["selected_checkpoint_sha256"] == hashlib.sha256(
+        paths["checkpoint"].read_bytes()
+    ).hexdigest()
 
 
 def test_latest_local_v3_ignores_a_newer_incomplete_run(tmp_path):

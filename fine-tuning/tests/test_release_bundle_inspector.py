@@ -2,10 +2,12 @@ import hashlib
 import json
 import plistlib
 import shutil
+import subprocess
 import zipfile
 
 import pytest
 
+import tools.inspect_release_bundle as release_inspector
 from tools.fetch_model import directory_digest, directory_inventory
 from tools.inspect_release_bundle import (
     app_from_archive,
@@ -16,6 +18,24 @@ from tools.inspect_release_bundle import (
 
 TRAINING_RUN = "pinned-training-run"
 SOURCE_REVISION = "b" * 40
+REAL_UNSIGNED_EXECUTABLE_IDENTITY = release_inspector.unsigned_executable_identity
+
+
+@pytest.fixture(autouse=True)
+def stub_code_signing(monkeypatch):
+    monkeypatch.setattr(
+        release_inspector,
+        "verify_code_signature",
+        lambda app: {"status": "valid"},
+    )
+    monkeypatch.setattr(
+        release_inspector,
+        "unsigned_executable_identity",
+        lambda executable: {
+            "bytes": executable.stat().st_size,
+            "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        },
+    )
 
 
 def make_beta_app(tmp_path):
@@ -117,12 +137,27 @@ def test_beta_app_gate_verifies_model_receipt_channel_and_metal(tmp_path):
         make_beta_app(tmp_path),
         configuration="Beta",
         expected_source_revision=SOURCE_REVISION,
+        expected_training_run=TRAINING_RUN,
     )
     assert result["build_channel"] == "beta"
     assert result["model"]["receipt_file_count"] == 1
     assert result["metal"]["bytes"] == 5
-    assert result["executable"]["sha256"]
+    assert result["executable"]["signed_sha256"]
+    assert result["executable"]["unsigned_sha256"]
+    assert result["code_signature"] == {"status": "valid"}
     assert result["model_runtime_contract"]["source_revision"] == SOURCE_REVISION
+
+
+def test_beta_app_gate_rejects_a_candidate_other_than_the_preflight_selection(
+    tmp_path,
+):
+    with pytest.raises(SystemExit, match="disagrees with publisher preflight"):
+        verify_app(
+            make_beta_app(tmp_path),
+            configuration="Beta",
+            expected_source_revision=SOURCE_REVISION,
+            expected_training_run="different-training-run",
+        )
 
 
 @pytest.mark.parametrize("configuration", ["Debug", "Beta"])
@@ -251,3 +286,39 @@ def test_archive_and_ipa_resolve_the_same_app_shape(tmp_path):
     extracted = tmp_path / "extracted"
     extracted.mkdir()
     assert app_from_ipa(ipa, extracted).name == "CREG.app"
+
+
+def test_unsigned_executable_identity_ignores_resigning(tmp_path):
+    if not release_inspector.CODESIGN.is_file():
+        pytest.skip("codesign is unavailable")
+    archive = tmp_path / "archive-executable"
+    ipa = tmp_path / "ipa-executable"
+    shutil.copyfile("/bin/echo", archive)
+    shutil.copyfile("/bin/echo", ipa)
+    archive.chmod(0o755)
+    ipa.chmod(0o755)
+    for executable, identifier in (
+        (archive, "dev.haroldmartin.CREG.archive-test"),
+        (ipa, "dev.haroldmartin.CREG.ipa-test"),
+    ):
+        subprocess.run(
+            [
+                str(release_inspector.CODESIGN),
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                identifier,
+                str(executable),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() != hashlib.sha256(
+        ipa.read_bytes()
+    ).hexdigest()
+    assert REAL_UNSIGNED_EXECUTABLE_IDENTITY(
+        archive
+    ) == REAL_UNSIGNED_EXECUTABLE_IDENTITY(ipa)
