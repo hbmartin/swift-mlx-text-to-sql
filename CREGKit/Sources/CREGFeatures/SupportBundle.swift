@@ -41,6 +41,7 @@ extension SupportBundleClient {
     SupportBundleClient { source in
       let bundle = Bundle.main
       let info = bundle.infoDictionary ?? [:]
+      let runtimeContract = try? ModelRuntimeContract.load(info: info)
       let preparationJSON =
         await ModelPreparationJournalClient.live().exportData()
       let preparation: ModelPreparationJournalSnapshot? =
@@ -55,6 +56,7 @@ extension SupportBundleClient {
         appVersion: info["CFBundleShortVersionString"] as? String ?? "unknown",
         buildNumber: info["CFBundleVersion"] as? String ?? "unknown",
         buildChannel: (try? BuildChannel.load(info: info).rawValue) ?? "invalid",
+        modelRuntimeContract: runtimeContract,
         modelIdentity: SupportBundleBuilder.bundledModelIdentity(),
         runtimeMode: preparation?.mode ?? .evaluated,
         createdAt: Date())
@@ -79,6 +81,7 @@ public enum SupportBundleBuilder {
     public var appVersion: String
     public var buildNumber: String
     public var buildChannel: String
+    public var modelRuntimeContract: ModelRuntimeContract?
     public var modelIdentity: (key: String, revision: String)
     public var runtimeMode: ModelRuntimeMode
     public var createdAt: Date
@@ -87,6 +90,7 @@ public enum SupportBundleBuilder {
       appVersion: String,
       buildNumber: String,
       buildChannel: String = "unknown",
+      modelRuntimeContract: ModelRuntimeContract? = nil,
       modelIdentity: (key: String, revision: String),
       runtimeMode: ModelRuntimeMode = .evaluated,
       createdAt: Date
@@ -94,6 +98,7 @@ public enum SupportBundleBuilder {
       self.appVersion = appVersion
       self.buildNumber = buildNumber
       self.buildChannel = buildChannel
+      self.modelRuntimeContract = modelRuntimeContract
       self.modelIdentity = modelIdentity
       self.runtimeMode = runtimeMode
       self.createdAt = createdAt
@@ -202,6 +207,9 @@ public enum SupportBundleBuilder {
       appVersion: context.appVersion,
       buildNumber: context.buildNumber,
       buildChannel: context.buildChannel,
+      modelRuntimeContractVersion: context.modelRuntimeContract?.version,
+      sourceRevision: context.modelRuntimeContract?.sourceRevision,
+      sourceDirty: context.modelRuntimeContract?.sourceDirty,
       modelKey: context.modelIdentity.key,
       modelRevision: context.modelIdentity.revision,
       runtimeMode: context.runtimeMode,
@@ -234,10 +242,8 @@ public enum SupportBundleBuilder {
 
   static func bundledModelIdentity() -> (key: String, revision: String) {
     guard
-      let url = Bundle.main.url(
-        forResource: "model-manifest", withExtension: "json"),
-      let configuration = try? ModelManifestLoader.production(
-        url: url, allowDebugCandidate: true)
+      let configuration = try? ModelManifestLoader.bundledProduction(
+        allowDebugCandidate: true)
     else { return ("unavailable", "unavailable") }
     return (configuration.model.key, configuration.model.revision)
   }

@@ -216,7 +216,11 @@ def test_copy_production_writes_manifest_bound_receipt(tmp_path):
     source, _, _ = make_artifact_tree(tmp_path)
     destination = tmp_path / "Resources" / "SQLModel"
     manifest = tmp_path / "model-manifest.json"
-    manifest.write_text('{"production_status":"verified"}\n')
+    manifest.write_text(
+        '{"model_runtime_contract":{"source_dirty":false,'
+        '"source_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+        '"version":1},"production_status":"verified"}\n'
+    )
     artifact = {
         "key": "winner",
         "repository": "owner/winner",
@@ -240,7 +244,9 @@ def test_copy_production_writes_manifest_bound_receipt(tmp_path):
     assert receipt["revision"] == "a" * 40
     assert receipt["file_count"] == 2
     assert len(receipt["directory_sha256"]) == 64
-    assert len(receipt["source_manifest_sha256"]) == 64
+    assert receipt["source_manifest_sha256"] == hashlib.sha256(
+        manifest.read_bytes()
+    ).hexdigest()
 
 
 @pytest.mark.parametrize("kind", ["file", "directory"])

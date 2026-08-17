@@ -26,6 +26,93 @@ public struct ProductionGenerationConfiguration:
   public var compactQuestionAwareOutputHead: Bool = false
   public var sqlNGramSpeculation: SQLNGramSpeculationPolicy? = nil
   public var debugModelIdentity: DebugModelIdentity? = nil
+  public var modelRuntimeContract: ModelRuntimeContract? = nil
+}
+
+public struct ModelRuntimeContract: Sendable, Equatable, Codable {
+  public static let currentVersion = 1
+  public static let infoVersionKey = "CREGModelRuntimeContractVersion"
+  public static let infoSourceRevisionKey = "CREGSourceRevision"
+  public static let infoSourceDirtyKey = "CREGSourceDirty"
+
+  public var version: Int
+  public var sourceRevision: String
+  public var sourceDirty: Bool
+
+  public init(version: Int, sourceRevision: String, sourceDirty: Bool) {
+    self.version = version
+    self.sourceRevision = sourceRevision
+    self.sourceDirty = sourceDirty
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case version
+    case sourceRevision = "source_revision"
+    case sourceDirty = "source_dirty"
+  }
+
+  public static func load(info: [String: Any]) throws -> Self {
+    let version: Int?
+    if let number = info[infoVersionKey] as? NSNumber,
+      CFGetTypeID(number) != CFBooleanGetTypeID()
+    {
+      version = number.intValue
+    } else if let text = info[infoVersionKey] as? String {
+      version = Int(text)
+    } else {
+      version = nil
+    }
+    guard let version else {
+      throw ModelRuntimeContractInfoError.missing(infoVersionKey)
+    }
+    guard version == currentVersion else {
+      throw ModelRuntimeContractInfoError.unsupportedVersion(
+        expected: currentVersion, actual: version)
+    }
+    guard
+      let sourceRevision = info[infoSourceRevisionKey] as? String,
+      sourceRevision.count == 40,
+      sourceRevision.allSatisfy({ "0123456789abcdef".contains($0) })
+    else {
+      throw ModelRuntimeContractInfoError.invalidSourceRevision
+    }
+    let sourceDirty: Bool?
+    if let value = info[infoSourceDirtyKey] as? Bool {
+      sourceDirty = value
+    } else if let text = info[infoSourceDirtyKey] as? String {
+      switch text.lowercased() {
+      case "true", "yes", "1": sourceDirty = true
+      case "false", "no", "0": sourceDirty = false
+      default: sourceDirty = nil
+      }
+    } else {
+      sourceDirty = nil
+    }
+    guard let sourceDirty else {
+      throw ModelRuntimeContractInfoError.missing(infoSourceDirtyKey)
+    }
+    return Self(
+      version: version,
+      sourceRevision: sourceRevision,
+      sourceDirty: sourceDirty)
+  }
+}
+
+public enum ModelRuntimeContractInfoError: LocalizedError, Equatable {
+  case missing(String)
+  case unsupportedVersion(expected: Int, actual: Int)
+  case invalidSourceRevision
+
+  public var errorDescription: String? {
+    switch self {
+    case .missing(let key):
+      "The bundled app provenance is missing \(key)."
+    case .unsupportedVersion(let expected, let actual):
+      "The app runtime contract version is unsupported (expected \(expected), actual \(actual))."
+    case .invalidSourceRevision:
+      "The bundled app source revision is not a full lowercase Git commit."
+    }
+  }
 }
 
 public struct VerificationMLPConfidenceSkipPolicy: Sendable, Equatable {
@@ -136,6 +223,9 @@ public enum ModelManifestError: LocalizedError, Equatable {
   case productionSelectionPending
   case unknownProductionModel(String)
   case invalidProductionConfiguration(String)
+  case missingRuntimeContract
+  case unsupportedRuntimeContract(expected: Int, actual: Int)
+  case runtimeProvenanceMismatch
 
   public var errorDescription: String? {
     switch self {
@@ -151,6 +241,12 @@ public enum ModelManifestError: LocalizedError, Equatable {
       "Production model key “\(key)” is not declared in the model manifest."
     case .invalidProductionConfiguration(let message):
       "Invalid production generation configuration: \(message)"
+    case .missingRuntimeContract:
+      "The bundled model manifest is missing its runtime contract."
+    case .unsupportedRuntimeContract(let expected, let actual):
+      "The bundled model runtime contract is unsupported (expected \(expected), actual \(actual))."
+    case .runtimeProvenanceMismatch:
+      "The bundled model manifest and executable provenance disagree."
     }
   }
 }
@@ -269,12 +365,14 @@ public enum ModelManifestLoader {
     var productionStatus: String
     var production: Production?
     var debugCandidate: DebugCandidate?
+    var modelRuntimeContract: ModelRuntimeContract?
 
     enum CodingKeys: String, CodingKey {
       case models
       case productionStatus = "production_status"
       case production
       case debugCandidate = "debug_candidate"
+      case modelRuntimeContract = "model_runtime_contract"
     }
   }
 
@@ -435,13 +533,27 @@ public enum ModelManifestLoader {
 
   public static func production(
     url: URL,
-    allowDebugCandidate: Bool = false
+    allowDebugCandidate: Bool = false,
+    requiredRuntimeContract: ModelRuntimeContract? = nil
   ) throws
     -> ProductionGenerationConfiguration
   {
     let decoder = JSONDecoder()
     let document = try decoder.decode(
       Document.self, from: Data(contentsOf: url))
+    if let requiredRuntimeContract {
+      guard let bundled = document.modelRuntimeContract else {
+        throw ModelManifestError.missingRuntimeContract
+      }
+      guard bundled.version == ModelRuntimeContract.currentVersion else {
+        throw ModelManifestError.unsupportedRuntimeContract(
+          expected: ModelRuntimeContract.currentVersion,
+          actual: bundled.version)
+      }
+      guard bundled == requiredRuntimeContract else {
+        throw ModelManifestError.runtimeProvenanceMismatch
+      }
+    }
     guard let production = document.production else {
       throw ModelManifestError.productionSelectionPending
     }
@@ -732,12 +844,14 @@ public enum ModelManifestLoader {
         || production.deviceRuntime?.policyVersion == "iphone-30-second-v10",
       sqlNGramSpeculation:
         production.deviceRuntime?.speculativeDecoding?.policy,
-      debugModelIdentity: debugIdentity)
+      debugModelIdentity: debugIdentity,
+      modelRuntimeContract: document.modelRuntimeContract)
   }
 
   public static func production(
     bundle: Bundle = .main,
-    allowDebugCandidate: Bool = false
+    allowDebugCandidate: Bool = false,
+    requiredRuntimeContract: ModelRuntimeContract? = nil
   ) throws
     -> ProductionGenerationConfiguration
   {
@@ -749,7 +863,23 @@ public enum ModelManifestLoader {
     }
     return try production(
       url: url,
-      allowDebugCandidate: allowDebugCandidate)
+      allowDebugCandidate: allowDebugCandidate,
+      requiredRuntimeContract: requiredRuntimeContract)
+  }
+
+  /// Loads an app-bundled manifest together with the processed Info.plist
+  /// contract. Unlike the URL-oriented tooling API, this always fails closed
+  /// when runtime provenance is absent or inconsistent.
+  public static func bundledProduction(
+    bundle: Bundle = .main,
+    allowDebugCandidate: Bool = false
+  ) throws -> ProductionGenerationConfiguration {
+    let runtimeContract = try ModelRuntimeContract.load(
+      info: bundle.infoDictionary ?? [:])
+    return try production(
+      bundle: bundle,
+      allowDebugCandidate: allowDebugCandidate,
+      requiredRuntimeContract: runtimeContract)
   }
 }
 

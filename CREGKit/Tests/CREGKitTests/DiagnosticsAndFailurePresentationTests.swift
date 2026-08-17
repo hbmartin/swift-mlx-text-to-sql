@@ -203,6 +203,15 @@ private enum DiagnosticsTestError: LocalizedError, Sendable {
         .invalidProductionConfiguration("quantization is invalid"),
         "production_configuration_invalid"
       ),
+      (.missingRuntimeContract, "production_runtime_contract_missing"),
+      (
+        .unsupportedRuntimeContract(expected: 1, actual: 2),
+        "production_runtime_contract_unsupported"
+      ),
+      (
+        .runtimeProvenanceMismatch,
+        "production_runtime_provenance_mismatch"
+      ),
     ]
 
     for (error, code) in cases {

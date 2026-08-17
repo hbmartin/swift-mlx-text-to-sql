@@ -15,6 +15,7 @@ from tools.inspect_release_bundle import (
 
 
 TRAINING_RUN = "pinned-training-run"
+SOURCE_REVISION = "b" * 40
 
 
 def make_beta_app(tmp_path):
@@ -26,6 +27,7 @@ def make_beta_app(tmp_path):
     weights = b"verified model bytes"
     (model / "model.bin").write_bytes(weights)
     (metal / "default.metallib").write_bytes(b"metal")
+    (app / "CREG").write_bytes(b"executable")
     model_digest = directory_digest(directory_inventory(model))
     model_key = "debug-model"
     manifest = {
@@ -33,7 +35,17 @@ def make_beta_app(tmp_path):
         "production_status": "debug-candidate",
         "debug_candidate": {
             "model_key": model_key,
+            "base_model_key": "base-model",
             "training_run_id": TRAINING_RUN,
+            "selected_iteration": 600,
+            "selected_checkpoint_sha256": "a" * 64,
+            "local_evidence_status": "complete",
+            "wandb_receipt_required": False,
+        },
+        "model_runtime_contract": {
+            "version": 1,
+            "source_revision": SOURCE_REVISION,
+            "source_dirty": False,
         },
         "models": [
             {
@@ -41,6 +53,7 @@ def make_beta_app(tmp_path):
                 "local_directory": model_key,
                 "repository": "local-debug/pinned",
                 "revision": "a" * 40,
+                "training_run": TRAINING_RUN,
                 "snapshot_directory_sha256": model_digest,
                 "required_files": [
                     {
@@ -86,9 +99,13 @@ def make_beta_app(tmp_path):
         plistlib.dump(
             {
                 "CFBundleIdentifier": "dev.haroldmartin.CREG",
+                "CFBundleExecutable": "CREG",
+                "CFBundleShortVersionString": "1.0",
                 "CFBundleVersion": "1",
                 "CREGBuildChannel": "beta",
-                "CREGExperimentalTrainingRun": TRAINING_RUN,
+                "CREGModelRuntimeContractVersion": 1,
+                "CREGSourceRevision": SOURCE_REVISION,
+                "CREGSourceDirty": False,
             },
             stream,
         )
@@ -99,18 +116,56 @@ def test_beta_app_gate_verifies_model_receipt_channel_and_metal(tmp_path):
     result = verify_app(
         make_beta_app(tmp_path),
         configuration="Beta",
-        expected_training_run=TRAINING_RUN,
+        expected_source_revision=SOURCE_REVISION,
     )
     assert result["build_channel"] == "beta"
     assert result["model"]["receipt_file_count"] == 1
     assert result["metal"]["bytes"] == 5
+    assert result["executable"]["sha256"]
+    assert result["model_runtime_contract"]["source_revision"] == SOURCE_REVISION
+
+
+@pytest.mark.parametrize("configuration", ["Debug", "Beta"])
+@pytest.mark.parametrize("status", ["debug-candidate", "verified"])
+def test_debug_and_beta_accept_the_same_model_states(tmp_path, configuration, status):
+    app = make_beta_app(tmp_path)
+    with (app / "Info.plist").open("rb") as stream:
+        info = plistlib.load(stream)
+    info["CREGBuildChannel"] = configuration.lower()
+    with (app / "Info.plist").open("wb") as stream:
+        plistlib.dump(info, stream)
+    if status == "verified":
+        manifest_path = app / "model-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["production_status"] = "verified"
+        manifest["debug_candidate"] = None
+        manifest_bytes = json.dumps(manifest, sort_keys=True).encode() + b"\n"
+        manifest_path.write_bytes(manifest_bytes)
+        receipt_path = app / "production-model-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["source_manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+        receipt_path.write_text(json.dumps(receipt))
+
+    result = verify_app(
+        app,
+        configuration=configuration,
+        expected_source_revision=SOURCE_REVISION,
+    )
+    if status == "verified":
+        assert result["debug_candidate"] is None
+    else:
+        assert isinstance(result["debug_candidate"], dict)
 
 
 @pytest.mark.parametrize(
     "mutation",
     [
         "channel",
-        "training_run",
+        "missing_contract",
+        "wrong_contract",
+        "wrong_revision",
+        "dirty_source",
+        "executable_missing",
         "model",
         "receipt",
         "metal_missing",
@@ -125,19 +180,37 @@ def test_beta_app_gate_fails_closed(tmp_path, mutation):
             plistlib.dump(
                 {
                     "CREGBuildChannel": "release",
-                    "CREGExperimentalTrainingRun": TRAINING_RUN,
+                    "CREGModelRuntimeContractVersion": 1,
+                    "CREGSourceRevision": SOURCE_REVISION,
+                    "CREGSourceDirty": False,
                 },
                 stream,
             )
-    elif mutation == "training_run":
+    elif mutation == "missing_contract":
+        manifest = json.loads((app / "model-manifest.json").read_text())
+        manifest.pop("model_runtime_contract")
+        (app / "model-manifest.json").write_text(json.dumps(manifest))
+    elif mutation == "wrong_contract":
+        manifest = json.loads((app / "model-manifest.json").read_text())
+        manifest["model_runtime_contract"]["version"] = 2
+        (app / "model-manifest.json").write_text(json.dumps(manifest))
+    elif mutation == "wrong_revision":
+        with (app / "Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        info["CREGSourceRevision"] = "c" * 40
         with (app / "Info.plist").open("wb") as stream:
-            plistlib.dump(
-                {
-                    "CREGBuildChannel": "beta",
-                    "CREGExperimentalTrainingRun": "wrong-training-run",
-                },
-                stream,
-            )
+            plistlib.dump(info, stream)
+    elif mutation == "dirty_source":
+        manifest = json.loads((app / "model-manifest.json").read_text())
+        manifest["model_runtime_contract"]["source_dirty"] = True
+        (app / "model-manifest.json").write_text(json.dumps(manifest))
+        with (app / "Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        info["CREGSourceDirty"] = True
+        with (app / "Info.plist").open("wb") as stream:
+            plistlib.dump(info, stream)
+    elif mutation == "executable_missing":
+        (app / "CREG").unlink()
     elif mutation == "model":
         (app / "SQLModel" / "model.bin").write_bytes(b"truncated")
     elif mutation == "receipt":
@@ -157,7 +230,7 @@ def test_beta_app_gate_fails_closed(tmp_path, mutation):
         verify_app(
             app,
             configuration="Beta",
-            expected_training_run=TRAINING_RUN,
+            expected_source_revision=SOURCE_REVISION,
         )
 
 

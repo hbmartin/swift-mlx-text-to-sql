@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import plistlib
+import re
 import tempfile
 import zipfile
 from contextlib import ExitStack
@@ -29,6 +30,7 @@ from tools.fetch_model import (
 
 DEFAULT_REPORTS = REPO_ROOT / "eval" / "build-verification"
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
+MODEL_RUNTIME_CONTRACT = REPO_ROOT / "model-runtime-contract.json"
 
 
 def load_bundled_manifest(path: Path, configuration: str) -> dict[str, Any]:
@@ -86,8 +88,8 @@ def parse_args() -> argparse.Namespace:
         default="Release",
     )
     parser.add_argument(
-        "--expected-training-run",
-        help="required pinned training run for Beta (defaults to Info.plist)",
+        "--expected-source-revision",
+        help="full Git revision expected in the app and bundled manifest",
     )
     parser.add_argument("--reports-dir", type=Path, default=DEFAULT_REPORTS)
     args = parser.parse_args()
@@ -137,7 +139,6 @@ def selected_artifact(
     manifest: dict[str, Any],
     configuration: str,
     info: dict[str, Any],
-    expected_training_run: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     production = manifest.get("production")
     if not isinstance(production, dict):
@@ -159,21 +160,31 @@ def selected_artifact(
             raise SystemExit(
                 "Release requires a verified bounded-policy production selection"
             )
-    elif configuration == "Beta":
+    else:
+        status = manifest.get("production_status")
         candidate = manifest.get("debug_candidate")
-        if (
-            manifest.get("production_status") != "debug-candidate"
-            or not isinstance(candidate, dict)
-            or candidate.get("model_key") != production.get("model_key")
-        ):
-            raise SystemExit("Beta requires its generated debug-candidate selection")
-        pinned = info.get("CREGExperimentalTrainingRun")
-        required = expected_training_run or pinned
-        if not isinstance(pinned, str) or not pinned:
-            raise SystemExit("Beta Info.plist has no pinned experimental training run")
-        if required != pinned or candidate.get("training_run_id") != pinned:
+        if status == "verified" and candidate is not None:
             raise SystemExit(
-                "Beta training run disagrees across CLI, Info.plist, and manifest"
+                f"{configuration} verified selection must not declare debug_candidate"
+            )
+        if status == "debug-candidate" and (
+            not isinstance(candidate, dict)
+            or candidate.get("model_key") != production.get("model_key")
+            or not isinstance(candidate.get("base_model_key"), str)
+            or not candidate.get("base_model_key")
+            or not isinstance(candidate.get("training_run_id"), str)
+            or not candidate.get("training_run_id")
+            or not isinstance(candidate.get("selected_iteration"), int)
+            or candidate.get("selected_iteration", 0) <= 0
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(candidate.get("selected_checkpoint_sha256", "")),
+            )
+            is None
+            or candidate.get("wandb_receipt_required") is not False
+        ):
+            raise SystemExit(
+                f"{configuration} debug-candidate identity is incomplete or inconsistent"
             )
 
     try:
@@ -184,7 +195,75 @@ def selected_artifact(
         )
     except (KeyError, StopIteration) as error:
         raise SystemExit("selected model is not declared in bundled manifest") from error
+    if configuration != "Release" and manifest.get("production_status") == "debug-candidate":
+        candidate = manifest["debug_candidate"]
+        if (
+            artifact.get("training_run") != candidate["training_run_id"]
+            or artifact.get("revision")
+            != candidate["selected_checkpoint_sha256"][:40]
+        ):
+            raise SystemExit(
+                f"{configuration} selected model disagrees with debug-candidate identity"
+            )
     return production, artifact
+
+
+def verify_runtime_contract(
+    manifest: dict[str, Any],
+    info: dict[str, Any],
+    *,
+    configuration: str,
+    expected_source_revision: str | None,
+) -> dict[str, Any]:
+    try:
+        definition = json.loads(MODEL_RUNTIME_CONTRACT.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"cannot read canonical model runtime contract: {error}") from error
+    version = definition.get("current_version")
+    if definition.get("schema_version") != 1 or not isinstance(version, int):
+        raise SystemExit("canonical model runtime contract is invalid")
+    contract = manifest.get("model_runtime_contract")
+    if not isinstance(contract, dict):
+        raise SystemExit("bundled manifest is missing model_runtime_contract")
+    source_revision = contract.get("source_revision")
+    source_dirty = contract.get("source_dirty")
+    if contract.get("version") != version:
+        raise SystemExit("bundled manifest runtime contract version is unsupported")
+    if not isinstance(source_revision, str) or re.fullmatch(
+        r"[0-9a-f]{40}", source_revision
+    ) is None:
+        raise SystemExit("bundled manifest source revision is invalid")
+    if not isinstance(source_dirty, bool):
+        raise SystemExit("bundled manifest source_dirty must be a Boolean")
+    if (
+        info.get("CREGModelRuntimeContractVersion") != version
+        or info.get("CREGSourceRevision") != source_revision
+        or info.get("CREGSourceDirty") is not source_dirty
+    ):
+        raise SystemExit("Info.plist and bundled manifest provenance disagree")
+    if expected_source_revision is not None and source_revision != expected_source_revision:
+        raise SystemExit("bundled source revision disagrees with the expected Git revision")
+    if configuration == "Beta" and source_dirty:
+        raise SystemExit("Beta source provenance must be clean")
+    return {
+        "version": version,
+        "source_revision": source_revision,
+        "source_dirty": source_dirty,
+    }
+
+
+def verify_executable(app: Path, info: dict[str, Any]) -> dict[str, Any]:
+    executable_name = info.get("CFBundleExecutable")
+    if not isinstance(executable_name, str) or not executable_name:
+        raise SystemExit("Info.plist has no CFBundleExecutable")
+    executable = app / executable_name
+    if not executable.is_file() or executable.stat().st_size <= 0:
+        raise SystemExit("bundle executable is missing or empty")
+    return {
+        "relative_path": executable_name,
+        "bytes": executable.stat().st_size,
+        "sha256": sha256_file(executable),
+    }
 
 
 def verify_metal_resource(app: Path) -> dict[str, Any]:
@@ -209,7 +288,7 @@ def verify_app(
     app: Path,
     *,
     configuration: str,
-    expected_training_run: str | None,
+    expected_source_revision: str | None = None,
 ) -> dict[str, Any]:
     app = app.resolve()
     bundled_manifest = app / "model-manifest.json"
@@ -228,15 +307,22 @@ def verify_app(
             f"{configuration} bundle is missing Info.plist, model-manifest.json, "
             f"production-model-receipt.json, or SQLModel: {app}"
         )
-    if configuration == "Release" and bundled_manifest.read_bytes() != MODEL_MANIFEST.read_bytes():
-        raise SystemExit("Release bundled model manifest is not byte-identical to source")
-
     with info_path.open("rb") as stream:
         info = plistlib.load(stream)
     manifest = load_bundled_manifest(bundled_manifest, configuration)
-    production, artifact = selected_artifact(
-        manifest, configuration, info, expected_training_run
+    if configuration == "Release":
+        source_manifest = json.loads(MODEL_MANIFEST.read_text())
+        unstamped_manifest = dict(manifest)
+        unstamped_manifest.pop("model_runtime_contract", None)
+        if unstamped_manifest != source_manifest:
+            raise SystemExit("Release bundled model manifest differs from source")
+    runtime_contract = verify_runtime_contract(
+        manifest,
+        info,
+        configuration=configuration,
+        expected_source_revision=expected_source_revision,
     )
+    production, artifact = selected_artifact(manifest, configuration, info)
     receipt = json.loads(bundled_receipt.read_text())
     receipt_identity = {
         "model_key": artifact["key"],
@@ -318,8 +404,10 @@ def verify_app(
     return {
         "app": str(app),
         "bundle_identifier": info.get("CFBundleIdentifier"),
+        "marketing_version": info.get("CFBundleShortVersionString"),
         "build_number": info.get("CFBundleVersion"),
         "build_channel": info.get("CREGBuildChannel"),
+        "model_runtime_contract": runtime_contract,
         "production": production,
         "debug_candidate": manifest.get("debug_candidate"),
         "model": {
@@ -334,6 +422,7 @@ def verify_app(
             "allowed_extra_distribution_files": extras,
             "bundle_bytes": sum(item["size"] for item in actual),
         },
+        "executable": verify_executable(app, info),
         "metal": verify_metal_resource(app),
         "inputs": {
             "bundled_manifest_sha256": sha256_file(bundled_manifest),
@@ -359,13 +448,13 @@ def main() -> None:
             result = verify_app(
                 app,
                 configuration=args.configuration,
-                expected_training_run=args.expected_training_run,
+                expected_source_revision=args.expected_source_revision,
             )
             result["artifact_kind"] = kind
             artifacts.append(result)
 
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": args.run_id,
         "status": "complete",
         "configuration": args.configuration,

@@ -27,6 +27,81 @@ import Testing
     throw CocoaError(.fileNoSuchFile)
   }
 
+  private func checkedInManifestURL(
+    runtimeContract: ModelRuntimeContract?
+  ) throws -> URL {
+    let source = try Data(contentsOf: checkedInManifestURL())
+    var document = try #require(
+      JSONSerialization.jsonObject(with: source) as? [String: Any])
+    if let runtimeContract {
+      document["model_runtime_contract"] = [
+        "version": runtimeContract.version,
+        "source_revision": runtimeContract.sourceRevision,
+        "source_dirty": runtimeContract.sourceDirty,
+      ]
+    }
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("model-manifest-\(UUID().uuidString).json")
+    try JSONSerialization.data(withJSONObject: document).write(to: url)
+    return url
+  }
+
+  @Test func runtimeContractAndSourceProvenanceFailClosed() throws {
+    let expected = ModelRuntimeContract(
+      version: 1,
+      sourceRevision: String(repeating: "a", count: 40),
+      sourceDirty: false)
+    #expect(throws: ModelManifestError.missingRuntimeContract) {
+      try ModelManifestLoader.production(
+        url: checkedInManifestURL(), requiredRuntimeContract: expected)
+    }
+
+    let unsupported = ModelRuntimeContract(
+      version: 2,
+      sourceRevision: expected.sourceRevision,
+      sourceDirty: false)
+    #expect(
+      throws: ModelManifestError.unsupportedRuntimeContract(
+        expected: 1, actual: 2)
+    ) {
+      try ModelManifestLoader.production(
+        url: checkedInManifestURL(runtimeContract: unsupported),
+        requiredRuntimeContract: expected)
+    }
+
+    let differentRevision = ModelRuntimeContract(
+      version: 1,
+      sourceRevision: String(repeating: "b", count: 40),
+      sourceDirty: false)
+    #expect(throws: ModelManifestError.runtimeProvenanceMismatch) {
+      try ModelManifestLoader.production(
+        url: checkedInManifestURL(runtimeContract: differentRevision),
+        requiredRuntimeContract: expected)
+    }
+
+    let production = try ModelManifestLoader.production(
+      url: checkedInManifestURL(runtimeContract: expected),
+      requiredRuntimeContract: expected)
+    #expect(production.modelRuntimeContract == expected)
+  }
+
+  @Test func infoPlistRuntimeContractRejectsMissingAndWrongVersions() throws {
+    let revision = String(repeating: "a", count: 40)
+    #expect(throws: ModelRuntimeContractInfoError.self) {
+      try ModelRuntimeContract.load(info: [:])
+    }
+    #expect(
+      throws: ModelRuntimeContractInfoError.unsupportedVersion(
+        expected: 1, actual: 2)
+    ) {
+      try ModelRuntimeContract.load(info: [
+        ModelRuntimeContract.infoVersionKey: 2,
+        ModelRuntimeContract.infoSourceRevisionKey: revision,
+        ModelRuntimeContract.infoSourceDirtyKey: false,
+      ])
+    }
+  }
+
   @Test func checkedInManifestLoadsVerifiedProductionConfiguration() throws {
     let production = try ModelManifestLoader.production(
       url: checkedInManifestURL())

@@ -255,6 +255,9 @@ public struct SupportBundleManifest: Equatable, Sendable, Codable {
   public var appVersion: String
   public var buildNumber: String
   public var buildChannel: String
+  public var modelRuntimeContractVersion: Int?
+  public var sourceRevision: String?
+  public var sourceDirty: Bool?
   public var modelKey: String
   public var modelRevision: String
   public var runtimeMode: ModelRuntimeMode
@@ -271,6 +274,9 @@ public struct SupportBundleManifest: Equatable, Sendable, Codable {
     appVersion: String,
     buildNumber: String,
     buildChannel: String = "unknown",
+    modelRuntimeContractVersion: Int? = nil,
+    sourceRevision: String? = nil,
+    sourceDirty: Bool? = nil,
     modelKey: String,
     modelRevision: String,
     runtimeMode: ModelRuntimeMode = .evaluated,
@@ -286,6 +292,9 @@ public struct SupportBundleManifest: Equatable, Sendable, Codable {
     self.appVersion = appVersion
     self.buildNumber = buildNumber
     self.buildChannel = buildChannel
+    self.modelRuntimeContractVersion = modelRuntimeContractVersion
+    self.sourceRevision = sourceRevision
+    self.sourceDirty = sourceDirty
     self.modelKey = modelKey
     self.modelRevision = modelRevision
     self.runtimeMode = runtimeMode

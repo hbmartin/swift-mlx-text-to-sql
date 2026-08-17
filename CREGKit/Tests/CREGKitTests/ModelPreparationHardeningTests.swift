@@ -48,24 +48,11 @@ import Testing
     }
   }
 
-  @Test func betaRequiresThePinnedCandidateIdentity() throws {
-    let info: [String: Any] = [
-      BuildChannel.infoKey: "beta",
-      BuildChannel.experimentalTrainingRunInfoKey: "pinned-run",
-    ]
-    try BuildChannel.beta.validate(
-      configuration(debugIdentity: identity), info: info)
-
-    #expect(throws: BuildChannel.Error.self) {
-      try BuildChannel.beta.validate(configuration(), info: info)
-    }
-    #expect(throws: BuildChannel.Error.self) {
-      try BuildChannel.beta.validate(
-        configuration(debugIdentity: identity),
-        info: [
-          BuildChannel.infoKey: "beta",
-          BuildChannel.experimentalTrainingRunInfoKey: "different-run",
-        ])
+  @Test func debugAndBetaAcceptVerifiedOrCandidateSelectionsWithoutPins() throws {
+    for channel in [BuildChannel.debug, .beta] {
+      try channel.validate(configuration(), info: [:])
+      try channel.validate(
+        configuration(debugIdentity: identity), info: [:])
     }
   }
 

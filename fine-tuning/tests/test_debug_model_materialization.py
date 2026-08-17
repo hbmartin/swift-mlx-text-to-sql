@@ -57,6 +57,11 @@ def fixture(tmp_path: Path) -> dict[str, Path]:
         json.dumps(
             {
                 "schema_version": 1,
+                "model_runtime_contract": {
+                    "version": 1,
+                    "source_revision": "b" * 40,
+                    "source_dirty": False,
+                },
                 "models": [artifact],
                 "production_status": "verified",
                 "production": {
@@ -160,6 +165,11 @@ def test_debug_materialization_accepts_local_evidence_without_wandb_receipt(tmp_
     assert result["wandb_receipt_required"] is False
     generated = json.loads((resources / "model-manifest.json").read_text())
     assert generated["production_status"] == "debug-candidate"
+    assert generated["model_runtime_contract"] == {
+        "version": 1,
+        "source_revision": "b" * 40,
+        "source_dirty": False,
+    }
     assert generated["debug_candidate"]["training_run_id"] == "run-new"
     assert generated["debug_candidate"]["selected_iteration"] == 600
     assert generated["debug_candidate"]["wandb_receipt_required"] is False
@@ -174,6 +184,12 @@ def test_debug_materialization_accepts_local_evidence_without_wandb_receipt(tmp_
         == "iphone-q4-g128-v2"
     )
     assert generated["production"]["voting"]["candidate_count"] == 1
+    receipt = json.loads(
+        (resources / "production-model-receipt.json").read_text()
+    )
+    assert receipt["source_manifest_sha256"] == hashlib.sha256(
+        (resources / "model-manifest.json").read_bytes()
+    ).hexdigest()
     assert generated["production"]["device_runtime"] == {
         "policy_version": "iphone-30-second-v10",
         "gcd": "off",

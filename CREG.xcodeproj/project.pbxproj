@@ -224,9 +224,12 @@
 			);
 			inputPaths = (
 				"$(SRCROOT)/model-manifest.json",
+				"$(SRCROOT)/model-runtime-contract.json",
+				"$(SRCROOT)/tools/materialize_bundled_model.sh",
 				"$(SRCROOT)/fine-tuning/uv.lock",
 				"$(SRCROOT)/fine-tuning/tools/fetch_model.py",
 				"$(SRCROOT)/fine-tuning/tools/materialize_debug_model.py",
+				"$(SRCROOT)/fine-tuning/tools/stamp_bundle_manifest.py",
 				"$(SRCROOT)/fine-tuning/eval/file_integrity.py",
 			);
 			name = "Materialize Bundled SQL Model";
@@ -236,7 +239,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\n\nUV_BIN=\"$(command -v uv || true)\"\nif [[ -z \"$UV_BIN\" && -x \"$HOME/.local/bin/uv\" ]]; then\n  UV_BIN=\"$HOME/.local/bin/uv\"\nfi\nif [[ -z \"$UV_BIN\" ]]; then\n  echo \"error: uv is required to materialize the pinned SQL model. Install uv and rebuild.\"\n  exit 1\nfi\n\nRESOURCE_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nMODEL_DIR=\"$RESOURCE_DIR/SQLModel\"\nMANIFEST_DESTINATION=\"$RESOURCE_DIR/model-manifest.json\"\nRECEIPT_DESTINATION=\"$RESOURCE_DIR/production-model-receipt.json\"\nMODELS_CACHE=\"${CREG_MODELS_DIR:-$SRCROOT/models}\"\nDEBUG_FUSED_CACHE=\"${CREG_DEBUG_FUSED_MODELS_DIR:-$MODELS_CACHE/debug-fused}\"\nDEBUG_TRAINING_RUN=\"${CREG_DEBUG_TRAINING_RUN:-}\"\nEXPERIMENTAL_TRAINING_RUN=\"${CREG_EXPERIMENTAL_TRAINING_RUN:-}\"\nmkdir -p \"$RESOURCE_DIR\"\ncd \"$SRCROOT/fine-tuning\"\n\nif [[ \"$CONFIGURATION\" == \"Beta\" ]]; then\n  if [[ -z \"$EXPERIMENTAL_TRAINING_RUN\" ]]; then\n    echo \"error: Beta requires CREG_EXPERIMENTAL_TRAINING_RUN to pin one immutable training run.\"\n    exit 1\n  fi\n  echo \"warning: Beta is bundling the pinned experimental reliability-v3 candidate; it is not production finalized.\"\n  \"$UV_BIN\" run --frozen python tools/materialize_debug_model.py \\\n    --training-run \"$EXPERIMENTAL_TRAINING_RUN\" \\\n    --training-runs-dir \"$SRCROOT/eval/training-runs\" \\\n    --model-manifest \"$SRCROOT/model-manifest.json\" \\\n    --models-dir \"$MODELS_CACHE\" \\\n    --fused-cache \"$DEBUG_FUSED_CACHE\" \\\n    --destination \"$MODEL_DIR\" \\\n    --manifest-destination \"$MANIFEST_DESTINATION\" \\\n    --receipt-destination \"$RECEIPT_DESTINATION\"\n  exit 0\nfi\n\nif [[ \"$CONFIGURATION\" == \"Debug\" && -n \"$DEBUG_TRAINING_RUN\" ]]; then\n  DEBUG_ARGS=(\n    --training-runs-dir \"$SRCROOT/eval/training-runs\"\n    --model-manifest \"$SRCROOT/model-manifest.json\"\n    --models-dir \"$MODELS_CACHE\"\n    --fused-cache \"$DEBUG_FUSED_CACHE\"\n    --destination \"$MODEL_DIR\"\n    --manifest-destination \"$MANIFEST_DESTINATION\"\n    --receipt-destination \"$RECEIPT_DESTINATION\"\n  )\n  if [[ \"$DEBUG_TRAINING_RUN\" == \"latest-local-v3\" ]]; then\n    DEBUG_ARGS+=(--latest-local-v3)\n  else\n    DEBUG_ARGS+=(--training-run \"$DEBUG_TRAINING_RUN\")\n  fi\n  echo \"warning: Debug is bundling an experimental local reliability-v3 model without requiring a W&B receipt.\"\n  \"$UV_BIN\" run --frozen python tools/materialize_debug_model.py \"${DEBUG_ARGS[@]}\"\n  exit 0\nfi\n\nif [[ -n \"$DEBUG_TRAINING_RUN\" ]]; then\n  echo \"error: CREG_DEBUG_TRAINING_RUN is forbidden outside Debug builds.\"\n  exit 1\nfi\n\nif [[ -n \"$EXPERIMENTAL_TRAINING_RUN\" ]]; then\n  echo \"error: CREG_EXPERIMENTAL_TRAINING_RUN is forbidden outside Beta builds.\"\n  exit 1\nfi\n\ncp \"$SRCROOT/model-manifest.json\" \"$MANIFEST_DESTINATION\"\nFETCH_ARGS=(\n  --production\n  --models-dir \"$MODELS_CACHE\"\n  --destination \"$MODEL_DIR\"\n)\nif [[ \"$CONFIGURATION\" == \"Debug\" ]]; then\n  FETCH_ARGS+=(--allow-historical-policy)\nfi\n\"$UV_BIN\" run --frozen python tools/fetch_model.py \"${FETCH_ARGS[@]}\"\n";
+			shellScript = "/bin/zsh \"$SRCROOT/tools/materialize_bundled_model.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		C4E600000000000000000026 /* Stamp Distribution Build Number */ = {
@@ -353,8 +356,8 @@
 				CODE_SIGN_ENTITLEMENTS = CREG/CREG.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CREG_BUILD_CHANNEL = debug;
-				CREG_DEBUG_TRAINING_RUN = "latest-local-v3";
-				CURRENT_PROJECT_VERSION = 1;
+				CREG_CANDIDATE_TRAINING_RUN = "latest-local-v3";
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = MGPHJKUJSY;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -379,7 +382,7 @@
 				CODE_SIGN_ENTITLEMENTS = CREG/CREG.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CREG_BUILD_CHANNEL = release;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = MGPHJKUJSY;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -429,8 +432,8 @@
 				CODE_SIGN_ENTITLEMENTS = CREG/CREG.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CREG_BUILD_CHANNEL = beta;
-				CREG_EXPERIMENTAL_TRAINING_RUN = "qwen25-coder-3b-73cb7525c61bc76c76d880076d56d39e0f25cd1675f21a01c28ae2b560838500-seed-424242-wb-0qvg7e4k";
-				CURRENT_PROJECT_VERSION = 1;
+				CREG_CANDIDATE_TRAINING_RUN = "latest-local-v3";
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = MGPHJKUJSY;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;

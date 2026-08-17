@@ -20,10 +20,11 @@ Python/Swift parity, and a fresh-verified public publication with a complete
 W&B receipt. None exist yet, and the current candidate does not clear the
 `MINIMUM_PRODUCTION_EX` floor of 66.8% (it scores 63.33% EX on gold_v1).
 
-Beta therefore bundles the **pinned experimental candidate** through the same
-Debug materialization path — real manifest, real content-addressed receipt,
-full byte verification at startup — and labels it in the UI. It is
-`production_status: "debug-candidate"`, and it is not production finalized.
+Beta therefore uses the same model selection and runtime policy as Debug. By
+default it resolves the newest eligible local reliability-v3 candidate, but it
+can also select an explicit local run or fall back to the verified production
+selection. Candidate builds use a real manifest and content-addressed receipt
+and remain clearly labeled as experimental.
 
 **Beta is not a relaxation of Release.** Release stays strict and unchanged.
 When a campaign finally clears finalization, retire Beta rather than promoting
@@ -34,7 +35,7 @@ it.
 | | Debug | Beta | Release |
 |---|---|---|---|
 | Optimization | `-Onone` | `-O`, whole-module | `-O`, whole-module |
-| Model source | newest local v3 run | **pinned** run ID | manifest production selection |
+| Model source | candidate selector or verified production | candidate selector or verified production | manifest production selection |
 | Debug candidates | allowed | allowed | refused |
 | Bounded-policy check | skipped | skipped | **required** |
 | Receipt verification | required | **required** | required |
@@ -42,30 +43,24 @@ it.
 | `CREG_WIRED_MEMORY` | honored | **ignored** | ignored |
 | Experimental banner | shown | **shown** | n/a |
 
-The app writes `CREGBuildChannel=beta` and the pinned
-`CREGExperimentalTrainingRun` into its processed Info.plist. Runtime policy
-reads those values explicitly. Do not use an app-project Swift compilation
+The app writes `CREGBuildChannel=beta` into its processed Info.plist. Runtime
+policy reads that value explicitly. Do not use an app-project Swift compilation
 condition for this decision: local Swift-package targets compile with their own
 Release configuration and do not inherit `SWIFT_ACTIVE_COMPILATION_CONDITIONS`
 from the app project.
 
-## The pinned model
+## Shared candidate selection
 
-`CREG_EXPERIMENTAL_TRAINING_RUN` in the Beta target configuration pins:
+`CREG_CANDIDATE_TRAINING_RUN` defaults to `latest-local-v3` in both Debug and
+Beta. That selector resolves by `max(started_at, run_id)`. Set it to an explicit
+run ID to make a local build immutable, or clear it to bundle the verified
+production selection. Release does not define the setting and rejects any
+candidate selector.
 
-```text
-qwen25-coder-3b-73cb7525c61bc76c76d880076d56d39e0f25cd1675f21a01c28ae2b560838500-seed-424242-wb-0qvg7e4k
-```
-
-iteration 600, 63.33% EX on gold_v1.
-
-Debug uses `latest-local-v3`, which resolves by `max(started_at, run_id)` and
-would silently change what ships when a new local run finishes. Beta pins an
-immutable run ID instead. To move Beta to a different checkpoint, change that
-build setting deliberately.
-
-The script refuses `CREG_EXPERIMENTAL_TRAINING_RUN` outside Beta, mirroring the
-existing `CREG_DEBUG_TRAINING_RUN` guard.
+Every manifest is stamped with runtime-contract version 1, the full Git source
+revision, and the source dirty flag. The processed Info.plist receives matching
+values. Startup fails closed if the compiled contract, manifest, and Info.plist
+do not agree. The TestFlight publisher additionally refuses dirty provenance.
 
 ### Reproducibility caveat
 
@@ -76,39 +71,27 @@ until a finalized production model replaces this path.
 
 ## Producing the archive
 
-Xcode's Product ▸ Archive uses Beta — the shared `CREG` scheme's archive action
-points at it. From the command line:
+Use the checked-in publisher for TestFlight. Each attempt places DerivedData
+under its own attempt directory so local Release package products cannot leak
+into a Beta archive:
 
 ```sh
-xcodebuild -project CREG.xcodeproj -scheme CREG \
-  -configuration Beta -destination 'generic/platform=iOS' \
-  -skipPackagePluginValidation -skipMacroValidation \
-  -archivePath build/install/CREG-beta.xcarchive archive
+python3 .agents/skills/publish-creg-testflight/scripts/publish_testflight.py preflight
+python3 .agents/skills/publish-creg-testflight/scripts/publish_testflight.py publish
 ```
 
-Export for upload with `method: app-store-connect` (the checked-in
-`build/install/ExportOptions.plist` is a `debugging` export and must not be
-reused for TestFlight):
-
-```sh
-xcodebuild -exportArchive \
-  -archivePath build/install/CREG-beta.xcarchive \
-  -exportPath build/install/beta-export \
-  -exportOptionsPlist <app-store-connect-options>.plist
-```
-
-Before uploading, verify **both** the archive and the exported IPA with the
-same Beta run. The gate checks the build channel and pinned candidate identity,
-recomputes the complete SQLModel inventory/receipt digest, and requires exactly
-one non-empty MLX `default.metallib` in each artifact:
+The publisher verifies both the archive and exported IPA before upload. For
+manual inspection of already-produced artifacts, pass the clean preflight Git
+revision. The gate checks bundle/version/build identity, runtime contract,
+provenance, executable hash, complete candidate and selected-model identity,
+manifest/receipt hashes, SQLModel inventory, and Metal library:
 
 ```sh
 cd fine-tuning
 uv run --frozen python tools/inspect_release_bundle.py \
   --configuration Beta \
   --run-id beta-<UTC timestamp> \
-  --expected-training-run \
-    qwen25-coder-3b-73cb7525c61bc76c76d880076d56d39e0f25cd1675f21a01c28ae2b560838500-seed-424242-wb-0qvg7e4k \
+  --expected-source-revision <40-character-Git-SHA> \
   --archive ../build/install/CREG-beta.xcarchive \
   --ipa ../build/install/beta-export/CREG.ipa
 ```
@@ -178,7 +161,7 @@ uses swift-crypto only for hashing — so uploads do not prompt per build.
   by `tools/make_app_icons.py`. `AppIconMidnight` is primary; the other two ship
   as alternates the user picks in Settings. actool renders every required size
   including the opaque 1024pt marketing asset, so there is no PNG to hand-check.
-- **Artifact gate**: retain the complete schema-v2 verification report for both
+- **Artifact gate**: retain the complete schema-v3 verification report for both
   the `.xcarchive` and exported `.ipa`; no successful report means no upload.
 
 ## Still open

@@ -61,6 +61,29 @@ extension FailurePresentation {
         code = "production_configuration_invalid"
         message =
           "This build contains an invalid SQL model configuration. Rebuild and reinstall CREG."
+      case .missingRuntimeContract:
+        code = "production_runtime_contract_missing"
+        message =
+          "This build is missing its SQL runtime compatibility contract. Rebuild and reinstall CREG."
+      case .unsupportedRuntimeContract:
+        code = "production_runtime_contract_unsupported"
+        message =
+          "This build’s SQL runtime and model configuration are incompatible. Install a newer build."
+      case .runtimeProvenanceMismatch:
+        code = "production_runtime_provenance_mismatch"
+        message =
+          "This build’s SQL model does not match its executable. Rebuild and reinstall CREG."
+      }
+    } else if let contractError = error as? ModelRuntimeContractInfoError {
+      switch contractError {
+      case .missing, .invalidSourceRevision:
+        code = "production_runtime_contract_missing"
+        message =
+          "This build is missing valid SQL runtime provenance. Rebuild and reinstall CREG."
+      case .unsupportedVersion:
+        code = "production_runtime_contract_unsupported"
+        message =
+          "This build’s SQL runtime contract is unsupported. Install a newer build."
       }
     } else if error is DecodingError {
       code = "production_manifest_incompatible"
