@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import plistlib
 import re
+import shutil
+import subprocess
 import tempfile
 import zipfile
 from contextlib import ExitStack
@@ -31,6 +34,7 @@ from tools.fetch_model import (
 DEFAULT_REPORTS = REPO_ROOT / "eval" / "build-verification"
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
 MODEL_RUNTIME_CONTRACT = REPO_ROOT / "model-runtime-contract.json"
+CODESIGN = Path("/usr/bin/codesign")
 
 
 def load_bundled_manifest(path: Path, configuration: str) -> dict[str, Any]:
@@ -91,6 +95,10 @@ def parse_args() -> argparse.Namespace:
         "--expected-source-revision",
         help="full Git revision expected in the app and bundled manifest",
     )
+    parser.add_argument(
+        "--expected-training-run",
+        help="exact candidate training run selected during publisher preflight",
+    )
     parser.add_argument("--reports-dir", type=Path, default=DEFAULT_REPORTS)
     args = parser.parse_args()
     if not any((args.app, args.archive, args.ipa)):
@@ -139,6 +147,7 @@ def selected_artifact(
     manifest: dict[str, Any],
     configuration: str,
     info: dict[str, Any],
+    expected_training_run: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     production = manifest.get("production")
     if not isinstance(production, dict):
@@ -185,6 +194,13 @@ def selected_artifact(
         ):
             raise SystemExit(
                 f"{configuration} debug-candidate identity is incomplete or inconsistent"
+            )
+        if expected_training_run is not None and (
+            status != "debug-candidate"
+            or candidate.get("training_run_id") != expected_training_run
+        ):
+            raise SystemExit(
+                f"{configuration} candidate disagrees with publisher preflight"
             )
 
     try:
@@ -252,6 +268,47 @@ def verify_runtime_contract(
     }
 
 
+def run_codesign(arguments: list[str], description: str) -> None:
+    if not CODESIGN.is_file():
+        raise SystemExit(f"codesign is unavailable while {description}")
+    completed = subprocess.run(
+        [str(CODESIGN), *arguments],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        check=False,
+    )
+    if completed.returncode != 0:
+        details = completed.stderr.strip() or completed.stdout.strip()
+        suffix = f": {details}" if details else ""
+        raise SystemExit(f"codesign failed while {description}{suffix}")
+
+
+def verify_code_signature(app: Path) -> dict[str, Any]:
+    run_codesign(
+        ["--verify", "--deep", "--strict", "--verbose=2", str(app)],
+        "verifying the app signature",
+    )
+    return {"status": "valid"}
+
+
+def unsigned_executable_identity(executable: Path) -> dict[str, Any]:
+    """Hash executable bytes after removing only the embedded signature."""
+    with tempfile.TemporaryDirectory(prefix="creg-unsigned-executable-") as value:
+        normalized = Path(value) / executable.name
+        shutil.copyfile(executable, normalized)
+        normalized.chmod((executable.stat().st_mode & 0o777) | 0o200)
+        run_codesign(
+            ["--remove-signature", str(normalized)],
+            "normalizing the executable signature",
+        )
+        return {
+            "bytes": normalized.stat().st_size,
+            "sha256": hashlib.sha256(normalized.read_bytes()).hexdigest(),
+        }
+
+
 def verify_executable(app: Path, info: dict[str, Any]) -> dict[str, Any]:
     executable_name = info.get("CFBundleExecutable")
     if not isinstance(executable_name, str) or not executable_name:
@@ -259,10 +316,14 @@ def verify_executable(app: Path, info: dict[str, Any]) -> dict[str, Any]:
     executable = app / executable_name
     if not executable.is_file() or executable.stat().st_size <= 0:
         raise SystemExit("bundle executable is missing or empty")
+    signed_sha256 = sha256_file(executable)
+    unsigned = unsigned_executable_identity(executable)
     return {
         "relative_path": executable_name,
-        "bytes": executable.stat().st_size,
-        "sha256": sha256_file(executable),
+        "signed_bytes": executable.stat().st_size,
+        "signed_sha256": signed_sha256,
+        "unsigned_bytes": unsigned["bytes"],
+        "unsigned_sha256": unsigned["sha256"],
     }
 
 
@@ -289,6 +350,7 @@ def verify_app(
     *,
     configuration: str,
     expected_source_revision: str | None = None,
+    expected_training_run: str | None = None,
 ) -> dict[str, Any]:
     app = app.resolve()
     bundled_manifest = app / "model-manifest.json"
@@ -322,7 +384,12 @@ def verify_app(
         configuration=configuration,
         expected_source_revision=expected_source_revision,
     )
-    production, artifact = selected_artifact(manifest, configuration, info)
+    production, artifact = selected_artifact(
+        manifest,
+        configuration,
+        info,
+        expected_training_run,
+    )
     receipt = json.loads(bundled_receipt.read_text())
     receipt_identity = {
         "model_key": artifact["key"],
@@ -423,6 +490,7 @@ def verify_app(
             "bundle_bytes": sum(item["size"] for item in actual),
         },
         "executable": verify_executable(app, info),
+        "code_signature": verify_code_signature(app),
         "metal": verify_metal_resource(app),
         "inputs": {
             "bundled_manifest_sha256": sha256_file(bundled_manifest),
@@ -449,6 +517,7 @@ def main() -> None:
                 app,
                 configuration=args.configuration,
                 expected_source_revision=args.expected_source_revision,
+                expected_training_run=args.expected_training_run,
             )
             result["artifact_kind"] = kind
             artifacts.append(result)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -59,7 +61,14 @@ def inspector_report(
                 "wandb_receipt_required": False,
             },
             "model": model.copy(),
-            "executable": {"sha256": "c" * 64, "bytes": 10},
+            "executable": {
+                "relative_path": "CREG",
+                "signed_bytes": 10,
+                "signed_sha256": ("c" if kind == "archive" else "9") * 64,
+                "unsigned_bytes": 8,
+                "unsigned_sha256": "8" * 64,
+            },
+            "code_signature": {"status": "valid"},
             "metal": {"sha256": "d" * 64, "bytes": 5},
             "inputs": {
                 "bundled_manifest_sha256": "e" * 64,
@@ -127,6 +136,49 @@ class VerifyModelInputsTests(unittest.TestCase):
             self.assertEqual(str(caught.exception), f"{description} must be an object")
 
 
+class VerifyCandidateInputsTests(unittest.TestCase):
+    def test_latest_selector_runs_the_real_candidate_preflight(self) -> None:
+        payload = {
+            "status": "debug_candidate_preflight_complete",
+            "training_run_id": "resolved-run",
+            "selected_iteration": 600,
+            "selected_checkpoint_sha256": "b" * 64,
+        }
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(payload), stderr=""
+        )
+        with patch.object(publisher, "run_command", return_value=completed) as run:
+            result = publisher.verify_candidate_inputs(
+                Path("/repo"),
+                "latest-local-v3",
+                uv="uv",
+                log_path=Path("/tmp/candidate.log"),
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn("--latest-local-v3", command)
+        self.assertIn("--preflight", command)
+        self.assertEqual(result["training_run_id"], "resolved-run")
+        self.assertEqual(result["candidate_selector"], "latest-local-v3")
+
+    def test_latest_selector_rejects_an_incomplete_preflight(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"status":"incomplete"}', stderr=""
+        )
+        with (
+            patch.object(publisher, "run_command", return_value=completed),
+            self.assertRaisesRegex(
+                publisher.ReleaseError, "Candidate preflight did not complete"
+            ),
+        ):
+            publisher.verify_candidate_inputs(
+                Path("/repo"),
+                "latest-local-v3",
+                uv="uv",
+                log_path=Path("/tmp/candidate.log"),
+            )
+
+
 class RequireInspectorReportTests(unittest.TestCase):
     def test_rejects_missing_empty_and_non_string_build_numbers(self) -> None:
         invalid_pairs = (
@@ -146,6 +198,7 @@ class RequireInspectorReportTests(unittest.TestCase):
                 publisher.require_inspector_report(
                     inspector_report(archive_build, ipa_build),
                     source_revision=SOURCE_REVISION,
+                    expected_training_run="training-run",
                 )
 
     def test_rejects_mismatched_build_numbers(self) -> None:
@@ -156,6 +209,7 @@ class RequireInspectorReportTests(unittest.TestCase):
             publisher.require_inspector_report(
                 inspector_report("20260816093000", "20260816093001"),
                 source_revision=SOURCE_REVISION,
+                expected_training_run="training-run",
             )
 
     def test_returns_matching_build_number(self) -> None:
@@ -164,19 +218,26 @@ class RequireInspectorReportTests(unittest.TestCase):
         verified = publisher.require_inspector_report(
             inspector_report(build_number, build_number),
             source_revision=SOURCE_REVISION,
+            expected_training_run="training-run",
         )
 
         self.assertEqual(verified["build_number"], build_number)
+        self.assertNotEqual(
+            verified["signed_executables"]["archive"]["sha256"],
+            verified["signed_executables"]["ipa"]["sha256"],
+        )
 
     def test_rejects_archive_ipa_executable_mismatch(self) -> None:
         report = inspector_report("20260816093000", "20260816093000")
-        report["artifacts"][1]["executable"]["sha256"] = "0" * 64
+        report["artifacts"][1]["executable"]["unsigned_sha256"] = "0" * 64
         with self.assertRaisesRegex(
             publisher.ReleaseError,
-            "Archive and IPA verification disagree: executable",
+            "Archive and IPA executable identities do not match",
         ):
             publisher.require_inspector_report(
-                report, source_revision=SOURCE_REVISION
+                report,
+                source_revision=SOURCE_REVISION,
+                expected_training_run="training-run",
             )
 
     def test_rejects_wrong_or_dirty_source_provenance(self) -> None:
@@ -196,8 +257,32 @@ class RequireInspectorReportTests(unittest.TestCase):
                 ),
             ):
                 publisher.require_inspector_report(
-                    report, source_revision=SOURCE_REVISION
+                    report,
+                    source_revision=SOURCE_REVISION,
+                    expected_training_run="training-run",
                 )
+
+    def test_rejects_invalid_code_signatures_and_wrong_candidates(self) -> None:
+        report = inspector_report("20260816093000", "20260816093000")
+        report["artifacts"][1]["code_signature"]["status"] = "invalid"
+        with self.assertRaisesRegex(
+            publisher.ReleaseError, "invalid code signature"
+        ):
+            publisher.require_inspector_report(
+                report,
+                source_revision=SOURCE_REVISION,
+                expected_training_run="training-run",
+            )
+
+        report = inspector_report("20260816093000", "20260816093000")
+        with self.assertRaisesRegex(
+            publisher.ReleaseError, "wrong candidate training run"
+        ):
+            publisher.require_inspector_report(
+                report,
+                source_revision=SOURCE_REVISION,
+                expected_training_run="different-run",
+            )
 
 
 class ReleaseCommandsTests(unittest.TestCase):
@@ -208,13 +293,22 @@ class ReleaseCommandsTests(unittest.TestCase):
             {"xcodebuild": "xcodebuild", "uv": "uv"},
             "run-id",
             SOURCE_REVISION,
+            "training-run",
         )
 
         self.assertEqual(
             commands["archive"][commands["archive"].index("-derivedDataPath") + 1],
             str(attempt / "DerivedData"),
         )
-        self.assertNotIn("--expected-training-run", commands["inspect"])
+        self.assertEqual(
+            commands["inspect"][
+                commands["inspect"].index("--expected-training-run") + 1
+            ],
+            "training-run",
+        )
+        self.assertIn(
+            "CREG_CANDIDATE_TRAINING_RUN=training-run", commands["archive"]
+        )
         self.assertEqual(
             commands["inspect"][
                 commands["inspect"].index("--expected-source-revision") + 1

@@ -73,17 +73,22 @@ until a finalized production model replaces this path.
 
 Use the checked-in publisher for TestFlight. Each attempt places DerivedData
 under its own attempt directory so local Release package products cannot leak
-into a Beta archive:
+into a Beta archive. Candidate preflight resolves and validates the exact local
+run, then pins that run ID into the archive command so a concurrently completed
+training run cannot change what the attempt ships:
 
 ```sh
 python3 .agents/skills/publish-creg-testflight/scripts/publish_testflight.py preflight
 python3 .agents/skills/publish-creg-testflight/scripts/publish_testflight.py publish
 ```
 
-The publisher verifies both the archive and exported IPA before upload. For
+The publisher verifies both the archive and exported IPA before upload. It
+validates each app's code signature independently and compares executable bytes
+after removing only the embedded signature, allowing the normal App Store
+export re-signing step without weakening executable identity. For
 manual inspection of already-produced artifacts, pass the clean preflight Git
 revision. The gate checks bundle/version/build identity, runtime contract,
-provenance, executable hash, complete candidate and selected-model identity,
+provenance, executable identity, complete candidate and selected-model identity,
 manifest/receipt hashes, SQLModel inventory, and Metal library:
 
 ```sh
@@ -92,6 +97,7 @@ uv run --frozen python tools/inspect_release_bundle.py \
   --configuration Beta \
   --run-id beta-<UTC timestamp> \
   --expected-source-revision <40-character-Git-SHA> \
+  --expected-training-run <preflight-training-run-id> \
   --archive ../build/install/CREG-beta.xcarchive \
   --ipa ../build/install/beta-export/CREG.ipa
 ```

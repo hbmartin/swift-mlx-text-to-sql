@@ -851,6 +851,35 @@ def materialize_debug_model(
     }
 
 
+def preflight_debug_candidate(
+    run_directory: Path,
+    *,
+    model_manifest_path: Path,
+    models_dir: Path,
+    fused_cache: Path,
+) -> dict[str, Any]:
+    """Resolve and fully validate a candidate without materializing it."""
+    source_manifest = load_manifest(model_manifest_path)
+    training, artifact, base, checkpoint = verify_local_candidate(
+        run_directory, source_manifest, models_dir
+    )
+    validate_device_requantization(artifact)
+    selected = training["checkpoint_evaluation"]["selected"]
+    return {
+        "status": "debug_candidate_preflight_complete",
+        "training_run_id": training["run_id"],
+        "training_run_directory": str(run_directory),
+        "adapter_directory": str(checkpoint.parent),
+        "checkpoint": str(checkpoint),
+        "base_model_key": artifact["key"],
+        "base_model_directory": str(base),
+        "selected_iteration": selected["iteration"],
+        "selected_checkpoint_sha256": selected["checkpoint_sha256"],
+        "fused_cache": str(fused_cache),
+        "wandb_receipt_required": False,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     selection = parser.add_mutually_exclusive_group(required=True)
@@ -869,11 +898,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
     parser.add_argument("--fused-cache", type=Path, default=DEFAULT_FUSED_CACHE)
-    parser.add_argument("--destination", type=Path, required=True)
-    parser.add_argument("--manifest-destination", type=Path, required=True)
+    parser.add_argument("--destination", type=Path)
+    parser.add_argument("--manifest-destination", type=Path)
     parser.add_argument("--receipt-destination", type=Path)
     parser.add_argument("--local-files-only", action="store_true")
-    return parser.parse_args()
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="resolve and validate the selected candidate without materializing it",
+    )
+    args = parser.parse_args()
+    if not args.preflight:
+        if args.destination is None:
+            parser.error("--destination is required unless --preflight is used")
+        if args.manifest_destination is None:
+            parser.error(
+                "--manifest-destination is required unless --preflight is used"
+            )
+    return args
 
 
 def main() -> None:
@@ -884,6 +926,18 @@ def main() -> None:
         if args.latest_local_v3
         else resolve_training_run(args.training_run, training_runs)
     )
+    if args.preflight:
+        result = preflight_debug_candidate(
+            run_directory,
+            model_manifest_path=args.model_manifest.resolve(),
+            models_dir=args.models_dir.resolve(),
+            fused_cache=args.fused_cache.resolve(),
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+
+    assert args.destination is not None
+    assert args.manifest_destination is not None
     destination = args.destination.resolve()
     manifest_destination = args.manifest_destination.resolve()
     receipt_destination = (

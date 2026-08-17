@@ -352,6 +352,7 @@ def verify_model_inputs(repo: Path, training_run: str) -> dict[str, str]:
     require_directory(base_model, "manifest-pinned base model")
 
     return {
+        "training_run_id": training_run,
         "training_run_directory": str(training_directory),
         "adapter_directory": str(adapter_directory),
         "checkpoint": str(checkpoint),
@@ -361,25 +362,43 @@ def verify_model_inputs(repo: Path, training_run: str) -> dict[str, str]:
     }
 
 
-def verify_candidate_inputs(repo: Path, selector: str) -> dict[str, str]:
+def verify_candidate_inputs(
+    repo: Path,
+    selector: str,
+    *,
+    uv: str,
+    log_path: Path,
+) -> dict[str, Any]:
     if selector != "latest-local-v3":
         return verify_model_inputs(repo, selector)
-    models = repo / "models"
-    adapters = models / "adapters"
-    fused = models / "debug-fused"
-    training_runs = repo / TRAINING_RUNS
-    require_directory(models, "local model cache")
-    require_directory(adapters, "adapter cache")
-    require_directory(fused, "fused-model cache")
-    require_directory(training_runs, "local training runs")
-    if not any(path.is_dir() for path in training_runs.iterdir()):
-        raise ReleaseError("latest-local-v3 requires at least one local training run")
-    return {
-        "candidate_selector": selector,
-        "training_runs": str(training_runs),
-        "adapter_cache": str(adapters),
-        "fused_cache": str(fused),
-    }
+    completed = run_command(
+        [
+            uv,
+            "run",
+            "--frozen",
+            "python",
+            "tools/materialize_debug_model.py",
+            "--latest-local-v3",
+            "--training-runs-dir",
+            str(repo / TRAINING_RUNS),
+            "--model-manifest",
+            str(repo / MODEL_MANIFEST),
+            "--models-dir",
+            str(repo / "models"),
+            "--fused-cache",
+            str(repo / "models/debug-fused"),
+            "--preflight",
+        ],
+        cwd=repo / "fine-tuning",
+        log_path=log_path,
+    )
+    result = parse_json_output(completed.stdout, "Candidate preflight")
+    if result.get("status") != "debug_candidate_preflight_complete":
+        raise ReleaseError("Candidate preflight did not complete")
+    training_run = result.get("training_run_id")
+    if not isinstance(training_run, str) or not training_run:
+        raise ReleaseError("Candidate preflight did not resolve a training run")
+    return {"candidate_selector": selector, **result}
 
 
 def verify_source_contract(repo: Path) -> None:
@@ -455,7 +474,12 @@ def collect_preflight(
     marketing_version = require_setting(settings, "MARKETING_VERSION")
     source_build_number = require_setting(settings, "CURRENT_PROJECT_VERSION")
     model_inputs = (
-        verify_candidate_inputs(repo, candidate_selector)
+        verify_candidate_inputs(
+            repo,
+            candidate_selector,
+            uv=tools["uv"],
+            log_path=attempt / "logs/candidate-preflight.log",
+        )
         if candidate_selector
         else {"selection": "verified-production"}
     )
@@ -507,6 +531,7 @@ def release_commands(
     tools: dict[str, str],
     run_id: str,
     source_revision: str,
+    expected_training_run: str | None,
 ) -> dict[str, list[str]]:
     archive = attempt / "CREG-beta.xcarchive"
     export = attempt / "beta-export"
@@ -515,26 +540,57 @@ def release_commands(
     upload_plist = attempt / "ExportOptions-upload.plist"
     verification = attempt / "verification"
     derived_data = attempt / "DerivedData"
-    return {
-        "archive": [
-            tools["xcodebuild"],
-            "-project",
-            PROJECT,
-            "-scheme",
-            SCHEME,
-            "-configuration",
-            CONFIGURATION,
-            "-destination",
-            "generic/platform=iOS",
-            "-skipPackagePluginValidation",
-            "-skipMacroValidation",
-            "-archivePath",
+    archive_command = [
+        tools["xcodebuild"],
+        "-project",
+        PROJECT,
+        "-scheme",
+        SCHEME,
+        "-configuration",
+        CONFIGURATION,
+        "-destination",
+        "generic/platform=iOS",
+        "-skipPackagePluginValidation",
+        "-skipMacroValidation",
+        "-archivePath",
+        str(archive),
+        "-derivedDataPath",
+        str(derived_data),
+        "-allowProvisioningUpdates",
+    ]
+    inspect_command = [
+        tools["uv"],
+        "run",
+        "--frozen",
+        "python",
+        "tools/inspect_release_bundle.py",
+        "--configuration",
+        CONFIGURATION,
+        "--run-id",
+        run_id,
+        "--expected-source-revision",
+        source_revision,
+    ]
+    if expected_training_run is not None:
+        archive_command.append(
+            f"CREG_CANDIDATE_TRAINING_RUN={expected_training_run}"
+        )
+        inspect_command.extend(
+            ["--expected-training-run", expected_training_run]
+        )
+    archive_command.append("archive")
+    inspect_command.extend(
+        [
+            "--archive",
             str(archive),
-            "-derivedDataPath",
-            str(derived_data),
-            "-allowProvisioningUpdates",
-            "archive",
-        ],
+            "--ipa",
+            str(export / "CREG.ipa"),
+            "--reports-dir",
+            str(verification),
+        ]
+    )
+    return {
+        "archive": archive_command,
         "export": [
             tools["xcodebuild"],
             "-exportArchive",
@@ -546,25 +602,7 @@ def release_commands(
             str(export_plist),
             "-allowProvisioningUpdates",
         ],
-        "inspect": [
-            tools["uv"],
-            "run",
-            "--frozen",
-            "python",
-            "tools/inspect_release_bundle.py",
-            "--configuration",
-            CONFIGURATION,
-            "--run-id",
-            run_id,
-            "--expected-source-revision",
-            source_revision,
-            "--archive",
-            str(archive),
-            "--ipa",
-            str(export / "CREG.ipa"),
-            "--reports-dir",
-            str(verification),
-        ],
+        "inspect": inspect_command,
         "upload": [
             tools["xcodebuild"],
             "-exportArchive",
@@ -632,7 +670,10 @@ def parse_json_output(output: str, description: str) -> dict[str, Any]:
 
 
 def require_inspector_report(
-    report: dict[str, Any], *, source_revision: str
+    report: dict[str, Any],
+    *,
+    source_revision: str,
+    expected_training_run: str | None,
 ) -> dict[str, Any]:
     if (
         report.get("schema_version") != 3
@@ -659,7 +700,6 @@ def require_inspector_report(
         "production",
         "debug_candidate",
         "model",
-        "executable",
         "metal",
         "inputs",
     )
@@ -679,8 +719,38 @@ def require_inspector_report(
         }:
             raise ReleaseError("Verified artifact has invalid source provenance")
         executable = artifact.get("executable")
-        if not isinstance(executable, dict) or not executable.get("sha256"):
+        if (
+            not isinstance(executable, dict)
+            or not isinstance(executable.get("relative_path"), str)
+            or not executable.get("relative_path")
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", str(executable.get(key, "")))
+                is None
+                for key in ("signed_sha256", "unsigned_sha256")
+            )
+            or any(
+                isinstance(executable.get(key), bool)
+                or not isinstance(executable.get(key), int)
+                or executable[key] <= 0
+                for key in ("signed_bytes", "unsigned_bytes")
+            )
+        ):
             raise ReleaseError("Artifact inspector report is missing executable verification")
+        code_signature = artifact.get("code_signature")
+        if (
+            not isinstance(code_signature, dict)
+            or code_signature.get("status") != "valid"
+        ):
+            raise ReleaseError("Verified artifact has an invalid code signature")
+        candidate = artifact.get("debug_candidate")
+        if expected_training_run is None:
+            if candidate is not None:
+                raise ReleaseError("Verified artifact unexpectedly bundled a candidate")
+        elif (
+            not isinstance(candidate, dict)
+            or candidate.get("training_run_id") != expected_training_run
+        ):
+            raise ReleaseError("Verified artifact has the wrong candidate training run")
         model = artifact.get("model")
         if not isinstance(model, dict):
             raise ReleaseError("Artifact inspector report is missing model verification")
@@ -706,6 +776,16 @@ def require_inspector_report(
         raise ReleaseError(
             "Archive and IPA verification disagree: " + ", ".join(mismatched)
         )
+    executable_identity_keys = (
+        "relative_path",
+        "unsigned_bytes",
+        "unsigned_sha256",
+    )
+    if any(
+        archive["executable"].get(key) != ipa["executable"].get(key)
+        for key in executable_identity_keys
+    ):
+        raise ReleaseError("Archive and IPA executable identities do not match")
     archive_model = archive["model"]
     if archive_model.get("verified_directory_sha256") != archive_model.get(
         "expected_directory_sha256"
@@ -717,7 +797,24 @@ def require_inspector_report(
         "debug_candidate": archive.get("debug_candidate"),
         "production": archive["production"],
         "model": archive_model,
-        "executable": archive["executable"],
+        "executable": {
+            key: archive["executable"][key]
+            for key in executable_identity_keys
+        },
+        "signed_executables": {
+            "archive": {
+                "bytes": archive["executable"]["signed_bytes"],
+                "sha256": archive["executable"]["signed_sha256"],
+            },
+            "ipa": {
+                "bytes": ipa["executable"]["signed_bytes"],
+                "sha256": ipa["executable"]["signed_sha256"],
+            },
+        },
+        "code_signatures": {
+            "archive": archive["code_signature"],
+            "ipa": ipa["code_signature"],
+        },
         "metal": archive.get("metal"),
         "inputs": archive["inputs"],
     }
@@ -803,11 +900,15 @@ def main() -> int:
 
         write_plist(attempt / "ExportOptions-export.plist", export_options("export"))
         write_plist(attempt / "ExportOptions-upload.plist", export_options("upload"))
+        expected_training_run = state["preflight"]["model_inputs"].get(
+            "training_run_id"
+        )
         commands = release_commands(
             attempt,
             tools,
             run_id,
             state["preflight"]["source_revision"],
+            expected_training_run,
         )
         state["commands"] = {
             key: command_text(value) for key, value in commands.items()
@@ -861,6 +962,7 @@ def main() -> int:
         verified = require_inspector_report(
             inspector_report,
             source_revision=state["preflight"]["source_revision"],
+            expected_training_run=expected_training_run,
         )
         if verified["build_number"] != archived["build_number"]:
             raise ReleaseError("Inspector and archive build numbers do not match")
