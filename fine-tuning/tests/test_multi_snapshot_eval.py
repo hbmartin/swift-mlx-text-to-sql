@@ -5,7 +5,14 @@ from pathlib import Path
 from eval.ex import score
 from eval.run_eval import canonicalize_database_inputs, database_set_identity
 from eval.run_artifacts import REPO_ROOT, sha256_file
-from tools.generate_eval_snapshots import BASE_DATABASE, generate
+from tools.generate_eval_snapshots import (
+    BASE_DATABASE,
+    SQLITE_HEADER,
+    SQLITE_VERSION_NUMBER_OFFSET,
+    SQLITE_VERSION_NUMBER_SIZE,
+    canonicalize_sqlite_version_number,
+    generate,
+)
 
 
 def database(path: Path, values: tuple[int, ...]) -> None:
@@ -55,6 +62,25 @@ def test_database_paths_and_inputs_are_canonicalized_as_pairs(tmp_path):
     assert forward == reversed_order
     paths, inputs = forward
     assert [record["path"] for record in inputs] == [str(path) for path in paths]
+
+
+def test_sqlite_version_number_is_canonicalized_from_base(tmp_path):
+    base = tmp_path / "base.sqlite"
+    snapshot = tmp_path / "snapshot.sqlite"
+    minimum_size = SQLITE_VERSION_NUMBER_OFFSET + SQLITE_VERSION_NUMBER_SIZE
+    base_bytes = bytearray(minimum_size)
+    snapshot_bytes = bytearray(minimum_size)
+    base_bytes[: len(SQLITE_HEADER)] = SQLITE_HEADER
+    snapshot_bytes[: len(SQLITE_HEADER)] = SQLITE_HEADER
+    version_slice = slice(SQLITE_VERSION_NUMBER_OFFSET, minimum_size)
+    base_bytes[version_slice] = b"\x01\x02\x03\x04"
+    snapshot_bytes[version_slice] = b"\x05\x06\x07\x08"
+    base.write_bytes(base_bytes)
+    snapshot.write_bytes(snapshot_bytes)
+
+    canonicalize_sqlite_version_number(base, snapshot)
+
+    assert snapshot.read_bytes()[version_slice] == base_bytes[version_slice]
 
 
 def test_committed_counterexample_snapshots_regenerate_byte_identically(tmp_path):
