@@ -12,7 +12,7 @@ TRAINING_CORPUS = (
     / "regenerated-corpus/train.jsonl"
 )
 DRAFT_RESOURCE = (
-    ROOT / "CREGKit/Sources/CREGEngine/Resources/sql_draft_corpus.json"
+    ROOT / "CREGKit/Sources/CREGInference/Resources/sql_draft_corpus.json"
 )
 
 

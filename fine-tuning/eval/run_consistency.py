@@ -35,6 +35,8 @@ from typing import Any
 from eval.prompt_contract import (
     REPAIR_PROMPT_TEMPLATE_PATH,
     SCHEMA_CATALOG_PATH,
+    SCHEMA_PROMPT_PATH,
+    SQL_GRAMMAR_PATH,
     SYSTEM_PROMPT_TEMPLATE_PATH,
     build_repair_prompt,
     build_system_prompt,
@@ -54,22 +56,8 @@ from tools.fetch_model import load_manifest, verify_artifact_tree_at_use
 
 GOLD_V2 = REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl"
 DATABASE = REPO_ROOT / "db" / "creg.sqlite"
-GRAMMAR = (
-    REPO_ROOT
-    / "CREGKit"
-    / "Sources"
-    / "CREGEngine"
-    / "Resources"
-    / "sql_grammar.ebnf"
-)
-SCHEMA_PROMPT = (
-    REPO_ROOT
-    / "CREGKit"
-    / "Sources"
-    / "CREGEngine"
-    / "Resources"
-    / "schema_prompt.txt"
-)
+GRAMMAR = SQL_GRAMMAR_PATH
+SCHEMA_PROMPT = SCHEMA_PROMPT_PATH
 SWIFT_LOCK = REPO_ROOT / "CREGKit" / "Package.resolved"
 UV_LOCK = REPO_ROOT / "fine-tuning" / "uv.lock"
 DEFAULT_CONSISTENCY = REPO_ROOT / "eval" / "consistency-runs"

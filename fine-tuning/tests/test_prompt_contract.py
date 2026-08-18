@@ -1,30 +1,34 @@
 import hashlib
-from pathlib import Path
 
 from eval.prompt_contract import (
+    DATA_RESOURCE_DIRECTORY,
+    INFERENCE_RESOURCE_DIRECTORY,
+    REPAIR_PROMPT_TEMPLATE_PATH,
+    SCHEMA_CATALOG_PATH,
+    SCHEMA_PROMPT_PATH,
+    SQL_GRAMMAR_PATH,
+    SYSTEM_PROMPT_TEMPLATE_PATH,
     build_repair_prompt,
     build_system_prompt,
     prompt_contract_receipt,
 )
-
-ROOT = Path(__file__).resolve().parents[2]
+from tools.generate_grammar import DATA_RESOURCE_DIR, INFERENCE_RESOURCE_DIR
 
 
 def test_system_prompt_matches_the_swift_parity_contract() -> None:
-    schema = (
-        (
-            ROOT
-            / "CREGKit"
-            / "Sources"
-            / "CREGEngine"
-            / "Resources"
-            / "schema_prompt.txt"
-        )
-        .read_text()
-        .strip()
-    )
+    schema = SCHEMA_PROMPT_PATH.read_text().strip()
     digest = hashlib.sha256(build_system_prompt(schema).encode()).hexdigest()
     assert digest == "f9edfd023d97867fbd8ea178ddff374de8daef080bff96b2082896971b0dfddc"
+
+
+def test_generator_and_prompt_contract_share_split_resource_targets() -> None:
+    assert INFERENCE_RESOURCE_DIR == INFERENCE_RESOURCE_DIRECTORY
+    assert DATA_RESOURCE_DIR == DATA_RESOURCE_DIRECTORY
+    assert SQL_GRAMMAR_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
+    assert SCHEMA_PROMPT_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
+    assert SYSTEM_PROMPT_TEMPLATE_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
+    assert REPAIR_PROMPT_TEMPLATE_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
+    assert SCHEMA_CATALOG_PATH.parent == DATA_RESOURCE_DIRECTORY
 
 
 def test_repair_prompt_matches_the_swift_runtime_contract() -> None:

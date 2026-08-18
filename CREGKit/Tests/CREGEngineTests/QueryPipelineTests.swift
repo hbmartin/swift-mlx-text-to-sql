@@ -39,7 +39,7 @@ import Testing
   ) -> QueryPipeline {
     QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         SQLGeneration(
           sql: request.repair == nil ? "SELECT 1" : "SELECT 2",
           tokensPerSecond: 42, modelName: "test")
@@ -134,7 +134,7 @@ import Testing
     let calls = Calls()
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         await calls.generated()
         return SQLGeneration(
           sql: "SELECT forbidden", tokensPerSecond: 1, modelName: "test")
@@ -185,7 +185,7 @@ import Testing
       message: "no such column: l.name")
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         await requests.append(request)
         let sql =
           request.candidateID.rawValue == "repair-2-sampled"
@@ -239,7 +239,7 @@ import Testing
       message: "no such column")
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(
           sql: "SELECT missing", tokensPerSecond: 1, modelName: "test")
       },
@@ -270,7 +270,7 @@ import Testing
     let counter = Counter()
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         let n = await counter.next()
         return SQLGeneration(
           sql: n == 0
@@ -327,7 +327,7 @@ import Testing
     // outvote a correct non-empty deterministic anchor.
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         SQLGeneration(
           sql: request.candidateID.rawValue == "initial"
             ? "SELECT good" : "SELECT empty",
@@ -407,7 +407,7 @@ import Testing
   @Test func generationFailureRetainsAttemptDuration() async {
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         throw NSError(
           domain: "generation",
           code: 1,
@@ -437,7 +437,7 @@ import Testing
   @Test func allUniqueVoteFallsBackToDeterministicAnchor() async throws {
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         let sql =
           switch request.role {
           case .starter: "SELECT 1"
@@ -508,7 +508,7 @@ import Testing
   @Test func anchorFailureUsesVisibleDegradedPrimaryFallback() async throws {
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         let sql =
           switch request.role {
           case .starter: "SELECT 1"
@@ -557,7 +557,7 @@ import Testing
   @Test func truncatedAnchorUsesVisibleDegradedPrimaryFallback() async throws {
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         let sql =
           switch request.role {
           case .starter: "SELECT 1"
@@ -610,7 +610,7 @@ import Testing
     let calls = Calls()
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient { _ in await calls.execute() },
@@ -639,7 +639,7 @@ import Testing
     ] {
       let pipeline = QueryPipeline.live(
         fm: .fallback(),
-        sqlGen: SQLGenClient { request in
+        sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
           let sql =
             switch request.candidateID.rawValue {
             case "initial": "SELECT initial_bad"
@@ -690,7 +690,7 @@ import Testing
       message: "database disk image is malformed")
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         await calls.generated()
         return SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
@@ -717,7 +717,7 @@ import Testing
   @Test func generationAndWholeTurnDeadlinesAreRecorded() async throws {
     let generationTimeout = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         try await Task.sleep(for: .milliseconds(100))
         return SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
@@ -741,7 +741,7 @@ import Testing
       kind: .binding, disposition: .repairable, message: "no such column")
     let repairTimeout = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         if request.repair != nil {
           try await Task.sleep(for: .milliseconds(100))
         }
@@ -781,7 +781,7 @@ import Testing
       narrate: { _, _ in "unused" })
     let turnTimeout = QueryPipeline.live(
       fm: slowFM,
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient { _ in QueryResult(columns: [], rows: []) },

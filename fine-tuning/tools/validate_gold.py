@@ -21,10 +21,11 @@ import xgrammar
 from xgrammar.testing import _is_grammar_accept_string as grammar_accepts
 
 from eval.ex import ExecutionError, execute
+from eval.prompt_contract import SQL_GRAMMAR_PATH
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DB = REPO_ROOT / "db" / "creg.sqlite"
-GRAMMAR = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "sql_grammar.ebnf"
+GRAMMAR = SQL_GRAMMAR_PATH
 DEFAULT_GOLD = REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl"
 DEFAULT_REPORT = REPO_ROOT / "docs" / "gold-review-v1.md"
 

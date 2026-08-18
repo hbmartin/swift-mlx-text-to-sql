@@ -109,5 +109,3 @@ public struct ModelPreparationProgress: Sendable {
     stageFinished: { _, _ in },
     stageFailed: { _ in })
 }
-
-/// Payload-free MLX memory dimensions suitable for public diagnostic context.

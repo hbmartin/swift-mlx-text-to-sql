@@ -36,7 +36,15 @@ from eval.ex import (
     results_match,
     typed_rows,
 )
-from eval.prompt_contract import build_system_prompt, prompt_contract_receipt
+from eval.prompt_contract import (
+    REPAIR_PROMPT_TEMPLATE_PATH,
+    SCHEMA_CATALOG_PATH,
+    SCHEMA_PROMPT_PATH,
+    SQL_GRAMMAR_PATH,
+    SYSTEM_PROMPT_TEMPLATE_PATH,
+    build_system_prompt,
+    prompt_contract_receipt,
+)
 from eval.run_artifacts import (
     DEFAULT_RUNS_DIR,
     REPO_ROOT,
@@ -61,22 +69,7 @@ from tools.fetch_model import (
 DB = REPO_ROOT / "db" / "creg.sqlite"
 DEFAULT_DATABASES = (DB,)
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
-GRAMMAR_PATH = (
-    REPO_ROOT
-    / "CREGKit"
-    / "Sources"
-    / "CREGEngine"
-    / "Resources"
-    / "sql_grammar.ebnf"
-)
-SCHEMA_PROMPT_PATH = (
-    REPO_ROOT
-    / "CREGKit"
-    / "Sources"
-    / "CREGEngine"
-    / "Resources"
-    / "schema_prompt.txt"
-)
+GRAMMAR_PATH = SQL_GRAMMAR_PATH
 
 AGG_RE = re.compile(r"\b(COUNT|SUM|AVG|MIN|MAX|TOTAL)\s*\(", re.I)
 TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.I)
@@ -487,30 +480,9 @@ def main() -> None:
             "grammar": input_hash(GRAMMAR_PATH),
             "schema_prompt": input_hash(SCHEMA_PROMPT_PATH),
             "system_prompt_sha256": sha256_bytes(system_prompt.encode()),
-            "system_prompt_template": input_hash(
-                REPO_ROOT
-                / "CREGKit"
-                / "Sources"
-                / "CREGEngine"
-                / "Resources"
-                / "system_prompt_template.txt"
-            ),
-            "repair_prompt_template": input_hash(
-                REPO_ROOT
-                / "CREGKit"
-                / "Sources"
-                / "CREGEngine"
-                / "Resources"
-                / "repair_prompt_template.txt"
-            ),
-            "schema_catalog": input_hash(
-                REPO_ROOT
-                / "CREGKit"
-                / "Sources"
-                / "CREGEngine"
-                / "Resources"
-                / "schema_catalog.json"
-            ),
+            "system_prompt_template": input_hash(SYSTEM_PROMPT_TEMPLATE_PATH),
+            "repair_prompt_template": input_hash(REPAIR_PROMPT_TEMPLATE_PATH),
+            "schema_catalog": input_hash(SCHEMA_CATALOG_PATH),
             **(
                 {"prompt_overrides": input_hash(prompt_overrides_path)}
                 if prompt_overrides_path is not None

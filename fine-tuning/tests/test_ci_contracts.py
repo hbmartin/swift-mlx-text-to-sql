@@ -87,7 +87,7 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
 
     live_dependencies = (
         check_ci_contracts.ROOT
-        / "CREGKit/Sources/CREGFeatures/Dependencies.swift"
+        / "CREGKit/Sources/CREGApplication/LiveDependencies.swift"
     ).read_text()
     assert "ProductionModelReceiptLoader.validate" in live_dependencies
     for setting in (
@@ -104,7 +104,7 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
         assert setting in live_dependencies
     assert '"input_preparation_mode"' in (
         check_ci_contracts.ROOT
-        / "CREGKit/Sources/CREGEngine/SQLGenClient.swift"
+        / "CREGKit/Sources/CREGInference/MLXSQLGenerator.swift"
     ).read_text()
     assert "#if DEBUG || CREG_DEVICE_BENCHMARK" in live_dependencies
     assert 'environment["CREG_WIRED_MEMORY"] == "true"' in live_dependencies

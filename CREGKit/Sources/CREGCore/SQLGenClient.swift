@@ -13,7 +13,7 @@ public struct SQLGenClient: Sendable {
 
   public init(
     prepare: @escaping @Sendable () async throws -> Void = {},
-    schemaPrompt: @escaping @Sendable () throws -> String = { "" },
+    schemaPrompt: @escaping @Sendable () throws -> String,
     generate:
       @escaping @Sendable (SQLGenerationRequest) async throws
       -> SQLGeneration
@@ -36,7 +36,7 @@ public struct SQLGenClient: Sendable {
       @escaping @Sendable (ModelRuntimeMode) async throws
       -> ModelPreparationReport,
     runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode,
-    schemaPrompt: @escaping @Sendable () throws -> String = { "" },
+    schemaPrompt: @escaping @Sendable () throws -> String,
     generate:
       @escaping @Sendable (SQLGenerationRequest) async throws
       -> SQLGeneration

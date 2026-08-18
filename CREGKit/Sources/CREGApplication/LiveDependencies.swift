@@ -82,7 +82,6 @@ private actor SQLGenRuntimeRouter {
 enum LiveDependencies {
   static let diagnostics = DiagnosticsClient.live
   static let serializer = InferenceSerializer(diagnostics: diagnostics)
-  static let readAloud = ReadAloudClient.live()
 
   static let pipeline: QueryPipeline = {
     // ``RootView`` already walls off unsupported hardware before the store is
