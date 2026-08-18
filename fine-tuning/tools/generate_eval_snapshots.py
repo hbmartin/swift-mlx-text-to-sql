@@ -18,6 +18,9 @@ from eval.run_artifacts import REPO_ROOT
 BASE_DATABASE = REPO_ROOT / "db" / "creg.sqlite"
 OUTPUT_DIRECTORY = REPO_ROOT / "eval" / "snapshots"
 Mutation = Callable[[sqlite3.Connection], None]
+SQLITE_HEADER = b"SQLite format 3\x00"
+SQLITE_VERSION_NUMBER_OFFSET = 96
+SQLITE_VERSION_NUMBER_SIZE = 4
 
 
 def sha256_file(path: Path) -> str:
@@ -26,6 +29,32 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonicalize_sqlite_version_number(base: Path, snapshot: Path) -> None:
+    """Keep byte identity independent of the host SQLite patch version.
+
+    SQLite records the version number of the library that most recently wrote
+    the database at header offset 96. The field is informational, but allowing
+    it to vary makes otherwise identical snapshots hash differently whenever
+    Python picks up a SQLite patch release. The base database is immutable and
+    hashed in the same manifest, so its header value is the canonical value.
+    """
+    with base.open("rb") as source:
+        if source.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
+            raise RuntimeError(f"base database has an invalid SQLite header: {base}")
+        source.seek(SQLITE_VERSION_NUMBER_OFFSET)
+        version_number = source.read(SQLITE_VERSION_NUMBER_SIZE)
+    if len(version_number) != SQLITE_VERSION_NUMBER_SIZE:
+        raise RuntimeError(f"base database has a truncated SQLite header: {base}")
+
+    with snapshot.open("r+b") as destination:
+        if destination.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
+            raise RuntimeError(
+                f"generated snapshot has an invalid SQLite header: {snapshot}"
+            )
+        destination.seek(SQLITE_VERSION_NUMBER_OFFSET)
+        destination.write(version_number)
 
 
 def stagger_latest_and_add_tie(connection: sqlite3.Connection) -> None:
@@ -130,6 +159,7 @@ def materialize_snapshot(base: Path, destination: Path, mutation: Mutation) -> N
                 raise RuntimeError(f"snapshot integrity check failed: {integrity}")
         finally:
             connection.close()
+        canonicalize_sqlite_version_number(base, staged)
         os.replace(staged, destination)
     finally:
         if staged.exists():

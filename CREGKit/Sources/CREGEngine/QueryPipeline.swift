@@ -7,8 +7,8 @@ import Foundation
 ///
 /// Candidate identity is preserved from generation through execution and the
 /// final immutable telemetry record. Foundation Models and MLX work continue
-/// to share one ``InferenceSerializer`` so the two inference stacks never
-/// overlap.
+/// to share one `InferenceSerializer` so the two inference stacks
+/// never overlap.
 public struct QueryPipeline: Sendable {
   public struct Configuration: Sendable, Equatable {
     public var model: ModelReference

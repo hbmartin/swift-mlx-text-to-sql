@@ -69,7 +69,6 @@ from tools.fetch_model import (
 DB = REPO_ROOT / "db" / "creg.sqlite"
 DEFAULT_DATABASES = (DB,)
 MODEL_MANIFEST = REPO_ROOT / "model-manifest.json"
-GRAMMAR_PATH = SQL_GRAMMAR_PATH
 
 AGG_RE = re.compile(r"\b(COUNT|SUM|AVG|MIN|MAX|TOTAL)\s*\(", re.I)
 TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.I)
@@ -477,7 +476,7 @@ def main() -> None:
             "databases": database_inputs,
             "database_set_sha256": snapshot_identity,
             "gold": input_hash(gold_path),
-            "grammar": input_hash(GRAMMAR_PATH),
+            "grammar": input_hash(SQL_GRAMMAR_PATH),
             "schema_prompt": input_hash(SCHEMA_PROMPT_PATH),
             "system_prompt_sha256": sha256_bytes(system_prompt.encode()),
             "system_prompt_template": input_hash(SYSTEM_PROMPT_TEMPLATE_PATH),
@@ -525,7 +524,7 @@ def main() -> None:
     if args.gcd == "on":
         tokenizer_info = xgrammar.TokenizerInfo.from_huggingface(hf_tokenizer)
         compiler = xgrammar.GrammarCompiler(tokenizer_info)
-        compiled = compiler.compile_grammar(GRAMMAR_PATH.read_text())
+        compiled = compiler.compile_grammar(SQL_GRAMMAR_PATH.read_text())
         vocabulary_size = tokenizer_info.vocab_size
 
     sampler = make_sampler(

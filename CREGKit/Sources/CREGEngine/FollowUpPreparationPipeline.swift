@@ -30,7 +30,20 @@ func preparedFollowUpStream(
         return
       }
 
-      let schema = (try? sqlGen.schemaPrompt()) ?? ""
+      let schema: String
+      do {
+        schema = try sqlGen.schemaPrompt()
+      } catch {
+        continuation.yield(
+          .proposalFailed(reason: .schemaLoadingFailed))
+        return
+      }
+      guard !schema.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else {
+        continuation.yield(
+          .proposalFailed(reason: .schemaLoadingFailed))
+        return
+      }
       let proposed: [String]
       do {
         proposed = try await withFollowUpDeadline(

@@ -132,10 +132,18 @@ a later turn retries.
 CREG.xcodeproj/                 iOS application
 CREG/                           app entry point and assets
 CREGKit/
-  Sources/CREGEngine/           generation, execution, grounding, voting
-  Sources/CREGFeatures/         chat, history, telemetry UI
+  Sources/CREGCore/             shared clients, models, events, diagnostics
+  Sources/CREGData/             database access and grounding heuristics
+  Sources/CREGInference/        MLX generation and prompt resources
+  Sources/CREGEngine/           query orchestration, validation, repair, voting
+  Sources/CREGFeatures/         chat, history, telemetry, and result UI
+  Sources/CREGApplication/      live dependency composition and root view
   Sources/creg-eval-cli/        production-stack full-gold parity CLI
-  Tests/CREGKitTests/           runtime and persistence tests
+  Tests/CREGCoreTests/          shared contract and serializer tests
+  Tests/CREGDataTests/          database and grounding tests
+  Tests/CREGInferenceTests/     model runtime and resource tests
+  Tests/CREGEngineTests/        orchestration and policy tests
+  Tests/CREGFeaturesTests/      feature, persistence, and presentation tests
 db/                             frozen schema and synthetic SQLite portfolio
 eval/gold/                      held-out gold_v1 and gold_v2
 eval/runs/                      immutable evaluation artifacts

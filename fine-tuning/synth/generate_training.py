@@ -47,9 +47,6 @@ GOLD_PATHS = (
     REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl",
     REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl",
 )
-GRAMMAR_PATH = SQL_GRAMMAR_PATH
-SCHEMA_PROMPT = SCHEMA_PROMPT_PATH
-SCHEMA_CATALOG = SCHEMA_CATALOG_PATH
 OUT_DIR = REPO_ROOT / "fine-tuning" / "synth" / "out"
 
 SEED = 424242
@@ -144,7 +141,7 @@ def repair_evidence(failed_sql: str, sqlite_error: str) -> dict[str, object]:
         r"(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)",
         sqlite_error,
     )
-    catalog_document = json.loads(SCHEMA_CATALOG.read_text())
+    catalog_document = json.loads(SCHEMA_CATALOG_PATH.read_text())
     catalog = catalog_document["tables"]
     qualifier = match.group(1).lower() if match and match.group(1) else None
     column = match.group(2).lower() if match else None
@@ -1738,7 +1735,7 @@ def main() -> None:
     rng = random.Random(SEED)
     conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     entities = load_entities(conn)
-    grammar = xgrammar.Grammar.from_ebnf(GRAMMAR_PATH.read_text())
+    grammar = xgrammar.Grammar.from_ebnf(SQL_GRAMMAR_PATH.read_text())
     gold_questions = {
         normalize(json.loads(line)["question"])
         for path in GOLD_PATHS
@@ -1792,7 +1789,7 @@ def main() -> None:
     stats["eligible"] = len(eligible)
     stats["kept"] = len(kept)
 
-    system_prompt = build_system_prompt(SCHEMA_PROMPT.read_text().strip())
+    system_prompt = build_system_prompt(SCHEMA_PROMPT_PATH.read_text().strip())
     out_dir.mkdir(parents=True, exist_ok=True)
     train_records = [training_record(item, system_prompt) for item in train_items]
     valid_records = [training_record(item, system_prompt) for item in valid_items]

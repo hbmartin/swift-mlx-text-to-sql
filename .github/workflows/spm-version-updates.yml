@@ -1,0 +1,37 @@
+name: Swift Package Version Updates
+
+# Fork PR comments require a target-context token. The job only parses the
+# manifest with SHA-pinned actions, drops checkout credentials, and restricts
+# dependency lookups to GitHub.
+on: # zizmor: ignore[dangerous-triggers]
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: spm-version-updates-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  spm-version-updates:
+    name: Check Swift package updates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Report Swift package updates
+        uses: hbmartin/github-action-spm_version_updates@c3cbe21c807e8a99fd61dba23c0d5476725a5a18 # v1.2.0
+        with:
+          package-manifest-paths: CREGKit/Package.swift
+          report-above-maximum: true
+          allow-hosts: github.com

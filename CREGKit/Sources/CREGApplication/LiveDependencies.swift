@@ -77,7 +77,7 @@ private actor SQLGenRuntimeRouter {
 }
 
 /// Builds the live dependency graph exactly once. The single
-/// ``InferenceSerializer`` shared by FM and MLX calls is the PRD §7.1
+/// `InferenceSerializer` shared by FM and MLX calls is the PRD §7.1
 /// "never overlap" guarantee.
 enum LiveDependencies {
   static let diagnostics = DiagnosticsClient.live

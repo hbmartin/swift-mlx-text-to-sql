@@ -1,5 +1,6 @@
 import hashlib
 
+import tools.generate_grammar as generate_grammar
 from eval.prompt_contract import (
     DATA_RESOURCE_DIRECTORY,
     INFERENCE_RESOURCE_DIRECTORY,
@@ -12,7 +13,6 @@ from eval.prompt_contract import (
     build_system_prompt,
     prompt_contract_receipt,
 )
-from tools.generate_grammar import DATA_RESOURCE_DIR, INFERENCE_RESOURCE_DIR
 
 
 def test_system_prompt_matches_the_swift_parity_contract() -> None:
@@ -21,14 +21,21 @@ def test_system_prompt_matches_the_swift_parity_contract() -> None:
     assert digest == "f9edfd023d97867fbd8ea178ddff374de8daef080bff96b2082896971b0dfddc"
 
 
-def test_generator_and_prompt_contract_share_split_resource_targets() -> None:
-    assert INFERENCE_RESOURCE_DIR == INFERENCE_RESOURCE_DIRECTORY
-    assert DATA_RESOURCE_DIR == DATA_RESOURCE_DIRECTORY
-    assert SQL_GRAMMAR_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
-    assert SCHEMA_PROMPT_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
-    assert SYSTEM_PROMPT_TEMPLATE_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
-    assert REPAIR_PROMPT_TEMPLATE_PATH.parent == INFERENCE_RESOURCE_DIRECTORY
-    assert SCHEMA_CATALOG_PATH.parent == DATA_RESOURCE_DIRECTORY
+def test_generator_uses_the_prompt_contract_resource_paths() -> None:
+    assert generate_grammar.SQL_GRAMMAR_PATH == SQL_GRAMMAR_PATH
+    assert generate_grammar.SCHEMA_PROMPT_PATH == SCHEMA_PROMPT_PATH
+    assert generate_grammar.SCHEMA_CATALOG_PATH == SCHEMA_CATALOG_PATH
+    assert SQL_GRAMMAR_PATH == INFERENCE_RESOURCE_DIRECTORY / "sql_grammar.ebnf"
+    assert SCHEMA_PROMPT_PATH == INFERENCE_RESOURCE_DIRECTORY / "schema_prompt.txt"
+    assert (
+        SYSTEM_PROMPT_TEMPLATE_PATH
+        == INFERENCE_RESOURCE_DIRECTORY / "system_prompt_template.txt"
+    )
+    assert (
+        REPAIR_PROMPT_TEMPLATE_PATH
+        == INFERENCE_RESOURCE_DIRECTORY / "repair_prompt_template.txt"
+    )
+    assert SCHEMA_CATALOG_PATH == DATA_RESOURCE_DIRECTORY / "schema_catalog.json"
 
 
 def test_repair_prompt_matches_the_swift_runtime_contract() -> None:

@@ -44,7 +44,13 @@ jobs:
           swift package \
             --allow-writing-to-directory "${RUNNER_TEMP}/docc" \
             generate-documentation \
+            --target CREGCore \
+            --target CREGData \
+            --target CREGInference \
             --target CREGEngine \
+            --target CREGFeatures \
+            --target CREGApplication \
+            --enable-experimental-combined-documentation \
             --output-path "${RUNNER_TEMP}/docc" \
             --disable-indexing \
             --transform-for-static-hosting \
@@ -58,7 +64,12 @@ jobs:
       - name: Verify documentation artifact
         run: |
           test -f "${RUNNER_TEMP}/docc/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregcore/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregdata/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/creginference/index.html"
           test -f "${RUNNER_TEMP}/docc/documentation/cregengine/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregfeatures/index.html"
+          test -f "${RUNNER_TEMP}/docc/documentation/cregapplication/index.html"
           test -f "${RUNNER_TEMP}/docc/documentation/cregengine/walkthrough/index.html"
           test -f "${RUNNER_TEMP}/docc/documentation/cregengine/0001-schema-semantics/index.html"
           test -f "${RUNNER_TEMP}/docc/documentation/cregengine/querypipeline/index.html"

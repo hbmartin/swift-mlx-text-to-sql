@@ -248,8 +248,9 @@ public enum SupportBundleBuilder {
     return (configuration.model.key, configuration.model.revision)
   }
 
-  /// Recent unified-log entries for this process. ``DiagnosticsClient`` is
-  /// the single sanitization boundary, so everything it logged is already
+  /// Recent unified-log entries for this process.
+  /// `DiagnosticsClient` is the single sanitization boundary, so
+  /// everything it logged is already
   /// privacy-redacted; private interpolations render as <private>.
   static func recentSanitizedDiagnostics() -> String {
     let subsystem = Bundle.main.bundleIdentifier ?? "dev.haroldmartin.CREG"

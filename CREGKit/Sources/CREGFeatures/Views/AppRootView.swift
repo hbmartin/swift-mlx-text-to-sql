@@ -18,8 +18,8 @@ public struct RootView: View {
     self.storeFactory = storeFactory
   }
 
-  /// Hardware below the ``DeviceCapability`` floor never reaches
-  /// ``AppRootView``. The factory is not invoked on either alternate path.
+  /// Hardware below the `DeviceCapability` floor never reaches
+  /// `AppRootView`. The factory is not invoked on either alternate path.
   @ViewBuilder
   public var body: some View {
     #if DEBUG
