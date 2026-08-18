@@ -40,8 +40,8 @@ def patch_current_identity_inputs(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(consistency, "MODEL_MANIFEST", tmp_path / "manifest")
     monkeypatch.setattr(consistency, "GOLD_V2", paths["gold"])
     monkeypatch.setattr(consistency, "DATABASE", paths["database"])
-    monkeypatch.setattr(consistency, "GRAMMAR", paths["grammar"])
-    monkeypatch.setattr(consistency, "SCHEMA_PROMPT", paths["schema"])
+    monkeypatch.setattr(consistency, "SQL_GRAMMAR_PATH", paths["grammar"])
+    monkeypatch.setattr(consistency, "SCHEMA_PROMPT_PATH", paths["schema"])
     monkeypatch.setattr(consistency, "SWIFT_LOCK", paths["swift-lock"])
     monkeypatch.setattr(consistency, "UV_LOCK", paths["uv-lock"])
     monkeypatch.setattr(

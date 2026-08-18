@@ -21,10 +21,35 @@ def test_system_prompt_matches_the_swift_parity_contract() -> None:
     assert digest == "f9edfd023d97867fbd8ea178ddff374de8daef080bff96b2082896971b0dfddc"
 
 
+def test_generator_writes_the_committed_resources_to_contract_paths(
+    monkeypatch, tmp_path
+) -> None:
+    """Pin generator destinations behaviorally.
+
+    Comparing ``generate_grammar.SQL_GRAMMAR_PATH`` to the contract constant
+    cannot fail now that the generator imports it, so run the generator against
+    redirected destinations and assert it reproduces the committed bytes. The
+    inference resources share one directory here exactly as they do in the
+    repository, so this also covers the generator's parent-directory creation.
+    """
+
+    inference_directory = tmp_path / "CREGInference" / "Resources"
+    data_directory = tmp_path / "CREGData" / "Resources"
+    grammar_path = inference_directory / "sql_grammar.ebnf"
+    schema_prompt_path = inference_directory / "schema_prompt.txt"
+    schema_catalog_path = data_directory / "schema_catalog.json"
+    monkeypatch.setattr(generate_grammar, "SQL_GRAMMAR_PATH", grammar_path)
+    monkeypatch.setattr(generate_grammar, "SCHEMA_PROMPT_PATH", schema_prompt_path)
+    monkeypatch.setattr(generate_grammar, "SCHEMA_CATALOG_PATH", schema_catalog_path)
+
+    generate_grammar.main()
+
+    assert grammar_path.read_text() == SQL_GRAMMAR_PATH.read_text()
+    assert schema_prompt_path.read_text() == SCHEMA_PROMPT_PATH.read_text()
+    assert schema_catalog_path.read_text() == SCHEMA_CATALOG_PATH.read_text()
+
+
 def test_generator_uses_the_prompt_contract_resource_paths() -> None:
-    assert generate_grammar.SQL_GRAMMAR_PATH == SQL_GRAMMAR_PATH
-    assert generate_grammar.SCHEMA_PROMPT_PATH == SCHEMA_PROMPT_PATH
-    assert generate_grammar.SCHEMA_CATALOG_PATH == SCHEMA_CATALOG_PATH
     assert SQL_GRAMMAR_PATH == INFERENCE_RESOURCE_DIRECTORY / "sql_grammar.ebnf"
     assert SCHEMA_PROMPT_PATH == INFERENCE_RESOURCE_DIRECTORY / "schema_prompt.txt"
     assert (

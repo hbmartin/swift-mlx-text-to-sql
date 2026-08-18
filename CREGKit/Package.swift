@@ -103,6 +103,13 @@ let package = Package(
       name: "creg-eval-cli",
       dependencies: ["CREGCore", "CREGData", "CREGInference", "CREGEngine"]
     ),
+    // Test-only helpers shared across test targets. Not exposed as a product,
+    // so it stays out of the dependency graph of anything that consumes CREGKit.
+    .target(
+      name: "CREGTestSupport",
+      dependencies: ["CREGCore"],
+      path: "Tests/CREGTestSupport"
+    ),
     .testTarget(
       name: "CREGCoreTests",
       dependencies: ["CREGCore"],
@@ -129,7 +136,7 @@ let package = Package(
     ),
     .testTarget(
       name: "CREGEngineTests",
-      dependencies: ["CREGCore", "CREGData", "CREGEngine"]
+      dependencies: ["CREGCore", "CREGData", "CREGEngine", "CREGTestSupport"]
     ),
     .testTarget(
       name: "CREGFeaturesTests",
@@ -139,6 +146,7 @@ let package = Package(
         "CREGInference",
         "CREGEngine",
         "CREGFeatures",
+        "CREGTestSupport",
         .product(name: "AutoTableCharts", package: "AutoTableCharts"),
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
       ]
