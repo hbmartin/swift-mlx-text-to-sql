@@ -9,10 +9,21 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESOURCE_DIRECTORY = REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources"
-SYSTEM_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "system_prompt_template.txt"
-REPAIR_PROMPT_TEMPLATE_PATH = RESOURCE_DIRECTORY / "repair_prompt_template.txt"
-SCHEMA_CATALOG_PATH = RESOURCE_DIRECTORY / "schema_catalog.json"
+INFERENCE_RESOURCE_DIRECTORY = (
+    REPO_ROOT / "CREGKit" / "Sources" / "CREGInference" / "Resources"
+)
+DATA_RESOURCE_DIRECTORY = (
+    REPO_ROOT / "CREGKit" / "Sources" / "CREGData" / "Resources"
+)
+SQL_GRAMMAR_PATH = INFERENCE_RESOURCE_DIRECTORY / "sql_grammar.ebnf"
+SCHEMA_PROMPT_PATH = INFERENCE_RESOURCE_DIRECTORY / "schema_prompt.txt"
+SYSTEM_PROMPT_TEMPLATE_PATH = (
+    INFERENCE_RESOURCE_DIRECTORY / "system_prompt_template.txt"
+)
+REPAIR_PROMPT_TEMPLATE_PATH = (
+    INFERENCE_RESOURCE_DIRECTORY / "repair_prompt_template.txt"
+)
+SCHEMA_CATALOG_PATH = DATA_RESOURCE_DIRECTORY / "schema_catalog.json"
 PROMPT_VERSION = "reliability-v4"
 POLICY_VERSION = "bounded-repair-state-machine-v2"
 

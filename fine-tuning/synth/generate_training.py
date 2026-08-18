@@ -33,7 +33,13 @@ import xgrammar
 from xgrammar.testing import _is_grammar_accept_string as grammar_accepts
 
 from eval.ex import ExecutionError, execute
-from eval.prompt_contract import build_repair_prompt, build_system_prompt
+from eval.prompt_contract import (
+    SCHEMA_CATALOG_PATH,
+    SCHEMA_PROMPT_PATH,
+    SQL_GRAMMAR_PATH,
+    build_repair_prompt,
+    build_system_prompt,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DB = REPO_ROOT / "db" / "creg.sqlite"
@@ -41,20 +47,9 @@ GOLD_PATHS = (
     REPO_ROOT / "eval" / "gold" / "gold_v1.jsonl",
     REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl",
 )
-GRAMMAR_PATH = (
-    REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "sql_grammar.ebnf"
-)
-SCHEMA_PROMPT = (
-    REPO_ROOT / "CREGKit" / "Sources" / "CREGEngine" / "Resources" / "schema_prompt.txt"
-)
-SCHEMA_CATALOG = (
-    REPO_ROOT
-    / "CREGKit"
-    / "Sources"
-    / "CREGEngine"
-    / "Resources"
-    / "schema_catalog.json"
-)
+GRAMMAR_PATH = SQL_GRAMMAR_PATH
+SCHEMA_PROMPT = SCHEMA_PROMPT_PATH
+SCHEMA_CATALOG = SCHEMA_CATALOG_PATH
 OUT_DIR = REPO_ROOT / "fine-tuning" / "synth" / "out"
 
 SEED = 424242

@@ -5,7 +5,7 @@ from eval.run_eval import extract_sql, strip_special_tokens
 
 FIXTURES = (
     Path(__file__).resolve().parents[2]
-    / "CREGKit/Sources/CREGEngine/Resources/sql_cutter_fixtures.json"
+    / "CREGKit/Tests/CREGInferenceTests/Resources/sql_cutter_fixtures.json"
 )
 
 

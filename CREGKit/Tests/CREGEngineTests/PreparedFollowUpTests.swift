@@ -307,7 +307,7 @@ private enum FollowUpTestError: Error {
       suggestFollowUps: { _, _ in throw FollowUpTestError.failed })
     let pipeline = QueryPipeline.live(
       fm: fm,
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         Issue.record("SQL generation must not run after proposal failure")
         return SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
@@ -337,7 +337,7 @@ private enum FollowUpTestError: Error {
       })
     let pipeline = QueryPipeline.live(
       fm: fm,
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         Issue.record("SQL generation must not run after proposal timeout")
         return SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
@@ -371,7 +371,7 @@ private enum FollowUpTestError: Error {
       })
     let pipeline = QueryPipeline.live(
       fm: fm,
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
@@ -400,7 +400,7 @@ private enum FollowUpTestError: Error {
       suggestFollowUps: { _, _ in throw CancellationError() })
     let pipeline = QueryPipeline.live(
       fm: fm,
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         Issue.record("SQL generation must not run after proposal failure")
         return SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
@@ -420,7 +420,7 @@ private enum FollowUpTestError: Error {
   @Test func validationTimeoutIsNotReportedAsGenerationFailure() async {
     let pipeline = QueryPipeline.live(
       fm: Self.fm(suggestions: ["Slow validation?"]),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
@@ -458,7 +458,7 @@ private enum FollowUpTestError: Error {
     let calls = FollowUpCalls()
     let pipeline = QueryPipeline.live(
       fm: Self.fm(suggestions: ["Slow execution?"]),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         await calls.generated()
         return SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
@@ -502,7 +502,7 @@ private enum FollowUpTestError: Error {
       fm: Self.fm(
         suggestions: ["First?", "Empty?", "Third?"],
         calls: calls),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         await calls.generated()
         let sql = request.question == "Empty?" ? "SELECT empty" : "SELECT 1"
         return SQLGeneration(
@@ -538,7 +538,7 @@ private enum FollowUpTestError: Error {
       message: "no such column")
     let pipeline = QueryPipeline.live(
       fm: Self.fm(suggestions: ["Needs repair?"], calls: calls),
-      sqlGen: SQLGenClient { request in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
         await calls.generated()
         return SQLGeneration(
           sql: "SELECT bad_\(request.candidateID.rawValue)",
@@ -593,7 +593,7 @@ private enum FollowUpTestError: Error {
       createdAt: Date(timeIntervalSince1970: 0))
     let pipeline = QueryPipeline.live(
       fm: Self.fm(calls: calls),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         await calls.generated()
         return SQLGeneration(
           sql: "SELECT fallback", tokensPerSecond: 1, modelName: "test")
@@ -640,7 +640,7 @@ private enum FollowUpTestError: Error {
     prepared.provenance.resultFingerprint = "legacy-v2-fingerprint"
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
@@ -758,7 +758,7 @@ private enum FollowUpTestError: Error {
     let prepared = Self.prepared(question: "Prepared?", rank: 1)
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
@@ -793,7 +793,7 @@ private enum FollowUpTestError: Error {
       narrate: { _, _ in throw CancellationError() })
     let pipeline = QueryPipeline.live(
       fm: fm,
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
@@ -829,7 +829,7 @@ private enum FollowUpTestError: Error {
       })
     let pipeline = QueryPipeline.live(
       fm: slowFM,
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient(
@@ -878,7 +878,7 @@ private enum FollowUpTestError: Error {
       createdAt: Date(timeIntervalSince1970: 0))
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient { _ in
+      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
         await calls.generated()
         return SQLGeneration(
           sql: "SELECT fallback", tokensPerSecond: 1, modelName: "test")

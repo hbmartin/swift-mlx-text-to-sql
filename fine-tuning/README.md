@@ -28,7 +28,8 @@ uv run python tools/fetch_model.py
 - `tools/generate_grammar.py` — emits `sql_grammar.ebnf` (XGrammar EBNF,
   SELECT-only, schema identifiers as terminals) and `schema_prompt.txt`
   (compact schema serialization with enumerated low-cardinality values) into
-  `CREGKit/Sources/CREGEngine/Resources/`.
+  `CREGKit/Sources/CREGInference/Resources/`, plus `schema_catalog.json` into
+  `CREGKit/Sources/CREGData/Resources/`.
 - `tools/fetch_model.py` — snapshot-downloads candidate models.
 - `tools/materialize_debug_model.py` — verifies and fuses a local reliability-v3
   checkpoint into a receipt-bound, explicitly experimental Debug bundle without

@@ -15,16 +15,24 @@ from eval.ex import (
     typed_rows,
 )
 
-DB = Path(__file__).resolve().parents[2] / "db" / "creg.sqlite"
+ROOT = Path(__file__).resolve().parents[2]
+DB = ROOT / "db" / "creg.sqlite"
 FIXTURES = (
-    Path(__file__).resolve().parents[2]
+    ROOT
     / "CREGKit"
-    / "Sources"
-    / "CREGEngine"
+    / "Tests"
+    / "CREGCoreTests"
     / "Resources"
     / "canonical_result_fixtures.json"
 )
-SQLITE_TEXT_FIXTURES = FIXTURES.with_name("sqlite_text_fixtures.json")
+SQLITE_TEXT_FIXTURES = (
+    ROOT
+    / "CREGKit"
+    / "Tests"
+    / "CREGDataTests"
+    / "Resources"
+    / "sqlite_text_fixtures.json"
+)
 
 
 def fixture_rows(rows: list[list[dict[str, str]]]) -> list[tuple[object, ...]]:
