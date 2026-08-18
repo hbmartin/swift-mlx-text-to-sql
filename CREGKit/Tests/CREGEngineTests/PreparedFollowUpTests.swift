@@ -1,3 +1,4 @@
+import CREGTestSupport
 import Foundation
 import Testing
 
@@ -326,34 +327,41 @@ private enum FollowUpTestError: Error {
   }
 
   @Test func proposalReceivesTheLoadedSchemaPrompt() async {
-    let fm = FMClient(
-      availability: { .available },
-      rewrite: { question, _ in question },
-      gate: { _, _ in .proceed },
-      narrate: { _, _ in "unused" },
-      suggestFollowUps: { _, schema in
-        #expect(schema == "follow-up schema")
-        return []
-      })
-    let pipeline = QueryPipeline.live(
-      fm: fm,
-      sqlGen: testSQLGenClient(
-        schemaPrompt: { "follow-up schema" }
-      ) { _ in
-        Issue.record("SQL generation must not run for an empty proposal set")
-        return SQLGeneration(
-          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
-      },
-      db: DatabaseClient(
-        fingerprint: "snapshot-v1",
-        execute: { _ in Self.result }),
-      serializer: InferenceSerializer(),
-      configuration: Self.configuration())
+    // The forwarding assertion lives inside the proposal closure, so the
+    // confirmation is what proves the closure ran at all. Without it the
+    // event assertions below also pass on the FM-unavailable path, which
+    // yields the same .started(candidateCount: 0) without ever proposing.
+    await confirmation("the loaded schema reaches the proposal") { proposed in
+      let fm = FMClient(
+        availability: { .available },
+        rewrite: { question, _ in question },
+        gate: { _, _ in .proceed },
+        narrate: { _, _ in "unused" },
+        suggestFollowUps: { _, schema in
+          #expect(schema == "follow-up schema")
+          proposed()
+          return []
+        })
+      let pipeline = QueryPipeline.live(
+        fm: fm,
+        sqlGen: testSQLGenClient(
+          schemaPrompt: { "follow-up schema" }
+        ) { _ in
+          Issue.record("SQL generation must not run for an empty proposal set")
+          return SQLGeneration(
+            sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+        },
+        db: DatabaseClient(
+          fingerprint: "snapshot-v1",
+          execute: { _ in Self.result }),
+        serializer: InferenceSerializer(),
+        configuration: Self.configuration())
 
-    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+      let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
-    #expect(events.contains(.started(candidateCount: 0)))
-    #expect(events.last == .finished)
+      #expect(events.contains(.started(candidateCount: 0)))
+      #expect(events.last == .finished)
+    }
   }
 
   @Test func schemaPromptFailureStopsProposalAndIsReported() async {

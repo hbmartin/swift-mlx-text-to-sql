@@ -31,6 +31,33 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def read_canonical_version_number(base: Path) -> bytes:
+    """Read the canonical SQLite version number from the base database header.
+
+    The base database is immutable for the whole run, so this is read once in
+    :func:`generate` rather than reopened for every snapshot.
+    """
+    with base.open("rb") as source:
+        if source.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
+            raise RuntimeError(f"base database has an invalid SQLite header: {base}")
+        source.seek(SQLITE_VERSION_NUMBER_OFFSET)
+        version_number = source.read(SQLITE_VERSION_NUMBER_SIZE)
+    if len(version_number) != SQLITE_VERSION_NUMBER_SIZE:
+        raise RuntimeError(f"base database has a truncated SQLite header: {base}")
+    return version_number
+
+
+def write_sqlite_version_number(snapshot: Path, version_number: bytes) -> None:
+    """Stamp one snapshot's header with the canonical version number."""
+    with snapshot.open("r+b") as destination:
+        if destination.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
+            raise RuntimeError(
+                f"generated snapshot has an invalid SQLite header: {snapshot}"
+            )
+        destination.seek(SQLITE_VERSION_NUMBER_OFFSET)
+        destination.write(version_number)
+
+
 def canonicalize_sqlite_version_number(base: Path, snapshot: Path) -> None:
     """Keep byte identity independent of the host SQLite patch version.
 
@@ -40,21 +67,7 @@ def canonicalize_sqlite_version_number(base: Path, snapshot: Path) -> None:
     Python picks up a SQLite patch release. The base database is immutable and
     hashed in the same manifest, so its header value is the canonical value.
     """
-    with base.open("rb") as source:
-        if source.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
-            raise RuntimeError(f"base database has an invalid SQLite header: {base}")
-        source.seek(SQLITE_VERSION_NUMBER_OFFSET)
-        version_number = source.read(SQLITE_VERSION_NUMBER_SIZE)
-    if len(version_number) != SQLITE_VERSION_NUMBER_SIZE:
-        raise RuntimeError(f"base database has a truncated SQLite header: {base}")
-
-    with snapshot.open("r+b") as destination:
-        if destination.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
-            raise RuntimeError(
-                f"generated snapshot has an invalid SQLite header: {snapshot}"
-            )
-        destination.seek(SQLITE_VERSION_NUMBER_OFFSET)
-        destination.write(version_number)
+    write_sqlite_version_number(snapshot, read_canonical_version_number(base))
 
 
 def stagger_latest_and_add_tie(connection: sqlite3.Connection) -> None:
@@ -141,7 +154,9 @@ SNAPSHOTS: tuple[tuple[str, str, Mutation], ...] = (
 )
 
 
-def materialize_snapshot(base: Path, destination: Path, mutation: Mutation) -> None:
+def materialize_snapshot(
+    base: Path, destination: Path, mutation: Mutation, version_number: bytes
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
@@ -159,7 +174,7 @@ def materialize_snapshot(base: Path, destination: Path, mutation: Mutation) -> N
                 raise RuntimeError(f"snapshot integrity check failed: {integrity}")
         finally:
             connection.close()
-        canonicalize_sqlite_version_number(base, staged)
+        write_sqlite_version_number(staged, version_number)
         os.replace(staged, destination)
     finally:
         if staged.exists():
@@ -169,10 +184,11 @@ def materialize_snapshot(base: Path, destination: Path, mutation: Mutation) -> N
 def generate(base: Path, output_directory: Path) -> dict:
     if base.is_symlink() or not base.is_file():
         raise RuntimeError(f"base database must be a regular file: {base}")
+    version_number = read_canonical_version_number(base)
     records = []
     for filename, purpose, mutation in SNAPSHOTS:
         destination = output_directory / filename
-        materialize_snapshot(base, destination, mutation)
+        materialize_snapshot(base, destination, mutation, version_number)
         records.append(
             {
                 "path": destination.relative_to(REPO_ROOT).as_posix()

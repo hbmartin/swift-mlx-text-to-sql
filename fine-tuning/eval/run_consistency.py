@@ -56,8 +56,6 @@ from tools.fetch_model import load_manifest, verify_artifact_tree_at_use
 
 GOLD_V2 = REPO_ROOT / "eval" / "gold" / "gold_v2.jsonl"
 DATABASE = REPO_ROOT / "db" / "creg.sqlite"
-GRAMMAR = SQL_GRAMMAR_PATH
-SCHEMA_PROMPT = SCHEMA_PROMPT_PATH
 SWIFT_LOCK = REPO_ROOT / "CREGKit" / "Package.resolved"
 UV_LOCK = REPO_ROOT / "fine-tuning" / "uv.lock"
 DEFAULT_CONSISTENCY = REPO_ROOT / "eval" / "consistency-runs"
@@ -188,13 +186,13 @@ def current_identity(model: str) -> dict[str, Any]:
         "input_sha256": {
             "database": sha256_file(DATABASE),
             "gold": sha256_file(GOLD_V2),
-            "grammar": sha256_file(GRAMMAR),
-            "schema_prompt": sha256_file(SCHEMA_PROMPT),
+            "grammar": sha256_file(SQL_GRAMMAR_PATH),
+            "schema_prompt": sha256_file(SCHEMA_PROMPT_PATH),
             "swift_package_lock": sha256_file(SWIFT_LOCK),
             "uv_lock": sha256_file(UV_LOCK),
             "tokenizer": sha256_file(tokenizer),
             "system_prompt_sha256": sha256_bytes(
-                build_system_prompt(SCHEMA_PROMPT.read_text().strip()).encode()
+                build_system_prompt(SCHEMA_PROMPT_PATH.read_text().strip()).encode()
             ),
             "system_prompt_template": sha256_file(SYSTEM_PROMPT_TEMPLATE_PATH),
             "repair_prompt_template": sha256_file(REPAIR_PROMPT_TEMPLATE_PATH),

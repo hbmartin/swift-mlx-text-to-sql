@@ -90,7 +90,7 @@ extension QueryPipeline {
                   level: .error,
                   category: .pipeline,
                   code: "follow_up_proposal_failed",
-                  summary: "Follow-up candidate proposal generation failed.",
+                  summary: followUpProposalFailureSummary(reason),
                   context: baseContext.merging([
                     "reason": reason.rawValue
                   ]) { current, _ in current }))
@@ -250,4 +250,22 @@ func operationTraceID() -> String {
   UUID().uuidString
     .replacingOccurrences(of: "-", with: "")
     .lowercased()
+}
+
+/// Human-readable summary for a follow-up proposal failure.
+///
+/// The exhaustive switch is deliberate: a new `FollowUpProposalFailure` case
+/// must state what a support-bundle reader should look at, rather than
+/// inheriting a message about generation that may not have run.
+private func followUpProposalFailureSummary(
+  _ reason: FollowUpProposalFailure
+) -> String {
+  switch reason {
+  case .schemaLoadingFailed:
+    return "Follow-up proposal stopped: the schema prompt could not be loaded."
+  case .generationFailed:
+    return "Follow-up candidate proposal generation failed."
+  case .generationTimedOut:
+    return "Follow-up candidate proposal generation timed out."
+  }
 }

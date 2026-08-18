@@ -1,14 +1,6 @@
 import CREGCore
+import CREGTestSupport
 import Foundation
-
-func testSQLGenClient(
-  schemaPrompt: @escaping @Sendable () throws -> String = { "test schema" },
-  generate:
-    @escaping @Sendable (SQLGenerationRequest) async throws
-    -> SQLGeneration
-) -> SQLGenClient {
-  SQLGenClient(schemaPrompt: schemaPrompt, generate: generate)
-}
 
 extension UUID {
   init(_ intValue: Int) {

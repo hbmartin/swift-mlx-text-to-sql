@@ -1,3 +1,4 @@
+import CREGTestSupport
 import CryptoKit
 import Foundation
 import Testing
