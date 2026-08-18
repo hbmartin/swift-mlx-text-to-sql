@@ -286,7 +286,7 @@ import Testing
     let recorder = DiagnosticEventRecorder()
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
+      sqlGen: testSQLGenClient { _ in
         throw DiagnosticsTestError.failed("weights could not be loaded")
       },
       db: DatabaseClient { _ in
@@ -315,7 +315,7 @@ import Testing
     let recorder = DiagnosticEventRecorder()
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
+      sqlGen: testSQLGenClient { _ in
         SQLGeneration(
           sql: "SELECT broken",
           tokensPerSecond: 1,
@@ -344,7 +344,7 @@ import Testing
     let recorder = DiagnosticEventRecorder()
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
+      sqlGen: testSQLGenClient { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: .unavailableBundledPortfolioDatabase(
@@ -368,7 +368,7 @@ import Testing
     let recorder = DiagnosticEventRecorder()
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
+      sqlGen: testSQLGenClient { _ in
         SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient { _ in
@@ -392,10 +392,11 @@ import Testing
           "rewrite service failed for \(question)")
       },
       gate: { _, _ in .proceed },
-      narrate: { _, _ in "unused" })
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in [] })
     let pipeline = QueryPipeline.live(
       fm: fm,
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
+      sqlGen: testSQLGenClient { _ in
         Issue.record("generation must not run after rewrite failure")
         return SQLGeneration(sql: "", tokensPerSecond: 0, modelName: "test")
       },
@@ -445,7 +446,7 @@ import Testing
     let attempts = LockIsolated(0)
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
+      sqlGen: testSQLGenClient { request in
         SQLGeneration(
           sql: request.repair == nil ? "SELECT broken" : "SELECT fixed",
           tokensPerSecond: 1,
@@ -480,10 +481,11 @@ import Testing
       gate: { _, _ in .proceed },
       narrate: { _, _ in
         throw DiagnosticsTestError.failed("narration service failed")
-      })
+      },
+      suggestFollowUps: { _, _ in [] })
     let pipeline = QueryPipeline.live(
       fm: fm,
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { request in
+      sqlGen: testSQLGenClient { request in
         SQLGeneration(
           sql: request.repair == nil ? "SELECT broken" : "SELECT fixed",
           tokensPerSecond: 1,
@@ -857,7 +859,7 @@ import Testing
       wholeTurnSeconds: 1)
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
-      sqlGen: SQLGenClient(schemaPrompt: { "test schema" }) { _ in
+      sqlGen: testSQLGenClient { _ in
         try await Task.sleep(for: .milliseconds(100))
         return SQLGeneration(
           sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")

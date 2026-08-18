@@ -12,7 +12,7 @@ uv run python tools/generate_db.py
 
 # Regenerate the SQL grammar + schema prompt from the database
 # (run after any schema change — but the schema is frozen; see docs/adr/0001)
-uv run python tools/generate_grammar.py
+uv run python -m tools.generate_grammar
 
 # Invariant tests for the generated data
 uv run pytest

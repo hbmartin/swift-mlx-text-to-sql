@@ -23,15 +23,15 @@ public struct FMClient: Sendable {
     rewrite: @escaping @Sendable (String, [ConversationTurn]) async throws -> String,
     gate: @escaping @Sendable (String, Double) async throws -> GateDecision,
     narrate: @escaping @Sendable (String, QueryResult) async throws -> String,
-    suggestFollowUps: (
-      @Sendable (FollowUpSuggestionContext, String) async throws -> [String]
-    )? = nil
+    suggestFollowUps:
+      @escaping @Sendable (FollowUpSuggestionContext, String) async throws
+      -> [String]
   ) {
     self.availability = availability
     self.rewrite = rewrite
     self.gate = gate
     self.narrate = narrate
-    self.suggestFollowUps = suggestFollowUps ?? { _, _ in [] }
+    self.suggestFollowUps = suggestFollowUps
   }
 }
 

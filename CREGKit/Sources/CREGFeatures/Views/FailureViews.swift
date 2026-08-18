@@ -2,9 +2,9 @@ import CREGEngine
 import SwiftUI
 
 /// The terminal screen shown instead of the app on hardware below the
-/// ``DeviceCapability`` floor. It replaces the whole shell rather than
-/// degrading the chat surface, because no part of the product works without
-/// the on-device model.
+/// `DeviceCapability` floor. It replaces the whole shell rather
+/// than degrading the chat surface, because no part of the product works
+/// without the on-device model.
 struct UnsupportedDeviceView: View {
   @ScaledMetric(relativeTo: .title2) private var warningSymbolSize = 44.0
 

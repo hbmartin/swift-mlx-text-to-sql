@@ -5,9 +5,17 @@ commercial real-estate schema.
 
 ## Overview
 
-CREGEngine contains the local query pipeline, model adapters, read-only database
-boundary, grounding checks, deterministic result identity, voting, diagnostics,
-and telemetry shared by the CREG app and its Swift evaluation harness.
+CREGEngine orchestrates the local query pipeline: deterministic starters,
+generation attempts, validation and bounded repair, execution, grounding, result
+selection, follow-up preparation, and operation reporting.
+
+The surrounding library targets provide the rest of the runtime. CREGCore owns
+shared clients, models, events, diagnostics, and result identity; CREGData owns
+the read-only database boundary and grounding heuristics; CREGInference owns the
+MLX model adapter and prompt resources; CREGFeatures owns application state,
+persistence, telemetry, and presentation; and CREGApplication composes the live
+dependencies and root view. This site publishes API documentation for all six
+library targets.
 
 The articles below document the architecture, experimental evidence, release
 verification, and decisions that define the engine's behavior.

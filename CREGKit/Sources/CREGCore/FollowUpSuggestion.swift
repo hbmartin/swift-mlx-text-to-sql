@@ -212,6 +212,7 @@ public enum FollowUpPreparationRejection: String, Sendable, Equatable, Codable {
 }
 
 public enum FollowUpProposalFailure: String, Sendable, Equatable, Codable {
+  case schemaLoadingFailed
   case generationFailed
   case generationTimedOut
 }

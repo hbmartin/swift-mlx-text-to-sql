@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import eval.prompt_contract as prompt_contract
 import eval.run_consistency as consistency
 from eval.run_consistency import run_is_compatible
 from eval.run_artifacts import sha256_file
@@ -15,6 +16,46 @@ from tools.fetch_model import (
     directory_digest,
     directory_inventory,
 )
+
+
+def patch_current_identity_inputs(monkeypatch, tmp_path: Path) -> None:
+    contents = {
+        "gold": "gold",
+        "database": "database",
+        "grammar": "grammar",
+        "schema": "schema",
+        "swift-lock": "swift-lock",
+        "uv-lock": "uv-lock",
+        "system-template": "System prompt: {{SCHEMA}}",
+        "repair-template": "Repair prompt",
+        "schema-catalog": "{}",
+    }
+    paths = {}
+    for name, content in contents.items():
+        path = tmp_path / name
+        path.write_text(content)
+        paths[name] = path
+
+    monkeypatch.setattr(consistency, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(consistency, "MODEL_MANIFEST", tmp_path / "manifest")
+    monkeypatch.setattr(consistency, "GOLD_V2", paths["gold"])
+    monkeypatch.setattr(consistency, "DATABASE", paths["database"])
+    monkeypatch.setattr(consistency, "GRAMMAR", paths["grammar"])
+    monkeypatch.setattr(consistency, "SCHEMA_PROMPT", paths["schema"])
+    monkeypatch.setattr(consistency, "SWIFT_LOCK", paths["swift-lock"])
+    monkeypatch.setattr(consistency, "UV_LOCK", paths["uv-lock"])
+    monkeypatch.setattr(
+        consistency, "SYSTEM_PROMPT_TEMPLATE_PATH", paths["system-template"]
+    )
+    monkeypatch.setattr(
+        consistency, "REPAIR_PROMPT_TEMPLATE_PATH", paths["repair-template"]
+    )
+    monkeypatch.setattr(
+        consistency, "SCHEMA_CATALOG_PATH", paths["schema-catalog"]
+    )
+    monkeypatch.setattr(
+        prompt_contract, "SYSTEM_PROMPT_TEMPLATE_PATH", paths["system-template"]
+    )
 
 
 def compatible_run() -> Run:
@@ -152,27 +193,7 @@ def test_current_identity_rehashes_model_weights(monkeypatch, tmp_path) -> None:
         "snapshot_directory_sha256": digest,
     }
 
-    paths = {}
-    for name in (
-        "gold",
-        "database",
-        "grammar",
-        "schema",
-        "swift-lock",
-        "uv-lock",
-    ):
-        path = tmp_path / name
-        path.write_text(name)
-        paths[name] = path
-
-    monkeypatch.setattr(consistency, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(consistency, "MODEL_MANIFEST", tmp_path / "manifest")
-    monkeypatch.setattr(consistency, "GOLD_V2", paths["gold"])
-    monkeypatch.setattr(consistency, "DATABASE", paths["database"])
-    monkeypatch.setattr(consistency, "GRAMMAR", paths["grammar"])
-    monkeypatch.setattr(consistency, "SCHEMA_PROMPT", paths["schema"])
-    monkeypatch.setattr(consistency, "SWIFT_LOCK", paths["swift-lock"])
-    monkeypatch.setattr(consistency, "UV_LOCK", paths["uv-lock"])
+    patch_current_identity_inputs(monkeypatch, tmp_path)
     monkeypatch.setattr(
         consistency,
         "load_manifest",
@@ -203,19 +224,7 @@ def test_current_identity_normalizes_local_unpublished_artifacts(
         "local_directory": "winner",
         "snapshot_directory_sha256": digest,
     }
-    paths = {}
-    for name in ("gold", "database", "grammar", "schema", "swift-lock", "uv-lock"):
-        path = tmp_path / name
-        path.write_text(name)
-        paths[name] = path
-    monkeypatch.setattr(consistency, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(consistency, "MODEL_MANIFEST", tmp_path / "manifest")
-    monkeypatch.setattr(consistency, "GOLD_V2", paths["gold"])
-    monkeypatch.setattr(consistency, "DATABASE", paths["database"])
-    monkeypatch.setattr(consistency, "GRAMMAR", paths["grammar"])
-    monkeypatch.setattr(consistency, "SCHEMA_PROMPT", paths["schema"])
-    monkeypatch.setattr(consistency, "SWIFT_LOCK", paths["swift-lock"])
-    monkeypatch.setattr(consistency, "UV_LOCK", paths["uv-lock"])
+    patch_current_identity_inputs(monkeypatch, tmp_path)
     monkeypatch.setattr(consistency, "load_manifest", lambda _: {"models": [artifact]})
 
     identity = consistency.current_identity("winner")
