@@ -107,7 +107,7 @@ let package = Package(
     // so it stays out of the dependency graph of anything that consumes CREGKit.
     .target(
       name: "CREGTestSupport",
-      dependencies: ["CREGCore"],
+      dependencies: ["CREGCore", "CREGData"],
       path: "Tests/CREGTestSupport"
     ),
     .testTarget(
@@ -130,6 +130,7 @@ let package = Package(
         "CREGCore",
         "CREGData",
         "CREGInference",
+        "CREGTestSupport",
         .product(name: "GRDB", package: "GRDB.swift"),
       ],
       resources: [.copy("Resources/sql_cutter_fixtures.json")]
