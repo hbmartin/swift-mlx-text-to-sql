@@ -35,6 +35,58 @@ import SwiftUI
     .preferredColorScheme(.dark)
 }
 
+#Preview("Turn Failure — Generation Exhausted") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.failedTurnChatState(reason: .generationExhausted)),
+    chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Turn Failure — Timed Out — Retry") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.failedTurnChatState(
+        reason: .timedOut(stage: "generation"))),
+    chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Turn Failure — Cancelled") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.failedTurnChatState(reason: .cancelled)),
+    chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Turn Failure — Database Unavailable — Dark") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.failedTurnChatState(reason: .databaseUnavailable)),
+    chrome: PreviewFixtures.chrome)
+    .background(CREGBrand.chatSurface.ignoresSafeArea())
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Turn Failure — Not Tracked Verdict") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.failedTurnChatState(
+        reason: .generationExhausted,
+        scopeVerdict: ScopeVerdictRecord(
+          verdict: .inDomainButNotTracked,
+          missingSubject: "property managers"))),
+    chrome: PreviewFixtures.chrome)
+}
+
+#Preview("Turn Failure — Answerable Verdict") {
+  ChatView(
+    store: PreviewFixtures.chatStore(
+      PreviewFixtures.failedTurnChatState(
+        reason: .noCandidateSelected,
+        scopeVerdict: ScopeVerdictRecord(
+          verdict: .likelyAnswerableModelFailed))),
+    chrome: PreviewFixtures.chrome)
+}
+
 #Preview("Chat — Apple Intelligence Off") {
   ChatView(
     store: PreviewFixtures.chatStore(PreviewFixtures.chatState()),

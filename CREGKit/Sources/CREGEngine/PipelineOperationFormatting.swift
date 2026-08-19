@@ -72,14 +72,7 @@ func voteTrigger(_ trigger: String) -> String {
 }
 
 func timeoutStage(_ stage: String?) -> String {
-  guard let stage else { return "none" }
-  return switch stage {
-  case "turn", "generation", "validation", "execution", "grounding",
-    "rewrite", "gate", "narration", "cancelled":
-    stage
-  default:
-    "unknown"
-  }
+  TurnTelemetry.normalizedTimeoutStage(stage)
 }
 
 func turnOutcome(_ outcome: TurnOutcome) -> String {

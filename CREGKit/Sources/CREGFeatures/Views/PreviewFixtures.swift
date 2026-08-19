@@ -287,6 +287,39 @@ enum PreviewFixtures {
     return state
   }
 
+  /// One transcript per `TurnFailureReason`, plus verdict-annotated variants,
+  /// per the plan's preview harness (previews with inert fixtures replace a
+  /// Simulator run in this project).
+  static func failedTurnChatState(
+    reason: TurnFailureReason,
+    scopeVerdict: ScopeVerdictRecord? = nil
+  ) -> ChatFeature.State {
+    var telemetry = answeredTelemetry
+    telemetry.failureReason = reason
+    telemetry.scopeVerdict = scopeVerdict
+    telemetry.terminalError = "[preview] deterministic preview failure"
+    var state = chatState(
+      messages: [
+        ChatMessage(
+          id: id("1"), role: .user,
+          body: .text("Who manages the Harborline property day to day?"),
+          createdAt: now.addingTimeInterval(-90)),
+        ChatMessage(
+          id: id("2"), role: .assistant,
+          body: .failedTurn(reason: reason, scopeVerdict: scopeVerdict),
+          traceSteps: [
+            "Understanding your question",
+            "Generating the initial lookup",
+            "Fixing a hiccup and retrying",
+          ],
+          createdAt: now.addingTimeInterval(-60),
+          devInfo: telemetry),
+      ],
+      title: "Property management")
+    state.isSubmissionEnabled = true
+    return state
+  }
+
   static let presentationFailure = FailurePresentation(
     code: "preview_history_unavailable",
     title: "History unavailable",

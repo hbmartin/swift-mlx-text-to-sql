@@ -30,7 +30,13 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     case preparedAnswer(PreparedFollowUp)
     case answer(result: QueryResult, narration: String, sql: String, notice: String?)
     case clarification(String)
+    /// Legacy stringly failure kept decodable for persisted history; new
+    /// failures are always `.failedTurn`.
     case failure(String)
+    /// A Turn Failure: exactly one typed reason, plus the Scope Verdict once
+    /// the post-render diagnosis lands (updated in place, like
+    /// `.preparedAnswer` → `.answer`).
+    case failedTurn(reason: TurnFailureReason, scopeVerdict: ScopeVerdictRecord?)
   }
 
   public var id: UUID
@@ -100,7 +106,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
       prepared.provenance.resultFingerprint
     case .answer(let result, _, _, _):
       PreparedFollowUpIntegrity.fingerprint(result: result)
-    case .text, .clarification, .failure:
+    case .text, .clarification, .failure, .failedTurn:
       nil
     }
   }

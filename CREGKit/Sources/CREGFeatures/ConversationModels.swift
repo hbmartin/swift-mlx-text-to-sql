@@ -315,6 +315,8 @@ extension ChatMessage {
     switch body {
     case .text(let text), .clarification(let text), .failure(let text):
       text
+    case .failedTurn(let reason, _):
+      FailurePresentation.turnFailure(reason).message
     case .preparedAnswer(let prepared):
       "Result ready — summarizing \(prepared.result.rowCount) row\(prepared.result.rowCount == 1 ? "" : "s")…"
     case .answer(_, let narration, _, _):

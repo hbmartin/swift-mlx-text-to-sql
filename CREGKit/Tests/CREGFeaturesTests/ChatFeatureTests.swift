@@ -555,11 +555,17 @@ private actor UserPersistenceOrderingGate {
 
     #expect(store.state.activeTurn == nil)
     #expect(store.state.chat?.processing == nil)
-    guard case .failure(let message)? = store.state.chat?.messages.last?.body else {
+    guard
+      case .failedTurn(let reason, let scopeVerdict)? =
+        store.state.chat?.messages.last?.body
+    else {
       Issue.record("Expected unterminated stream recovery to render a failure")
       return
     }
-    #expect(message == "CREG couldn’t finish that answer. Please try again.")
+    #expect(reason == .unexpected)
+    #expect(scopeVerdict == nil)
+    #expect(
+      store.state.chat?.messages.last?.devInfo?.failureReason == .unexpected)
   }
 
   @Test func submitWhileActiveBecomesCancellableQueuedQuestion() async {

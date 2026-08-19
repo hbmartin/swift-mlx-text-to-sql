@@ -71,8 +71,8 @@ extension AppFeature {
         .answer(result: result, narration: narration, sql: sql, notice: notice)
       case .needsClarification(let question):
         .clarification(question)
-      case .failed(let message):
-        .failure(message)
+      case .failed(let reason):
+        .failedTurn(reason: reason, scopeVerdict: nil)
       }
     let assistantMessageID = active.provisionalAssistantMessageID ?? uuid()
     let assistantMessage = ChatMessage(
@@ -223,8 +223,8 @@ extension AppFeature {
       telemetry.executionPath = active.submission.source.executionPath
       telemetry.terminalError =
         "The pipeline event stream ended without a terminal event."
-      outcome = .failed(
-        message: "CREG couldn’t finish that answer. Please try again.")
+      telemetry.failureReason = .unexpected
+      outcome = .failed(reason: .unexpected)
     }
     return handlePipelineEvent(
       state: &state,

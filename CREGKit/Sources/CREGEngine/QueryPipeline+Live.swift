@@ -33,6 +33,9 @@ extension QueryPipeline {
             let activeFM = fmAvailable ? fm : .fallback()
 
             func finish(_ outcome: TurnOutcome) {
+              if case .failed(let reason) = outcome {
+                telemetry.failureReason = reason
+              }
               telemetry.generatedCount = telemetry.candidates.count
               telemetry.stageTimings.totalMicroseconds =
                 turnStarted.duration(to: .now).microseconds
@@ -269,6 +272,12 @@ extension QueryPipeline {
               return report
             }
 
+            // The FM stage currently awaiting a Foundation Model response.
+            // A non-deadline, non-cancellation throw in the outer catch can
+            // only come from one of these calls, so this is what lets the
+            // catch emit `.languageServiceFailed` instead of `.unexpected`.
+            var fmStage: String?
+
             do {
               // 1. Follow-up rewrite. First turns still emit an explicit
               // standalone-question record with a zero-duration no-op.
@@ -278,6 +287,7 @@ extension QueryPipeline {
                 standalone = question
               } else {
                 continuation.yield(.rewriteStarted)
+                fmStage = "rewrite"
                 standalone = try await withPipelineDeadline(
                   seconds: remainingTurnSeconds(),
                   stage: "rewrite"
@@ -286,6 +296,7 @@ extension QueryPipeline {
                     try await activeFM.rewrite(question, history)
                   }
                 }
+                fmStage = nil
               }
               let rewriteElapsed =
                 rewriteStarted.duration(to: .now).microseconds
@@ -310,6 +321,7 @@ extension QueryPipeline {
                 gateUsedFM = false
                 telemetry.gateMode = .bypassed
               } else {
+                fmStage = "gate"
                 decision = try await withPipelineDeadline(
                   seconds: remainingTurnSeconds(),
                   stage: "gate"
@@ -319,6 +331,7 @@ extension QueryPipeline {
                       standalone, configuration.gateSensitivity)
                   }
                 }
+                fmStage = nil
                 gateUsedFM = fmAvailable
                 telemetry.gateMode = fmAvailable ? .foundationModel : .fallback
               }
@@ -352,18 +365,14 @@ extension QueryPipeline {
               if let stage = telemetry.timeoutStage {
                 telemetry.terminalError =
                   initial.error ?? "turn stopped during \(stage)"
-                finish(
-                  .failed(
-                    message: "That answer took too long. Please try again."))
+                finish(.failed(reason: .interrupted(stage: stage)))
                 return
               }
 
               if initial.validationReport?.issue?.disposition == .terminal {
                 telemetry.recoveryOutcome = .terminal
                 telemetry.terminalError = initial.error
-                finish(
-                  .failed(
-                    message: "CREG couldn’t access the portfolio database safely."))
+                finish(.failed(reason: .databaseUnavailable))
                 return
               }
 
@@ -387,16 +396,13 @@ extension QueryPipeline {
                   if let stage = telemetry.timeoutStage {
                     telemetry.terminalError =
                       sample.error ?? "turn stopped during \(stage)"
-                    finish(
-                      .failed(
-                        message: "That answer took too long. Please try again."))
+                    finish(.failed(reason: .interrupted(stage: stage)))
                     return
                   }
                   if sample.validationReport?.issue?.disposition == .terminal {
+                    telemetry.recoveryOutcome = .terminal
                     telemetry.terminalError = sample.error
-                    finish(
-                      .failed(
-                        message: "CREG couldn’t access the portfolio database safely."))
+                    finish(.failed(reason: .databaseUnavailable))
                     return
                   }
                 }
@@ -409,8 +415,8 @@ extension QueryPipeline {
                   telemetry.recoveryOutcome = .exhausted
                   finish(
                     .failed(
-                      message:
-                        "I couldn't answer that one — try rephrasing the question."))
+                      reason: initial.sql == nil
+                        ? .generationFailed : .generationExhausted))
                   return
                 }
                 trigger = "repair"
@@ -447,17 +453,13 @@ extension QueryPipeline {
                     telemetry.recoveryOutcome = .terminal
                     telemetry.terminalError =
                       repair.error ?? "turn stopped during \(stage)"
-                    finish(
-                      .failed(
-                        message: "That answer took too long. Please try again."))
+                    finish(.failed(reason: .interrupted(stage: stage)))
                     return
                   }
                   if repair.validationReport?.issue?.disposition == .terminal {
                     telemetry.recoveryOutcome = .terminal
                     telemetry.terminalError = repair.error
-                    finish(
-                      .failed(
-                        message: "CREG couldn’t access the portfolio database safely."))
+                    finish(.failed(reason: .databaseUnavailable))
                     return
                   }
                   if repair.result != nil {
@@ -499,10 +501,12 @@ extension QueryPipeline {
                   preferredCandidateIDs: preferredCandidateIDs,
                   initialWasValid: initial.result != nil)
               else {
+                // Exhausted repairs reach voting with only failed candidates;
+                // that is still a generation failure, not a voting one.
                 finish(
                   .failed(
-                    message:
-                      "I couldn't answer that one — try rephrasing the question."))
+                    reason: telemetry.recoveryOutcome == .exhausted
+                      ? .generationExhausted : .noCandidateSelected))
                 return
               }
               let chosenCandidate = selection.candidate
@@ -519,10 +523,7 @@ extension QueryPipeline {
                 let chosenResult = chosenCandidate.result,
                 let chosenSQL = chosenCandidate.sql
               else {
-                finish(
-                  .failed(
-                    message:
-                      "I couldn't answer that one — try rephrasing the question."))
+                finish(.failed(reason: .noCandidateSelected))
                 return
               }
               let grounding = try await inspectGrounding(
@@ -539,6 +540,7 @@ extension QueryPipeline {
               continuation.yield(.narrationStarted)
               let narrationStarted = ContinuousClock.now
               let narrationResult = chosenResult
+              fmStage = "narration"
               let narration = try await withPipelineDeadline(
                 seconds: remainingTurnSeconds(),
                 stage: "narration"
@@ -547,6 +549,7 @@ extension QueryPipeline {
                   try await activeFM.narrate(standalone, narrationResult)
                 }
               }
+              fmStage = nil
               let narrationElapsed =
                 narrationStarted.duration(to: .now).microseconds
               telemetry.narrationUsedFM = fmAvailable
@@ -569,18 +572,20 @@ extension QueryPipeline {
                   sql: chosenSQL,
                   notice: notice.isEmpty ? nil : notice))
             } catch {
+              telemetry.terminalError = String(describing: error)
+              let reason: TurnFailureReason
               if let deadline = error as? PipelineDeadlineExceeded {
                 telemetry.timeoutStage = deadline.stage
+                reason = .timedOut(stage: deadline.stage)
               } else if error is CancellationError {
                 telemetry.timeoutStage = "cancelled"
+                reason = .cancelled
+              } else if let fmStage {
+                reason = .languageServiceFailed(stage: fmStage)
+              } else {
+                reason = .unexpected
               }
-              telemetry.terminalError = String(describing: error)
-              finish(
-                .failed(
-                  message:
-                    telemetry.timeoutStage != nil
-                    ? "That answer took too long. Please try again."
-                    : "Something went wrong while answering — please try again."))
+              finish(.failed(reason: reason))
             }
           }
           continuation.onTermination = { _ in task.cancel() }

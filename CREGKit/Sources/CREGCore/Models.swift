@@ -513,7 +513,7 @@ public struct StageTimings: Sendable, Equatable, Codable {
 }
 
 public struct TurnTelemetry: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 6
+  public static let currentSchemaVersion = 7
 
   public var schemaVersion: Int
   public var originalQuestion: String
@@ -546,6 +546,11 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
   public var timeoutStage: String?
   public var grounding: GroundingReport?
   public var terminalError: String?
+  /// The typed reason for a failed turn; mirrors the terminal outcome so the
+  /// JSONL event stream and eval harness see it as data (schema v7).
+  public var failureReason: TurnFailureReason?
+  /// The Scope Verdict attached after the failure rendered (schema v7).
+  public var scopeVerdict: ScopeVerdictRecord?
   public var runtimeMode: ModelRuntimeMode
   public var isEvaluated: Bool
 
@@ -606,6 +611,8 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case timeoutStage
     case grounding
     case terminalError
+    case failureReason
+    case scopeVerdict
     case runtimeMode
     case isEvaluated
   }
@@ -708,6 +715,10 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
       try values.decodeIfPresent(GroundingReport.self, forKey: .grounding)
     terminalError =
       try values.decodeIfPresent(String.self, forKey: .terminalError)
+    failureReason =
+      try values.decodeIfPresent(TurnFailureReason.self, forKey: .failureReason)
+    scopeVerdict =
+      try values.decodeIfPresent(ScopeVerdictRecord.self, forKey: .scopeVerdict)
     runtimeMode =
       try values.decodeIfPresent(ModelRuntimeMode.self, forKey: .runtimeMode)
       ?? .evaluated
@@ -723,5 +734,7 @@ public enum TurnOutcome: Sendable, Equatable, Codable {
   /// empty-result warning) shown alongside the answer.
   case answered(result: QueryResult, narration: String, sql: String, notice: String?)
   case needsClarification(question: String)
-  case failed(message: String)
+  /// Failures ship typed data, never display strings — the UI maps the
+  /// reason to user-facing copy (`PipelineEvent` convention).
+  case failed(reason: TurnFailureReason)
 }

@@ -46,6 +46,9 @@ package func deterministicStarterStream(
       }
 
       func finish(_ outcome: TurnOutcome) {
+        if case .failed(let reason) = outcome {
+          telemetry.failureReason = reason
+        }
         telemetry.candidates = [candidate]
         telemetry.generatedCount = 0
         telemetry.stageTimings.totalMicroseconds =
@@ -84,9 +87,7 @@ package func deterministicStarterStream(
               candidateID: candidateID,
               message: issue.message,
               attempt: 0))
-          finish(
-            .failed(
-              message: "That built-in portfolio query is temporarily unavailable."))
+          finish(.failed(reason: .starterQueryUnavailable))
           return
         }
 
@@ -173,9 +174,8 @@ package func deterministicStarterStream(
             attempt: 0))
         finish(
           .failed(
-            message: telemetry.timeoutStage == nil
-              ? "That built-in portfolio query is temporarily unavailable."
-              : "That answer took too long. Please try again."))
+            reason: telemetry.timeoutStage.map(TurnFailureReason.interrupted)
+              ?? .starterQueryUnavailable))
       }
     }
     continuation.onTermination = { _ in task.cancel() }

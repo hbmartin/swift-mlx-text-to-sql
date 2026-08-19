@@ -29,6 +29,100 @@ public struct FailurePresentation: Error, Sendable, Equatable {
 }
 
 extension FailurePresentation {
+  /// The single mapping from a Turn Failure's typed reason to user copy.
+  /// Every sentence here is written by a human; the engine ships data only.
+  /// Copy never implies user error for causes the user cannot fix — "try
+  /// rephrasing" appears nowhere, because for a genuine scope miss it is
+  /// advice that can never work.
+  public static func turnFailure(
+    _ reason: TurnFailureReason,
+    diagnostic: String? = nil
+  ) -> FailurePresentation {
+    let code: String
+    let title: String
+    let message: String
+    switch reason {
+    case .timedOut:
+      code = "turn_timed_out"
+      title = "Answer timed out"
+      message = "That answer took too long. Please try again."
+    case .cancelled:
+      code = "turn_cancelled"
+      title = "Answer cancelled"
+      message = "That answer was cancelled. Ask again whenever you're ready."
+    case .databaseUnavailable:
+      code = "turn_database_unavailable"
+      title = "Portfolio data unavailable"
+      message =
+        "CREG couldn't access the portfolio database safely. Reinstall CREG; if the problem continues, contact support."
+    case .generationFailed:
+      code = "turn_generation_failed"
+      title = "Model couldn't run"
+      message =
+        "The SQL model couldn't produce a query for this question. Try again; if the problem continues, reinstall CREG."
+    case .generationExhausted:
+      code = "turn_generation_exhausted"
+      title = "No valid query"
+      message =
+        "CREG tried several ways to query the portfolio for this and none held up."
+    case .noCandidateSelected:
+      code = "turn_no_candidate_selected"
+      title = "No trustworthy answer"
+      message =
+        "CREG's attempts didn't agree on an answer it could stand behind."
+    case .languageServiceFailed:
+      code = "turn_language_service_failed"
+      title = "Language service failed"
+      message =
+        "The on-device language service couldn't finish this step. Try again."
+    case .starterQueryUnavailable:
+      code = "turn_starter_query_unavailable"
+      title = "Starter query unavailable"
+      message = "That built-in portfolio query is temporarily unavailable."
+    case .pipelineUnavailable:
+      code = "turn_pipeline_unavailable"
+      title = "SQL model unavailable"
+      message =
+        "CREG's SQL model isn't available right now, so this question couldn't run."
+    case .unexpected:
+      code = "turn_unexpected_failure"
+      title = "Unable to answer"
+      message = "Something went wrong while answering. Please try again."
+    }
+    return FailurePresentation(
+      code: code,
+      title: title,
+      message: message,
+      diagnostic: diagnostic ?? reason.label)
+  }
+}
+
+extension ScopeVerdictRecord {
+  /// The human-written coverage sentence rendered beneath a Turn Failure.
+  /// The FM only picked the bucket; `missingSubject` is the one FM-supplied
+  /// phrase and it is rendered solely for `inDomainButNotTracked`, after the
+  /// deterministic schema-coverage guard upstream (ADR 0010).
+  public var userNotice: String {
+    switch verdict {
+    case .outsideRealEstate:
+      return
+        "This looks outside CREG's commercial real estate portfolio, so the data here can't answer it."
+    case .inDomainButNotTracked:
+      if let missingSubject, !missingSubject.isEmpty {
+        return "The portfolio doesn't track \(missingSubject)."
+      }
+      return "The portfolio doesn't track the information this needs."
+    case .needsDataNotInSnapshot:
+      return
+        "This needs data beyond the portfolio snapshot — CREG covers recorded history up to its as-of date."
+    case .likelyAnswerableModelFailed:
+      return
+        "The portfolio should be able to answer this — asking again is worth a try."
+    }
+  }
+}
+
+extension FailurePresentation {
   public static func productionConfiguration(
     _ error: any Error
   ) -> FailurePresentation {

@@ -272,12 +272,13 @@ import Testing
 
     let terminal = try #require(
       terminalEvent(await Array(pipeline.run("question", []))))
-    guard case .failed(let message) = terminal.0 else {
+    guard case .failed(let reason) = terminal.0 else {
       Issue.record("expected failed outcome")
       return
     }
-    #expect(message.contains("Rebuild and reinstall CREG"))
-    #expect(!message.contains("quantization"))
+    #expect(reason == .pipelineUnavailable)
+    let presentation = FailurePresentation.turnFailure(reason)
+    #expect(!presentation.message.contains("quantization"))
     #expect(
       terminal.1.terminalError
         == "[production_manifest_incompatible] Missing key at models[3].quantization")
@@ -300,12 +301,13 @@ import Testing
 
     let terminal = try #require(
       terminalEvent(await Array(pipeline.run("question", []))))
-    guard case .failed(let message) = terminal.0 else {
+    guard case .failed(let reason) = terminal.0 else {
       Issue.record("expected failed outcome")
       return
     }
-    #expect(message.contains("SQL model couldn’t run"))
-    #expect(!message.contains("weights"))
+    #expect(reason == .generationFailed)
+    #expect(
+      !FailurePresentation.turnFailure(reason).message.contains("weights"))
     #expect(
       terminal.1.terminalError?.contains(
         "[pipeline_model_generation_failed]") == true)
@@ -331,12 +333,13 @@ import Testing
 
     let terminal = try #require(
       terminalEvent(await Array(pipeline.run("question", []))))
-    guard case .failed(let message) = terminal.0 else {
+    guard case .failed(let reason) = terminal.0 else {
       Issue.record("expected failed outcome")
       return
     }
-    #expect(message.contains("valid portfolio query"))
-    #expect(!message.contains("broken"))
+    #expect(reason == .generationExhausted)
+    #expect(
+      !FailurePresentation.turnFailure(reason).message.contains("broken"))
     #expect(recorder.events.map(\.code) == ["pipeline_database_execution_failed"])
     #expect(recorder.events.first?.details?.contains("no such column") == true)
   }
@@ -356,12 +359,13 @@ import Testing
 
     let terminal = try #require(
       terminalEvent(await Array(pipeline.run("question", []))))
-    guard case .failed(let message) = terminal.0 else {
+    guard case .failed(let reason) = terminal.0 else {
       Issue.record("expected failed outcome")
       return
     }
-    #expect(message.contains("portfolio data is unavailable"))
-    #expect(!message.contains("sqlite"))
+    #expect(reason == .databaseUnavailable)
+    #expect(
+      !FailurePresentation.turnFailure(reason).message.contains("sqlite"))
     #expect(recorder.events.map(\.code) == ["pipeline_portfolio_database_unavailable"])
   }
 
@@ -426,7 +430,7 @@ import Testing
         continuation.yield(.turnStarted(question: question))
         continuation.yield(
           .turnFinished(
-            outcome: .failed(message: "failed"),
+            outcome: .failed(reason: .unexpected),
             telemetry: telemetry))
         continuation.finish()
       }
@@ -518,7 +522,7 @@ import Testing
         continuation.yield(.turnStarted(question: question))
         continuation.yield(
           .turnFinished(
-            outcome: .failed(message: "unexpected low-level failure"),
+            outcome: .failed(reason: .unexpected),
             telemetry: telemetry))
         continuation.finish()
       }
@@ -529,13 +533,14 @@ import Testing
         await Array(
           source.reportingTerminalFailures(to: recorder.client)
             .run("question", []))))
-    guard case .failed(let message) = terminal.0 else {
+    guard case .failed(let reason) = terminal.0 else {
       Issue.record("expected failed outcome")
       return
     }
 
-    #expect(message.contains("couldn’t finish"))
-    #expect(!message.contains("low-level"))
+    #expect(reason == .unexpected)
+    #expect(
+      !FailurePresentation.turnFailure(reason).message.contains("low-level"))
     #expect(recorder.events.map(\.code) == ["pipeline_unexpected_failure"])
     #expect(
       terminal.1.terminalError
@@ -581,7 +586,7 @@ import Testing
               seed: nil)))
         continuation.yield(
           .turnFinished(
-            outcome: .failed(message: "timeout"),
+            outcome: .failed(reason: .timedOut(stage: "generation")),
             telemetry: telemetry))
         continuation.finish()
       }
@@ -660,7 +665,7 @@ import Testing
             attempt: 0))
         continuation.yield(
           .turnFinished(
-            outcome: .failed(message: "Try again."),
+            outcome: .failed(reason: .unexpected),
             telemetry: telemetry))
         continuation.finish()
       }
