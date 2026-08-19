@@ -18,13 +18,37 @@ from tools.generate_eval_snapshots import (
     write_sqlite_version_number,
 )
 
-VERSION_NUMBER_SLICE = slice(
-    SQLITE_VERSION_NUMBER_OFFSET,
-    SQLITE_VERSION_NUMBER_OFFSET + SQLITE_VERSION_NUMBER_SIZE,
-)
+# The SQLite database file format specifies a four-byte SQLITE_VERSION_NUMBER
+# field at byte offset 96 of the header: https://sqlite.org/fileformat.html
+#
+# These literals restate that contract rather than importing it. Deriving the
+# fixture from SQLITE_VERSION_NUMBER_OFFSET / _SIZE would move the fixture and
+# the production code together if either constant drifted, leaving this green
+# while the generator canonicalized some neighbouring header field and left
+# the real version field varying per host.
+SPECIFIED_VERSION_NUMBER_SLICE = slice(96, 100)
+# Room for bytes on both sides of the field, so a stamp that lands outside it
+# has somewhere to be caught.
+FIXTURE_SIZE = 200
 # No SQLite library reports version 1, so a snapshot carrying this value can
 # only have been stamped from the base rather than left as the host wrote it.
 SENTINEL_VERSION_NUMBER = b"\x00\x00\x00\x01"
+
+
+def header_fixture(version_number: bytes, filler: int) -> bytes:
+    """Build a header-shaped file whose non-version bytes are recognisable."""
+    contents = bytearray(bytes([filler]) * FIXTURE_SIZE)
+    contents[: len(SQLITE_HEADER)] = SQLITE_HEADER
+    contents[SPECIFIED_VERSION_NUMBER_SLICE] = version_number
+    return bytes(contents)
+
+
+def outside_the_version_number_field(contents: bytes) -> bytes:
+    """Everything stamping the version number must leave alone."""
+    return (
+        contents[: SPECIFIED_VERSION_NUMBER_SLICE.start]
+        + contents[SPECIFIED_VERSION_NUMBER_SLICE.stop :]
+    )
 
 
 def database(path: Path, values: tuple[int, ...]) -> None:
@@ -78,41 +102,52 @@ def test_database_paths_and_inputs_are_canonicalized_as_pairs(tmp_path):
 
 def stamp_version_number(path: Path, version_number: bytes) -> None:
     contents = bytearray(path.read_bytes())
-    contents[VERSION_NUMBER_SLICE] = version_number
+    contents[SPECIFIED_VERSION_NUMBER_SLICE] = version_number
     path.write_bytes(bytes(contents))
+
+
+def test_version_number_field_matches_the_sqlite_file_format():
+    """Hold the implementation constants to the published header layout.
+
+    Every other expectation here is written against the literal 96..100, so
+    this is what fails if the constants drift rather than the fixtures
+    quietly drifting with them.
+    """
+
+    assert SQLITE_VERSION_NUMBER_OFFSET == SPECIFIED_VERSION_NUMBER_SLICE.start
+    assert SQLITE_VERSION_NUMBER_SIZE == (
+        SPECIFIED_VERSION_NUMBER_SLICE.stop - SPECIFIED_VERSION_NUMBER_SLICE.start
+    )
 
 
 def test_sqlite_version_number_is_canonicalized_from_base(tmp_path):
     base = tmp_path / "base.sqlite"
     snapshot = tmp_path / "snapshot.sqlite"
-    minimum_size = SQLITE_VERSION_NUMBER_OFFSET + SQLITE_VERSION_NUMBER_SIZE
-    base_bytes = bytearray(minimum_size)
-    snapshot_bytes = bytearray(minimum_size)
-    base_bytes[: len(SQLITE_HEADER)] = SQLITE_HEADER
-    snapshot_bytes[: len(SQLITE_HEADER)] = SQLITE_HEADER
-    base_bytes[VERSION_NUMBER_SLICE] = b"\x01\x02\x03\x04"
-    snapshot_bytes[VERSION_NUMBER_SLICE] = b"\x05\x06\x07\x08"
+    base_bytes = header_fixture(b"\x01\x02\x03\x04", filler=0x11)
+    snapshot_bytes = header_fixture(b"\x05\x06\x07\x08", filler=0x22)
     base.write_bytes(base_bytes)
     snapshot.write_bytes(snapshot_bytes)
 
     write_sqlite_version_number(snapshot, read_canonical_version_number(base))
 
-    assert (
-        snapshot.read_bytes()[VERSION_NUMBER_SLICE]
-        == base_bytes[VERSION_NUMBER_SLICE]
+    stamped = snapshot.read_bytes()
+    assert stamped[SPECIFIED_VERSION_NUMBER_SLICE] == b"\x01\x02\x03\x04"
+    # A stamp aimed at the wrong offset would satisfy nothing above but would
+    # still show up here, having overwritten a neighbouring header field.
+    assert outside_the_version_number_field(stamped) == (
+        outside_the_version_number_field(snapshot_bytes)
     )
 
 
 def test_version_number_of_the_wrong_width_is_rejected(tmp_path):
     snapshot = tmp_path / "snapshot.sqlite"
-    contents = bytearray(SQLITE_VERSION_NUMBER_OFFSET + SQLITE_VERSION_NUMBER_SIZE)
-    contents[: len(SQLITE_HEADER)] = SQLITE_HEADER
-    snapshot.write_bytes(bytes(contents))
+    contents = header_fixture(b"\x05\x06\x07\x08", filler=0x22)
+    snapshot.write_bytes(contents)
 
     with pytest.raises(RuntimeError, match="exactly"):
         write_sqlite_version_number(snapshot, b"\x01\x02\x03")
 
-    assert snapshot.read_bytes() == bytes(contents)
+    assert snapshot.read_bytes() == contents
 
 
 def test_materialized_snapshot_is_stamped_with_the_base_version_number(tmp_path):
@@ -137,7 +172,10 @@ def test_materialized_snapshot_is_stamped_with_the_base_version_number(tmp_path)
 
     materialize_snapshot(base, destination, mutation, version_number)
 
-    assert destination.read_bytes()[VERSION_NUMBER_SLICE] == SENTINEL_VERSION_NUMBER
+    assert (
+        destination.read_bytes()[SPECIFIED_VERSION_NUMBER_SLICE]
+        == SENTINEL_VERSION_NUMBER
+    )
 
 
 def test_committed_counterexample_snapshots_regenerate_byte_identically(tmp_path):

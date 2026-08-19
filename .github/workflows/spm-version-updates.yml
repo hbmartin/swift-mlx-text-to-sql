@@ -1,27 +1,42 @@
 name: Swift Package Version Updates
 
-# Runs only against the trusted default branch. Dependency staleness is a
-# property of the manifest on main rather than of any single pull request, so
-# there is no reason to give this job pull-request contents to read: the
-# report is identical and no untrusted input reaches a privileged context.
-# Runs without a pull request open or update a single tracking issue instead.
+# Dependency staleness is a property of the manifest on main rather than of any
+# single pull request, so the scheduled report runs only against the trusted
+# default branch: the report is identical either way, and no untrusted input
+# reaches a privileged context. On runs without a pull request context
+# (schedule, workflow_dispatch), the action opens or updates a single tracking
+# issue instead of commenting.
+#
+# The pull-request trigger exists to validate this workflow and the manifest it
+# reads at the time they change, rather than up to a week later on a green
+# scheduled run nobody is watching. It reports only, holds no write permission,
+# and is scoped to the two files that can break it. It also keeps the workflow
+# exercised, so the report cannot silently stop when GitHub disables a
+# schedule-only workflow after 60 days of repository inactivity.
 on:
   schedule:
     - cron: "0 7 * * 1"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/spm-version-updates.yml
+      - CREGKit/Package.swift
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
-  group: spm-version-updates
+  group: spm-version-updates-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   spm-version-updates:
     name: Check Swift package updates
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Check out the default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -35,3 +50,24 @@ jobs:
           report-above-maximum: true
           allow-hosts: github.com
           open-tracking-issue: true
+
+  validate-spm-version-updates:
+    name: Validate Swift package update reporting
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Same inputs as the scheduled job, minus anything that writes. A typo
+      # here, a renamed input, or a breaking change in the pinned action fails
+      # on the pull request that introduces it.
+      - name: Report Swift package updates
+        uses: hbmartin/github-action-spm_version_updates@c3cbe21c807e8a99fd61dba23c0d5476725a5a18 # v1.2.0
+        with:
+          package-manifest-paths: CREGKit/Package.swift
+          report-above-maximum: true
+          allow-hosts: github.com
+          open-tracking-issue: false

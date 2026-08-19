@@ -38,6 +38,9 @@ jobs:
           mkdir -p CREGKit/Sources/CREGEngine/CREGEngine.docc
           rsync -a --exclude .DS_Store docs/ CREGKit/Sources/CREGEngine/CREGEngine.docc/
 
+      # --warnings-as-errors makes doc comment authoring rules load-bearing
+      # here; they live with the doc comments they constrain, in
+      # docs/doc-comment-authoring.md.
       - name: Generate static documentation
         working-directory: CREGKit
         run: |
@@ -61,13 +64,6 @@ jobs:
             --source-service-base-url \
               "https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}"
 
-      # Cross-module references in doc comments are written as `Symbol` code
-      # spans, not ``Symbol`` links. DocC resolves symbol links per target, so
-      # a link to another module fails this warnings-as-errors build even with
-      # combined documentation enabled -- verified: writing
-      # ``InferenceSerializer`` in CREGEngine/QueryPipeline.swift fails with
-      # "'InferenceSerializer' doesn't exist at '/CREGEngine/QueryPipeline'".
-      # Same-module links stay as ``Symbol``.
       - name: Verify documentation artifact
         run: |
           test -f "${RUNNER_TEMP}/docc/index.html"
