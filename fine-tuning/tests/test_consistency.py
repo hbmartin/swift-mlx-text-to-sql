@@ -40,22 +40,24 @@ def patch_current_identity_inputs(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(consistency, "MODEL_MANIFEST", tmp_path / "manifest")
     monkeypatch.setattr(consistency, "GOLD_V2", paths["gold"])
     monkeypatch.setattr(consistency, "DATABASE", paths["database"])
-    monkeypatch.setattr(consistency, "SQL_GRAMMAR_PATH", paths["grammar"])
-    monkeypatch.setattr(consistency, "SCHEMA_PROMPT_PATH", paths["schema"])
     monkeypatch.setattr(consistency, "SWIFT_LOCK", paths["swift-lock"])
     monkeypatch.setattr(consistency, "UV_LOCK", paths["uv-lock"])
-    monkeypatch.setattr(
-        consistency, "SYSTEM_PROMPT_TEMPLATE_PATH", paths["system-template"]
-    )
-    monkeypatch.setattr(
-        consistency, "REPAIR_PROMPT_TEMPLATE_PATH", paths["repair-template"]
-    )
-    monkeypatch.setattr(
-        consistency, "SCHEMA_CATALOG_PATH", paths["schema-catalog"]
-    )
-    monkeypatch.setattr(
-        prompt_contract, "SYSTEM_PROMPT_TEMPLATE_PATH", paths["system-template"]
-    )
+
+    # These five are owned by prompt_contract and re-exported into
+    # run_consistency by its ``from ... import``. Patching only the importer
+    # would leave prompt_contract itself resolving the real repository files,
+    # so anything reached through it -- build_system_prompt already, and any
+    # helper that later resolves a constant internally -- would silently hash
+    # committed bytes instead of the fixture's.
+    for name, fixture in (
+        ("SQL_GRAMMAR_PATH", paths["grammar"]),
+        ("SCHEMA_PROMPT_PATH", paths["schema"]),
+        ("SYSTEM_PROMPT_TEMPLATE_PATH", paths["system-template"]),
+        ("REPAIR_PROMPT_TEMPLATE_PATH", paths["repair-template"]),
+        ("SCHEMA_CATALOG_PATH", paths["schema-catalog"]),
+    ):
+        monkeypatch.setattr(consistency, name, fixture)
+        monkeypatch.setattr(prompt_contract, name, fixture)
 
 
 def compatible_run() -> Run:

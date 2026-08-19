@@ -34,7 +34,12 @@ def sha256_file(path: Path) -> str:
 def read_canonical_version_number(base: Path) -> bytes:
     """Read the canonical SQLite version number from the base database header.
 
-    The base database is immutable for the whole run, so this is read once in
+    SQLite records the version number of the library that most recently wrote
+    the database at header offset 96. The field is informational, but allowing
+    it to vary makes otherwise identical snapshots hash differently whenever
+    Python picks up a SQLite patch release. The base database is immutable and
+    hashed in the same manifest, so its header value is the canonical value —
+    and because it cannot change during a run it is read once in
     :func:`generate` rather than reopened for every snapshot.
     """
     with base.open("rb") as source:
@@ -48,7 +53,19 @@ def read_canonical_version_number(base: Path) -> bytes:
 
 
 def write_sqlite_version_number(snapshot: Path, version_number: bytes) -> None:
-    """Stamp one snapshot's header with the canonical version number."""
+    """Stamp one snapshot's header with the canonical version number.
+
+    The width is checked because the field is fixed-width and this writes into
+    the middle of an existing file: a short value leaves the field half
+    stamped, and a long one overwrites page-1 content. Neither is detectable
+    afterwards, because :func:`materialize_snapshot` runs its integrity check
+    before stamping, so the damage would reach a committed snapshot.
+    """
+    if len(version_number) != SQLITE_VERSION_NUMBER_SIZE:
+        raise RuntimeError(
+            "SQLite version number must be exactly "
+            f"{SQLITE_VERSION_NUMBER_SIZE} bytes, got {len(version_number)}"
+        )
     with snapshot.open("r+b") as destination:
         if destination.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
             raise RuntimeError(
@@ -56,18 +73,6 @@ def write_sqlite_version_number(snapshot: Path, version_number: bytes) -> None:
             )
         destination.seek(SQLITE_VERSION_NUMBER_OFFSET)
         destination.write(version_number)
-
-
-def canonicalize_sqlite_version_number(base: Path, snapshot: Path) -> None:
-    """Keep byte identity independent of the host SQLite patch version.
-
-    SQLite records the version number of the library that most recently wrote
-    the database at header offset 96. The field is informational, but allowing
-    it to vary makes otherwise identical snapshots hash differently whenever
-    Python picks up a SQLite patch release. The base database is immutable and
-    hashed in the same manifest, so its header value is the canonical value.
-    """
-    write_sqlite_version_number(snapshot, read_canonical_version_number(base))
 
 
 def stagger_latest_and_add_tie(connection: sqlite3.Connection) -> None:

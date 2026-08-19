@@ -117,6 +117,57 @@ func speculationAcceptancePercent(
       / Double(speculation.draftTokenCount))
 }
 
+/// Human-readable summary for a follow-up proposal failure.
+///
+/// The exhaustive switch is deliberate: a new `FollowUpProposalFailure` case
+/// must state what a support-bundle reader should look at, rather than
+/// inheriting a message about generation that may not have run.
+func followUpProposalFailureSummary(
+  _ reason: FollowUpProposalFailure
+) -> String {
+  switch reason {
+  case .schemaLoadingFailed:
+    "Follow-up proposal stopped: the schema prompt could not be loaded."
+  case .generationFailed:
+    "Follow-up candidate proposal generation failed."
+  case .generationTimedOut:
+    "Follow-up candidate proposal generation timed out."
+  }
+}
+
+/// Human-readable summary for a rejected follow-up candidate.
+///
+/// Rejection is the common outcome, so a single summary would make bundles
+/// where every candidate timed out read exactly like bundles where every
+/// candidate was unusable, forcing the reader to cross-reference the reason
+/// in context to learn anything.
+func followUpPreparationRejectionSummary(
+  _ reason: FollowUpPreparationRejection
+) -> String {
+  switch reason {
+  case .invalidQuestion:
+    "Follow-up candidate rejected: the proposed question was not usable."
+  case .generationFailed:
+    "Follow-up candidate rejected: SQL generation failed."
+  case .generationTimedOut:
+    "Follow-up candidate rejected: SQL generation timed out."
+  case .validationFailed:
+    "Follow-up candidate rejected: the generated SQL failed validation."
+  case .validationTimedOut:
+    "Follow-up candidate rejected: SQL validation timed out."
+  case .executionFailed:
+    "Follow-up candidate rejected: the generated SQL failed to execute."
+  case .executionTimedOut:
+    "Follow-up candidate rejected: SQL execution timed out."
+  case .unhelpfulResult:
+    "Follow-up candidate rejected: the result would not help the reader."
+  case .groundingTimedOut:
+    "Follow-up candidate rejected: result grounding timed out."
+  case .cancelled:
+    "Follow-up candidate rejected: preparation was cancelled."
+  }
+}
+
 func operationMilliseconds(_ microseconds: Int64) -> String {
   String(format: "%.1f", Double(microseconds) / 1_000)
 }

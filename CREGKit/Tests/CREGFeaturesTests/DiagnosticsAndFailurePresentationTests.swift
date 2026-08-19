@@ -755,9 +755,14 @@ import Testing
     let failure = events.first { $0.code == "follow_up_proposal_failed" }
     #expect(failure?.level == .error)
     #expect(failure?.context["reason"] == "generationTimedOut")
+    #expect(
+      failure?.summary == "Follow-up candidate proposal generation timed out.")
     let rejection = events.first { $0.code == "follow_up_candidate_rejected" }
     #expect(rejection?.context["rank"] == "2")
     #expect(rejection?.context["reason"] == "validationTimedOut")
+    #expect(
+      rejection?.summary
+        == "Follow-up candidate rejected: SQL validation timed out.")
     #expect(rejection?.context["timeout_stage"] == "validation")
     #expect(rejection?.context["candidate_count"] == "0")
     #expect(rejection?.context["elapsed_ms"] == "12.0")

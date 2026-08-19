@@ -1,5 +1,3 @@
-import CREGCore
-import CREGTestSupport
 import Foundation
 
 extension UUID {
