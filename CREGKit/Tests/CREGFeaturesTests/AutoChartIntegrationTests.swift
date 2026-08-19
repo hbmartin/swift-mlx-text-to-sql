@@ -1,4 +1,5 @@
 import AutoTableCharts
+import CREGData
 import ComposableArchitecture
 import Foundation
 import Testing
@@ -344,82 +345,6 @@ import Testing
     #expect(components.second == 0)
   }
 
-  @Test @MainActor
-  func previewChartAnalysisSurvivesUndoAndIsInvalidatedByInput() async {
-    ResultPreviewChartCache.removeAll()
-    defer { ResultPreviewChartCache.removeAll() }
-    let messageID = UUID()
-    let result = QueryResult(
-      columns: ["fund", "current_market_value"],
-      rows: [[.text("Core"), .real(10)]])
-    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
-    let first = ResultPreviewChartCache.analysis(
-      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
-      sql: "SELECT fund, current_market_value FROM properties", question: nil)
-    let second = ResultPreviewChartCache.analysis(
-      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
-      sql: "SELECT fund, current_market_value FROM properties", question: nil)
-    #expect(first === second)
-    #expect(
-      first.table.chartDataIdentity
-        == "CREG.Result.v1:\(messageID.uuidString.lowercased())")
-
-    var retimed = result
-    retimed.elapsedMicroseconds = 42_000
-    let equivalent = ResultPreviewChartCache.analysis(
-      messageID: messageID, resultFingerprint: resultFingerprint, result: retimed,
-      sql: "SELECT fund, current_market_value FROM properties", question: nil)
-    #expect(first === equivalent)
-
-    let selectedID = UUID()
-    let deletedID = UUID()
-    var state = AppFeature.State(
-      debugModelIdentity: nil, launchBenchmarkQuestion: nil)
-    state.modelReadiness = .ready
-    state.chat = ChatFeature.State(conversationID: selectedID)
-    state.conversations = [
-      ConversationSummary(
-        id: selectedID, title: "Selected",
-        startedAt: Date(timeIntervalSince1970: 0),
-        lastActivityAt: Date(timeIntervalSince1970: 2)),
-      ConversationSummary(
-        id: deletedID, title: "Deleted then restored",
-        startedAt: Date(timeIntervalSince1970: 0),
-        lastActivityAt: Date(timeIntervalSince1970: 1)),
-    ]
-    let clock = TestClock()
-    let store = TestStore(initialState: state) {
-      AppFeature()
-    } withDependencies: {
-      $0.historyClient = .noop()
-      $0.continuousClock = clock
-    }
-    store.exhaustivity = .off
-
-    await store.send(.deleteConversationTapped(deletedID))
-    await store.send(.undoDeleteTapped)
-    await store.finish()
-    let afterUndo = ResultPreviewChartCache.analysis(
-      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
-      sql: "SELECT fund, current_market_value FROM properties", question: nil)
-    #expect(first === afterUndo)
-
-    var changed = result
-    changed.rows.append([.text("Value-Add"), .real(8)])
-    let changedFingerprint = PreparedFollowUpIntegrity.fingerprint(result: changed)
-    let third = ResultPreviewChartCache.analysis(
-      messageID: messageID, resultFingerprint: changedFingerprint, result: changed,
-      sql: "SELECT fund, current_market_value FROM properties", question: nil)
-    #expect(first !== third)
-    #expect(third.table.chartDataIdentity == first.table.chartDataIdentity)
-
-    ResultPreviewChartCache.removeAll()
-    let afterRelease = ResultPreviewChartCache.analysis(
-      messageID: messageID, resultFingerprint: changedFingerprint, result: changed,
-      sql: "SELECT fund, current_market_value FROM properties", question: nil)
-    #expect(third !== afterRelease)
-  }
-
   @Test(arguments: [
     (
       "Show the trend over time", "SELECT period_end, noi FROM property_financials",
@@ -525,6 +450,59 @@ import Testing
     }
   }
 
+  /// Each named chart preview exists to show one family. Policy version 8
+  /// re-scores every candidate, so pin what the preview fixtures resolve to
+  /// here rather than discovering a Canvas full of bar charts by eye.
+  @Test func chartPreviewFixturesResolveTheirIntendedFamily() throws {
+    let fixtures: [(String, QueryResult, String, String?, AutoChartFamily)] = [
+      (
+        "Result Viewer — Range Chart — Light",
+        PreviewFixtures.leaseListingResult,
+        StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql,
+        StarterQueryID.leaseExpirationsNextTwelveMonthsV1.question,
+        .range
+      ),
+      (
+        "Result Viewer — Loan Maturities — Range Chart",
+        PreviewFixtures.loanMaturityResult,
+        StarterQueryID.loanMaturitiesNextTwentyFourMonthsV1.sql,
+        StarterQueryID.loanMaturitiesNextTwentyFourMonthsV1.question,
+        .range
+      ),
+      (
+        "Result Viewer — Bar Chart — Light",
+        PreviewFixtures.fundValueResult,
+        StarterQueryID.portfolioValueByFundV1.sql,
+        StarterQueryID.portfolioValueByFundV1.question,
+        .bar
+      ),
+    ]
+
+    for (name, result, sql, question, expected) in fixtures {
+      let recommendation = try #require(
+        CREGChartAdapter.recommendations(
+          result: result, sql: sql, question: question
+        ).set.chartRecommendations.first,
+        "\(name) has no chart to show")
+      #expect(
+        recommendation.specification.family == expected,
+        "\(name) now resolves to \(recommendation.specification.family)")
+    }
+  }
+
+  /// The truncation preview exists to show the incomplete-result caution, so it
+  /// needs a chart to hang that caution on.
+  @Test func theTruncationPreviewFixtureStillWarnsOnAChart() throws {
+    let recommendation = try #require(
+      CREGChartAdapter.recommendations(
+        result: PreviewFixtures.truncatedResult,
+        sql: "SELECT property, tenant, annual_base_rent FROM leases LIMIT 500",
+        question: "Show the distribution of returned annual base rent"
+      ).set.chartRecommendations.first)
+
+    #expect(!recommendation.warnings.isEmpty)
+  }
+
   @Test func truncatedResultsSuppressCompositionAndFrequencyClaims() {
     let result = QueryResult(
       columns: ["property_type", "status", "annual_rent_roll"],
@@ -567,6 +545,88 @@ import Testing
     #expect(table.sourceRowIndexes(for: selection) == [0, 2])
   }
 
+  /// The package's recommendation policy version is a component of every
+  /// `AutoChartSpecification.id`, so a policy bump — 6 to 8 in this revision —
+  /// makes every `ResultPresentationPreference.specificationID` already
+  /// persisted in a user's history stale. The chart-or-table mode survives
+  /// because it is stored separately; the chosen variant degrades to the
+  /// current top recommendation rather than dropping the chart.
+  @Test func preferencesPersistedUnderAnEarlierPolicyVersionStillResolve() throws {
+    let result = QueryResult(
+      columns: ["fund", "current_market_value"],
+      rows: [[.text("Core"), .real(10)], [.text("Value-Add"), .real(8)]])
+    let recommendations = CREGChartAdapter.recommendations(
+      result: result,
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question
+    ).set.chartRecommendations
+    let top = try #require(recommendations.first)
+
+    var components = top.id.split(
+      separator: "|", omittingEmptySubsequences: false)
+    #expect(components.count > 1)
+    components[0] = "1:6"
+    let policyV6ID = components.joined(separator: "|")
+    #expect(policyV6ID != top.id)
+
+    #expect(
+      CREGChartAdapter.resolvedRecommendation(
+        preferredID: policyV6ID, in: recommendations)?.id == top.id)
+  }
+
+  /// SQLite can hand back an overflowed REAL, which the adapter forwards as a
+  /// non-finite `.double`. Such a value cannot position a mark, so the package
+  /// omits it and says so: families that would misstate a whole are rejected
+  /// outright, and the ones that survive carry a validation diagnostic that
+  /// `AutoChartView` shows alongside the chart.
+  @Test func nonFiniteMeasuresAreReportedAndNeverSilentlyCharted() throws {
+    let chart = CREGChartAdapter.recommendations(
+      result: QueryResult(
+        columns: ["fund", "current_market_value"],
+        rows: [
+          [.text("Core"), .real(412_500_000)],
+          [.text("Value-Add"), .real(.infinity)],
+          [.text("Opportunistic"), .real(98_750_000)],
+        ]),
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question)
+
+    let families = Set(chart.set.chartRecommendations.map(\.specification.family))
+    #expect(!families.contains(.kpi))
+    #expect(!families.contains(.donut))
+    #expect(!families.contains(.stackedBar))
+    #expect(!families.contains(.normalizedBar))
+
+    let top = try #require(chart.set.chartRecommendations.first)
+    let validation = AutoChartEngine.validate(
+      specification: top.specification, for: chart.table)
+    #expect(validation.isValid)
+    #expect(
+      validation.issues.contains {
+        $0.severity == .warning && $0.message.contains("non-finite")
+      },
+      "\(top.specification.family) charted a non-finite measure silently")
+  }
+
+  /// Two finite extremes can still subtract to infinity, so an axis over them
+  /// cannot be positioned. The package rejects that span; CREG has to degrade
+  /// to the table rather than offer an unrenderable chart.
+  @Test func measuresSpanningAnUnrenderableRangeFallBackToTheTable() {
+    let set = CREGChartAdapter.recommendations(
+      result: QueryResult(
+        columns: ["fund", "current_market_value"],
+        rows: [
+          [.text("Core"), .real(-.greatestFiniteMagnitude)],
+          [.text("Value-Add"), .real(.greatestFiniteMagnitude)],
+        ]),
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question
+    ).set
+
+    #expect(set.chartRecommendations.isEmpty)
+    #expect(set.fallbackReason != nil)
+  }
+
   @Test func invalidStoredSpecificationFallsBackToCurrentTopRecommendation() throws {
     let result = QueryResult(
       columns: ["fund", "current_market_value"],
@@ -587,6 +647,178 @@ import Testing
         preferredID: top.id,
         in: recommendations)?.id == top.id)
   }
+}
+
+/// Both tests here mutate `ResultPreviewChartCache`, a process-wide store, so
+/// they must not run concurrently with each other.
+@MainActor
+@Suite(.serialized) struct PreviewChartCacheTests {
+  @Test func previewChartAnalysisSurvivesUndoAndIsInvalidatedByInput() async {
+    ResultPreviewChartCache.removeAll()
+    defer { ResultPreviewChartCache.removeAll() }
+    let messageID = UUID()
+    let result = QueryResult(
+      columns: ["fund", "current_market_value"],
+      rows: [[.text("Core"), .real(10)]])
+    let resultFingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
+    let first = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    let second = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === second)
+    #expect(
+      first.table.chartDataIdentity
+        == "CREG.Result.v1:\(messageID.uuidString.lowercased())")
+
+    var retimed = result
+    retimed.elapsedMicroseconds = 42_000
+    let equivalent = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: resultFingerprint, result: retimed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === equivalent)
+
+    let selectedID = UUID()
+    let deletedID = UUID()
+    var state = AppFeature.State(
+      debugModelIdentity: nil, launchBenchmarkQuestion: nil)
+    state.modelReadiness = .ready
+    state.chat = ChatFeature.State(conversationID: selectedID)
+    state.conversations = [
+      ConversationSummary(
+        id: selectedID, title: "Selected",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 2)),
+      ConversationSummary(
+        id: deletedID, title: "Deleted then restored",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 1)),
+    ]
+    let clock = TestClock()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.historyClient = .noop()
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(deletedID))
+    await store.send(.undoDeleteTapped)
+    await store.finish()
+    let afterUndo = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: resultFingerprint, result: result,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first === afterUndo)
+
+    var changed = result
+    changed.rows.append([.text("Value-Add"), .real(8)])
+    let changedFingerprint = PreparedFollowUpIntegrity.fingerprint(result: changed)
+    let third = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: changedFingerprint, result: changed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(first !== third)
+    #expect(third.table.chartDataIdentity == first.table.chartDataIdentity)
+
+    ResultPreviewChartCache.removeAll()
+    let afterRelease = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: changedFingerprint, result: changed,
+      sql: "SELECT fund, current_market_value FROM properties", question: nil)
+    #expect(third !== afterRelease)
+  }
+
+  /// Clearing CREG's analyses hands the release through to the package, whose
+  /// entries were all keyed on tables those analyses owned. The package exposes
+  /// no retained-entry count, so this pins the behavior CREG depends on across
+  /// the release: the same message re-prepares into a fresh analysis that still
+  /// resolves the same chart.
+  @Test func clearingPreviewAnalysesReleasesPreparedRendersAndReprepares() throws {
+    ResultPreviewChartCache.removeAll()
+    defer { ResultPreviewChartCache.removeAll() }
+    let messageID = UUID()
+    let result = PreviewFixtures.fundValueResult
+    let fingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
+    let sql = StarterQueryID.portfolioValueByFundV1.sql
+    let question = StarterQueryID.portfolioValueByFundV1.question
+
+    let before = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: fingerprint, result: result,
+      sql: sql, question: question)
+    let beforeRecommendation = try #require(before.recommendations.first)
+    _ = AutoChartView(
+      table: before.table,
+      recommendation: beforeRecommendation,
+      interaction: .preview)
+
+    ResultPreviewChartCache.removeAll()
+    #expect(
+      AutoChartRenderCache.configuration == CREGChartRenderCache.configuration)
+
+    let after = ResultPreviewChartCache.analysis(
+      messageID: messageID, resultFingerprint: fingerprint, result: result,
+      sql: sql, question: question)
+    let afterRecommendation = try #require(after.recommendations.first)
+
+    #expect(before !== after)
+    #expect(afterRecommendation.id == beforeRecommendation.id)
+  }
+}
+
+@MainActor
+@Suite struct CREGChartRenderCacheTests {
+  /// Every `AutoChartView` CREG builds renders a table that came from a
+  /// `ResultChartAnalysis`, so preparing one has to apply the host budget
+  /// before the package can retain anything for it.
+  @Test func preparingAChartAppliesTheHostBudget() {
+    _ = ResultChartAnalysis(
+      result: PreviewFixtures.fundValueResult,
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question)
+
+    #expect(
+      AutoChartRenderCache.configuration == CREGChartRenderCache.configuration)
+  }
+
+  /// A margin check on CREG's own numbers rather than a copy of the package's
+  /// accounting: the package refuses to cache an entry that exceeds its byte
+  /// budget outright, so the budget has to stay well clear of anything CREG's
+  /// row cap can produce. This fails if the row cap grows, the schema widens,
+  /// or the budget shrinks without someone re-checking the headroom.
+  @Test func theHostBudgetStaysClearOfTheWidestChartableResult() {
+    // `properties` is the widest table in the schema catalog at 20 columns;
+    // allow double that for a join. 160 bytes per cell covers the package's
+    // per-value overhead plus a text payload far longer than this schema's.
+    let widestPlausibleColumnCount = 40
+    let bytesPerCell = 160
+    let worstCase =
+      DatabaseClient.defaultRowCap * widestPlausibleColumnCount * bytesPerCell
+
+    #expect(CREGChartRenderCache.configuration.maximumTableCost >= worstCase * 4)
+    #expect(CREGChartRenderCache.configuration.maximumRenderCost >= worstCase * 4)
+    #expect(CREGChartRenderCache.configuration.maximumTableEntries > 0)
+    #expect(CREGChartRenderCache.configuration.maximumRenderEntries > 0)
+  }
+
+  /// `AutoChartView.init` runs the package's whole preparation, validation, and
+  /// cache-admission path, so building one over the row-cap fixture exercises
+  /// admission under CREG's budget rather than only the recommendation stage.
+  @Test func rowCapResultsPrepareARenderableChart() throws {
+    let analysis = ResultChartAnalysis(
+      result: PreviewFixtures.truncatedResult,
+      sql: "SELECT property, tenant, annual_base_rent FROM leases LIMIT 500",
+      question: "Show the distribution of returned annual base rent")
+    let recommendation = try #require(analysis.recommendations.first)
+
+    _ = AutoChartView(
+      table: analysis.table,
+      recommendation: recommendation,
+      interaction: .preview)
+
+    #expect(
+      AutoChartRenderCache.configuration == CREGChartRenderCache.configuration)
+  }
+
 }
 
 @MainActor

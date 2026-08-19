@@ -93,6 +93,12 @@ clears that temporary selection. CSV and Markdown exports always contain the
 complete returned result. Truncated results are labeled as the first returned
 rows and suppress totals, frequency claims, and composition charts.
 
+The package retains prepared snapshots and rendering data in a process-wide
+cache. CREG lowers both of its layers to 16 MiB — half the package default —
+because charts render alongside a resident model, and it releases the cache
+whenever it drops its own analyses: on a conversation switch and on a memory
+warning.
+
 ### On-device operational diagnostics
 
 Apple unified logging mirrors payload-free pipeline milestones under the app
