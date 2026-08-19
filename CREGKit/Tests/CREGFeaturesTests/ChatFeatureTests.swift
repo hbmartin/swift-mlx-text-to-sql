@@ -704,6 +704,32 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.queue.isEmpty)
   }
 
+  /// Apple Intelligence is required (ADR 0011): a ready SQL model alone must
+  /// not open the submission gate when the FM is unavailable, and the gate
+  /// reopens once availability returns on scene activation.
+  @Test func appleIntelligenceUnavailabilityGatesSubmission() async {
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: {
+      $0.fmStatus = FMStatusClient(availability: {
+        .unavailable(reason: .appleIntelligenceNotEnabled)
+      })
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameActive)
+    #expect(
+      store.state.fmAvailability
+        == .unavailable(reason: .appleIntelligenceNotEnabled))
+    #expect(store.state.modelReadiness == .ready)
+    #expect(store.state.chat?.isSubmissionEnabled == false)
+
+    store.dependencies.fmStatus = FMStatusClient(availability: { .available })
+    await store.send(.appBecameActive)
+    #expect(store.state.fmAvailability == .available)
+    #expect(store.state.chat?.isSubmissionEnabled == true)
+  }
+
   @Test func preparedTapUpdatesTheSameAssistantMessageAfterImmediatePreview() async {
     let sourceID = UUID(79)
     let prepared = Self.preparedFollowUp(sourceMessageID: sourceID)

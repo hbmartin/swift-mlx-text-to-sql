@@ -360,6 +360,12 @@ enum PreviewFixtures {
     return state
   }
 
+  static func chrome(fmAvailability: FMAvailability) -> ChatChrome {
+    var chrome = Self.chrome
+    chrome.fmAvailability = fmAvailability
+    return chrome
+  }
+
   static var chrome: ChatChrome {
     ChatChrome(
       modelReadiness: .ready,

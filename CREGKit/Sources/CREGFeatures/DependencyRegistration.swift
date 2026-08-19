@@ -22,6 +22,14 @@ extension SupportBundleClient: DependencyKey {
   public static var liveValue: SupportBundleClient { .live() }
 }
 
+extension FMStatusClient: DependencyKey {
+  public static var testValue: FMStatusClient {
+    FMStatusClient(availability: { .available })
+  }
+
+  public static var liveValue: FMStatusClient { .live() }
+}
+
 extension DependencyValues {
   public var queryPipeline: QueryPipeline {
     get { self[QueryPipeline.self] }
@@ -46,6 +54,11 @@ extension DependencyValues {
   public var supportBundle: SupportBundleClient {
     get { self[SupportBundleClient.self] }
     set { self[SupportBundleClient.self] = newValue }
+  }
+
+  public var fmStatus: FMStatusClient {
+    get { self[FMStatusClient.self] }
+    set { self[FMStatusClient.self] = newValue }
   }
 
   public var appIcon: AppIconClient {

@@ -100,7 +100,8 @@ enum LiveDependencies {
         userMessage: DeviceCapability.requirementMessage,
         diagnostic: """
           The device identifier \(DeviceCapability.currentIdentifier) is below \
-          the iPhone 15 floor required by the bundled model.
+          the iPhone 15 Pro floor required by the bundled model and Apple \
+          Intelligence (ADR 0011).
           """))
     }
     let bundle = Bundle.main

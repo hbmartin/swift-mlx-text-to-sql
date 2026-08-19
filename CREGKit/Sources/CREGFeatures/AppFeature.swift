@@ -171,6 +171,10 @@ public struct AppFeature: Sendable {
     public var searchHits: [ConversationSearchHit] = []
     public var pendingDeletion: PendingDeletion?
     public var modelReadiness: ModelReadiness = .preparing
+    /// Apple Intelligence availability, refreshed on every scene activation.
+    /// Apple Intelligence is required (ADR 0011): submission gates on this
+    /// alongside `modelReadiness`.
+    public var fmAvailability: FMAvailability = .available
     public var activeTurn: ActiveTurn?
     /// The completed turn whose history write currently gates queue dispatch.
     public var pendingTurnPersistence: PendingTurnPersistence?
@@ -322,6 +326,7 @@ public struct AppFeature: Sendable {
   }
 
   @Dependency(\.queryPipeline) var pipeline
+  @Dependency(\.fmStatus) var fmStatus
   @Dependency(\.historyClient) var history
   @Dependency(\.supportBundle) var supportBundle
   @Dependency(\.haptics) var haptics
@@ -366,6 +371,7 @@ public struct AppFeature: Sendable {
           code: "app_appeared",
           summary: "The app surface appeared.",
           context: ["has_selection": String(state.chat != nil)])
+        refreshFMAvailability(state: &state)
         syncSchedulerProjection(into: &state)
         var effects: [Effect<Action>] = []
         if !state.didRequestPreparationJournalInspection {
@@ -401,6 +407,7 @@ public struct AppFeature: Sendable {
         return .merge(effects)
 
       case .appBecameActive:
+        refreshFMAvailability(state: &state)
         return resumeFollowUpPreparationIfIdle(state: &state)
 
       case .appBecameInactive:

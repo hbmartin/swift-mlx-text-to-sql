@@ -53,6 +53,33 @@ private struct FollowUpQuestionSet {
   var questions: [String]
 }
 
+@available(macOS 26.0, iOS 26.0, *)
+extension FMUnavailabilityReason {
+  init(_ reason: SystemLanguageModel.Availability.UnavailableReason) {
+    switch reason {
+    case .appleIntelligenceNotEnabled: self = .appleIntelligenceNotEnabled
+    case .modelNotReady: self = .modelNotReady
+    case .deviceNotEligible: self = .deviceNotEligible
+    @unknown default: self = .other(String(describing: reason))
+    }
+  }
+}
+
+/// The app-level view of Foundation Model availability. Apple Intelligence is
+/// required (ADR 0011): the reducer polls this on scene activation and gates
+/// all new turns on it.
+public struct FMStatusClient: Sendable {
+  public var availability: @Sendable () -> FMAvailability
+
+  public init(availability: @escaping @Sendable () -> FMAvailability) {
+    self.availability = availability
+  }
+
+  public static func live() -> FMStatusClient {
+    FMStatusClient(availability: FMClient.live().availability)
+  }
+}
+
 extension FMClient {
   public static func live() -> FMClient {
     if #available(macOS 26.0, iOS 26.0, *) {
@@ -69,7 +96,7 @@ extension FMClient {
         case .available:
           return .available
         case .unavailable(let reason):
-          return .unavailable(reason: String(describing: reason))
+          return .unavailable(reason: FMUnavailabilityReason(reason))
         }
       },
       rewrite: { question, history in
@@ -156,9 +183,13 @@ extension FMClient {
 
   /// Deterministic fallback used when the FM is unavailable on device:
   /// no rewriting, no gating, templated narration (per plan decision 10).
+  ///
+  /// Apple Intelligence is required (ADR 0011), so this is a mid-turn safety
+  /// net for a turn already in flight when availability flips — never a
+  /// designed experience.
   public static func fallback() -> FMClient {
     FMClient(
-      availability: { .unavailable(reason: "fallback") },
+      availability: { .unavailable(reason: .other("fallback")) },
       rewrite: { question, _ in question },
       gate: { _, _ in .proceed },
       narrate: { _, result in

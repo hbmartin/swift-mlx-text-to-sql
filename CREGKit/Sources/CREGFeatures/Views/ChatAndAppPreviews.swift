@@ -35,6 +35,20 @@ import SwiftUI
     .preferredColorScheme(.dark)
 }
 
+#Preview("Chat — Apple Intelligence Off") {
+  ChatView(
+    store: PreviewFixtures.chatStore(PreviewFixtures.chatState()),
+    chrome: PreviewFixtures.chrome(
+      fmAvailability: .unavailable(reason: .appleIntelligenceNotEnabled)))
+}
+
+#Preview("Chat — Apple Intelligence Preparing") {
+  ChatView(
+    store: PreviewFixtures.chatStore(PreviewFixtures.chatState()),
+    chrome: PreviewFixtures.chrome(
+      fmAvailability: .unavailable(reason: .modelNotReady)))
+}
+
 #Preview("Chat — Processing and Queue") {
   ChatView(
     store: PreviewFixtures.chatStore(PreviewFixtures.processingChatState()),

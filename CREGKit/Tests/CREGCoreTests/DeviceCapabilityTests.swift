@@ -4,8 +4,9 @@ import Testing
 @testable import CREGCore
 
 @Suite struct DeviceCapabilityTests {
-  /// The identifier families straddle the marketing boundary: `iPhone15,2` and
-  /// `iPhone15,3` are the iPhone 14 Pro and 14 Pro Max, not iPhone 15 models.
+  /// The identifier families straddle the marketing boundary: `iPhone15,4` and
+  /// `iPhone15,5` are the base iPhone 15 and 15 Plus — A16 devices below the
+  /// Apple Intelligence floor — while `iPhone16,1` is the iPhone 15 Pro.
   @Test func rejectsEveryIPhoneBelowTheFloor() {
     #expect(!DeviceCapability.isSupported(identifier: "iPhone12,1"))
     #expect(!DeviceCapability.isSupported(identifier: "iPhone14,5"))
@@ -13,11 +14,11 @@ import Testing
     #expect(!DeviceCapability.isSupported(identifier: "iPhone14,8"))
     #expect(!DeviceCapability.isSupported(identifier: "iPhone15,2"))
     #expect(!DeviceCapability.isSupported(identifier: "iPhone15,3"))
+    #expect(!DeviceCapability.isSupported(identifier: "iPhone15,4"))
+    #expect(!DeviceCapability.isSupported(identifier: "iPhone15,5"))
   }
 
-  @Test func acceptsIPhone15AndNewer() {
-    #expect(DeviceCapability.isSupported(identifier: "iPhone15,4"))
-    #expect(DeviceCapability.isSupported(identifier: "iPhone15,5"))
+  @Test func acceptsIPhone15ProAndNewer() {
     #expect(DeviceCapability.isSupported(identifier: "iPhone16,1"))
     #expect(DeviceCapability.isSupported(identifier: "iPhone16,2"))
     #expect(DeviceCapability.isSupported(identifier: "iPhone17,1"))

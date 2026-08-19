@@ -108,10 +108,35 @@ public enum GateDecision: Sendable, Equatable, Codable {
   case clarify(question: String)
 }
 
+/// Why Apple's on-device Foundation Model cannot serve requests right now.
+///
+/// Apple Intelligence is required (ADR 0011): the reducer keys the enable-AI
+/// callout and the transient preparing state off these cases, so the
+/// distinction must survive as data rather than a stringified description.
+public enum FMUnavailabilityReason: Sendable, Equatable {
+  /// The user has not turned Apple Intelligence on in Settings.
+  case appleIntelligenceNotEnabled
+  /// Model assets are still downloading or warming; transient.
+  case modelNotReady
+  /// The hardware cannot run the model. Unreachable behind the device floor.
+  case deviceNotEligible
+  case other(String)
+
+  /// Stable diagnostics label; never shown to the user.
+  public var label: String {
+    switch self {
+    case .appleIntelligenceNotEnabled: return "apple_intelligence_not_enabled"
+    case .modelNotReady: return "model_not_ready"
+    case .deviceNotEligible: return "device_not_eligible"
+    case .other(let description): return "other(\(description))"
+    }
+  }
+}
+
 /// Availability of Apple's on-device Foundation Model.
 public enum FMAvailability: Sendable, Equatable {
   case available
-  case unavailable(reason: String)
+  case unavailable(reason: FMUnavailabilityReason)
 }
 
 public enum SQLValidationDisposition: String, Sendable, Equatable, Codable {
