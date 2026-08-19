@@ -13,6 +13,7 @@ extension AppFeature {
       state.queue.isEmpty,
       state.pendingTurnPersistence == nil,
       state.modelReadiness == .ready,
+      state.fmAvailability == .available,
       state.conversations[id: conversationID] != nil
     else { return .none }
     let batch = PreparedFollowUpBatch(
@@ -52,6 +53,7 @@ extension AppFeature {
       state.pendingTurnPersistence == nil,
       state.followUpPreparation == nil,
       state.modelReadiness == .ready,
+      state.fmAvailability == .available,
       let chat = state.chat,
       let batch = chat.followUpBatch,
       batch.status == .preparing,

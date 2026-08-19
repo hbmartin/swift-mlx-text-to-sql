@@ -463,6 +463,9 @@ public enum QueryOrigin: String, Sendable, Equatable, Codable {
   case freeForm
   case starter
   case preparedFollowUp = "prepared_follow_up"
+  /// A pre-executed question offered beneath a Turn Failure
+  /// (CONTEXT.md "Recovery Suggestion").
+  case recoverySuggestion = "recovery_suggestion"
 }
 
 public enum QueryExecutionPath: String, Sendable, Equatable, Codable {

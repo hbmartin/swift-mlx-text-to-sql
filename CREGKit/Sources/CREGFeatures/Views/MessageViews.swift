@@ -146,6 +146,8 @@ struct MessageCell: View {
         !batch.suggestions.isEmpty
       {
         FollowUpSuggestionsView(
+          title: batch.context?.isRecoverySeed == true
+            ? "Try one of these instead" : "Ask a follow-up",
           suggestions: batch.suggestions,
           select: { store.send(.preparedFollowUpTapped($0)) }
         )
@@ -179,12 +181,13 @@ struct MessageCell: View {
 }
 
 struct FollowUpSuggestionsView: View {
+  var title = "Ask a follow-up"
   let suggestions: [PreparedFollowUp]
   let select: (UUID) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Ask a follow-up")
+      Text(title)
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
       ForEach(suggestions) { suggestion in

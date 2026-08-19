@@ -158,15 +158,27 @@ extension AppFeature {
       message: assistantMessage,
       replacing: replacesProvisional)
     syncSchedulerProjection(into: &state)
-    if state.activeTurn == nil, state.queue.isEmpty,
-      case .answered(let result, let narration, _, _) = outcome
-    {
-      state.pendingTurnPersistence?.followUpContext = FollowUpSuggestionContext(
-        sourceAssistantMessageID: assistantMessage.id,
-        question: active.question,
-        standaloneQuestion: telemetry.standaloneQuestion,
-        narration: narration,
-        result: result)
+    if state.activeTurn == nil, state.queue.isEmpty {
+      switch outcome {
+      case .answered(let result, let narration, _, _):
+        state.pendingTurnPersistence?.followUpContext =
+          FollowUpSuggestionContext(
+            sourceAssistantMessageID: assistantMessage.id,
+            question: active.question,
+            standaloneQuestion: telemetry.standaloneQuestion,
+            narration: narration,
+            result: result)
+      case .failed(let reason) where reason.isEligibleForRecoverySuggestions:
+        state.pendingTurnPersistence?.followUpContext =
+          FollowUpSuggestionContext(
+            sourceAssistantMessageID: assistantMessage.id,
+            question: active.question,
+            standaloneQuestion: telemetry.standaloneQuestion,
+            seed: .turnFailure(
+              reason: reason, scopeVerdict: telemetry.scopeVerdict))
+      case .failed, .needsClarification:
+        break
+      }
     }
     return .merge(effects)
   }

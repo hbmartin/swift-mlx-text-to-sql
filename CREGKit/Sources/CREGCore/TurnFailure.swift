@@ -55,6 +55,20 @@ public enum TurnFailureReason: Sendable, Equatable, Codable {
     }
   }
 
+  /// Recovery Suggestions run only where the model failed on plausibly
+  /// answerable input. Timeouts and cancellations get the retry affordance
+  /// instead; database/pipeline-terminal states cannot pre-execute anything;
+  /// a failed Starter Query must not circularly suggest starter queries.
+  public var isEligibleForRecoverySuggestions: Bool {
+    switch self {
+    case .generationFailed, .generationExhausted, .noCandidateSelected:
+      return true
+    case .timedOut, .cancelled, .databaseUnavailable, .languageServiceFailed,
+      .starterQueryUnavailable, .pipelineUnavailable, .unexpected:
+      return false
+    }
+  }
+
   /// Test oracle only. Telemetry under-determines the reason: the vote sites
   /// set no fields locally, `.exhausted` also occurs on turns that went on to
   /// answer, and the FM stage is not recorded — so production reasons are

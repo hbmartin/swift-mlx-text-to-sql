@@ -1654,6 +1654,120 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.queue.isEmpty)
   }
 
+  static func failedEvent(
+    question: String = "Who manages each property?",
+    reason: TurnFailureReason
+  ) -> PipelineEvent {
+    var telemetry = TurnTelemetry(originalQuestion: question)
+    telemetry.failureReason = reason
+    return .turnFinished(
+      outcome: .failed(reason: reason), telemetry: telemetry)
+  }
+
+  /// A model failure on plausibly answerable input seeds Recovery
+  /// Suggestions; the seed carries the typed reason.
+  @Test func eligibleFailedTurnSeedsRecoverySuggestionPreparation() async {
+    var state = Self.appState()
+    let activeID = UUID(98)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Who manages each property?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let contexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        contexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .generationExhausted)))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    let seeded = contexts.value
+    #expect(seeded.count == 1)
+    guard case .turnFailure(let reason, let verdict)? = seeded.first?.seed
+    else {
+      Issue.record("Expected a failure-seeded suggestion context")
+      return
+    }
+    #expect(reason == .generationExhausted)
+    #expect(verdict == nil)
+    #expect(store.state.chat?.followUpBatch?.context?.isRecoverySeed == true)
+  }
+
+  /// Terminal reasons cannot pre-execute anything and must not seed
+  /// suggestions.
+  @Test func ineligibleFailedTurnDoesNotSeedRecoverySuggestions() async {
+    var state = Self.appState()
+    let activeID = UUID(99)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Who manages each property?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let preparations = CallRecorder()
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        preparations.record("started")
+        return AsyncStream { continuation in
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    for reason in [
+      TurnFailureReason.databaseUnavailable,
+      .timedOut(stage: "generation"),
+      .cancelled,
+      .starterQueryUnavailable,
+    ] {
+      #expect(!reason.isEligibleForRecoverySuggestions)
+    }
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .databaseUnavailable)))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(preparations.recorded.isEmpty)
+    #expect(store.state.chat?.followUpBatch == nil)
+  }
+
   @Test func followUpPreparationWaitsForTerminalPersistence() async {
     var state = Self.appState()
     let activeID = UUID(97)

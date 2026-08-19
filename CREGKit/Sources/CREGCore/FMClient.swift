@@ -150,33 +150,72 @@ extension FMClient {
         return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
       },
       suggestFollowUps: { context, schema in
-        let session = LanguageModelSession(instructions: """
-          You suggest the next questions a commercial real estate professional would ask. \
-          Return exactly three distinct, concise, standalone questions. Every question \
-          must be answerable from the supplied portfolio schema, must not repeat the \
-          source question, and must not require older conversation context. Prefer a \
-          useful mix of drill-down, comparison, and adjacent portfolio analysis. Never \
-          mention SQL, tables, columns, or unavailable data.
-          """)
-        let preview = context.result.rows.prefix(8)
-          .map { row in row.map(\.displayString).joined(separator: " | ") }
-          .joined(separator: "\n")
-        let response = try await session.respond(
-          to: """
-            Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
-            Portfolio schema:
-            \(schema)
+        switch context.seed {
+        case .answer(let result, let narration):
+          let session = LanguageModelSession(instructions: """
+            You suggest the next questions a commercial real estate professional would ask. \
+            Return exactly three distinct, concise, standalone questions. Every question \
+            must be answerable from the supplied portfolio schema, must not repeat the \
+            source question, and must not require older conversation context. Prefer a \
+            useful mix of drill-down, comparison, and adjacent portfolio analysis. Never \
+            mention SQL, tables, columns, or unavailable data.
+            """)
+          let preview = result.rows.prefix(8)
+            .map { row in row.map(\.displayString).joined(separator: " | ") }
+            .joined(separator: "\n")
+          let response = try await session.respond(
+            to: """
+              Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
+              Portfolio schema:
+              \(schema)
 
-            Source question: \(context.question)
-            Standalone interpretation: \(context.standaloneQuestion)
-            Answer summary: \(context.narration)
-            Result columns: \(context.result.columns.joined(separator: ", "))
-            Result row count: \(context.result.rowCount)\(context.result.isTruncated ? " (truncated)" : "")
-            First rows:
-            \(preview)
-            """,
-          generating: FollowUpQuestionSet.self)
-        return response.content.questions
+              Source question: \(context.question)
+              Standalone interpretation: \(context.standaloneQuestion)
+              Answer summary: \(narration)
+              Result columns: \(result.columns.joined(separator: ", "))
+              Result row count: \(result.rowCount)\(result.isTruncated ? " (truncated)" : "")
+              First rows:
+              \(preview)
+              """,
+            generating: FollowUpQuestionSet.self)
+          return response.content.questions
+
+        case .turnFailure(_, let scopeVerdict):
+          // Recovery Suggestions: the source question produced no answer, so
+          // the prompt steers toward nearby questions the schema CAN answer
+          // instead of drilling into a result that does not exist.
+          let session = LanguageModelSession(instructions: """
+            A commercial real estate professional asked a question their portfolio \
+            database could not answer. Suggest exactly three distinct, concise, \
+            standalone questions that come closest to what they wanted to learn AND \
+            are directly answerable from the supplied portfolio schema. Never repeat \
+            the failed question, never require older conversation context, and never \
+            mention SQL, tables, columns, or unavailable data.
+            """)
+          let coverage: String =
+            switch scopeVerdict?.verdict {
+            case .outsideRealEstate:
+              "The question was outside the portfolio's domain."
+            case .inDomainButNotTracked:
+              "The portfolio does not track the information the question needs."
+            case .needsDataNotInSnapshot:
+              "The question needs data beyond the portfolio's recorded snapshot."
+            case .likelyAnswerableModelFailed, nil:
+              "The question itself may be answerable; the attempt failed."
+            }
+          let response = try await session.respond(
+            to: """
+              Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
+              Portfolio schema:
+              \(schema)
+
+              Failed question: \(context.question)
+              Standalone interpretation: \(context.standaloneQuestion)
+              Coverage note: \(coverage)
+              """,
+            generating: FollowUpQuestionSet.self)
+          return response.content.questions
+        }
       }
     )
   }
