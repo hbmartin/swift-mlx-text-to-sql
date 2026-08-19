@@ -120,8 +120,14 @@ enum ResultPreviewChartCache {
   static func removeAll() {
     entries.removeAll()
     recency.removeAll()
-    // Every prepared render the package still holds was keyed on a table these
-    // analyses owned, so it is unreachable once they are gone.
+    // Every prepared render the package still holds was keyed on a table one of
+    // these analyses owned, so dropping them leaves it unreachable — with one
+    // exception: `ResultViewerView`'s cacheless initializer builds an analysis
+    // this cache never sees. That initializer is reached only from `#Preview`
+    // and the DEBUG-only accessibility harness, never from a shipping path, and
+    // the cost there is a re-prepare on the next render rather than a stale
+    // chart. Both callers of this method — a conversation switch and a memory
+    // warning — want the release regardless.
     CREGChartRenderCache.releasePrepared()
   }
 
