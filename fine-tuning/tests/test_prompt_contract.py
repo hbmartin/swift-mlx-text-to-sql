@@ -24,20 +24,22 @@ def test_system_prompt_matches_the_swift_parity_contract() -> None:
 def test_generator_writes_the_committed_resources_to_contract_paths(
     monkeypatch, tmp_path
 ) -> None:
-    """Pin generator destinations behaviorally.
+    """Pin generator output behaviorally.
 
-    Comparing ``generate_grammar.SQL_GRAMMAR_PATH`` to the contract constant
-    cannot fail now that the generator imports it, so run the generator against
-    redirected destinations and assert it reproduces the committed bytes. The
-    inference resources share one directory here exactly as they do in the
-    repository, so this also covers the generator's parent-directory creation.
+    Each resource gets its own directory, none of which exists beforehand, so
+    the generator has to create every parent it writes into. Co-locating them
+    the way the repository happens to today would let a missing ``mkdir`` ride
+    along on a sibling's.
+
+    Redirecting the destinations is what makes the committed-bytes comparison
+    possible, and it is also why this cannot see where the generator points in
+    the repository. ``test_generator_binds_the_contract_resource_paths``
+    covers that half.
     """
 
-    inference_directory = tmp_path / "CREGInference" / "Resources"
-    data_directory = tmp_path / "CREGData" / "Resources"
-    grammar_path = inference_directory / "sql_grammar.ebnf"
-    schema_prompt_path = inference_directory / "schema_prompt.txt"
-    schema_catalog_path = data_directory / "schema_catalog.json"
+    grammar_path = tmp_path / "grammar" / "sql_grammar.ebnf"
+    schema_prompt_path = tmp_path / "schema-prompt" / "schema_prompt.txt"
+    schema_catalog_path = tmp_path / "catalog" / "schema_catalog.json"
     monkeypatch.setattr(generate_grammar, "SQL_GRAMMAR_PATH", grammar_path)
     monkeypatch.setattr(generate_grammar, "SCHEMA_PROMPT_PATH", schema_prompt_path)
     monkeypatch.setattr(generate_grammar, "SCHEMA_CATALOG_PATH", schema_catalog_path)
@@ -49,7 +51,20 @@ def test_generator_writes_the_committed_resources_to_contract_paths(
     assert schema_catalog_path.read_text() == SCHEMA_CATALOG_PATH.read_text()
 
 
-def test_generator_uses_the_prompt_contract_resource_paths() -> None:
+def test_generator_binds_the_contract_resource_paths() -> None:
+    """Pin the generator's destinations to the contract objects themselves.
+
+    Identity, not equality: a locally re-derived path that happens to match
+    today is the drift this guards against, and it is invisible to the
+    behavioral test above, which replaces these very attributes.
+    """
+
+    assert generate_grammar.SQL_GRAMMAR_PATH is SQL_GRAMMAR_PATH
+    assert generate_grammar.SCHEMA_PROMPT_PATH is SCHEMA_PROMPT_PATH
+    assert generate_grammar.SCHEMA_CATALOG_PATH is SCHEMA_CATALOG_PATH
+
+
+def test_contract_resource_paths_match_the_committed_layout() -> None:
     assert SQL_GRAMMAR_PATH == INFERENCE_RESOURCE_DIRECTORY / "sql_grammar.ebnf"
     assert SCHEMA_PROMPT_PATH == INFERENCE_RESOURCE_DIRECTORY / "schema_prompt.txt"
     assert (

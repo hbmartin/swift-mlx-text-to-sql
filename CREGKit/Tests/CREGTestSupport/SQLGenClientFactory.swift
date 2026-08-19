@@ -1,6 +1,7 @@
 import CREGCore
 
-/// Shared `SQLGenClient` factory for every test target.
+/// Shared `SQLGenClient` factory for the test targets that depend on
+/// `CREGTestSupport`.
 ///
 /// The default schema prompt is defined once here so the engine and feature
 /// suites cannot drift apart on what an unconfigured client returns.

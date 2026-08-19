@@ -188,6 +188,7 @@ def main() -> None:
     }
 
     SQL_GRAMMAR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SCHEMA_PROMPT_PATH.parent.mkdir(parents=True, exist_ok=True)
     SCHEMA_CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     SQL_GRAMMAR_PATH.write_text(grammar)
     SCHEMA_PROMPT_PATH.write_text(schema_prompt)
