@@ -61,7 +61,7 @@ overlap:
 ```text
 question
   → standalone-question rewrite
-  → ambiguity gate
+  → ambiguity gate (ships bypassed: sensitivity 0)
   → identified SQL candidate generation
   → read-only SQLite prepare/validation
   → execute valid candidates only

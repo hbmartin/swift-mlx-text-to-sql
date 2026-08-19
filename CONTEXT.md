@@ -176,3 +176,15 @@ _Avoid_: partial answer, duplicate answer
 **Result Presentation**:
 The per-answer Chart or Table choice and, when charted, the selected deterministic specification. Chart marks retain the source row identities needed to filter the Table view temporarily; exports always use the complete returned result.
 _Avoid_: generated visualization, sampled chart
+
+**Turn Failure**:
+A completed turn that produced no answer, carrying exactly one typed reason. A Scope Miss (the schema does not cover the subject) is not an empty result — an empty result means the schema covers it and no rows matched, which is Grounding Check territory.
+_Avoid_: error, crash
+
+**Scope Verdict**:
+The enumerated judgement of whether the portfolio covers a Standalone Question's subject, produced only by a Foundation Model with the schema in hand — never inferred from SQL errors (ADR 0010). It annotates a Turn Failure; it is never a reason itself.
+_Avoid_: unanswerable, no data
+
+**Recovery Suggestion**:
+A pre-executed next question offered beneath a Turn Failure, prepared through the same validate-execute-ground path as a Prepared Follow-up and distinguished from one by its origin and policy version. When generation is impossible or the verdict is out-of-domain, reviewed Starter Queries stand in.
+_Avoid_: follow-up suggestion, starter query
