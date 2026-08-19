@@ -1,0 +1,87 @@
+{"id": "OR-01", "question": "What's the weather in Boston today?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-02", "question": "Who won the Super Bowl last year?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-03", "question": "What's a good recipe for lasagna?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-04", "question": "What is Apple's stock price right now?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-05", "question": "Should I invest in REITs or index funds?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-06", "question": "What is the capital of Australia?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-07", "question": "How do I fix a leaking faucet in my apartment?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-08", "question": "What's the best restaurant near our Chicago property?", "expectedVerdict": "outside_real_estate", "note": "Mentions a portfolio property but asks for external information."}
+{"id": "OR-09", "question": "What time is it in Tokyo?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-10", "question": "Write a haiku about skyscrapers.", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-11", "question": "What's the current price of Bitcoin?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-12", "question": "How many employees does CREG have?", "expectedVerdict": "outside_real_estate", "note": "About the firm itself, not the portfolio."}
+{"id": "OR-13", "question": "What's the average home price in Seattle?", "expectedVerdict": "outside_real_estate", "note": "Residential market data; the portfolio is commercial."}
+{"id": "OR-14", "question": "Who is the CEO of Blackstone?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-15", "question": "What movies are playing this weekend?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-16", "question": "What's the population of Dallas?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-17", "question": "Plan a three-day team offsite in Denver.", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-18", "question": "What's the square footage of the Empire State Building?", "expectedVerdict": "outside_real_estate", "acceptableVerdicts": ["in_domain_but_not_tracked"], "note": "An external building; reads as in-domain to a lenient judge."}
+{"id": "OR-19", "question": "Did the Fed raise rates at its last meeting?", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-20", "question": "Summarize the latest news about office-to-residential conversions.", "expectedVerdict": "outside_real_estate"}
+{"id": "OR-21", "question": "What's the exchange rate between dollars and euros?", "expectedVerdict": "outside_real_estate"}
+{"id": "NT-01", "question": "Who is the property manager for each building?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-02", "question": "What's the main contact phone number for each tenant?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-03", "question": "Which properties are LEED certified?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-04", "question": "How many parking spaces does each property have?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-05", "question": "How many elevators does each building have?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-06", "question": "Which buildings have rooftop solar installed?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-07", "question": "What insurance premium do we pay for each property?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-08", "question": "Which leases have personal guarantors?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-09", "question": "Which brokers handled our leases signed this year?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-10", "question": "What are the CAM charges billed to each tenant?", "expectedVerdict": "in_domain_but_not_tracked", "note": "Operating expenses exist only as a property-level monthly total."}
+{"id": "NT-11", "question": "How many open maintenance work orders are there per property?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-12", "question": "What did each tenant score on our satisfaction survey?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-13", "question": "Which properties have pending litigation?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-14", "question": "Who are the limited partners in each fund?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-15", "question": "What management fees does each fund charge?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-16", "question": "What's the zoning designation for each property?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-17", "question": "Which tenants sublease part of their space?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-18", "question": "What's the utility expense breakdown by property?", "expectedVerdict": "in_domain_but_not_tracked", "note": "Only total operating expenses are recorded, without line items."}
+{"id": "NT-19", "question": "Which properties have had Phase I environmental assessments?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-20", "question": "What prepayment penalties do our loans carry?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-21", "question": "How many employees does each tenant have in our buildings?", "expectedVerdict": "in_domain_but_not_tracked"}
+{"id": "NT-22", "question": "What's the leasing budget for each property this year?", "expectedVerdict": "in_domain_but_not_tracked", "note": "Budgets are not part of the snapshot; only actuals are recorded."}
+{"id": "NS-01", "question": "What will portfolio occupancy be next quarter?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-02", "question": "Forecast net operating income for 2027 by fund.", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-03", "question": "What was occupancy on June 3rd, 2026?", "expectedVerdict": "needs_data_not_in_snapshot", "note": "Financials are month-grain (ADR 0001); no daily data exists."}
+{"id": "NS-04", "question": "What will our floating-rate loan payments be if rates rise 100 basis points next year?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-05", "question": "What is the occupancy rate for December 2026?", "expectedVerdict": "needs_data_not_in_snapshot", "note": "After the 2026-07-01 as-of date."}
+{"id": "NS-06", "question": "How did our Boston rents compare with market asking rents last quarter?", "expectedVerdict": "needs_data_not_in_snapshot", "acceptableVerdicts": ["in_domain_but_not_tracked"], "note": "Needs external market comps the snapshot does not carry."}
+{"id": "NS-07", "question": "What is each property's projected value at fund exit?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-08", "question": "What renewal rents should we expect on leases expiring next year?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-09", "question": "What will vacancy loss total in 2027?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-10", "question": "Show September 2026 financials for each property.", "expectedVerdict": "needs_data_not_in_snapshot", "note": "After the 2026-07-01 as-of date."}
+{"id": "NS-11", "question": "What cap rate will our next appraisal use?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-12", "question": "How much rent will we collect next month?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-13", "question": "Which leases will be in holdover by the end of 2026?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-14", "question": "What are current market cap rates in Miami?", "expectedVerdict": "needs_data_not_in_snapshot", "acceptableVerdicts": ["outside_real_estate"], "note": "Market-level data outside the portfolio snapshot."}
+{"id": "NS-15", "question": "What was the portfolio NOI in 2014?", "expectedVerdict": "needs_data_not_in_snapshot", "note": "Before the earliest fund inception; no recorded history exists."}
+{"id": "NS-16", "question": "What's the expected IRR of each fund at liquidation?", "expectedVerdict": "needs_data_not_in_snapshot", "note": "Target IRR is recorded; realized/expected outcome is a projection."}
+{"id": "NS-17", "question": "How many prospective tenants are in the leasing pipeline?", "expectedVerdict": "needs_data_not_in_snapshot", "acceptableVerdicts": ["in_domain_but_not_tracked"], "note": "Pipeline data straddles untracked and beyond-snapshot."}
+{"id": "NS-18", "question": "What will Dallas industrial vacancy be next year?", "expectedVerdict": "needs_data_not_in_snapshot", "acceptableVerdicts": ["outside_real_estate"], "note": "External market forecast."}
+{"id": "NS-19", "question": "What were the daily occupancy fluctuations during March 2026?", "expectedVerdict": "needs_data_not_in_snapshot", "note": "Financials are month-grain (ADR 0001)."}
+{"id": "NS-20", "question": "If we sell our largest office property next year, what price should we expect?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "NS-21", "question": "Which tenants will renew when their leases expire?", "expectedVerdict": "needs_data_not_in_snapshot"}
+{"id": "G-223", "question": "Which 3 properties produced the most NOI over the last 12 months?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "G-224", "question": "Top 5 properties by trailing-12-month NOI?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "G-231", "question": "How much annual base rent comes from occupying NNN leases?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "MT-60", "question": "which of those tenants have a renewal option?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T1-02", "question": "How many tenants are in the technology industry?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T1-06", "question": "What's the average interest rate on our fixed-rate loans?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T1-15", "question": "List the current balance and maturity date of loans maturing before 2028.", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-21", "question": "What are the five properties with the highest vacancy right now?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-28", "question": "Which properties had an occupancy rate below 70 percent in any month of 2026?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-33", "question": "What is the loan-to-value ratio on each property that has debt? Show property and LTV.", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-34", "question": "What's the total current market value of the portfolio by fund, for properties we still hold?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-36", "question": "What's the average base rent per square foot for office leases that commenced since the start of 2024?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-39", "question": "How much space is currently leased to healthcare tenants across the portfolio?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-41", "question": "Which properties currently have a tenant in holdover?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-42", "question": "Compare total gross potential rent and total effective gross income by market for 2026 so far.", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T2-45", "question": "How many active leases expire in each calendar year, by year?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T3-47", "question": "Rank the top ten properties by total NOI over the last 12 months, showing the rank.", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T3-48", "question": "Which property in each market has the highest current market value, among properties we still hold?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T3-49", "question": "What share of the total current rent roll does each property type represent, as a fraction?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T3-52", "question": "Which five properties have spent the most on capex since the start of 2024?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T3-53", "question": "Which funds had average portfolio occupancy above 90 percent in June 2026?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T3-54", "question": "For 2026 so far, what fraction of gross potential rent was lost to vacancy at each property? Show the five worst.", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}
+{"id": "T3-55", "question": "Which tenants signed their first lease with us in 2025 or later?", "expectedVerdict": "likely_answerable_model_failed", "note": "Recovered real failure from eval/runs; gold-set question, answerable by definition."}

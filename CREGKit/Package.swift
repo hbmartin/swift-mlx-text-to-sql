@@ -103,6 +103,13 @@ let package = Package(
       name: "creg-eval-cli",
       dependencies: ["CREGCore", "CREGData", "CREGInference", "CREGEngine"]
     ),
+    // Offline answerability scoring (docs/eval.md "Answerability"): corpus +
+    // captured FM verdicts in, deterministic confusion matrix out. No FM, no
+    // database, no MLX — it runs identically on macOS 15 and in CI.
+    .executableTarget(
+      name: "creg-answerability-cli",
+      dependencies: ["CREGCore"]
+    ),
     // Test-only helpers shared across test targets. Not exposed as a product,
     // so it stays out of the dependency graph of anything that consumes CREGKit.
     .target(
