@@ -46,6 +46,10 @@ verification, and decisions that define the engine's behavior.
 - <doc:gold-review-v1>
 - <doc:gold-review-v2>
 
+### Contributing
+
+- <doc:doc-comment-authoring>
+
 ### Architecture Decisions
 
 - <doc:0001-schema-semantics>
