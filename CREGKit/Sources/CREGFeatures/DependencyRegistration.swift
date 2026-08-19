@@ -30,6 +30,14 @@ extension FMStatusClient: DependencyKey {
   public static var liveValue: FMStatusClient { .live() }
 }
 
+extension ScopeDiagnosisClient: DependencyKey {
+  public static var testValue: ScopeDiagnosisClient {
+    ScopeDiagnosisClient(judge: { _ in nil })
+  }
+
+  public static var liveValue: ScopeDiagnosisClient { testValue }
+}
+
 extension DependencyValues {
   public var queryPipeline: QueryPipeline {
     get { self[QueryPipeline.self] }
@@ -59,6 +67,11 @@ extension DependencyValues {
   public var fmStatus: FMStatusClient {
     get { self[FMStatusClient.self] }
     set { self[FMStatusClient.self] = newValue }
+  }
+
+  public var scopeDiagnosis: ScopeDiagnosisClient {
+    get { self[ScopeDiagnosisClient.self] }
+    set { self[ScopeDiagnosisClient.self] = newValue }
   }
 
   public var appIcon: AppIconClient {

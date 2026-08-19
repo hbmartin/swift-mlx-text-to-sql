@@ -14,6 +14,9 @@ extension AppFeature {
     precondition(
       state.activeTurn == nil && state.pendingTurnPersistence == nil,
       "Dispatch requires an idle scheduler and a settled transcript write.")
+    // A new turn owns the serializer; an in-flight scope diagnosis for an
+    // older failure is abandoned rather than queued ahead of it.
+    state.pendingScopeDiagnosis = nil
     let question = submission.question
     let questionID = uuid()
     let startedAt = now
@@ -64,7 +67,7 @@ extension AppFeature {
         "queue_depth": String(state.queue.count),
       ])
 
-    return .run { send in
+    let run: Effect<Action> = .run { send in
       // Unstructured so a Stop cancellation cannot abort the user-message
       // write. Stop coalesces onto this same once-save before writing its
       // terminal message, so the prerequisite remains ordered even when Stop
@@ -138,7 +141,9 @@ extension AppFeature {
           conversationID: conversationID,
           questionID: questionID))
     }
-    .cancellable(id: CancelID.pipeline, cancelInFlight: true)
+    return .merge(
+      .cancel(id: CancelID.scopeDiagnosis),
+      run.cancellable(id: CancelID.pipeline, cancelInFlight: true))
   }
 
   /// Visible-conversation priority: the oldest Queued Question in the

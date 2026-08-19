@@ -86,6 +86,11 @@ let package = Package(
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         .product(name: "ZIPFoundation", package: "ZIPFoundation"),
         .product(name: "GRDB", package: "GRDB.swift"),
+      ],
+      resources: [
+        // Byte-exact copy of eval/gold/answerability.jsonl for the debug
+        // on-device capture; a CREGFeaturesTests test pins the equality.
+        .copy("Resources/answerability.jsonl")
       ]
     ),
     .target(

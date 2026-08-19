@@ -131,6 +131,103 @@ extension AppFeature {
     }
   }
 
+  // MARK: - Scope diagnosis (C before D)
+
+  /// Judges portfolio coverage of the failed question after the failure has
+  /// rendered, then hands the verdict-enriched context to Recovery Suggestion
+  /// preparation. When the diagnosis cannot run — a turn started, FM went
+  /// unavailable, or the conversation is no longer on screen (its message is
+  /// not loaded to enrich) — preparation proceeds without a verdict.
+  func startScopeDiagnosis(
+    state: inout State,
+    conversationID: UUID,
+    messageID: UUID,
+    context: FollowUpSuggestionContext
+  ) -> Effect<Action> {
+    guard
+      context.isRecoverySeed,
+      state.activeTurn == nil,
+      state.queue.isEmpty,
+      state.fmAvailability == .available,
+      state.chat?.conversationID == conversationID
+    else {
+      return startFollowUpPreparation(
+        state: &state,
+        conversationID: conversationID,
+        context: context)
+    }
+    state.pendingScopeDiagnosis = PendingScopeDiagnosis(
+      conversationID: conversationID,
+      messageID: messageID,
+      context: context)
+    let question = context.standaloneQuestion
+    return .run(priority: .low) { send in
+      let verdict = await scopeDiagnosis.judge(question)
+      await send(
+        .scopeDiagnosisFinished(
+          conversationID: conversationID,
+          messageID: messageID,
+          verdict: verdict))
+    }
+    .cancellable(id: CancelID.scopeDiagnosis, cancelInFlight: true)
+  }
+
+  func handleScopeDiagnosisFinished(
+    state: inout State,
+    conversationID: UUID,
+    messageID: UUID,
+    verdict: ScopeVerdictRecord?
+  ) -> Effect<Action> {
+    guard
+      let pending = state.pendingScopeDiagnosis,
+      pending.conversationID == conversationID,
+      pending.messageID == messageID
+    else { return .none }
+    state.pendingScopeDiagnosis = nil
+    var context = pending.context
+    var effects: [Effect<Action>] = []
+
+    if let verdict, case .turnFailure(let reason, _) = context.seed {
+      context.seed = .turnFailure(reason: reason, scopeVerdict: verdict)
+      // Enrich the rendered failure in place — the same revisioned-save
+      // pattern as preparedAnswer → .answer.
+      if state.chat?.conversationID == conversationID,
+        let index = state.chat?.messages.index(id: messageID),
+        var message = state.chat?.messages[index],
+        case .failedTurn(let bodyReason, _) = message.body
+      {
+        message.body = .failedTurn(reason: bodyReason, scopeVerdict: verdict)
+        message.devInfo?.scopeVerdict = verdict
+        state.chat?.messages[index] = message
+        let updated = message
+        effects.append(
+          .run { _ in
+            _ = try? await messageUpdateQueue.save(
+              conversationID: conversationID,
+              messageID: updated.id
+            ) {
+              try await history.updateMessage(conversationID, updated)
+            }
+          })
+      }
+      diagnostics.info(
+        category: .submission,
+        code: "scope_verdict_attached",
+        summary: "A Scope Verdict annotated a rendered Turn Failure.",
+        context: [
+          "verdict": verdict.verdict.rawValue,
+          "has_missing_subject": String(verdict.missingSubject != nil),
+        ])
+    }
+
+    effects.append(
+      startFollowUpPreparation(
+        state: &state,
+        conversationID: conversationID,
+        context: context))
+    return .merge(effects)
+  }
+
   // MARK: - Conversation lifecycle helpers
 
 }

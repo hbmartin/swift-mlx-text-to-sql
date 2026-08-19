@@ -173,6 +173,62 @@ import Testing
         == ScopeVerdictRecord(verdict: .likelyAnswerableModelFailed))
   }
 
+  // MARK: - Scope verdict guard (ADR 0010)
+
+  private static let schemaSnippet = """
+    loans(loan_id, interest_rate, maturity_date)
+    property_financials(vacancy_loss, occupancy_rate)
+    properties(property_id, name)
+    """
+
+  @Test func guardDropsSubjectsTheSchemaCovers() {
+    let covered = ScopeVerdictGuard.coveredPhrases(
+      fromSchemaPrompt: Self.schemaSnippet)
+    // Column phrase, plural-insensitive.
+    #expect(
+      ScopeVerdictGuard.sanitize("interest rates", coveredPhrases: covered)
+        == nil)
+    // Component word of vacancy_loss — the T2-21 lesson.
+    #expect(
+      ScopeVerdictGuard.sanitize("vacancy", coveredPhrases: covered) == nil)
+    // Table name.
+    #expect(
+      ScopeVerdictGuard.sanitize("Properties", coveredPhrases: covered) == nil)
+    // A genuinely untracked multi-word subject survives even though
+    // "property" alone is covered.
+    #expect(
+      ScopeVerdictGuard.sanitize("property managers", coveredPhrases: covered)
+        == "property managers")
+  }
+
+  @Test func guardCapsLengthAndStripsMarkup() {
+    let covered = ScopeVerdictGuard.coveredPhrases(
+      fromSchemaPrompt: Self.schemaSnippet)
+    #expect(
+      ScopeVerdictGuard.sanitize(
+        "  tenant\ncontact `emails`  ", coveredPhrases: covered)
+        == "tenant contact emails")
+    #expect(
+      ScopeVerdictGuard.sanitize(
+        String(repeating: "x", count: 41), coveredPhrases: covered) == nil)
+    #expect(ScopeVerdictGuard.sanitize(nil, coveredPhrases: covered) == nil)
+    #expect(ScopeVerdictGuard.sanitize("  ", coveredPhrases: covered) == nil)
+  }
+
+  @Test func realSchemaPromptCoversItsOwnVocabulary() {
+    let covered = ScopeVerdictGuard.coveredPhrases(fromSchemaPrompt: """
+      leases(lease_id, base_rent_psf, annual_base_rent, has_renewal_option)
+      property_financials(gross_potential_rent, vacancy_loss, net_operating_income, occupancy_rate)
+      """)
+    for subject in [
+      "vacancy", "occupancy rate", "annual base rent", "renewal option",
+    ] {
+      #expect(
+        ScopeVerdictGuard.sanitize(subject, coveredPhrases: covered) == nil,
+        "\(subject) names covered data and must never render as missing")
+    }
+  }
+
   @Test func normalizedTimeoutStageKeepsStarterStages() {
     #expect(
       TurnTelemetry.normalizedTimeoutStage("starter-validation")

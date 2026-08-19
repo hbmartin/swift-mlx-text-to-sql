@@ -120,6 +120,96 @@ public struct ScopeVerdictRecord: Sendable, Equatable, Codable {
   }
 }
 
+/// Deterministic guards on the one FM-supplied phrase a user can read.
+///
+/// `missingSubject` is rendered only for `inDomainButNotTracked`, and never
+/// when it names something the schema does cover — otherwise the annotation
+/// itself would make a false scope claim (ADR 0010).
+public enum ScopeVerdictGuard {
+  static let maximumSubjectLength = 40
+
+  /// Phrases the schema covers, derived from the schema prompt's identifiers
+  /// so the guard stays in sync with the schema automatically. Snake_case
+  /// identifiers contribute both the space-joined phrase ("interest_rate" →
+  /// "interest rate") and each component word ("vacancy" from
+  /// `vacancy_loss`); a trailing "s" is trimmed for plural-insensitive
+  /// comparison. Only a full-phrase match drops a subject, so a multi-word
+  /// subject like "property managers" survives even though "property" is
+  /// covered.
+  public static func coveredPhrases(fromSchemaPrompt schema: String) -> Set<String> {
+    var phrases = Set<String>()
+    var identifier = ""
+    func flush() {
+      defer { identifier = "" }
+      guard identifier.count >= 3 else { return }
+      let components = identifier
+        .lowercased()
+        .split(separator: "_")
+        .map(String.init)
+      // Every contiguous sub-phrase: "has_renewal_option" also covers
+      // "renewal option", so that subject can never render as missing.
+      for start in components.indices {
+        for end in start..<components.count {
+          let phrase = components[start...end].joined(separator: " ")
+          guard phrase.count >= 3 else { continue }
+          phrases.insert(normalized(phrase))
+        }
+      }
+    }
+    for character in schema {
+      if character.isLetter || character.isNumber || character == "_" {
+        identifier.append(character)
+      } else {
+        flush()
+      }
+    }
+    flush()
+    return phrases
+  }
+
+  /// Returns the subject when it is safe to render; nil drops the annotation.
+  public static func sanitize(
+    _ subject: String?,
+    coveredPhrases: Set<String>
+  ) -> String? {
+    guard var subject else { return nil }
+    subject = subject
+      .replacingOccurrences(of: "\n", with: " ")
+      .replacingOccurrences(of: "\r", with: " ")
+    subject.removeAll(where: { "`*_#<>[]{}|\"".contains($0) })
+    subject = subject
+      .split(whereSeparator: \Character.isWhitespace)
+      .joined(separator: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !subject.isEmpty, subject.count <= maximumSubjectLength else {
+      return nil
+    }
+    guard !coveredPhrases.contains(normalized(subject.lowercased())) else {
+      return nil
+    }
+    return subject
+  }
+
+  private static func normalized(_ phrase: String) -> String {
+    phrase.hasSuffix("s") ? String(phrase.dropLast()) : phrase
+  }
+}
+
+/// The app-level scope diagnosis: judges one Standalone Question after its
+/// Turn Failure has rendered. The live client checks FM availability, loads
+/// the schema prompt, serializes the FM call, and sanitizes `missingSubject`;
+/// nil means no verdict could be produced and the reason-only copy stands.
+public struct ScopeDiagnosisClient: Sendable {
+  public var judge:
+    @Sendable (_ standaloneQuestion: String) async -> ScopeVerdictRecord?
+
+  public init(
+    judge: @escaping @Sendable (String) async -> ScopeVerdictRecord?
+  ) {
+    self.judge = judge
+  }
+}
+
 extension TurnTelemetry {
   /// The diagnostics whitelist for `timeoutStage` values, shared by every
   /// formatter so the starter stages never collapse to "unknown".

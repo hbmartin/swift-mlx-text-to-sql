@@ -17,6 +17,12 @@ public struct FMClient: Sendable {
   public var suggestFollowUps:
     @Sendable (_ context: FollowUpSuggestionContext, _ schema: String) async throws
       -> [String]
+  /// The enumerated Scope Verdict for a Standalone Question, produced with
+  /// the schema in hand — the only admissible evidence for a scope claim
+  /// (ADR 0010). Nil when no judgement could be made.
+  public var scopeVerdict:
+    @Sendable (_ standaloneQuestion: String, _ schema: String) async throws
+      -> ScopeVerdictRecord?
 
   public init(
     availability: @escaping @Sendable () -> FMAvailability,
@@ -25,13 +31,17 @@ public struct FMClient: Sendable {
     narrate: @escaping @Sendable (String, QueryResult) async throws -> String,
     suggestFollowUps:
       @escaping @Sendable (FollowUpSuggestionContext, String) async throws
-      -> [String]
+      -> [String],
+    scopeVerdict:
+      @escaping @Sendable (String, String) async throws -> ScopeVerdictRecord? =
+        { _, _ in nil }
   ) {
     self.availability = availability
     self.rewrite = rewrite
     self.gate = gate
     self.narrate = narrate
     self.suggestFollowUps = suggestFollowUps
+    self.scopeVerdict = scopeVerdict
   }
 }
 
@@ -51,6 +61,23 @@ private struct GateProbe {
 private struct FollowUpQuestionSet {
   @Guide(description: "Exactly three distinct, concise, standalone questions. Each must end with a question mark and be answerable from the supplied portfolio schema.")
   var questions: [String]
+}
+
+@Generable
+@available(macOS 26.0, iOS 26.0, *)
+private struct ScopeVerdictProbe {
+  @Guide(
+    description:
+      "Exactly one of: outside_real_estate, in_domain_but_not_tracked, needs_data_not_in_snapshot, likely_answerable_model_failed",
+    .anyOf([
+      "outside_real_estate", "in_domain_but_not_tracked",
+      "needs_data_not_in_snapshot", "likely_answerable_model_failed",
+    ]))
+  var verdict: String
+  @Guide(
+    description:
+      "Only when the verdict is in_domain_but_not_tracked: one short noun phrase naming what the portfolio does not track. Otherwise an empty string.")
+  var missingSubject: String
 }
 
 @available(macOS 26.0, iOS 26.0, *)
@@ -216,6 +243,42 @@ extension FMClient {
             generating: FollowUpQuestionSet.self)
           return response.content.questions
         }
+      },
+      scopeVerdict: { question, schema in
+        // Biased toward likely_answerable_model_failed the way the gate
+        // prompt biases toward answering: a wrong "not covered" claim is the
+        // failure mode ADR 0010 exists to prevent.
+        let session = LanguageModelSession(instructions: """
+          You judge whether a commercial real estate portfolio database can answer a \
+          question, given its complete schema. Pick exactly one verdict: \
+          outside_real_estate (not about this portfolio's domain at all), \
+          in_domain_but_not_tracked (about the portfolio, but the schema has no data \
+          for the subject), needs_data_not_in_snapshot (needs forecasts, external \
+          market data, finer-grained history, or dates after the as-of date), or \
+          likely_answerable_model_failed (the schema plausibly covers it). The \
+          portfolio answers most reasonable questions about its funds, properties, \
+          leases, tenants, loans, valuations, and monthly financials — when in doubt, \
+          choose likely_answerable_model_failed.
+          """)
+        let probe = try await session.respond(
+          to: """
+            Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
+            Portfolio schema:
+            \(schema)
+
+            Question: \(question)
+            """,
+          generating: ScopeVerdictProbe.self
+        ).content
+        // The probe's verdict string is constrained generation, but the
+        // mapping still refuses to invent a refusal on a parse miss.
+        let verdict =
+          ScopeVerdict(rawValue: probe.verdict) ?? .likelyAnswerableModelFailed
+        let subject = probe.missingSubject
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ScopeVerdictRecord(
+          verdict: verdict,
+          missingSubject: subject.isEmpty ? nil : subject)
       }
     )
   }

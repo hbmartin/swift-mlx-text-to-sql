@@ -368,6 +368,30 @@ enum LiveDependencies {
     ).reportingOperations(to: diagnostics)
   }()
 
+  /// Scope diagnosis (docs/turn-failure-plan.md Phase 4): runs after a Turn
+  /// Failure renders, outside the turn deadline, through the same shared
+  /// serializer so it never overlaps FM or MLX inference. Nil on any failure —
+  /// the reason-only copy is a complete experience without it.
+  static let scopeDiagnosis: ScopeDiagnosisClient = ScopeDiagnosisClient {
+    question in
+    let fm = FMClient.live()
+    guard fm.availability() == .available else { return nil }
+    guard
+      let schema = try? SQLGenClient.schemaPrompt(),
+      !schema.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return nil }
+    guard
+      var record = try? await serializer.run(operation: .scopeVerdict, {
+        try await fm.scopeVerdict(question, schema)
+      })
+    else { return nil }
+    record.missingSubject = ScopeVerdictGuard.sanitize(
+      record.missingSubject,
+      coveredPhrases: ScopeVerdictGuard.coveredPhrases(
+        fromSchemaPrompt: schema))
+    return record
+  }
+
   private static func preparationPreflight(
     stage: ModelPreparationStage,
     mode: ModelRuntimeMode,

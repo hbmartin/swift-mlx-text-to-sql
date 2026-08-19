@@ -59,6 +59,21 @@ import Testing
     #expect(message.previewText == "That answer took too long. Please try again.")
   }
 
+  /// The debug capture judges the bundled corpus; it must be a byte-exact
+  /// copy of eval/gold/answerability.jsonl or captures silently diverge from
+  /// the scorer's corpus.
+  @Test func bundledAnswerabilityCorpusMatchesEvalGold() throws {
+    let bundled = try AnswerabilityCapture.corpusJSONL()
+    let goldURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()  // CREGFeaturesTests
+      .deletingLastPathComponent()  // Tests
+      .deletingLastPathComponent()  // CREGKit
+      .deletingLastPathComponent()  // repo root
+      .appendingPathComponent("eval/gold/answerability.jsonl")
+    let gold = try String(contentsOf: goldURL, encoding: .utf8)
+    #expect(bundled == gold)
+  }
+
   @Test func resultFingerprintPersistsWithLegacyDecodeFallback() throws {
     let result = QueryResult(
       columns: ["fund", "value"],

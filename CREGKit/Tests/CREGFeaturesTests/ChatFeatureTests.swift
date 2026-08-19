@@ -1664,9 +1664,10 @@ private actor UserPersistenceOrderingGate {
       outcome: .failed(reason: reason), telemetry: telemetry)
   }
 
-  /// A model failure on plausibly answerable input seeds Recovery
-  /// Suggestions; the seed carries the typed reason.
-  @Test func eligibleFailedTurnSeedsRecoverySuggestionPreparation() async {
+  /// A model failure on plausibly answerable input runs the Scope Verdict
+  /// first (C), enriches the rendered failure in place, and only then seeds
+  /// Recovery Suggestions (D) with the verdict in hand.
+  @Test func eligibleFailedTurnDiagnosesScopeThenSeedsRecovery() async {
     var state = Self.appState()
     let activeID = UUID(98)
     state.activeTurn = AppFeature.ActiveTurn(
@@ -1675,6 +1676,10 @@ private actor UserPersistenceOrderingGate {
       question: "Who manages each property?",
       startedAt: Date(timeIntervalSince1970: 0))
     let contexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let judged = LockIsolated<[String]>([])
+    let expectedVerdict = ScopeVerdictRecord(
+      verdict: .inDomainButNotTracked,
+      missingSubject: "property managers")
     let pipeline = QueryPipeline(
       run: { _, _ in AsyncStream { $0.finish() } },
       prepareFollowUps: { context in
@@ -1689,6 +1694,10 @@ private actor UserPersistenceOrderingGate {
     } withDependencies: { [pipeline] in
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
+      $0.scopeDiagnosis = ScopeDiagnosisClient { question in
+        judged.withValue { $0.append(question) }
+        return expectedVerdict
+      }
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 5))
       $0.continuousClock = ImmediateClock()
@@ -1704,6 +1713,9 @@ private actor UserPersistenceOrderingGate {
     await store.finish()
     await store.skipReceivedActions()
 
+    #expect(judged.value == ["Who manages each property?"])
+
+    // D waited for C: the seeded context already carries the verdict.
     let seeded = contexts.value
     #expect(seeded.count == 1)
     guard case .turnFailure(let reason, let verdict)? = seeded.first?.seed
@@ -1712,8 +1724,61 @@ private actor UserPersistenceOrderingGate {
       return
     }
     #expect(reason == .generationExhausted)
-    #expect(verdict == nil)
+    #expect(verdict == expectedVerdict)
     #expect(store.state.chat?.followUpBatch?.context?.isRecoverySeed == true)
+
+    // The rendered failure was enriched in place.
+    guard
+      case .failedTurn(_, let renderedVerdict)? =
+        store.state.chat?.messages.last(where: { $0.role == .assistant })?.body
+    else {
+      Issue.record("Expected the failure message to remain rendered")
+      return
+    }
+    #expect(renderedVerdict == expectedVerdict)
+    #expect(
+      store.state.chat?.messages.last(where: { $0.role == .assistant })?
+        .devInfo?.scopeVerdict == expectedVerdict)
+    #expect(store.state.pendingScopeDiagnosis == nil)
+  }
+
+  /// Timeouts already know their cause; the diagnosis never runs for them.
+  @Test func timedOutFailureNeverRunsScopeDiagnosis() async {
+    var state = Self.appState()
+    let activeID = UUID(96)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Which fund leads?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let judged = LockIsolated<[String]>([])
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = QueryPipeline(
+        run: { _, _ in AsyncStream { $0.finish() } })
+      $0.historyClient = .noop()
+      $0.scopeDiagnosis = ScopeDiagnosisClient { question in
+        judged.withValue { $0.append(question) }
+        return ScopeVerdictRecord(verdict: .outsideRealEstate)
+      }
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .timedOut(stage: "generation"))))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(judged.value.isEmpty)
+    #expect(store.state.pendingScopeDiagnosis == nil)
   }
 
   /// Terminal reasons cannot pre-execute anything and must not seed

@@ -104,6 +104,24 @@ public struct AppFeature: Sendable {
     }
   }
 
+  /// One Scope Verdict in flight for a rendered Turn Failure. Recovery
+  /// Suggestions (D) wait for this (C): the verdict decides their strategy.
+  public struct PendingScopeDiagnosis: Equatable, Sendable {
+    public var conversationID: UUID
+    public var messageID: UUID
+    public var context: FollowUpSuggestionContext
+
+    public init(
+      conversationID: UUID,
+      messageID: UUID,
+      context: FollowUpSuggestionContext
+    ) {
+      self.conversationID = conversationID
+      self.messageID = messageID
+      self.context = context
+    }
+  }
+
   public struct FollowUpPreparationState: Equatable, Sendable {
     public var conversationID: UUID
     public var context: FollowUpSuggestionContext
@@ -185,6 +203,7 @@ public struct AppFeature: Sendable {
     /// A confirmed delete waiting for its conversation's persistence barrier.
     public var deletionAwaitingTurnPersistence: UUID?
     public var followUpPreparation: FollowUpPreparationState?
+    public var pendingScopeDiagnosis: PendingScopeDiagnosis?
     /// Session-only Queued Questions across all Conversations, oldest first.
     public var queue: [QueuedQuestion] = []
     public var answerReadyBanner: AnswerReadyBanner?
@@ -206,6 +225,9 @@ public struct AppFeature: Sendable {
     public var supportsAlternateIcons = false
     public var isBuildingSupportBundle = false
     public var supportBundleExport: SupportBundleExport?
+    /// Debug-only answerability capture (docs/eval.md "Answerability").
+    public var isCapturingAnswerability = false
+    public var answerabilityCaptureExport: URL?
     public var presentedFailure: FailurePresentation?
     public var modelPreparationReport: ModelPreparationReport?
     /// Appearance can re-fire while the root store remains alive. These
@@ -301,9 +323,15 @@ public struct AppFeature: Sendable {
       conversationID: UUID,
       sourceMessageID: UUID,
       event: FollowUpPreparationEvent)
+    case scopeDiagnosisFinished(
+      conversationID: UUID,
+      messageID: UUID,
+      verdict: ScopeVerdictRecord?)
     case supportBundleExportTapped
     case supportBundleReady(SupportBundleExport)
     case supportBundleDismissed
+    case answerabilityCaptureTapped
+    case answerabilityCaptureReady(URL?)
     case appIconLoaded(AppIconVariant, supportsAlternates: Bool)
     case appIconSelected(AppIconVariant)
     case appearanceSelected(AppearancePreference)
@@ -314,6 +342,7 @@ public struct AppFeature: Sendable {
   enum CancelID {
     case pipeline
     case followUpPreparation
+    case scopeDiagnosis
     case search
     case deleteCountdown
     case bannerTimeout
@@ -327,6 +356,7 @@ public struct AppFeature: Sendable {
 
   @Dependency(\.queryPipeline) var pipeline
   @Dependency(\.fmStatus) var fmStatus
+  @Dependency(\.scopeDiagnosis) var scopeDiagnosis
   @Dependency(\.historyClient) var history
   @Dependency(\.supportBundle) var supportBundle
   @Dependency(\.haptics) var haptics
@@ -413,6 +443,9 @@ public struct AppFeature: Sendable {
       case .appBecameInactive:
         let preparation = state.followUpPreparation
         state.followUpPreparation = nil
+        // A backgrounded scope diagnosis is dropped rather than resumed; the
+        // rendered reason-only failure is complete without it.
+        state.pendingScopeDiagnosis = nil
         var followOnEffects: [Effect<Action>] = []
         if let preparation, !preparation.eventLines.isEmpty {
           followOnEffects.append(
@@ -425,6 +458,7 @@ public struct AppFeature: Sendable {
         }
         return .concatenate(
           .cancel(id: CancelID.followUpPreparation),
+          .cancel(id: CancelID.scopeDiagnosis),
           .merge(followOnEffects))
 
       case .preparationJournalLoaded(let previous):
@@ -777,11 +811,23 @@ public struct AppFeature: Sendable {
             })
         }
         if let context = pending.followUpContext {
-          effects.append(
-            startFollowUpPreparation(
-              state: &state,
-              conversationID: pending.conversationID,
-              context: context))
+          // A failure-seeded context runs the Scope Verdict first (C before
+          // D): the verdict decides the suggestion strategy and enriches the
+          // rendered failure in place.
+          if context.isRecoverySeed, let messageID = pending.terminalMessageID {
+            effects.append(
+              startScopeDiagnosis(
+                state: &state,
+                conversationID: pending.conversationID,
+                messageID: messageID,
+                context: context))
+          } else {
+            effects.append(
+              startFollowUpPreparation(
+                state: &state,
+                conversationID: pending.conversationID,
+                context: context))
+          }
         }
         if state.deletionAwaitingTurnPersistence == pending.conversationID {
           state.deletionAwaitingTurnPersistence = nil
@@ -825,6 +871,14 @@ public struct AppFeature: Sendable {
           conversationID: conversationID,
           sourceMessageID: sourceMessageID,
           event: event)
+
+      case .scopeDiagnosisFinished(
+        let conversationID, let messageID, let verdict):
+        return handleScopeDiagnosisFinished(
+          state: &state,
+          conversationID: conversationID,
+          messageID: messageID,
+          verdict: verdict)
 
       case .chat(.delegate(.submitQuestion(let submission))):
         guard state.modelReadiness == .ready, let chat = state.chat
@@ -933,6 +987,28 @@ public struct AppFeature: Sendable {
 
       case .supportBundleDismissed:
         state.supportBundleExport = nil
+        return .none
+
+      case .answerabilityCaptureTapped:
+        #if DEBUG
+          guard !state.isCapturingAnswerability else { return .none }
+          guard state.fmAvailability == .available else { return .none }
+          state.isCapturingAnswerability = true
+          state.answerabilityCaptureExport = nil
+          let capturedAt = now
+          return .run { send in
+            let url = await AnswerabilityCapture.run(
+              judge: scopeDiagnosis.judge,
+              capturedAt: capturedAt)
+            await send(.answerabilityCaptureReady(url))
+          }
+        #else
+          return .none
+        #endif
+
+      case .answerabilityCaptureReady(let url):
+        state.isCapturingAnswerability = false
+        state.answerabilityCaptureExport = url
         return .none
 
       case .appIconLoaded(let variant, let supportsAlternates):
