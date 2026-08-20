@@ -182,11 +182,6 @@ extension AppFeature {
     guard availability != state.fmAvailability else { return }
     state.fmAvailability = availability
     if case .unavailable(let reason) = availability {
-      // The device floor admits only Apple Intelligence-capable hardware
-      // (ADR 0011), so eligibility can only fail if the floor regressed.
-      assert(
-        reason != .deviceNotEligible,
-        "FM reports deviceNotEligible on a device the floor admitted.")
       diagnostics.info(
         category: .submission,
         code: "fm_unavailable",
@@ -234,12 +229,14 @@ extension AppFeature {
   func startLaunchBenchmarkIfReady(
     state: inout State
   ) -> Effect<Action> {
+    refreshFMAvailability(state: &state)
     guard
       let question = state.launchBenchmarkQuestion?
         .trimmingCharacters(in: .whitespacesAndNewlines),
       !question.isEmpty,
       !state.launchBenchmarkStarted,
       state.modelReadiness == .ready,
+      state.fmAvailability == .available,
       state.chat != nil,
       state.activeTurn == nil,
       state.pendingTurnPersistence == nil
@@ -306,6 +303,7 @@ extension AppFeature {
     !state.modelPreparationInFlight
       && state.activeTurn == nil
       && state.pendingTurnPersistence == nil
+      && state.pendingScopeDiagnosis == nil
       && state.queue.isEmpty
       && state.followUpPreparation == nil
   }

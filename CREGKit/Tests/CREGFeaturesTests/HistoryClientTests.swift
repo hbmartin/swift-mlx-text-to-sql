@@ -612,6 +612,63 @@ import Testing
         == "{\"turn\":\"finished\"}\n")
   }
 
+  @Test func scopeDiagnosisAtomicallyEnrichesMessageAndEventLog() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    var telemetry = TurnTelemetry(originalQuestion: "Who manages it?")
+    telemetry.failureReason = .generationExhausted
+    let message = ChatMessage(
+      id: UUID(),
+      role: .assistant,
+      body: .failedTurn(reason: .generationExhausted, scopeVerdict: nil),
+      createdAt: Date(timeIntervalSince1970: 10),
+      devInfo: telemetry)
+    let terminalLine = try PipelineEvent.turnFinished(
+      outcome: .failed(reason: .generationExhausted),
+      telemetry: telemetry
+    ).jsonLine()
+    try await client.persistTerminalTurn(
+      conversationID, message, false, [terminalLine])
+
+    let verdict = ScopeVerdictRecord(
+      verdict: .inDomainButNotTracked,
+      missingSubject: "property managers")
+    let diagnosisLine = try PipelineEvent.scopeDiagnosisFinished(
+      sourceAssistantMessageID: message.id,
+      verdict: verdict
+    ).jsonLine()
+    try await client.persistScopeDiagnosis(
+      conversationID, message.id, verdict, diagnosisLine)
+
+    let stored = try #require(
+      try await client.loadConversation(conversationID).messages.last)
+    guard case .failedTurn(let reason, let storedVerdict) = stored.body else {
+      Issue.record("Expected the failed message to remain a failed message")
+      return
+    }
+    #expect(reason == .generationExhausted)
+    #expect(storedVerdict == verdict)
+    #expect(stored.devInfo?.scopeVerdict == verdict)
+
+    let exportURL = try await client.exportJSONL(conversationID)
+    let exportedLines = try String(contentsOf: exportURL, encoding: .utf8)
+      .split(separator: "\n")
+    #expect(exportedLines.count == 2)
+    guard
+      case .scopeDiagnosisFinished(let sourceID, let exportedVerdict) =
+        try JSONDecoder().decode(
+          PipelineEvent.self,
+          from: Data(exportedLines[1].utf8))
+    else {
+      Issue.record("Expected scope diagnosis as the second append-only event")
+      return
+    }
+    #expect(sourceID == message.id)
+    #expect(exportedVerdict == verdict)
+  }
+
   @Test func preparedSuggestionTextAndProvisionalResultsAreNotSearchable() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()

@@ -27,7 +27,7 @@ enum AnswerabilityCapture {
   }
 
   /// Runs the full capture and returns the ZIP to share, or nil when the
-  /// corpus/schema cannot load, nothing could be judged, or capture is
+  /// corpus/schema cannot load, any item cannot be judged, or capture is
   /// cancelled. The schema is loaded once and reused so the manifest records
   /// the exact bytes that informed every verdict.
   static func run(
@@ -45,12 +45,8 @@ enum AnswerabilityCapture {
     var judgements: [AnswerabilityJudgement] = []
     for item in corpus {
       guard !Task.isCancelled else { return nil }
-      guard
-        let record = await client.judgeWithSchema(item.question, schema)
-      else {
-        guard !Task.isCancelled else { return nil }
-        continue
-      }
+      guard let record = await client.judgeWithSchema(item.question, schema)
+      else { return nil }
       guard !Task.isCancelled else { return nil }
       judgements.append(
         AnswerabilityJudgement(
@@ -58,7 +54,7 @@ enum AnswerabilityCapture {
           verdict: record.verdict,
           missingSubject: record.missingSubject))
     }
-    guard !judgements.isEmpty else { return nil }
+    guard judgements.count == corpus.count else { return nil }
 
     let manifest = Manifest(
       capturedAt: capturedAt,

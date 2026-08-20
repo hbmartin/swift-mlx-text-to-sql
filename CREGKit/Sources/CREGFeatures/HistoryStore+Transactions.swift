@@ -312,6 +312,42 @@ extension HistoryStore {
     }
   }
 
+  func persistScopeDiagnosis(
+    conversationID: UUID,
+    messageID: UUID,
+    verdict: ScopeVerdictRecord,
+    line: String
+  ) async throws {
+    try await queue.write { db in
+      guard
+        let storedPayload = try String.fetchOne(
+          db,
+          sql: """
+            SELECT payload FROM message
+            WHERE id = ? AND conversation_id = ?
+            """,
+          arguments: [messageID.uuidString, conversationID.uuidString]),
+        var message = try? Self.decoder.decode(
+          ChatMessage.self, from: Data(storedPayload.utf8)),
+        case .failedTurn(let reason, _) = message.body
+      else {
+        throw HistoryStoreError.messageNotFound
+      }
+      message.body = .failedTurn(reason: reason, scopeVerdict: verdict)
+      message.devInfo?.scopeVerdict = verdict
+      try Self.updateMessage(
+        db,
+        conversationID: conversationID,
+        message: message,
+        payload: try Self.encodedPayload(for: message))
+      try Self.appendEvents(
+        db,
+        conversationID: conversationID,
+        messageID: messageID,
+        lines: [line])
+    }
+  }
+
   func persistUserTurn(
     conversationID: UUID,
     message: ChatMessage,

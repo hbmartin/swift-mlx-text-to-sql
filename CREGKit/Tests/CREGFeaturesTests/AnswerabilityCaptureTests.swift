@@ -44,6 +44,15 @@ private actor CaptureJudgeGate {
   var calls: Int { callCount }
 }
 
+private actor CaptureFailureCounter {
+  private(set) var calls = 0
+
+  func fail() -> ScopeVerdictRecord? {
+    calls += 1
+    return nil
+  }
+}
+
 @Suite(.serialized) struct AnswerabilityCaptureTests {
   @Test func manifestHashesTheSchemaUsedForEveryVerdict() async throws {
     let schema = "properties(property_id, name)\nleases(has_renewal_option)"
@@ -103,5 +112,20 @@ private actor CaptureJudgeGate {
     let calls = await gate.calls
     #expect(result == nil)
     #expect(calls == 1)
+  }
+
+  @Test func oneMissingVerdictDiscardsTheWholeCapture() async {
+    let counter = CaptureFailureCounter()
+    let client = ScopeDiagnosisClient(
+      schemaPrompt: { "properties(property_id, name)" },
+      policyVersion: "scope-verdict-test-v1",
+      judgeWithSchema: { _, _ in await counter.fail() })
+
+    let result = await AnswerabilityCapture.run(
+      client: client,
+      capturedAt: Date(timeIntervalSince1970: 1))
+
+    #expect(result == nil)
+    #expect(await counter.calls == 1)
   }
 }

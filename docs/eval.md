@@ -338,7 +338,9 @@ the digest and every recorded judgement.
 of `likely_answerable_model_failed` items judged as any not-covered bucket.
 The gate is **provisional at ≤ 1 of 23**, with `T2-21` correct as a hard
 requirement (`creg-answerability-cli … --max-false-abstentions 1` enforces
-both). Recalibration procedure after the first on-device capture: review
+both). Gate mode also rejects every incomplete capture and every unknown id;
+the threshold is evaluated only against one complete, corpus-exact set of 87
+judgements. Recalibration procedure after the first on-device capture: review
 every miss individually; if a miss is a prompt defect, fix the verdict prompt
 and re-capture; if all 23 pass cleanly, ratchet the gate to 0; only if a miss
 is judged irreducible does the ≤ 1 slack stand, recorded with the run id that
@@ -351,6 +353,10 @@ claim — measured at 0/41 precision on the recovered failures (ADR 0010).
 exported via `events.jsonl` in the Support Bundle) changed shape with
 telemetry schema v7: the outcome's `failed` case now carries a typed
 `reason` object instead of a display `message` string, and telemetry carries
-`failureReason` and optional `scopeVerdict` fields. Lines written by earlier
+`failureReason` and optional `scopeVerdict` fields. Because scope diagnosis is
+lower-priority work performed after the failure renders, a later
+`scopeDiagnosisFinished` event carries the source assistant-message id and
+verdict; the history transaction enriches the message and appends that event
+atomically before Recovery Suggestion events begin. Lines written by earlier
 builds remain valid as stored text; consumers reading exported JSONL must
-accept both shapes.
+accept the legacy terminal shape and the new post-render event.

@@ -62,6 +62,34 @@ public struct AnswerabilityScore: Sendable, Equatable {
     return Double(falseAbstentionIDs.count) / Double(answerableJudgedCount)
   }
 
+  /// Deterministic failures for the shipping gate. A threshold is meaningful
+  /// only for a complete, corpus-exact capture: missing judgements shrink the
+  /// denominator, and unknown ids make the capture provenance ambiguous.
+  public func shippingGateFailures(
+    maxFalseAbstentions: Int,
+    keystoneID: String = "T2-21"
+  ) -> [String] {
+    var failures: [String] = []
+    if !missingIDs.isEmpty {
+      failures.append(
+        "\(missingIDs.count) corpus judgements are missing [\(missingIDs.joined(separator: ", "))]")
+    }
+    if !unknownIDs.isEmpty {
+      failures.append(
+        "\(unknownIDs.count) unknown judgement ids were supplied [\(unknownIDs.joined(separator: ", "))]")
+    }
+    if falseAbstentionIDs.count > maxFalseAbstentions {
+      failures.append(
+        "\(falseAbstentionIDs.count) false abstentions exceed the gate of \(maxFalseAbstentions)")
+    }
+    if missingIDs.contains(keystoneID) {
+      failures.append("\(keystoneID) is missing (hard gate)")
+    } else if falseAbstentionIDs.contains(keystoneID) {
+      failures.append("\(keystoneID) was misclassified (hard gate)")
+    }
+    return failures
+  }
+
   /// The byte-stable report the run discipline records.
   public func report() -> String {
     var lines: [String] = []

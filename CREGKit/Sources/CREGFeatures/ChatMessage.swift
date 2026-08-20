@@ -180,6 +180,7 @@ extension PipelineEvent {
     case .narrationStarted: "Summarizing what I found"
     case .narrationFinished: nil
     case .turnFinished: nil
+    case .scopeDiagnosisFinished: nil
     }
   }
 }

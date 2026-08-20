@@ -736,6 +736,57 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.chat?.isSubmissionEnabled == true)
   }
 
+  @Test func queuedTurnWaitsForAppleIntelligenceAndResumesOnActivation() async {
+    var state = Self.appState()
+    let activeID = UUID(70)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(71),
+        conversationID: Self.conversationA,
+        question: "Run after AI returns",
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    let availability = LockIsolated<FMAvailability>(.available)
+    let runs = CallRecorder()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.fmStatus = FMStatusClient(availability: { availability.value })
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    availability.setValue(.unavailable(reason: .modelNotReady))
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(runs.recorded.isEmpty)
+    #expect(store.state.queue.map(\.question) == ["Run after AI returns"])
+    #expect(store.state.activeTurn == nil)
+
+    availability.setValue(.available)
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(runs.recorded == ["Run after AI returns"])
+    #expect(store.state.queue.isEmpty)
+  }
+
   @Test func preparedTapUpdatesTheSameAssistantMessageAfterImmediatePreview() async {
     let sourceID = UUID(79)
     let prepared = Self.preparedFollowUp(sourceMessageID: sourceID)
@@ -1648,6 +1699,44 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.queue.isEmpty)
   }
 
+  @Test func retryingFailedStarterRetainsStarterExecutionSource() async {
+    var state = Self.appState()
+    let messageID = UUID(89)
+    var telemetry = TurnTelemetry(
+      originalQuestion: StarterQueryID.portfolioValueByFundV1.question)
+    telemetry.failureReason = .starterQueryUnavailable
+    telemetry.starterQueryID = .portfolioValueByFundV1
+    state.chat?.messages.append(
+      ChatMessage(
+        id: messageID,
+        role: .assistant,
+        body: .failedTurn(
+          reason: .starterQueryUnavailable,
+          scopeVerdict: nil),
+        createdAt: Date(timeIntervalSince1970: 1),
+        devInfo: telemetry))
+    let starterRuns = CallRecorder()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline(starterRuns: starterRuns)
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .chat(.retryFailedTurnTapped(messageID: messageID)))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(
+      starterRuns.recorded
+        == [StarterQueryID.portfolioValueByFundV1.rawValue])
+  }
+
   @Test func queuedTurnWaitsForThePreviousAssistantToPersistAndPreservesOrder() async {
     var state = Self.appState()
     let activeID = UUID(90)
@@ -1735,23 +1824,31 @@ private actor UserPersistenceOrderingGate {
       startedAt: Date(timeIntervalSince1970: 0))
     let contexts = LockIsolated<[FollowUpSuggestionContext]>([])
     let judged = LockIsolated<[String]>([])
+    let scopeLines = LockIsolated<[String]>([])
+    let ordering = CallRecorder()
     let expectedVerdict = ScopeVerdictRecord(
       verdict: .inDomainButNotTracked,
       missingSubject: "property managers")
     let pipeline = QueryPipeline(
       run: { _, _ in AsyncStream { $0.finish() } },
       prepareFollowUps: { context in
+        ordering.record("prepare")
         contexts.withValue { $0.append(context) }
         return AsyncStream { continuation in
           continuation.yield(.finished)
           continuation.finish()
         }
       })
+    var history = HistoryClient.noop()
+    history.persistScopeDiagnosis = { _, _, _, line in
+      ordering.record("scope-persist")
+      scopeLines.withValue { $0.append(line) }
+    }
     let store = TestStore(initialState: state) {
       AppFeature()
-    } withDependencies: { [pipeline] in
+    } withDependencies: { [history, pipeline] in
       $0.queryPipeline = pipeline
-      $0.historyClient = .noop()
+      $0.historyClient = history
       $0.scopeDiagnosis = ScopeDiagnosisClient { question in
         judged.withValue { $0.append(question) }
         return expectedVerdict
@@ -1772,6 +1869,17 @@ private actor UserPersistenceOrderingGate {
     await store.skipReceivedActions()
 
     #expect(judged.value == ["Who manages each property?"])
+    #expect(ordering.recorded == ["scope-persist", "prepare"])
+    #expect(scopeLines.value.count == 1)
+    guard
+      let decoded = try? JSONDecoder().decode(
+        PipelineEvent.self, from: Data(scopeLines.value[0].utf8)),
+      case .scopeDiagnosisFinished(_, let persistedVerdict) = decoded
+    else {
+      Issue.record("Expected an exportable scope-diagnosis event")
+      return
+    }
+    #expect(persistedVerdict == expectedVerdict)
 
     // D waited for C: the seeded context already carries the verdict.
     let seeded = contexts.value
@@ -1798,6 +1906,69 @@ private actor UserPersistenceOrderingGate {
       store.state.chat?.messages.last(where: { $0.role == .assistant })?
         .devInfo?.scopeVerdict == expectedVerdict)
     #expect(store.state.pendingScopeDiagnosis == nil)
+  }
+
+  @Test func backgroundFailureStillPersistsDiagnosisBeforeRecovery() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let activeID = UUID(109)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationB,
+      question: "Who manages each property?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let expectedVerdict = ScopeVerdictRecord(
+      verdict: .inDomainButNotTracked,
+      missingSubject: "property managers")
+    let ordering = CallRecorder()
+    let contexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let persistedConversationIDs = LockIsolated<[UUID]>([])
+    let persistedVerdicts = LockIsolated<[ScopeVerdictRecord]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        ordering.record("prepare")
+        contexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    var history = HistoryClient.noop()
+    history.persistScopeDiagnosis = { conversationID, _, verdict, _ in
+      persistedConversationIDs.withValue { $0.append(conversationID) }
+      persistedVerdicts.withValue { $0.append(verdict) }
+      ordering.record("scope-persist")
+    }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history, pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = history
+      $0.scopeDiagnosis = ScopeDiagnosisClient { _ in expectedVerdict }
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationB,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .generationExhausted)))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.chat?.conversationID == Self.conversationA)
+    #expect(ordering.recorded == ["scope-persist", "prepare"])
+    #expect(persistedConversationIDs.value == [Self.conversationB])
+    #expect(persistedVerdicts.value == [expectedVerdict])
+    guard case .turnFailure(_, let verdict)? = contexts.value.first?.seed else {
+      Issue.record("Expected background recovery context")
+      return
+    }
+    #expect(verdict == expectedVerdict)
   }
 
   /// Timeouts already know their cause; the diagnosis never runs for them.

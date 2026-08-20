@@ -83,6 +83,35 @@ import Testing
     }
   }
 
+  @Test func shippingGateRequiresACompleteCorpusExactCapture() throws {
+    let corpus = try AnswerabilityScorer.parseCorpus(jsonl: Self.corpusJSONL)
+    let complete = corpus.map {
+      AnswerabilityJudgement(id: $0.id, verdict: $0.expectedVerdict)
+    }
+    let passing = try AnswerabilityScorer.score(
+      corpus: corpus,
+      judgements: complete)
+    #expect(passing.shippingGateFailures(maxFalseAbstentions: 1).isEmpty)
+
+    let withoutKeystone = try AnswerabilityScorer.score(
+      corpus: corpus,
+      judgements: complete.filter { $0.id != "T2-21" })
+    let missingFailures = withoutKeystone.shippingGateFailures(
+      maxFalseAbstentions: 1)
+    #expect(missingFailures.contains { $0.contains("judgements are missing") })
+    #expect(missingFailures.contains("T2-21 is missing (hard gate)"))
+
+    let withUnknown = try AnswerabilityScorer.score(
+      corpus: corpus,
+      judgements: complete + [
+        AnswerabilityJudgement(
+          id: "UNKNOWN", verdict: .likelyAnswerableModelFailed)
+      ])
+    #expect(
+      withUnknown.shippingGateFailures(maxFalseAbstentions: 1)
+        .contains { $0.contains("unknown judgement ids") })
+  }
+
   /// The checked-in corpus itself: parses, holds exactly the 23 recovered
   /// real failures (T2-21 among them), and keeps unique ids.
   @Test func checkedInCorpusIsWellFormed() throws {

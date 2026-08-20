@@ -56,8 +56,10 @@ of that ladder ever made a scope claim either.
 3. **Every sentence the user reads is written by a human.** The FM picks a
    bucket; the one FM-supplied phrase (`missingSubject`, rendered only for
    `in_domain_but_not_tracked`) passes a deterministic guard
-   (`ScopeVerdictGuard`) that drops any phrase the schema covers — the
-   annotation itself must never make a false scope claim.
+   (`ScopeVerdictGuard`). The guard canonicalizes punctuation and plurals,
+   drops schema and portfolio vocabulary, and renders only a human-reviewed
+   allowlist of genuinely untracked concepts. Arbitrary FM text is omitted —
+   the annotation itself must never make a false scope claim.
 4. **The mechanism is measured, not assumed:** the answerability corpus
    (`eval/gold/answerability.jsonl`) keeps the 23 recovered real failures as
    a false-abstention guard, gated at ≤ 1 miss of 23 with `T2-21` correct as

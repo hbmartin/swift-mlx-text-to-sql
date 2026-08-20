@@ -128,6 +128,45 @@ public struct ScopeVerdictRecord: Sendable, Equatable, Codable {
 public enum ScopeVerdictGuard {
   static let maximumSubjectLength = 40
 
+  /// Human-reviewed concepts that the fixed portfolio does not track. The FM
+  /// may choose one of these phrasings, but arbitrary generated text never
+  /// becomes a user-facing scope claim.
+  private static let reviewedMissingSubjects: [String: String] = [
+    "broker": "lease brokers",
+    "cam charge": "tenant-level CAM charges",
+    "elevator": "elevator counts",
+    "environmental assessment": "environmental assessments",
+    "insurance premium": "property insurance premiums",
+    "lease broker": "lease brokers",
+    "leasing budget": "leasing budgets",
+    "leed certification": "LEED certification",
+    "limited partner": "limited partners",
+    "maintenance work order": "maintenance work orders",
+    "management fee": "fund management fees",
+    "parking space": "parking-space counts",
+    "pending litigation": "pending litigation",
+    "personal guarantor": "personal guarantors",
+    "prepayment penalty": "loan prepayment penalties",
+    "property insurance premium": "property insurance premiums",
+    "property manager": "property managers",
+    "rooftop solar": "rooftop solar",
+    "satisfaction survey": "tenant satisfaction surveys",
+    "sublease detail": "sublease details",
+    "tenant contact": "tenant contact details",
+    "tenant employee count": "tenant employee counts",
+    "utility expense breakdown": "utility expense breakdowns",
+    "zoning designation": "zoning designations",
+  ]
+
+  /// CONTEXT.md Portfolio vocabulary that can appear without matching one
+  /// exact SQL identifier. These are always treated as covered concepts.
+  private static let portfolioCoveredPhrases = [
+    "portfolio", "fund", "property", "lease", "tenant", "loan",
+    "valuation", "monthly financials", "rent roll", "base rent",
+    "occupancy", "vacancy", "net operating income", "noi",
+    "market value", "maturity date", "renewal option",
+  ]
+
   /// Phrases the schema covers, derived from the schema prompt's identifiers
   /// so the guard stays in sync with the schema automatically. Snake_case
   /// identifiers contribute both the space-joined phrase ("interest_rate" →
@@ -164,6 +203,9 @@ public enum ScopeVerdictGuard {
       }
     }
     flush()
+    for phrase in portfolioCoveredPhrases {
+      phrases.insert(normalized(phrase))
+    }
     return phrases
   }
 
@@ -185,17 +227,30 @@ public enum ScopeVerdictGuard {
     guard !subject.isEmpty, subject.count <= maximumSubjectLength else {
       return nil
     }
-    guard !coveredPhrases.contains(normalized(subject.lowercased())) else {
+    let canonical = normalized(subject)
+    guard !coveredPhrases.contains(canonical) else {
       return nil
     }
-    return subject
+    return reviewedMissingSubjects[canonical]
   }
 
   private static func normalized(_ phrase: String) -> String {
-    if phrase.hasSuffix("ies"), phrase.count > 3 {
-      return String(phrase.dropLast(3)) + "y"
-    }
-    return phrase.hasSuffix("s") ? String(phrase.dropLast()) : phrase
+    phrase
+      .folding(
+        options: [.caseInsensitive, .diacriticInsensitive],
+        locale: Locale(identifier: "en_US_POSIX"))
+      .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+      .map { token in
+        let token = String(token)
+        if token.hasSuffix("ies"), token.count > 3 {
+          return String(token.dropLast(3)) + "y"
+        }
+        if token.hasSuffix("s"), !token.hasSuffix("ss"), token.count > 3 {
+          return String(token.dropLast())
+        }
+        return token
+      }
+      .joined(separator: " ")
   }
 }
 

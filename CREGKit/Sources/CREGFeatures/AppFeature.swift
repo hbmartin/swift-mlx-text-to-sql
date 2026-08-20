@@ -444,7 +444,8 @@ public struct AppFeature: Sendable {
         let interruptedRecovery =
           resumeInterruptedScopeDiagnosisIfIdle(state: &state)
         let persistedPreparation = resumeFollowUpPreparationIfIdle(state: &state)
-        return .merge(interruptedRecovery, persistedPreparation)
+        let queuedTurn = dispatchNextIfIdle(state: &state)
+        return .merge(interruptedRecovery, persistedPreparation, queuedTurn)
 
       case .appBecameInactive:
         let preparation = state.followUpPreparation
@@ -889,7 +890,10 @@ public struct AppFeature: Sendable {
           verdict: verdict)
 
       case .chat(.delegate(.submitQuestion(let submission))):
-        guard state.modelReadiness == .ready, let chat = state.chat
+        refreshFMAvailability(state: &state)
+        guard state.modelReadiness == .ready,
+          state.fmAvailability == .available,
+          let chat = state.chat
         else { return .none }
         let conversationID = chat.conversationID
         let preparation = state.followUpPreparation
@@ -1022,6 +1026,15 @@ public struct AppFeature: Sendable {
         guard state.isCapturingAnswerability else { return .none }
         state.isCapturingAnswerability = false
         state.answerabilityCaptureExport = url
+        if url == nil {
+          state.presentedFailure = FailurePresentation(
+            code: "answerability_capture_failed",
+            title: "Capture failed",
+            message:
+              "CREG couldn't judge every corpus item. Keep Apple Intelligence available and try the capture again.",
+            diagnostic:
+              "Answerability capture returned no complete corpus-exact artifact.")
+        }
         return .none
 
       case .appIconLoaded(let variant, let supportsAlternates):

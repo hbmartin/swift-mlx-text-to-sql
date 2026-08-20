@@ -139,7 +139,9 @@ struct SettingsView: View {
             Label("Capture answerability verdicts", systemImage: "checklist")
           }
         }
-        .disabled(store.isCapturingAnswerability)
+        .disabled(
+          store.isCapturingAnswerability
+            || store.fmAvailability != .available)
         if let export = store.answerabilityCaptureExport {
           ShareLink(item: export) {
             Label("Share capture", systemImage: "square.and.arrow.up")
@@ -148,9 +150,15 @@ struct SettingsView: View {
       } header: {
         Text("Answerability (debug)")
       } footer: {
-        Text(
-          "Runs the bundled answerability corpus through the on-device Foundation Model and exports the verdicts for the offline scorer (docs/eval.md)."
-        )
+        if store.fmAvailability == .available {
+          Text(
+            "Runs the complete bundled answerability corpus through the on-device Foundation Model and exports the verdicts for the offline scorer (docs/eval.md)."
+          )
+        } else {
+          Text(
+            "Apple Intelligence must be available to capture the complete answerability corpus."
+          )
+        }
       }
     }
   #endif
