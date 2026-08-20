@@ -128,10 +128,13 @@ public struct ScopeVerdictRecord: Sendable, Equatable, Codable {
 public enum ScopeVerdictGuard {
   static let maximumSubjectLength = 40
 
-  /// Human-reviewed concepts that the fixed portfolio does not track. The FM
-  /// may choose one of these phrasings, but arbitrary generated text never
-  /// becomes a user-facing scope claim.
-  private static let reviewedMissingSubjects: [String: String] = [
+  /// Human-reviewed concepts that the fixed portfolio does not track, keyed
+  /// by normalized concept with the reviewed display phrase as the value. The
+  /// FM may phrase the subject as either side — the lookup index covers both —
+  /// but arbitrary generated text never becomes a user-facing scope claim.
+  /// Internal (not private) so tests can pin every entry against the real
+  /// schema prompt.
+  static let reviewedMissingSubjects: [String: String] = [
     "broker": "lease brokers",
     "cam charge": "tenant-level CAM charges",
     "elevator": "elevator counts",
@@ -157,6 +160,19 @@ public enum ScopeVerdictGuard {
     "utility expense breakdown": "utility expense breakdowns",
     "zoning designation": "zoning designations",
   ]
+
+  /// The reviewed table indexed by the normalized form of both its concept
+  /// keys and its display phrases, so an FM answer in either phrasing —
+  /// "management fee" or the reviewed "fund management fees" — resolves to
+  /// the same display phrase instead of silently dropping the annotation.
+  private static let reviewedMissingSubjectsByCanonical: [String: String] = {
+    var index: [String: String] = [:]
+    for (concept, display) in reviewedMissingSubjects {
+      index[normalized(concept)] = display
+      index[normalized(display)] = display
+    }
+    return index
+  }()
 
   /// CONTEXT.md Portfolio vocabulary that can appear without matching one
   /// exact SQL identifier. These are always treated as covered concepts.
@@ -231,7 +247,7 @@ public enum ScopeVerdictGuard {
     guard !coveredPhrases.contains(canonical) else {
       return nil
     }
-    return reviewedMissingSubjects[canonical]
+    return reviewedMissingSubjectsByCanonical[canonical]
   }
 
   private static func normalized(_ phrase: String) -> String {

@@ -1,3 +1,4 @@
+import AutoTableCharts
 import CREGEngine
 import Foundation
 
@@ -8,9 +9,9 @@ public struct ResultPresentationPreference: Equatable, Hashable, Sendable, Codab
   }
 
   public var mode: Mode
-  public var specificationID: String?
+  public var specificationID: AutoChartRecommendationID?
 
-  public init(mode: Mode, specificationID: String? = nil) {
+  public init(mode: Mode, specificationID: AutoChartRecommendationID? = nil) {
     self.mode = mode
     self.specificationID = specificationID
   }

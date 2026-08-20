@@ -97,13 +97,49 @@ extension FMUnavailabilityReason {
 /// all new turns on it.
 public struct FMStatusClient: Sendable {
   public var availability: @Sendable () -> FMAvailability
+  /// Emits whenever `availability` changes value. The system offers no push
+  /// notification, so the live stream polls the synchronous read at a low
+  /// cadence — it costs nothing unless someone is consuming it. The default
+  /// is an empty stream for clients whose availability never changes
+  /// mid-scene.
+  public var availabilityUpdates: @Sendable () -> AsyncStream<FMAvailability>
 
-  public init(availability: @escaping @Sendable () -> FMAvailability) {
+  public init(
+    availability: @escaping @Sendable () -> FMAvailability,
+    availabilityUpdates: @escaping @Sendable () -> AsyncStream<FMAvailability> = {
+      AsyncStream { $0.finish() }
+    }
+  ) {
     self.availability = availability
+    self.availabilityUpdates = availabilityUpdates
   }
 
   public static func live() -> FMStatusClient {
-    FMStatusClient(availability: FMClient.live().availability)
+    let availability = FMClient.live().availability
+    return FMStatusClient(
+      availability: availability,
+      availabilityUpdates: { pollingUpdates(availability: availability) })
+  }
+
+  static func pollingUpdates(
+    availability: @escaping @Sendable () -> FMAvailability,
+    interval: Duration = .seconds(5)
+  ) -> AsyncStream<FMAvailability> {
+    AsyncStream { continuation in
+      let task = Task {
+        var last = availability()
+        while !Task.isCancelled {
+          do { try await Task.sleep(for: interval) } catch { break }
+          let current = availability()
+          if current != last {
+            last = current
+            continuation.yield(current)
+          }
+        }
+        continuation.finish()
+      }
+      continuation.onTermination = { _ in task.cancel() }
+    }
   }
 }
 

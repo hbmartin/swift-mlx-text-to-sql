@@ -947,6 +947,37 @@ private enum FollowUpTestError: Error {
     #expect(telemetry.queryOrigin == .recoverySuggestion)
   }
 
+  /// The fallback stamps the prepared surface exactly as a cache hit would,
+  /// so telemetry segmented by query_origin does not vary with the cache-hit
+  /// rate.
+  @Test func preparedChipCacheMissKeepsThePreparedFollowUpOrigin() async {
+    var prepared = Self.prepared(question: "Prepared?", rank: 1)
+    prepared.preparationTelemetry.queryOrigin = .preparedFollowUp
+    prepared.provenance.schemaVersion = 2
+    let pipeline = QueryPipeline.live(
+      fm: .fallback(),
+      sqlGen: testSQLGenClient { _ in
+        SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.runPrepared(prepared, []))
+
+    guard case .turnFinished(_, let telemetry) = events.last else {
+      Issue.record("Expected schema-version fallback outcome")
+      return
+    }
+    #expect(telemetry.preparedCacheMissReason == .schemaVersion)
+    #expect(telemetry.queryOrigin == .preparedFollowUp)
+    #expect(telemetry.preparedFollowUpID == prepared.id)
+  }
+
   @Test func preparedFallbackTreatsTheChipQuestionAsStandalone() async {
     let calls = FollowUpCalls()
     var prepared = Self.prepared(question: "Which fund owns it?", rank: 1)

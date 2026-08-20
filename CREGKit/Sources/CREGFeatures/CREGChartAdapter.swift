@@ -2,101 +2,90 @@ import AutoTableCharts
 import CREGEngine
 import Foundation
 
-struct CREGChartRow: AutoChartRow {
-  var chartRowID: AutoChartRowID
-  var values: [AutoChartColumnID: AutoChartValue]
-
-  func chartValue(for columnID: AutoChartColumnID) -> AutoChartValue {
-    values[columnID] ?? .null
-  }
+struct CREGChartAnalysisInput: Sendable {
+  var dataset: AutoChartDataset<Int>
+  var context: AutoChartContext
 }
 
-struct CREGChartTable: AutoChartTable {
-  var chartColumns: [AutoChartColumn]
-  var chartRows: [CREGChartRow]
-  var chartMetadata: AutoChartTableMetadata
-  var chartDataIdentity: String?
-  var chartDataVersion: String?
-  var context: AutoChartContext
-
-  init(
+enum CREGChartAdapter {
+  static func analysisInput(
     result: QueryResult,
     sql: String,
     question: String?,
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
-  ) {
-    let projections = CREGChartAdapter.alignedProjections(
+  ) throws -> CREGChartAnalysisInput {
+    let projections = alignedProjections(
       sql, columnCount: result.columns.count)
     let columns = result.columns.enumerated().map { index, name in
       AutoChartColumn(
-        id: CREGChartAdapter.columnID(index: index, name: name),
+        id: columnID(index: index, name: name),
         name: name,
-        hints: CREGChartAdapter.hints(
+        hints: hints(
           for: name,
           projection: projections[index],
           values: result.rows.map { row in
             row.indices.contains(index) ? row[index] : .null
           }))
     }
-    chartColumns = columns
-    chartRows = result.rows.enumerated().map { rowIndex, row in
-      let values = Dictionary(
-        uniqueKeysWithValues: columns.enumerated().map { columnIndex, column in
-          let value = row.indices.contains(columnIndex) ? row[columnIndex] : .null
-          return (
-            column.id,
-            CREGChartAdapter.value(
-              value,
-              temporal: column.hints.semanticType == .temporal)
-          )
-        })
-      return CREGChartRow(
-        chartRowID: AutoChartRowID(rawValue: "row-\(rowIndex)"),
-        values: values)
+    let rows = result.rows.map { row in
+      row.enumerated().map { columnIndex, value in
+        CREGChartAdapter.value(
+          value,
+          temporal: columns.indices.contains(columnIndex)
+            && columns[columnIndex].hints.semanticType == .temporal)
+      }
     }
-    chartMetadata = AutoChartTableMetadata(
-      isTruncated: result.isTruncated,
-      provenance: "CREG query result")
-    chartDataIdentity = dataIdentity
-    chartDataVersion = [
-      "CREG.ChartData.v1",
-      resultFingerprint ?? PreparedFollowUpIntegrity.fingerprint(result: result),
+    let fingerprint = resultFingerprint
+      ?? PreparedFollowUpIntegrity.fingerprint(result: result)
+    let dataset = try AutoChartDataset<Int>(
+      columns: columns,
+      rows: rows,
+      metadata: AutoChartTableMetadata(
+        isTruncated: result.isTruncated,
+        provenance: "CREG query result"),
+      key: AutoChartDataKey(
+        identity: dataIdentity ?? "CREG.Result.v2:\(fingerprint)",
+        revision: dataKeyRevision(resultFingerprint: fingerprint, sql: sql)))
+    return CREGChartAnalysisInput(
+      dataset: dataset,
+      context: AutoChartContext(
+        goal: goal(question: question, sql: sql),
+        title: question))
+  }
+
+  static let formatters = AutoChartFormatters(
+    locale: Locale(identifier: "en_US"),
+    timeZone: .gmt
+  ) { column, value, _, _, _ in
+    guard let column else { return nil }
+    let sqlValue: SQLValue
+    switch value {
+    case .null: sqlValue = .null
+    case .boolean(let value): sqlValue = .integer(value ? 1 : 0)
+    case .integer(let value): sqlValue = .integer(value)
+    case .double(let value): sqlValue = .real(value)
+    case .decimal(let value): sqlValue = .real(NSDecimalNumber(decimal: value).doubleValue)
+    case .text(let value): sqlValue = .text(value)
+    case .date(let value):
+      let components = gregorianGMTCalendar.dateComponents([.year, .month, .day], from: value)
+      guard let year = components.year, let month = components.month, let day = components.day
+      else { return nil }
+      sqlValue = .text(String(format: "%04d-%02d-%02d", year, month, day))
+    case .binary(let value): sqlValue = .blob(value)
+    }
+    return PortfolioValueFormatting.displayString(for: sqlValue, column: column.name)
+  }
+
+  static func dataKeyRevision(
+    resultFingerprint: String,
+    sql: String
+  ) -> String {
+    [
+      "CREG.ChartData.v2",
+      resultFingerprint,
       PreparedFollowUpIntegrity.fingerprint(sql: sql),
     ].joined(separator: ":")
-    context = AutoChartContext(
-      goal: CREGChartAdapter.goal(question: question, sql: sql),
-      title: question)
-  }
-
-  func sourceRowIndexes(for selection: AutoChartSelection?) -> Set<Int>? {
-    guard let selection else { return nil }
-    return Set(
-      selection.sourceRowIDs.compactMap { id in
-        guard id.rawValue.hasPrefix("row-") else { return nil }
-        return Int(id.rawValue.dropFirst(4))
-      })
-  }
-}
-
-enum CREGChartAdapter {
-  static func recommendations(
-    result: QueryResult,
-    sql: String,
-    question: String?,
-    resultFingerprint: String? = nil,
-    dataIdentity: String? = nil
-  ) -> (table: CREGChartTable, set: AutoChartRecommendationSet) {
-    let table = CREGChartTable(
-      result: result,
-      sql: sql,
-      question: question,
-      resultFingerprint: resultFingerprint,
-      dataIdentity: dataIdentity)
-    return (
-      table,
-      AutoChartEngine.recommendations(for: table, context: table.context)
-    )
   }
 
   static func columnID(index: Int, name: String) -> AutoChartColumnID {
@@ -104,18 +93,6 @@ enum CREGChartAdapter {
       character.isLetter || character.isNumber ? character : "-"
     }
     return AutoChartColumnID(rawValue: "c\(index)-\(String(slug))")
-  }
-
-  static func resolvedRecommendation(
-    preferredID: String?,
-    in recommendations: [AutoChartRecommendation]
-  ) -> AutoChartRecommendation? {
-    if let preferredID,
-      let persisted = recommendations.first(where: { $0.id == preferredID })
-    {
-      return persisted
-    }
-    return recommendations.first
   }
 
   static func value(_ value: SQLValue, temporal: Bool) -> AutoChartValue {
@@ -136,16 +113,11 @@ enum CREGChartAdapter {
   ) -> AutoChartColumnHints {
     let normalized = name.lowercased()
     let aggregation = aggregate(in: projection)
-    let safety: AutoChartAggregationSafety =
-      aggregation == nil
-      ? .unknown : .alreadyAggregated
 
     if normalized == "id" || normalized.hasSuffix("_id") {
       return AutoChartColumnHints(
         semanticType: .identifier,
-        role: .identifier,
-        aggregation: aggregation,
-        aggregationSafety: .unsafe)
+        role: .identifier)
     }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
     let temporalValues = style == .date ? values() : []
@@ -167,62 +139,50 @@ enum CREGChartAdapter {
           ? .intervalEnd : .dimension
       return AutoChartColumnHints(
         semanticType: .temporal,
-        role: role,
-        aggregation: aggregation,
-        aggregationSafety: safety)
+        role: role)
     }
     if normalized.hasPrefix("is_") || normalized.hasPrefix("has_") {
       return AutoChartColumnHints(
         semanticType: .boolean,
-        role: .dimension,
-        aggregation: aggregation,
-        aggregationSafety: safety)
+        role: .dimension)
     }
     if style == .percent {
       let values = values()
       return quantitativeHints(
         values: values,
         unit: percentUnit(for: values),
-        aggregation: aggregation,
-        safety: safety)
+        aggregation: aggregation)
     }
     if style == .currency || style == .currencyPerSquareFoot {
       return quantitativeHints(
         values: values(),
         unit: .currency(code: "USD"),
-        aggregation: aggregation,
-        safety: safety)
+        aggregation: aggregation)
     }
     if style == .squareFeet {
       return quantitativeHints(
         values: values(),
         unit: .area(unit: "sq ft"),
-        aggregation: aggregation,
-        safety: safety)
+        aggregation: aggregation)
     }
     if style == .count, containsWord(normalized, ["month", "months"]) {
       return quantitativeHints(
         values: values(),
         unit: .duration(unit: "months"),
-        aggregation: aggregation,
-        safety: safety)
+        aggregation: aggregation)
     }
     if style == .ratio {
       return quantitativeHints(
         values: values(),
-        aggregation: aggregation,
-        safety: safety)
+        aggregation: aggregation)
     }
     if style == .plainDigits, containsWord(normalized, ["year"]) {
       return AutoChartColumnHints(
         semanticType: .ordinal,
-        role: .dimension,
-        aggregation: aggregation,
-        aggregationSafety: safety)
+        role: .dimension)
     }
     return AutoChartColumnHints(
-      aggregation: aggregation,
-      aggregationSafety: safety)
+      measureSemantics: measureSemantics(for: aggregation))
   }
 
   static func goal(question: String?, sql: String) -> AutoChartGoal {
@@ -501,20 +461,36 @@ enum CREGChartAdapter {
   private static func quantitativeHints(
     values: [SQLValue],
     unit: AutoChartUnit? = nil,
-    aggregation: AutoChartAggregation?,
-    safety: AutoChartAggregationSafety
+    aggregation: AutoChartAggregation?
   ) -> AutoChartColumnHints {
     guard values.isEmpty || hasQuantitativeValues(values) else {
       return AutoChartColumnHints(
-        aggregation: aggregation,
-        aggregationSafety: safety)
+        measureSemantics: measureSemantics(for: aggregation))
     }
     return AutoChartColumnHints(
       semanticType: .quantitative,
       role: .measure,
       unit: unit,
-      aggregation: aggregation,
-      aggregationSafety: safety)
+      measureSemantics: measureSemantics(for: aggregation))
+  }
+
+  private static func measureSemantics(
+    for aggregation: AutoChartAggregation?
+  ) -> AutoChartMeasureSemantics {
+    guard let aggregation else {
+      return AutoChartMeasureSemantics(source: .rowLevel, rollup: .unknown)
+    }
+    let rollup: AutoChartRollupPolicy =
+      switch aggregation {
+      case .sum, .count: .additive
+      case .minimum: .safe(.minimum)
+      case .maximum: .safe(.maximum)
+      case .mean, .countDistinct, .none: .nonAdditive
+      }
+    return AutoChartMeasureSemantics(
+      source: .aggregated(aggregation),
+      rollup: rollup,
+      preferredTransform: aggregation)
   }
 
   private static func hasQuantitativeValues(_ values: [SQLValue]) -> Bool {

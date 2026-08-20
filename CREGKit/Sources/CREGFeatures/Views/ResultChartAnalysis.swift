@@ -1,138 +1,64 @@
 import AutoTableCharts
 import CREGEngine
 import ComposableArchitecture
-import SwiftUI
+import Foundation
 
-// MARK: - Rendering cache budget
+/// The one app-owned chart analysis service. Its analyzer owns all reusable
+/// snapshots, analyses, and prepared charts for CREG.
+struct CREGChartAnalysisClient: Sendable {
+  static let configuration = AutoChartAnalyzerConfiguration(
+    tables: .init(maximumEntries: 8),
+    analyses: .init(maximumEntries: 64),
+    preparedCharts: .init(maximumEntries: 16),
+    maximumRetainedCost: 32 * 1_024 * 1_024)
 
-/// CREG's process-wide limits for the prepared rendering data AutoTableCharts
-/// retains behind `AutoChartView`.
-///
-/// The package defaults to 32 MiB for each of its two layers. CREG charts run
-/// on a device that already holds a multi-gigabyte model resident, and every
-/// result it can chart is capped at `DatabaseClient.defaultRowCap` rows, so
-/// halving each layer still admits the widest table in the schema catalog with
-/// room to spare while capping the worst case at 32 MiB rather than 64 MiB.
-enum CREGChartRenderCache {
-  static let configuration = AutoChartRenderCacheConfiguration(
-    maximumTableEntries: 8,
-    maximumTableCost: 16 * 1_024 * 1_024,
-    maximumRenderEntries: 16,
-    maximumRenderCost: 16 * 1_024 * 1_024)
+  static let live = CREGChartAnalysisClient(
+    analyzer: AutoChartAnalyzer(configuration: configuration))
 
-  /// Applies `configuration` the first time CREG prepares a chart.
-  ///
-  /// The package asks hosts to configure at startup so every chart in the
-  /// process sees the same limits. Every `AutoChartView` CREG builds renders a
-  /// table that came from a `ResultChartAnalysis`, so applying it there is
-  /// ordered before the first cached render without depending on an app
-  /// lifecycle the previews and tests don't have.
-  static func applyOnce() {
-    _ = isApplied
+  let analyzer: AutoChartAnalyzer
+
+  init(analyzer: AutoChartAnalyzer) {
+    self.analyzer = analyzer
   }
 
-  /// Releases the package's retained snapshots and prepared results.
-  ///
-  /// The package clears itself on a UIKit memory warning. This covers the
-  /// paths it cannot see: CREG dropping every analysis of its own.
-  static func releasePrepared() {
-    AutoChartRenderCache.removeAll()
-  }
-
-  private static let isApplied: Bool = {
-    AutoChartRenderCache.configure(configuration)
-    return true
-  }()
-}
-
-// MARK: - Inline preview
-
-@MainActor
-final class ResultChartAnalysis {
-  let table: CREGChartTable
-  let recommendations: [AutoChartRecommendation]
-
-  init(
+  func analyze(
     result: QueryResult,
     sql: String,
     question: String?,
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
-  ) {
-    CREGChartRenderCache.applyOnce()
-    let chart = CREGChartAdapter.recommendations(
+  ) async throws -> AutoChartAnalysis<Int> {
+    let input = try CREGChartAdapter.analysisInput(
       result: result,
       sql: sql,
       question: question,
       resultFingerprint: resultFingerprint,
       dataIdentity: dataIdentity)
-    table = chart.table
-    recommendations = chart.set.chartRecommendations
+    return try await analyzer.analyze(input.dataset, context: input.context)
+  }
+
+  func trimToMinimum() async {
+    await analyzer.trim(to: .minimum)
+  }
+
+  func removeAll() async {
+    await analyzer.removeAll()
+  }
+
+  var cacheStatistics: AutoChartCacheStatistics {
+    get async { await analyzer.cacheStatistics }
   }
 }
 
-@MainActor
-enum ResultPreviewChartCache {
-  private struct Entry {
-    var resultFingerprint: String
-    var sql: String
-    var question: String?
-    var analysis: ResultChartAnalysis
-  }
+extension CREGChartAnalysisClient: DependencyKey {
+  static let liveValue = CREGChartAnalysisClient.live
+  static let testValue = CREGChartAnalysisClient(
+    analyzer: AutoChartAnalyzer(configuration: .uncached))
+}
 
-  private static let limit = 64
-  private static var entries: [UUID: Entry] = [:]
-  private static var recency: [UUID] = []
-
-  static func analysis(
-    messageID: UUID,
-    resultFingerprint: String,
-    result: QueryResult,
-    sql: String,
-    question: String?
-  ) -> ResultChartAnalysis {
-    if let entry = entries[messageID],
-      entry.resultFingerprint == resultFingerprint,
-      entry.sql == sql,
-      entry.question == question
-    {
-      markRecent(messageID)
-      return entry.analysis
-    }
-    let analysis = ResultChartAnalysis(
-      result: result,
-      sql: sql,
-      question: question,
-      resultFingerprint: resultFingerprint,
-      dataIdentity: "CREG.Result.v1:\(messageID.uuidString.lowercased())")
-    entries[messageID] = Entry(
-      resultFingerprint: resultFingerprint,
-      sql: sql,
-      question: question,
-      analysis: analysis)
-    markRecent(messageID)
-    while recency.count > limit {
-      entries[recency.removeFirst()] = nil
-    }
-    return analysis
-  }
-
-  static func removeAll() {
-    entries.removeAll()
-    recency.removeAll()
-    // Every prepared render the package still holds was keyed on a table one of
-    // these analyses owned, so dropping them leaves it unreachable — with one
-    // exception: `ResultViewerView`'s cacheless initializer builds an analysis
-    // this cache never sees. That initializer is reached only from `#Preview`
-    // and the DEBUG-only accessibility harness, never from a shipping path, and
-    // the cost there is a re-prepare on the next render rather than a stale
-    // chart. Both callers of this method — a conversation switch and a memory
-    // warning — want the release regardless.
-    CREGChartRenderCache.releasePrepared()
-  }
-
-  private static func markRecent(_ messageID: UUID) {
-    recency.removeAll { $0 == messageID }
-    recency.append(messageID)
+extension DependencyValues {
+  var chartAnalysis: CREGChartAnalysisClient {
+    get { self[CREGChartAnalysisClient.self] }
+    set { self[CREGChartAnalysisClient.self] = newValue }
   }
 }

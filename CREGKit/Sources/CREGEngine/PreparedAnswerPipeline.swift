@@ -31,9 +31,12 @@ func preparedAnswerStream(
             telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID
             telemetry.preparedCacheHit = false
             telemetry.preparedCacheMissReason = reason
-            if prepared.preparationTelemetry.queryOrigin == .recoverySuggestion {
-              telemetry.queryOrigin = .recoverySuggestion
-            }
+            // Stamp the prepared surface's origin exactly as the cache-hit
+            // path does, so telemetry segmented by query_origin does not vary
+            // with the cache-hit rate.
+            telemetry.queryOrigin =
+              prepared.preparationTelemetry.queryOrigin == .recoverySuggestion
+              ? .recoverySuggestion : .preparedFollowUp
             if telemetry.timeoutStage == nil {
               telemetry.timeoutStage = timeoutStage
             }

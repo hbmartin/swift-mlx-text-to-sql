@@ -9,9 +9,7 @@ extension AppFeature {
     context: FollowUpSuggestionContext
   ) -> Effect<Action> {
     guard
-      state.activeTurn == nil,
-      state.queue.isEmpty,
-      state.pendingTurnPersistence == nil,
+      state.isInferenceIdle,
       state.modelReadiness == .ready,
       state.fmAvailability == .available,
       state.conversations[id: conversationID] != nil
@@ -48,11 +46,7 @@ extension AppFeature {
     state: inout State
   ) -> Effect<Action> {
     guard
-      state.activeTurn == nil,
-      state.queue.isEmpty,
-      state.pendingTurnPersistence == nil,
-      state.pendingScopeDiagnosis == nil,
-      state.followUpPreparation == nil,
+      state.isInferenceIdle,
       state.modelReadiness == .ready,
       state.fmAvailability == .available,
       let chat = state.chat,
@@ -124,11 +118,18 @@ extension AppFeature {
       }
       let batch = preparation.batch
       let lines = preparation.eventLines
-      return .run { _ in
+      let persistence = Effect<Action>.run { _ in
         try? await history.saveFollowUpBatch(conversationID, batch)
         try? await history.appendEvents(
           conversationID, sourceMessageID, lines)
       }
+      // An interrupted-diagnosis resume can occupy the slot ahead of the
+      // selected conversation's own persisted `.preparing` batch, whose only
+      // other resume hooks are activation and navigation. Re-check now that
+      // the slot is free again.
+      return .merge(
+        persistence,
+        resumeFollowUpPreparationIfIdle(state: &state))
     }
   }
 
@@ -140,15 +141,19 @@ extension AppFeature {
   func resumeInterruptedScopeDiagnosisIfIdle(
     state: inout State
   ) -> Effect<Action> {
+    guard let pending = state.pendingScopeDiagnosis else { return .none }
+    guard state.conversations[id: pending.conversationID] != nil else {
+      // The retained diagnosis can never resume once its conversation is
+      // gone; keeping it would gate preparation, resume, and model
+      // maintenance for the rest of the session.
+      state.pendingScopeDiagnosis = nil
+      return .none
+    }
     guard
-      let pending = state.pendingScopeDiagnosis,
-      state.activeTurn == nil,
-      state.queue.isEmpty,
-      state.pendingTurnPersistence == nil,
+      state.isTurnSchedulerIdle,
       state.followUpPreparation == nil,
       state.modelReadiness == .ready,
-      state.fmAvailability == .available,
-      state.conversations[id: pending.conversationID] != nil
+      state.fmAvailability == .available
     else { return .none }
     state.pendingScopeDiagnosis = nil
     return startFollowUpPreparation(
@@ -169,8 +174,7 @@ extension AppFeature {
   ) -> Effect<Action> {
     guard
       context.isRecoverySeed,
-      state.activeTurn == nil,
-      state.queue.isEmpty,
+      state.isTurnSchedulerIdle,
       state.fmAvailability == .available
     else {
       return startFollowUpPreparation(
@@ -208,7 +212,7 @@ extension AppFeature {
     else { return .none }
     state.pendingScopeDiagnosis = nil
     var context = pending.context
-    var verdictPersistence: Effect<Action> = .none
+    var verdictPersistence: Effect<Action>?
 
     if let verdict, case .turnFailure(let reason, _) = context.seed {
       context.seed = .turnFailure(reason: reason, scopeVerdict: verdict)
@@ -243,13 +247,25 @@ extension AppFeature {
         ])
     }
 
-    let preparation = startFollowUpPreparation(
-      state: &state,
-      conversationID: conversationID,
-      context: context)
+    guard let verdictPersistence else {
+      return startFollowUpPreparation(
+        state: &state,
+        conversationID: conversationID,
+        context: context)
+    }
     // Persist C's message/event enrichment before D can append preparation
-    // events, preserving the intended C-before-D order in events.jsonl.
-    return .concatenate(verdictPersistence, preparation)
+    // events, preserving the intended C-before-D order in events.jsonl. D
+    // starts through its own action so delivery re-checks the idle gates: a
+    // turn dispatched or a deletion committed during this write must veto
+    // the preparation. Chaining the raw preparation effect here would defer
+    // its cancel-ID registration behind the write, turning any
+    // `.cancel(id: .followUpPreparation)` issued in that window into a no-op
+    // and letting the preparation run as an uncancellable zombie.
+    return .concatenate(
+      verdictPersistence,
+      .send(
+        .scopeDiagnosisPersisted(
+          conversationID: conversationID, context: context)))
   }
 
   // MARK: - Conversation lifecycle helpers

@@ -11,16 +11,22 @@ import SwiftUI
 struct ResultViewerView: View {
   let result: QueryResult
   let runtimeMode: ModelRuntimeMode
-  let chartTable: CREGChartTable
-  let chartRecommendations: [AutoChartRecommendation]
+  let sql: String
+  let question: String?
+  let resultFingerprint: String
+  let chartDataIdentity: String?
   let persistPreference: (ResultPresentationPreference) -> Void
+  @Dependency(\.chartAnalysis) var chartAnalysisClient
   @Binding var textSize: ResultTableTextSize
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
   @State var resultMode: ResultPresentationPreference.Mode
-  @State var selectedSpecificationID: String?
-  @State var chartSelection: AutoChartSelection?
+  @State var selectedSpecificationID: AutoChartRecommendationID?
+  @State var chartSelection: AutoChartSelection<Int>?
+  @State var chartAnalysis: AutoChartAnalysis<Int>?
+  @State var preparedChart: AutoChartPreparedChart<Int>?
+  @State var chartPreparationFailed = false
   @State var copyFeedbackMessage: String?
   @State var copyFeedbackTrigger = 0
   @Environment(\.dismiss) var dismiss
@@ -49,7 +55,7 @@ struct ResultViewerView: View {
     persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
-    initialChartSelection: AutoChartSelection? = nil
+    initialChartSelection: AutoChartSelection<Int>? = nil
   ) {
     self.init(
       result: result,
@@ -79,7 +85,7 @@ struct ResultViewerView: View {
     persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
-    initialChartSelection: AutoChartSelection? = nil
+    initialChartSelection: AutoChartSelection<Int>? = nil
   ) {
     self.init(
       result: result,
@@ -107,33 +113,36 @@ struct ResultViewerView: View {
     persistPreference: @escaping (ResultPresentationPreference) -> Void,
     initialSearchText: String,
     initialSelection: ResultCellSelection?,
-    initialChartSelection: AutoChartSelection?
+    initialChartSelection: AutoChartSelection<Int>?
   ) {
-    let analysis =
-      cacheIdentity.map {
-        ResultPreviewChartCache.analysis(
-          messageID: $0.messageID,
-          resultFingerprint: $0.resultFingerprint,
-          result: result,
-          sql: sql,
-          question: question)
-      } ?? ResultChartAnalysis(result: result, sql: sql, question: question)
-    let recommendations = analysis.recommendations
-    let selectedID = CREGChartAdapter.resolvedRecommendation(
-      preferredID: preference?.specificationID,
-      in: recommendations)?.id
     self.result = result
     self.runtimeMode = runtimeMode
-    self.chartTable = analysis.table
-    self.chartRecommendations = recommendations
+    self.sql = sql
+    self.question = question
+    self.resultFingerprint = cacheIdentity?.resultFingerprint
+      ?? PreparedFollowUpIntegrity.fingerprint(result: result)
+    self.chartDataIdentity = cacheIdentity.map {
+      "CREG.Result.v2:\($0.messageID.uuidString.lowercased())"
+    }
     self.persistPreference = persistPreference
     self._textSize = textSize
     self._searchText = State(initialValue: initialSearchText)
     self._selectedCell = State(initialValue: initialSelection)
     self._resultMode = State(
-      initialValue: recommendations.isEmpty ? .table : preference?.mode ?? .chart)
-    self._selectedSpecificationID = State(initialValue: selectedID)
+      initialValue: preference?.mode ?? .chart)
+    self._selectedSpecificationID = State(initialValue: preference?.specificationID)
     self._chartSelection = State(initialValue: initialChartSelection)
+  }
+
+  var chartRecommendations: [AutoChartRecommendation] {
+    guard let chartAnalysis, case .charts(let recommendations) = chartAnalysis.outcome else {
+      return []
+    }
+    return recommendations
+  }
+
+  var analysisTaskID: String {
+    [resultFingerprint, chartDataIdentity ?? "", sql, question ?? ""].joined(separator: "|")
   }
 
   func columnWidths() -> [CGFloat] {
@@ -163,18 +172,17 @@ struct ResultViewerView: View {
   }
 
   var selectedRecommendation: AutoChartRecommendation? {
-    if let selectedSpecificationID,
-      let recommendation = chartRecommendations.first(where: {
-        $0.id == selectedSpecificationID
-      })
-    {
+    guard let chartAnalysis else { return nil }
+    switch chartAnalysis.resolve(selectedSpecificationID) {
+    case .exact(let recommendation), .defaulted(let recommendation, _):
       return recommendation
+    case .unavailable:
+      return nil
     }
-    return chartRecommendations.first
   }
 
   var filteredResult: QueryResult {
-    guard let indexes = chartTable.sourceRowIndexes(for: chartSelection) else {
+    guard let indexes = chartSelection?.sourceRowIDs else {
       return result
     }
     return QueryResult(
@@ -225,16 +233,22 @@ struct ResultViewerView: View {
 
         if resultMode == .chart, let selectedRecommendation {
           ScrollView {
-            AutoChartView(
-              table: chartTable,
-              recommendation: selectedRecommendation,
-              selection: $chartSelection,
-              interaction: .explore,
-              height: 360
-            )
-            .padding()
+            if let preparedChart {
+              AutoChartView(
+                preparedChart: preparedChart,
+                selection: $chartSelection,
+                presentation: .explorer(plotHeight: 360),
+                formatters: CREGChartAdapter.formatters
+              )
+              .padding()
+            } else {
+              ProgressView("Preparing chart")
+                .frame(maxWidth: .infinity)
+                .frame(height: 360)
+                .padding()
+            }
             if let reason = selectedRecommendation.rationale.first {
-              Label(reason, systemImage: "lightbulb")
+              Label(reason.defaultText, systemImage: "lightbulb")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
@@ -296,7 +310,55 @@ struct ResultViewerView: View {
     .onChange(of: selectedSpecificationID) { _, id in
       chartSelection = nil
       persistPreference(
-        ResultPresentationPreference(mode: .chart, specificationID: id))
+        ResultPresentationPreference(mode: resultMode, specificationID: id))
+    }
+    .task(id: analysisTaskID) {
+      chartAnalysis = nil
+      preparedChart = nil
+      chartPreparationFailed = false
+      do {
+        let analysis = try await chartAnalysisClient.analyze(
+          result: result,
+          sql: sql,
+          question: question,
+          resultFingerprint: resultFingerprint,
+          dataIdentity: chartDataIdentity)
+        chartAnalysis = analysis
+        switch analysis.resolve(selectedSpecificationID) {
+        case .exact(let recommendation), .defaulted(let recommendation, _):
+          preparedChart = analysis.primaryChart?.recommendation.id == recommendation.id
+            ? analysis.primaryChart : nil
+          selectedSpecificationID = recommendation.id
+        case .unavailable:
+          resultMode = .table
+          selectedSpecificationID = nil
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        chartAnalysis = nil
+      }
+    }
+    .task(id: selectedRecommendation?.id) {
+      chartSelection = nil
+      chartPreparationFailed = false
+      guard let chartAnalysis, let selectedRecommendation else {
+        preparedChart = nil
+        return
+      }
+      if chartAnalysis.primaryChart?.recommendation.id == selectedRecommendation.id {
+        preparedChart = chartAnalysis.primaryChart
+        return
+      }
+      preparedChart = nil
+      do {
+        preparedChart = try await chartAnalysis.prepare(selectedRecommendation.id)
+      } catch is CancellationError {
+        return
+      } catch {
+        chartPreparationFailed = true
+        resultMode = .table
+      }
     }
   }
 

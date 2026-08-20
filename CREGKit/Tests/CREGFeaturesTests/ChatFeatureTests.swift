@@ -958,7 +958,7 @@ private actor UserPersistenceOrderingGate {
     let questionID = UUID(90)
     let provisionalID = UUID(91)
     let preference = ResultPresentationPreference(
-      mode: .table, specificationID: "policy|table")
+      mode: .table, specificationID: chartTestRecommendationID("policy|table"))
     var state = Self.appState(selected: Self.conversationA)
     var activeTurn = AppFeature.ActiveTurn(
       questionID: questionID,
@@ -2115,6 +2115,352 @@ private actor UserPersistenceOrderingGate {
 
     #expect(preparations.recorded == ["started"])
     #expect(store.state.pendingTurnPersistence == nil)
+  }
+
+  /// A mid-foreground availability flip can leave a stale-enabled composer.
+  /// The committed submission must never be dropped — its composer text and
+  /// draft are already gone — so it queues and dispatches on recovery.
+  @Test func submissionDuringUnavailabilityQueuesInsteadOfDropping() async {
+    let availability = LockIsolated<FMAvailability>(
+      .unavailable(reason: .modelNotReady))
+    let runs = CallRecorder()
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: {
+      $0.fmStatus = FMStatusClient(availability: { availability.value })
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(QuestionSubmission(question: "Which fund leads?")))))
+    await store.finish()
+
+    #expect(runs.recorded.isEmpty)
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.queue.map(\.question) == ["Which fund leads?"])
+
+    availability.setValue(.available)
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(runs.recorded == ["Which fund leads?"])
+    #expect(store.state.queue.isEmpty)
+  }
+
+  /// fmAvailability is the only dispatch gate that reopens without an action
+  /// of its own. A queued question stranded behind it must dispatch when
+  /// availability recovers mid-foreground, without a scene transition.
+  @Test func strandedQueueDispatchesWhenAvailabilityRecoversInForeground() async {
+    var state = Self.appState()
+    let activeID = UUID(70)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    state.queue = [
+      QueuedQuestion(
+        id: UUID(71),
+        conversationID: Self.conversationA,
+        question: "Run after AI returns",
+        submittedAt: Date(timeIntervalSince1970: 1))
+    ]
+    let availability = LockIsolated<FMAvailability>(.available)
+    let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
+    let runs = CallRecorder()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.fmStatus = FMStatusClient(
+        availability: { availability.value },
+        availabilityUpdates: {
+          AsyncStream { continuation in
+            watchers.withValue { $0.append(continuation) }
+          }
+        })
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    availability.setValue(.unavailable(reason: .modelNotReady))
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.finishedEvent()))
+    await store.receive(.turnPersistenceFinished(activeID))
+    await store.receive(.dispatchNextIfIdle)
+
+    #expect(runs.recorded.isEmpty)
+    #expect(store.state.queue.count == 1)
+    while watchers.value.isEmpty { await Task.yield() }
+
+    // Availability recovers with the app still foregrounded: the armed
+    // watch re-runs the scheduler and the stranded question dispatches.
+    availability.setValue(.available)
+    watchers.value.forEach { $0.yield(.available) }
+    await store.receive(.dispatchNextIfIdle)
+
+    #expect(runs.recorded == ["Run after AI returns"])
+    #expect(store.state.queue.isEmpty)
+
+    watchers.value.forEach { $0.finish() }
+    await store.finish()
+    await store.skipReceivedActions()
+  }
+
+  /// Deleting the diagnosed conversation must clear the retained diagnosis;
+  /// an unresumable one would gate preparation, resume, and model
+  /// maintenance for the rest of the session.
+  @Test func deletingTheDiagnosedConversationClearsThePendingDiagnosis() async {
+    let sourceMessageID = UUID(77)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: sourceMessageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState(selected: Self.conversationA)
+    state.pendingScopeDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: Self.conversationB,
+      messageID: sourceMessageID,
+      context: context)
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteConversationTapped(Self.conversationB))
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    await store.finish()
+    await store.skipReceivedActions()
+  }
+
+  /// A retained diagnosis whose conversation no longer exists clears on the
+  /// next resume attempt instead of blocking the idle gates forever.
+  @Test func unresumableRetainedDiagnosisClearsOnActivation() async {
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: UUID(77),
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState()
+    state.pendingScopeDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: UUID(200),
+      messageID: UUID(77),
+      context: context)
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.historyClient = .noop()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameActive)
+    await store.finish()
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+  }
+
+  /// A question submitted while the Scope Verdict's history write is still
+  /// in flight owns the scheduler; the write's completion must veto Recovery
+  /// Suggestion preparation instead of racing the new turn for the
+  /// serializer with an uncancellable zombie effect.
+  @Test func submissionDuringVerdictPersistenceVetoesRecoveryPreparation() async {
+    var state = Self.appState()
+    let activeID = UUID(98)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Who manages each property?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let gate = AssistantPersistenceGate()
+    let preparations = CallRecorder()
+    let batchSaves = CallRecorder()
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { _ in } },
+      prepareFollowUps: { _ in
+        preparations.record("started")
+        return AsyncStream { $0.finish() }
+      })
+    var history = HistoryClient.noop()
+    history.persistScopeDiagnosis = { _, _, _, _ in
+      await gate.holdFirstAssistant()
+    }
+    history.saveFollowUpBatch = { _, _ in batchSaves.record("saved") }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history, pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = history
+      $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
+        ScopeVerdictRecord(verdict: .likelyAnswerableModelFailed)
+      }
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .generationExhausted)))
+    await gate.waitUntilHeld()
+
+    // The verdict write is mid-flight when a new question dispatches.
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(QuestionSubmission(question: "New question")))))
+    #expect(store.state.activeTurn?.question == "New question")
+
+    await gate.release()
+    await store.receive(\.scopeDiagnosisPersisted)
+
+    #expect(preparations.recorded.isEmpty)
+    #expect(batchSaves.recorded.isEmpty)
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.activeTurn?.question == "New question")
+
+    await store.send(.chat(.stopTapped))
+    await store.finish()
+    await store.skipReceivedActions()
+  }
+
+  /// A resumed interrupted diagnosis can occupy the preparation slot ahead
+  /// of the selected conversation's persisted `.preparing` batch. When that
+  /// preparation finishes, the freed slot must resume the waiting batch
+  /// instead of leaving it for the next activation.
+  @Test func finishedPreparationResumesTheSelectedConversationsWaitingBatch() async {
+    let prepared = Self.preparedFollowUp()
+    let contextA = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    let batchA = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: contextA,
+      status: .preparing,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    let sourceB = UUID(88)
+    let contextB = FollowUpSuggestionContext(
+      sourceAssistantMessageID: sourceB,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState(selected: Self.conversationA)
+    state.chat?.followUpBatch = batchA
+    state.followUpPreparation = AppFeature.FollowUpPreparationState(
+      conversationID: Self.conversationB,
+      context: contextB,
+      batch: PreparedFollowUpBatch(
+        sourceAssistantMessageID: sourceB,
+        context: contextB,
+        status: .preparing,
+        updatedAt: Date(timeIntervalSince1970: 2)))
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .followUpPreparationEvent(
+        conversationID: Self.conversationB,
+        sourceMessageID: sourceB,
+        event: .finished))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(
+      preparedContexts.value.map(\.sourceAssistantMessageID)
+        == [prepared.sourceAssistantMessageID])
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.chat?.followUpBatch?.status == .completed)
+  }
+
+  /// The debug capture funnels 87 serialized FM calls into the shared
+  /// serializer while turn deadlines keep ticking; it must refuse to start
+  /// unless the scheduler is fully idle.
+  @Test func answerabilityCaptureRefusesToStartUnlessSchedulerIsIdle() async {
+    var state = Self.appState()
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: UUID(90),
+      conversationID: Self.conversationA,
+      question: "running",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let judged = LockIsolated(0)
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
+        judged.withValue { $0 += 1 }
+        return nil
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.answerabilityCaptureTapped)
+    await store.finish()
+
+    #expect(store.state.isCapturingAnswerability == false)
+    #expect(judged.value == 0)
+  }
+
+  /// A capture completion that lost the race with its cancellation must not
+  /// leave the finished archive orphaned in tmp.
+  @Test func staleCaptureCompletionRemovesTheOrphanedArchive() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("stale-answerability-\(UUID().uuidString).zip")
+    try Data("zip".utf8).write(to: url)
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.answerabilityCaptureReady(url))
+    await store.finish()
+
+    #expect(store.state.answerabilityCaptureExport == nil)
+    #expect(!FileManager.default.fileExists(atPath: url.path))
   }
 
   @Test func debugLaunchBenchmarkWaitsForReadinessAndRunsStandalone() async {

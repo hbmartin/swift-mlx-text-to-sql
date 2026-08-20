@@ -29,6 +29,12 @@ extension AppFeature {
       state.followUpPreparation = nil
       effects.append(.cancel(id: CancelID.followUpPreparation))
     }
+    if state.pendingScopeDiagnosis?.conversationID == summary.id {
+      // A diagnosis for a deleted conversation can never resume, and a
+      // retained one gates preparation and model maintenance session-long.
+      state.pendingScopeDiagnosis = nil
+      effects.append(.cancel(id: CancelID.scopeDiagnosis))
+    }
 
     if state.chat?.conversationID == summary.id {
       if let nextSummary = state.conversations.first {
@@ -300,12 +306,7 @@ extension AppFeature {
   }
 
   func canStartModelPreparation(state: State) -> Bool {
-    !state.modelPreparationInFlight
-      && state.activeTurn == nil
-      && state.pendingTurnPersistence == nil
-      && state.pendingScopeDiagnosis == nil
-      && state.queue.isEmpty
-      && state.followUpPreparation == nil
+    !state.modelPreparationInFlight && state.isInferenceIdle
   }
 
   func outcomeName(_ outcome: TurnOutcome) -> String {

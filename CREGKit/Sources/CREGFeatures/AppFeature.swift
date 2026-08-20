@@ -281,6 +281,23 @@ public struct AppFeature: Sendable {
     public func queuedQuestions(in conversationID: UUID) -> [QueuedQuestion] {
       queue.filter { $0.conversationID == conversationID }
     }
+
+    /// The ADR 0008 idle core: no turn is active, queued, or holding the
+    /// completed-turn persistence barrier.
+    public var isTurnSchedulerIdle: Bool {
+      activeTurn == nil && queue.isEmpty && pendingTurnPersistence == nil
+    }
+
+    /// The idle core plus every lower-priority inference owner: no Scope
+    /// Verdict outstanding and no follow-up preparation running. Low-priority
+    /// FM/MLX work (preparation, diagnosis resume, model preparation, debug
+    /// captures) may start only from here, so every such gate shares this
+    /// one predicate instead of hand-enumerating the conditions.
+    public var isInferenceIdle: Bool {
+      isTurnSchedulerIdle
+        && pendingScopeDiagnosis == nil
+        && followUpPreparation == nil
+    }
   }
 
   public enum Action: BindableAction, Sendable, Equatable {
@@ -329,6 +346,12 @@ public struct AppFeature: Sendable {
       conversationID: UUID,
       messageID: UUID,
       verdict: ScopeVerdictRecord?)
+    /// The Scope Verdict's durable enrichment finished; Recovery Suggestion
+    /// preparation (D) starts through this action so its idle gates are
+    /// re-checked at delivery time rather than captured before the write.
+    case scopeDiagnosisPersisted(
+      conversationID: UUID,
+      context: FollowUpSuggestionContext)
     case supportBundleExportTapped
     case supportBundleReady(SupportBundleExport)
     case supportBundleDismissed
@@ -346,6 +369,7 @@ public struct AppFeature: Sendable {
     case followUpPreparation
     case scopeDiagnosis
     case answerabilityCapture
+    case fmAvailabilityWatch
     case search
     case deleteCountdown
     case bannerTimeout
@@ -453,6 +477,15 @@ public struct AppFeature: Sendable {
         // Keep the pending context while cancelling its FM call. Reactivation
         // starts Recovery Suggestion preparation without a verdict, preserving
         // the lower-priority work without running it in the background.
+        if state.isCapturingAnswerability {
+          // Cancellation drops the effect's completion action, so this is the
+          // only record that the capture died rather than finishing.
+          diagnostics.info(
+            category: .model,
+            code: "answerability_capture_cancelled",
+            summary:
+              "Deactivation cancelled the in-flight answerability capture; no export was produced.")
+        }
         state.isCapturingAnswerability = false
         var followOnEffects: [Effect<Action>] = []
         if let preparation, !preparation.eventLines.isEmpty {
@@ -468,6 +501,7 @@ public struct AppFeature: Sendable {
           .cancel(id: CancelID.followUpPreparation),
           .cancel(id: CancelID.scopeDiagnosis),
           .cancel(id: CancelID.answerabilityCapture),
+          .cancel(id: CancelID.fmAvailabilityWatch),
           .merge(followOnEffects))
 
       case .preparationJournalLoaded(let previous):
@@ -889,12 +923,18 @@ public struct AppFeature: Sendable {
           messageID: messageID,
           verdict: verdict)
 
+      case .scopeDiagnosisPersisted(let conversationID, let context):
+        // Delivery re-checks the idle gates inside startFollowUpPreparation:
+        // a turn dispatched or a conversation deleted while the verdict
+        // persisted vetoes the preparation instead of racing it.
+        return startFollowUpPreparation(
+          state: &state,
+          conversationID: conversationID,
+          context: context)
+
       case .chat(.delegate(.submitQuestion(let submission))):
         refreshFMAvailability(state: &state)
-        guard state.modelReadiness == .ready,
-          state.fmAvailability == .available,
-          let chat = state.chat
-        else { return .none }
+        guard let chat = state.chat else { return .none }
         let conversationID = chat.conversationID
         let preparation = state.followUpPreparation
         state.followUpPreparation = nil
@@ -910,8 +950,9 @@ public struct AppFeature: Sendable {
           }
           try? await history.clearFollowUpBatch(conversationID)
         }
-        if state.activeTurn == nil, state.queue.isEmpty,
-          state.pendingTurnPersistence == nil
+        if state.isTurnSchedulerIdle,
+          state.modelReadiness == .ready,
+          state.fmAvailability == .available
         {
           let userTurn = dispatch(
             state: &state,
@@ -921,6 +962,10 @@ public struct AppFeature: Sendable {
             cancelPreparation,
             .merge(clearBatch, userTurn))
         }
+        // Never drop a committed submission: the composer is already cleared
+        // and the draft overwritten. A submission that cannot dispatch —
+        // scheduler busy, model not ready, or Apple Intelligence unavailable —
+        // becomes a Queued Question and dispatches when the gate reopens.
         let queued = QueuedQuestion(
           id: uuid(),
           conversationID: conversationID,
@@ -932,8 +977,16 @@ public struct AppFeature: Sendable {
           category: .submission,
           code: "question_queued",
           summary: "A submission became a queued question behind active work.",
-          context: ["queue_depth": String(state.queue.count)])
-        return .concatenate(cancelPreparation, clearBatch)
+          context: [
+            "queue_depth": String(state.queue.count),
+            "fm_available": String(state.fmAvailability == .available),
+          ])
+        // Re-running the scheduler here is what arms the availability watch
+        // when the queue is stranded behind an unavailable FM, and what
+        // drains an already-idle queue after recovery.
+        return .concatenate(
+          cancelPreparation,
+          .merge(clearBatch, dispatchNextIfIdle(state: &state)))
 
       case .chat(.delegate(.stopActiveTurn)):
         return stopActiveTurn(state: &state)
@@ -1004,7 +1057,12 @@ public struct AppFeature: Sendable {
       case .answerabilityCaptureTapped:
         #if DEBUG
           guard !state.isCapturingAnswerability else { return .none }
-          guard state.fmAvailability == .available else { return .none }
+          // The capture's 87 serialized Scope Verdict calls share the
+          // InferenceSerializer with turn stages, whose deadlines keep
+          // ticking while queued. Start only from a fully idle scheduler.
+          guard state.fmAvailability == .available,
+            state.isInferenceIdle
+          else { return .none }
           state.isCapturingAnswerability = true
           state.answerabilityCaptureExport = nil
           let capturedAt = now
@@ -1023,7 +1081,13 @@ public struct AppFeature: Sendable {
         #endif
 
       case .answerabilityCaptureReady(let url):
-        guard state.isCapturingAnswerability else { return .none }
+        guard state.isCapturingAnswerability else {
+          // A cancelled capture's completion can win the race with its
+          // cancellation. The surface that started it is gone, so remove the
+          // finished archive instead of orphaning it in tmp.
+          guard let url else { return .none }
+          return .run { _ in try? FileManager.default.removeItem(at: url) }
+        }
         state.isCapturingAnswerability = false
         state.answerabilityCaptureExport = url
         if url == nil {
