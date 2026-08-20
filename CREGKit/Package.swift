@@ -86,6 +86,11 @@ let package = Package(
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         .product(name: "ZIPFoundation", package: "ZIPFoundation"),
         .product(name: "GRDB", package: "GRDB.swift"),
+      ],
+      resources: [
+        // Byte-exact copy of eval/gold/answerability.jsonl for the debug
+        // on-device capture; a CREGFeaturesTests test pins the equality.
+        .copy("Resources/answerability.jsonl")
       ]
     ),
     .target(
@@ -102,6 +107,13 @@ let package = Package(
     .executableTarget(
       name: "creg-eval-cli",
       dependencies: ["CREGCore", "CREGData", "CREGInference", "CREGEngine"]
+    ),
+    // Offline answerability scoring (docs/eval.md "Answerability"): corpus +
+    // captured FM verdicts in, deterministic confusion matrix out. No FM, no
+    // database, no MLX — it runs identically on macOS 15 and in CI.
+    .executableTarget(
+      name: "creg-answerability-cli",
+      dependencies: ["CREGCore"]
     ),
     // Test-only helpers shared across test targets. Not exposed as a product,
     // so it stays out of the dependency graph of anything that consumes CREGKit.

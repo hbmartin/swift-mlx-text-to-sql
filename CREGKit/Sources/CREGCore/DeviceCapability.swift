@@ -5,17 +5,18 @@ import Foundation
 /// The bundled `SQLModel` is roughly 1.75 GB resident once loaded. Below the
 /// floor the app is jetsammed during model preparation rather than answering
 /// slowly, so the floor is enforced before any model load is attempted rather
-/// than surfaced as a runtime failure.
+/// than surfaced as a runtime failure. The floor also guarantees Apple
+/// Intelligence eligibility (ADR 0011): every admitted device carries an
+/// A17 Pro or newer, so an FM `deviceNotEligible` state is unreachable.
 public enum DeviceCapability: Sendable {
-  /// The lowest supported iPhone: iPhone 15 (`iPhone15,4`).
+  /// The lowest supported iPhone: iPhone 15 Pro (`iPhone16,1`).
   ///
-  /// The major/minor split matters. Apple's identifier families do not line up
-  /// with marketing names across this exact boundary: `iPhone15,2` and
-  /// `iPhone15,3` are the iPhone 14 Pro and 14 Pro Max, while `iPhone15,4` and
-  /// `iPhone15,5` are the iPhone 15 and 15 Plus. A plain `major >= 15`
-  /// comparison would admit both iPhone 14 Pro models.
-  static let minimumMajor = 15
-  static let minimumMinorAtMinimumMajor = 4
+  /// Apple's identifier families do not line up with marketing names:
+  /// `iPhone16,1` and `iPhone16,2` are the iPhone 15 Pro and 15 Pro Max,
+  /// while `iPhone15,4` and `iPhone15,5` are the base iPhone 15 and 15 Plus —
+  /// A16 devices that cannot run Apple Intelligence. Major 16 is therefore
+  /// exactly the Apple Intelligence boundary.
+  static let minimumMajor = 16
 
   /// Whether the identifier names an iPhone at or above the floor.
   ///
@@ -24,12 +25,10 @@ public enum DeviceCapability: Sendable {
   /// bare `arm64` a simulator reports when it does not expose a model
   /// identifier.
   public static func isSupported(identifier: String) -> Bool {
-    guard let (major, minor) = iPhoneVersion(identifier: identifier) else {
+    guard let (major, _) = iPhoneVersion(identifier: identifier) else {
       return false
     }
-    if major > minimumMajor { return true }
-    if major < minimumMajor { return false }
-    return minor >= minimumMinorAtMinimumMajor
+    return major >= minimumMajor
   }
 
   /// Parses `iPhone<major>,<minor>`, rejecting every other shape.
@@ -83,5 +82,5 @@ public enum DeviceCapability: Sendable {
 
   /// The user-facing requirement, shared by the wall and the pipeline guard.
   public static let requirementMessage =
-    "CREG requires iPhone 15 or newer to run its on-device SQL model."
+    "CREG requires iPhone 15 Pro or newer to run its on-device SQL model and Apple Intelligence."
 }

@@ -23,7 +23,7 @@ One turn moves through:
 ```text
 question
   → standalone rewrite
-  → ambiguity gate
+  → ambiguity gate (ships bypassed: sensitivity 0)
   → SQL generation
   → read-only execution
   → bounded repair

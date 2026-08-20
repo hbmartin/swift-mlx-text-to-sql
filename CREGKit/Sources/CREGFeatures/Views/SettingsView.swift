@@ -102,6 +102,10 @@ struct SettingsView: View {
             "Creates a ZIP with your conversation history, drafts, feedback, sanitized diagnostics, and model/build manifests — not the model weights or the portfolio database. It contains your questions and result data; review before sending."
           )
         }
+
+        #if DEBUG
+          answerabilityDebugSection
+        #endif
       }
       .navigationTitle("Settings")
       .inlineNavigationTitle()
@@ -119,6 +123,37 @@ struct SettingsView: View {
       }
     }
   }
+
+  #if DEBUG
+    private var answerabilityDebugSection: some View {
+      Section {
+        Button {
+          store.send(.answerabilityCaptureTapped)
+        } label: {
+          if store.isCapturingAnswerability {
+            HStack(spacing: 8) {
+              ProgressView()
+              Text("Capturing scope verdicts…")
+            }
+          } else {
+            Label("Capture answerability verdicts", systemImage: "checklist")
+          }
+        }
+        .disabled(store.isCapturingAnswerability)
+        if let export = store.answerabilityCaptureExport {
+          ShareLink(item: export) {
+            Label("Share capture", systemImage: "square.and.arrow.up")
+          }
+        }
+      } header: {
+        Text("Answerability (debug)")
+      } footer: {
+        Text(
+          "Runs the bundled answerability corpus through the on-device Foundation Model and exports the verdicts for the offline scorer (docs/eval.md)."
+        )
+      }
+    }
+  #endif
 
   /// The theme override. `.system` is the default and the app ships no
   /// `UIUserInterfaceStyle`, so leaving this alone means CREG follows iOS.

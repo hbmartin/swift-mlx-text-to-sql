@@ -174,9 +174,32 @@ extension AppFeature {
     syncSchedulerProjection(into: &state)
   }
 
+  /// Re-reads Apple Intelligence availability and re-projects the submission
+  /// gate. Availability is a synchronous system read, so this runs inline on
+  /// appearance and scene activation rather than through an effect.
+  func refreshFMAvailability(state: inout State) {
+    let availability = fmStatus.availability()
+    guard availability != state.fmAvailability else { return }
+    state.fmAvailability = availability
+    if case .unavailable(let reason) = availability {
+      // The device floor admits only Apple Intelligence-capable hardware
+      // (ADR 0011), so eligibility can only fail if the floor regressed.
+      assert(
+        reason != .deviceNotEligible,
+        "FM reports deviceNotEligible on a device the floor admitted.")
+      diagnostics.info(
+        category: .submission,
+        code: "fm_unavailable",
+        summary: "Apple Intelligence is unavailable; submission is gated.",
+        context: ["reason": reason.label])
+    }
+    syncSchedulerProjection(into: &state)
+  }
+
   func syncSchedulerProjection(into state: inout State) {
     guard var chat = state.chat else { return }
-    chat.isSubmissionEnabled = state.modelReadiness == .ready
+    chat.isSubmissionEnabled =
+      state.modelReadiness == .ready && state.fmAvailability == .available
     chat.queued = state.queue.filter { $0.conversationID == chat.conversationID }
     if let active = state.activeTurn,
       active.conversationID == chat.conversationID
@@ -296,13 +319,6 @@ extension AppFeature {
   }
 
   func timeoutStage(_ stage: String?) -> String {
-    guard let stage else { return "none" }
-    return switch stage {
-    case "turn", "generation", "validation", "execution", "grounding",
-      "rewrite", "gate", "narration", "cancelled":
-      stage
-    default:
-      "unknown"
-    }
+    TurnTelemetry.normalizedTimeoutStage(stage)
   }
 }

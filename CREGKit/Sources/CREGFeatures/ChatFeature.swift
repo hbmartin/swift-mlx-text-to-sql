@@ -155,6 +155,7 @@ public struct ChatFeature: Sendable {
     case sendTapped
     case starterQuestionTapped(StarterQueryID)
     case preparedFollowUpTapped(UUID)
+    case retryFailedTurnTapped(messageID: UUID)
     case stopTapped
     case cancelQueuedTapped(UUID)
     case askAgainTapped
@@ -329,6 +330,27 @@ public struct ChatFeature: Sendable {
           clearsComposer: false,
           preparedFollowUp: prepared,
           clearsFollowUpBatch: false)
+
+      case .retryFailedTurnTapped(let messageID):
+        guard
+          let message = state.messages[id: messageID],
+          case .failedTurn = message.body,
+          let question = message.devInfo?.originalQuestion,
+          !question.isEmpty
+        else { return .none }
+        state.isSubmissionPending = false
+        diagnostics.info(
+          category: .submission,
+          code: "chat_failed_turn_retried",
+          summary: "A failed turn's Try again affordance resubmitted it.",
+          context: [
+            "failure_reason":
+              message.devInfo?.failureReason?.label ?? "unknown"
+          ])
+        return commitSubmission(
+          state: &state,
+          submittedQuestion: question,
+          clearsComposer: false)
 
       case .stopTapped:
         guard state.isProcessing else { return .none }

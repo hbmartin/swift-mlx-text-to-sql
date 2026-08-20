@@ -37,6 +37,7 @@ extension QueryPipeline {
             originalQuestion: question,
             runtimeMode: failure.mode)
           telemetry.terminalError = "[\(failure.code)] \(failure.diagnostic)"
+          telemetry.failureReason = .pipelineUnavailable
           continuation.yield(.turnStarted(question: question))
           continuation.yield(
             .questionResolved(
@@ -46,7 +47,7 @@ extension QueryPipeline {
               elapsedMicroseconds: 0))
           continuation.yield(
             .turnFinished(
-              outcome: .failed(message: failure.userMessage),
+              outcome: .failed(reason: .pipelineUnavailable),
               telemetry: telemetry))
           continuation.finish()
         }
@@ -72,7 +73,7 @@ extension QueryPipeline {
             stage.observe(event)
 
             guard
-              case .turnFinished(.failed, var telemetry) = event,
+              case .turnFinished(.failed(let reason), var telemetry) = event,
               !didReport
             else {
               continuation.yield(event)
@@ -80,6 +81,10 @@ extension QueryPipeline {
             }
 
             didReport = true
+            // Diagnostics only: the typed reason emitted at the failure site
+            // is authoritative and passes through untouched — this wrapper
+            // never rewrites the outcome, it enriches the log record and the
+            // developer-facing terminalError.
             let failure = PipelineTerminalFailure(
               stage: stage,
               telemetry: telemetry)
@@ -96,10 +101,11 @@ extension QueryPipeline {
                 code: failure.code,
                 summary: failure.summary,
                 details: logDiagnostic,
-                context: failure.context))
+                context: failure.context.merging(
+                  ["failure_reason": reason.label]) { current, _ in current }))
             continuation.yield(
               .turnFinished(
-                outcome: .failed(message: failure.userMessage),
+                outcome: .failed(reason: reason),
                 telemetry: telemetry))
           }
           continuation.finish()
@@ -166,7 +172,6 @@ private struct PipelineTerminalFailure: Sendable {
   var category: DiagnosticEvent.Category
   var code: String
   var summary: String
-  var userMessage: String
   var diagnostic: String
   var context: [String: String]
 
@@ -174,14 +179,12 @@ private struct PipelineTerminalFailure: Sendable {
     category: DiagnosticEvent.Category,
     code: String,
     summary: String,
-    userMessage: String,
     diagnostic: String,
     context: [String: String]
   ) {
     self.category = category
     self.code = code
     self.summary = summary
-    self.userMessage = userMessage
     self.diagnostic = diagnostic
     self.context = context
   }
@@ -231,9 +234,6 @@ private struct PipelineTerminalFailure: Sendable {
         summary: cancelled
           ? "The on-device query turn was cancelled."
           : "The on-device query turn exceeded its deadline.",
-        userMessage: cancelled
-          ? "That answer was cancelled. Please try again."
-          : "That answer took too long. Please try again.",
         diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
         context: baseContext.merging(["timeout_stage": timeoutStage]) {
           current, _ in current
@@ -245,8 +245,6 @@ private struct PipelineTerminalFailure: Sendable {
         category: .pipeline,
         code: "pipeline_foundation_model_failed",
         summary: "The on-device language service failed.",
-        userMessage:
-          "The on-device language service couldn’t finish this step. Try again.",
         diagnostic: terminalDiagnostic,
         context: baseContext)
     } else if lastFailure?.validationReport?.issue?.kind == .databaseUnavailable {
@@ -254,8 +252,6 @@ private struct PipelineTerminalFailure: Sendable {
         category: .database,
         code: "pipeline_portfolio_database_unavailable",
         summary: "The bundled portfolio database is unavailable.",
-        userMessage:
-          "CREG’s portfolio data is unavailable. Reinstall CREG; if the problem continues, contact support.",
         diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
         context: baseContext)
     } else if let lastFailure, lastFailure.sql == nil {
@@ -263,8 +259,6 @@ private struct PipelineTerminalFailure: Sendable {
         category: .pipeline,
         code: "pipeline_model_generation_failed",
         summary: "The SQL model failed to generate a query.",
-        userMessage:
-          "The SQL model couldn’t run. Try again; if the problem continues, reinstall CREG.",
         diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
         context: baseContext)
     } else if lastFailure != nil {
@@ -272,8 +266,6 @@ private struct PipelineTerminalFailure: Sendable {
         category: .database,
         code: "pipeline_database_execution_failed",
         summary: "The generated portfolio query could not be executed.",
-        userMessage:
-          "CREG couldn’t run a valid portfolio query. Try rephrasing the question.",
         diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
         context: baseContext)
     } else {
@@ -281,7 +273,6 @@ private struct PipelineTerminalFailure: Sendable {
         category: .pipeline,
         code: "pipeline_unexpected_failure",
         summary: "The query pipeline ended unexpectedly.",
-        userMessage: "CREG couldn’t finish that answer. Please try again.",
         diagnostic: fallbackDiagnostic,
         context: baseContext)
     }

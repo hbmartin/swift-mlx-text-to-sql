@@ -53,9 +53,12 @@ func preparedAnswerStream(
         cacheMissReason = .modelRevision
       } else if prepared.provenance.runtimeMode != mode {
         cacheMissReason = .runtimeMode
-      } else if prepared.provenance.preparationPolicyVersion
-        != "prepared-follow-up-v1|\(configuration.repairPolicyVersion)"
-      {
+      } else if ![
+        PreparedQueryProvenance.followUpPolicyVersion(
+          repairPolicyVersion: configuration.repairPolicyVersion),
+        PreparedQueryProvenance.recoverySuggestionPolicyVersion(
+          repairPolicyVersion: configuration.repairPolicyVersion),
+      ].contains(prepared.provenance.preparationPolicyVersion) {
         cacheMissReason = .preparationPolicyVersion
       } else if prepared.provenance.databaseFingerprint != db.fingerprint {
         cacheMissReason = .databaseFingerprint
@@ -110,7 +113,11 @@ func preparedAnswerStream(
         originalQuestion: prepared.question,
         runtimeMode: mode)
       telemetry.standaloneQuestion = prepared.question
-      telemetry.queryOrigin = .preparedFollowUp
+      // A tapped Recovery Suggestion keeps its origin so telemetry and eval
+      // can separate the two surfaces.
+      telemetry.queryOrigin =
+        prepared.preparationTelemetry.queryOrigin == .recoverySuggestion
+        ? .recoverySuggestion : .preparedFollowUp
       telemetry.executionPath = .preparedFollowUp
       telemetry.preparedFollowUpID = prepared.id
       telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID

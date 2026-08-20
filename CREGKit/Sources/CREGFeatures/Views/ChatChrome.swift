@@ -5,6 +5,8 @@ import SwiftUI
 /// App-level context the chat surface renders but does not own.
 struct ChatChrome {
   var modelReadiness: AppFeature.ModelReadiness
+  /// Apple Intelligence availability; required for all new turns (ADR 0011).
+  var fmAvailability: FMAvailability = .available
   var modelPreparationReport: ModelPreparationReport?
   var developerMode: Bool
   var resultTableTextSize: Binding<ResultTableTextSize>

@@ -16,6 +16,7 @@ public actor InferenceSerializer {
     case followUpSuggestion = "follow_up_suggestion"
     case sqlGeneration = "sql_generation"
     case narration
+    case scopeVerdict = "scope_verdict"
   }
 
   private var tail: Task<Void, Never>?

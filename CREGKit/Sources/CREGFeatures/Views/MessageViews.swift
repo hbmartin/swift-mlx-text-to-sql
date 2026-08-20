@@ -41,10 +41,21 @@ struct MessageCell: View {
         Text(body)
           .frame(maxWidth: .infinity, alignment: .leading)
       case .failure(let body):
+        // Legacy persisted failures carry a finished sentence and no reason.
         FailureMessageView(
-          message: body,
-          diagnostic: message.devInfo?.terminalError,
+          presentation: FailurePresentation(
+            code: "legacy_turn_failure",
+            title: "Unable to answer",
+            message: body,
+            diagnostic: message.devInfo?.terminalError ?? ""),
           developerMode: developerMode)
+      case .failedTurn(let reason, let scopeVerdict):
+        FailureMessageView(
+          presentation: .turnFailure(
+            reason, diagnostic: message.devInfo?.terminalError),
+          scopeVerdict: scopeVerdict,
+          developerMode: developerMode,
+          retry: retryAction(for: reason))
       case .preparedAnswer(let prepared):
         HStack(spacing: 8) {
           ProgressView()
@@ -135,6 +146,8 @@ struct MessageCell: View {
         !batch.suggestions.isEmpty
       {
         FollowUpSuggestionsView(
+          title: batch.context?.isRecoverySeed == true
+            ? "Try one of these instead" : "Ask a follow-up",
           suggestions: batch.suggestions,
           select: { store.send(.preparedFollowUpTapped($0)) }
         )
@@ -142,6 +155,19 @@ struct MessageCell: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// Retry is offered only where the same question can plausibly succeed
+  /// unchanged — a timeout or a cancellation — and only while submission is
+  /// open.
+  private func retryAction(for reason: TurnFailureReason) -> (() -> Void)? {
+    switch reason {
+    case .timedOut, .cancelled:
+      guard store.isSubmissionEnabled else { return nil }
+      return { store.send(.retryFailedTurnTapped(messageID: message.id)) }
+    default:
+      return nil
+    }
   }
 
   private var unconfirmedMessage: String {
@@ -155,12 +181,13 @@ struct MessageCell: View {
 }
 
 struct FollowUpSuggestionsView: View {
+  var title = "Ask a follow-up"
   let suggestions: [PreparedFollowUp]
   let select: (UUID) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Ask a follow-up")
+      Text(title)
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
       ForEach(suggestions) { suggestion in

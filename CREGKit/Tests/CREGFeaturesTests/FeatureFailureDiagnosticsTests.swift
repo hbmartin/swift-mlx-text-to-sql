@@ -93,7 +93,7 @@ import Testing
           telemetry.standaloneQuestion = question
           continuation.yield(
             .turnFinished(
-              outcome: .failed(message: "Please try again."),
+              outcome: .failed(reason: .unexpected),
               telemetry: telemetry))
           continuation.finish()
         }
@@ -147,7 +147,7 @@ import Testing
           telemetry.generatedCount = 1
           continuation.yield(
             .turnFinished(
-              outcome: .failed(message: "Try again."),
+              outcome: .failed(reason: .unexpected),
               telemetry: telemetry))
           continuation.finish()
         }

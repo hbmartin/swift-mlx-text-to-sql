@@ -3,13 +3,40 @@ import Foundation
 
 /// The single completed exchange used to propose the next questions. Older
 /// conversation turns are deliberately excluded so suggestions stay local to
-/// the answer the user is looking at.
+/// the message the user is looking at.
+///
+/// The seed distinguishes what the exchange produced: an answer (Follow-up
+/// Suggestions) or a Turn Failure (Recovery Suggestions). Legacy persisted
+/// contexts predate the seed and carried bare `narration` + `result` fields;
+/// they decode as answer seeds.
 public struct FollowUpSuggestionContext: Sendable, Equatable, Codable {
+  public enum Seed: Sendable, Equatable, Codable {
+    case answer(result: QueryResult, narration: String)
+    case turnFailure(
+      reason: TurnFailureReason, scopeVerdict: ScopeVerdictRecord?)
+  }
+
   public var sourceAssistantMessageID: UUID
   public var question: String
   public var standaloneQuestion: String
-  public var narration: String
-  public var result: QueryResult
+  public var seed: Seed
+
+  public var isRecoverySeed: Bool {
+    if case .turnFailure = seed { return true }
+    return false
+  }
+
+  public init(
+    sourceAssistantMessageID: UUID,
+    question: String,
+    standaloneQuestion: String,
+    seed: Seed
+  ) {
+    self.sourceAssistantMessageID = sourceAssistantMessageID
+    self.question = question
+    self.standaloneQuestion = standaloneQuestion
+    self.seed = seed
+  }
 
   public init(
     sourceAssistantMessageID: UUID,
@@ -18,11 +45,41 @@ public struct FollowUpSuggestionContext: Sendable, Equatable, Codable {
     narration: String,
     result: QueryResult
   ) {
-    self.sourceAssistantMessageID = sourceAssistantMessageID
-    self.question = question
-    self.standaloneQuestion = standaloneQuestion
-    self.narration = narration
-    self.result = result
+    self.init(
+      sourceAssistantMessageID: sourceAssistantMessageID,
+      question: question,
+      standaloneQuestion: standaloneQuestion,
+      seed: .answer(result: result, narration: narration))
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case sourceAssistantMessageID, question, standaloneQuestion, seed,
+      narration, result
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    sourceAssistantMessageID = try values.decode(
+      UUID.self, forKey: .sourceAssistantMessageID)
+    question = try values.decode(String.self, forKey: .question)
+    standaloneQuestion = try values.decode(
+      String.self, forKey: .standaloneQuestion)
+    if let seed = try values.decodeIfPresent(Seed.self, forKey: .seed) {
+      self.seed = seed
+    } else {
+      seed = .answer(
+        result: try values.decode(QueryResult.self, forKey: .result),
+        narration: try values.decode(String.self, forKey: .narration))
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(
+      sourceAssistantMessageID, forKey: .sourceAssistantMessageID)
+    try values.encode(question, forKey: .question)
+    try values.encode(standaloneQuestion, forKey: .standaloneQuestion)
+    try values.encode(seed, forKey: .seed)
   }
 }
 
@@ -58,6 +115,24 @@ public struct PreparedQueryProvenance: Sendable, Equatable, Codable {
     self.databaseFingerprint = databaseFingerprint
     self.sqlFingerprint = sqlFingerprint
     self.resultFingerprint = resultFingerprint
+  }
+}
+
+extension PreparedQueryProvenance {
+  /// The policy stamp for answer-seeded Follow-up Suggestions.
+  public static func followUpPolicyVersion(
+    repairPolicyVersion: String
+  ) -> String {
+    "prepared-follow-up-v1|\(repairPolicyVersion)"
+  }
+
+  /// The policy stamp for failure-seeded Recovery Suggestions — a distinct
+  /// version so telemetry, eval, and cache validation can tell the two
+  /// surfaces apart.
+  public static func recoverySuggestionPolicyVersion(
+    repairPolicyVersion: String
+  ) -> String {
+    "recovery-suggestion-v1|\(repairPolicyVersion)"
   }
 }
 

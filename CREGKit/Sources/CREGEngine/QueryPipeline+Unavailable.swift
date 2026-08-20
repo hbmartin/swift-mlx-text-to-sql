@@ -10,6 +10,7 @@ extension QueryPipeline {
       AsyncStream { continuation in
         var telemetry = TurnTelemetry(originalQuestion: question)
         telemetry.terminalError = message
+        telemetry.failureReason = .pipelineUnavailable
         continuation.yield(.turnStarted(question: question))
         continuation.yield(
           .questionResolved(
@@ -19,7 +20,7 @@ extension QueryPipeline {
             elapsedMicroseconds: 0))
         continuation.yield(
           .turnFinished(
-            outcome: .failed(message: message),
+            outcome: .failed(reason: .pipelineUnavailable),
             telemetry: telemetry))
         continuation.finish()
       }

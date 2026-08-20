@@ -555,11 +555,17 @@ private actor UserPersistenceOrderingGate {
 
     #expect(store.state.activeTurn == nil)
     #expect(store.state.chat?.processing == nil)
-    guard case .failure(let message)? = store.state.chat?.messages.last?.body else {
+    guard
+      case .failedTurn(let reason, let scopeVerdict)? =
+        store.state.chat?.messages.last?.body
+    else {
       Issue.record("Expected unterminated stream recovery to render a failure")
       return
     }
-    #expect(message == "CREG couldn’t finish that answer. Please try again.")
+    #expect(reason == .unexpected)
+    #expect(scopeVerdict == nil)
+    #expect(
+      store.state.chat?.messages.last?.devInfo?.failureReason == .unexpected)
   }
 
   @Test func submitWhileActiveBecomesCancellableQueuedQuestion() async {
@@ -702,6 +708,32 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.chat?.followUpBatch?.suggestions == [prepared])
     #expect(store.state.activeTurn == nil)
     #expect(store.state.queue.isEmpty)
+  }
+
+  /// Apple Intelligence is required (ADR 0011): a ready SQL model alone must
+  /// not open the submission gate when the FM is unavailable, and the gate
+  /// reopens once availability returns on scene activation.
+  @Test func appleIntelligenceUnavailabilityGatesSubmission() async {
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: {
+      $0.fmStatus = FMStatusClient(availability: {
+        .unavailable(reason: .appleIntelligenceNotEnabled)
+      })
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameActive)
+    #expect(
+      store.state.fmAvailability
+        == .unavailable(reason: .appleIntelligenceNotEnabled))
+    #expect(store.state.modelReadiness == .ready)
+    #expect(store.state.chat?.isSubmissionEnabled == false)
+
+    store.dependencies.fmStatus = FMStatusClient(availability: { .available })
+    await store.send(.appBecameActive)
+    #expect(store.state.fmAvailability == .available)
+    #expect(store.state.chat?.isSubmissionEnabled == true)
   }
 
   @Test func preparedTapUpdatesTheSameAssistantMessageAfterImmediatePreview() async {
@@ -1620,6 +1652,185 @@ private actor UserPersistenceOrderingGate {
 
     #expect(runs.recorded == ["Use the previous answer", "Late question"])
     #expect(store.state.queue.isEmpty)
+  }
+
+  static func failedEvent(
+    question: String = "Who manages each property?",
+    reason: TurnFailureReason
+  ) -> PipelineEvent {
+    var telemetry = TurnTelemetry(originalQuestion: question)
+    telemetry.failureReason = reason
+    return .turnFinished(
+      outcome: .failed(reason: reason), telemetry: telemetry)
+  }
+
+  /// A model failure on plausibly answerable input runs the Scope Verdict
+  /// first (C), enriches the rendered failure in place, and only then seeds
+  /// Recovery Suggestions (D) with the verdict in hand.
+  @Test func eligibleFailedTurnDiagnosesScopeThenSeedsRecovery() async {
+    var state = Self.appState()
+    let activeID = UUID(98)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Who manages each property?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let contexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let judged = LockIsolated<[String]>([])
+    let expectedVerdict = ScopeVerdictRecord(
+      verdict: .inDomainButNotTracked,
+      missingSubject: "property managers")
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        contexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.scopeDiagnosis = ScopeDiagnosisClient { question in
+        judged.withValue { $0.append(question) }
+        return expectedVerdict
+      }
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .generationExhausted)))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(judged.value == ["Who manages each property?"])
+
+    // D waited for C: the seeded context already carries the verdict.
+    let seeded = contexts.value
+    #expect(seeded.count == 1)
+    guard case .turnFailure(let reason, let verdict)? = seeded.first?.seed
+    else {
+      Issue.record("Expected a failure-seeded suggestion context")
+      return
+    }
+    #expect(reason == .generationExhausted)
+    #expect(verdict == expectedVerdict)
+    #expect(store.state.chat?.followUpBatch?.context?.isRecoverySeed == true)
+
+    // The rendered failure was enriched in place.
+    guard
+      case .failedTurn(_, let renderedVerdict)? =
+        store.state.chat?.messages.last(where: { $0.role == .assistant })?.body
+    else {
+      Issue.record("Expected the failure message to remain rendered")
+      return
+    }
+    #expect(renderedVerdict == expectedVerdict)
+    #expect(
+      store.state.chat?.messages.last(where: { $0.role == .assistant })?
+        .devInfo?.scopeVerdict == expectedVerdict)
+    #expect(store.state.pendingScopeDiagnosis == nil)
+  }
+
+  /// Timeouts already know their cause; the diagnosis never runs for them.
+  @Test func timedOutFailureNeverRunsScopeDiagnosis() async {
+    var state = Self.appState()
+    let activeID = UUID(96)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Which fund leads?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let judged = LockIsolated<[String]>([])
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = QueryPipeline(
+        run: { _, _ in AsyncStream { $0.finish() } })
+      $0.historyClient = .noop()
+      $0.scopeDiagnosis = ScopeDiagnosisClient { question in
+        judged.withValue { $0.append(question) }
+        return ScopeVerdictRecord(verdict: .outsideRealEstate)
+      }
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .timedOut(stage: "generation"))))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(judged.value.isEmpty)
+    #expect(store.state.pendingScopeDiagnosis == nil)
+  }
+
+  /// Terminal reasons cannot pre-execute anything and must not seed
+  /// suggestions.
+  @Test func ineligibleFailedTurnDoesNotSeedRecoverySuggestions() async {
+    var state = Self.appState()
+    let activeID = UUID(99)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID,
+      conversationID: Self.conversationA,
+      question: "Who manages each property?",
+      startedAt: Date(timeIntervalSince1970: 0))
+    let preparations = CallRecorder()
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        preparations.record("started")
+        return AsyncStream { continuation in
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+      $0.haptics = .noop
+    }
+    store.exhaustivity = .off
+
+    for reason in [
+      TurnFailureReason.databaseUnavailable,
+      .timedOut(stage: "generation"),
+      .cancelled,
+      .starterQueryUnavailable,
+    ] {
+      #expect(!reason.isEligibleForRecoverySuggestions)
+    }
+
+    await store.send(
+      .pipelineEvent(
+        conversationID: Self.conversationA,
+        questionID: activeID,
+        event: Self.failedEvent(reason: .databaseUnavailable)))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(preparations.recorded.isEmpty)
+    #expect(store.state.chat?.followUpBatch == nil)
   }
 
   @Test func followUpPreparationWaitsForTerminalPersistence() async {

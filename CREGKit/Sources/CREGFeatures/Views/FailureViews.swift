@@ -69,18 +69,38 @@ struct FailureBanner: View {
   }
 }
 
+/// The transcript cell for a Turn Failure. The title and message come from
+/// the reason's `FailurePresentation` mapping; the Scope Verdict notice
+/// renders beneath them once the post-render diagnosis lands; `retry`
+/// resubmits the same question for reasons where retrying is the honest
+/// recovery (timeout, cancellation).
 struct FailureMessageView: View {
-  let message: String
-  let diagnostic: String?
+  let presentation: FailurePresentation
+  var scopeVerdict: ScopeVerdictRecord?
   let developerMode: Bool
+  var retry: (() -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Label("Unable to answer", systemImage: "exclamationmark.triangle")
+      Label(presentation.title, systemImage: "exclamationmark.triangle")
         .font(.headline)
-      Text(message)
-      if developerMode, let diagnostic {
-        TechnicalDetailsView(details: diagnostic)
+      Text(presentation.message)
+      if let scopeVerdict {
+        Label(scopeVerdict.userNotice, systemImage: "square.stack.3d.up.slash")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("scope-verdict-notice")
+      }
+      if let retry {
+        Button("Try again") { retry() }
+          .cregTextButtonTarget()
+          .font(.callout.weight(.semibold))
+          .accessibilityIdentifier("failed-turn-retry")
+      }
+      if let details = presentation.technicalDetails(
+        developerMode: developerMode)
+      {
+        TechnicalDetailsView(details: details)
       }
     }
     .padding(.horizontal, 14)

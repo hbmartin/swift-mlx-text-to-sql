@@ -17,6 +17,12 @@ public struct FMClient: Sendable {
   public var suggestFollowUps:
     @Sendable (_ context: FollowUpSuggestionContext, _ schema: String) async throws
       -> [String]
+  /// The enumerated Scope Verdict for a Standalone Question, produced with
+  /// the schema in hand — the only admissible evidence for a scope claim
+  /// (ADR 0010). Nil when no judgement could be made.
+  public var scopeVerdict:
+    @Sendable (_ standaloneQuestion: String, _ schema: String) async throws
+      -> ScopeVerdictRecord?
 
   public init(
     availability: @escaping @Sendable () -> FMAvailability,
@@ -25,13 +31,17 @@ public struct FMClient: Sendable {
     narrate: @escaping @Sendable (String, QueryResult) async throws -> String,
     suggestFollowUps:
       @escaping @Sendable (FollowUpSuggestionContext, String) async throws
-      -> [String]
+      -> [String],
+    scopeVerdict:
+      @escaping @Sendable (String, String) async throws -> ScopeVerdictRecord? =
+        { _, _ in nil }
   ) {
     self.availability = availability
     self.rewrite = rewrite
     self.gate = gate
     self.narrate = narrate
     self.suggestFollowUps = suggestFollowUps
+    self.scopeVerdict = scopeVerdict
   }
 }
 
@@ -53,6 +63,50 @@ private struct FollowUpQuestionSet {
   var questions: [String]
 }
 
+@Generable
+@available(macOS 26.0, iOS 26.0, *)
+private struct ScopeVerdictProbe {
+  @Guide(
+    description:
+      "Exactly one of: outside_real_estate, in_domain_but_not_tracked, needs_data_not_in_snapshot, likely_answerable_model_failed",
+    .anyOf([
+      "outside_real_estate", "in_domain_but_not_tracked",
+      "needs_data_not_in_snapshot", "likely_answerable_model_failed",
+    ]))
+  var verdict: String
+  @Guide(
+    description:
+      "Only when the verdict is in_domain_but_not_tracked: one short noun phrase naming what the portfolio does not track. Otherwise an empty string.")
+  var missingSubject: String
+}
+
+@available(macOS 26.0, iOS 26.0, *)
+extension FMUnavailabilityReason {
+  init(_ reason: SystemLanguageModel.Availability.UnavailableReason) {
+    switch reason {
+    case .appleIntelligenceNotEnabled: self = .appleIntelligenceNotEnabled
+    case .modelNotReady: self = .modelNotReady
+    case .deviceNotEligible: self = .deviceNotEligible
+    @unknown default: self = .other(String(describing: reason))
+    }
+  }
+}
+
+/// The app-level view of Foundation Model availability. Apple Intelligence is
+/// required (ADR 0011): the reducer polls this on scene activation and gates
+/// all new turns on it.
+public struct FMStatusClient: Sendable {
+  public var availability: @Sendable () -> FMAvailability
+
+  public init(availability: @escaping @Sendable () -> FMAvailability) {
+    self.availability = availability
+  }
+
+  public static func live() -> FMStatusClient {
+    FMStatusClient(availability: FMClient.live().availability)
+  }
+}
+
 extension FMClient {
   public static func live() -> FMClient {
     if #available(macOS 26.0, iOS 26.0, *) {
@@ -69,7 +123,7 @@ extension FMClient {
         case .available:
           return .available
         case .unavailable(let reason):
-          return .unavailable(reason: String(describing: reason))
+          return .unavailable(reason: FMUnavailabilityReason(reason))
         }
       },
       rewrite: { question, history in
@@ -123,42 +177,121 @@ extension FMClient {
         return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
       },
       suggestFollowUps: { context, schema in
+        switch context.seed {
+        case .answer(let result, let narration):
+          let session = LanguageModelSession(instructions: """
+            You suggest the next questions a commercial real estate professional would ask. \
+            Return exactly three distinct, concise, standalone questions. Every question \
+            must be answerable from the supplied portfolio schema, must not repeat the \
+            source question, and must not require older conversation context. Prefer a \
+            useful mix of drill-down, comparison, and adjacent portfolio analysis. Never \
+            mention SQL, tables, columns, or unavailable data.
+            """)
+          let preview = result.rows.prefix(8)
+            .map { row in row.map(\.displayString).joined(separator: " | ") }
+            .joined(separator: "\n")
+          let response = try await session.respond(
+            to: """
+              Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
+              Portfolio schema:
+              \(schema)
+
+              Source question: \(context.question)
+              Standalone interpretation: \(context.standaloneQuestion)
+              Answer summary: \(narration)
+              Result columns: \(result.columns.joined(separator: ", "))
+              Result row count: \(result.rowCount)\(result.isTruncated ? " (truncated)" : "")
+              First rows:
+              \(preview)
+              """,
+            generating: FollowUpQuestionSet.self)
+          return response.content.questions
+
+        case .turnFailure(_, let scopeVerdict):
+          // Recovery Suggestions: the source question produced no answer, so
+          // the prompt steers toward nearby questions the schema CAN answer
+          // instead of drilling into a result that does not exist.
+          let session = LanguageModelSession(instructions: """
+            A commercial real estate professional asked a question their portfolio \
+            database could not answer. Suggest exactly three distinct, concise, \
+            standalone questions that come closest to what they wanted to learn AND \
+            are directly answerable from the supplied portfolio schema. Never repeat \
+            the failed question, never require older conversation context, and never \
+            mention SQL, tables, columns, or unavailable data.
+            """)
+          let coverage: String =
+            switch scopeVerdict?.verdict {
+            case .outsideRealEstate:
+              "The question was outside the portfolio's domain."
+            case .inDomainButNotTracked:
+              "The portfolio does not track the information the question needs."
+            case .needsDataNotInSnapshot:
+              "The question needs data beyond the portfolio's recorded snapshot."
+            case .likelyAnswerableModelFailed, nil:
+              "The question itself may be answerable; the attempt failed."
+            }
+          let response = try await session.respond(
+            to: """
+              Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
+              Portfolio schema:
+              \(schema)
+
+              Failed question: \(context.question)
+              Standalone interpretation: \(context.standaloneQuestion)
+              Coverage note: \(coverage)
+              """,
+            generating: FollowUpQuestionSet.self)
+          return response.content.questions
+        }
+      },
+      scopeVerdict: { question, schema in
+        // Biased toward likely_answerable_model_failed the way the gate
+        // prompt biases toward answering: a wrong "not covered" claim is the
+        // failure mode ADR 0010 exists to prevent.
         let session = LanguageModelSession(instructions: """
-          You suggest the next questions a commercial real estate professional would ask. \
-          Return exactly three distinct, concise, standalone questions. Every question \
-          must be answerable from the supplied portfolio schema, must not repeat the \
-          source question, and must not require older conversation context. Prefer a \
-          useful mix of drill-down, comparison, and adjacent portfolio analysis. Never \
-          mention SQL, tables, columns, or unavailable data.
+          You judge whether a commercial real estate portfolio database can answer a \
+          question, given its complete schema. Pick exactly one verdict: \
+          outside_real_estate (not about this portfolio's domain at all), \
+          in_domain_but_not_tracked (about the portfolio, but the schema has no data \
+          for the subject), needs_data_not_in_snapshot (needs forecasts, external \
+          market data, finer-grained history, or dates after the as-of date), or \
+          likely_answerable_model_failed (the schema plausibly covers it). The \
+          portfolio answers most reasonable questions about its funds, properties, \
+          leases, tenants, loans, valuations, and monthly financials — when in doubt, \
+          choose likely_answerable_model_failed.
           """)
-        let preview = context.result.rows.prefix(8)
-          .map { row in row.map(\.displayString).joined(separator: " | ") }
-          .joined(separator: "\n")
-        let response = try await session.respond(
+        let probe = try await session.respond(
           to: """
             Portfolio as-of date: \(PortfolioSnapshot.asOfDate)
             Portfolio schema:
             \(schema)
 
-            Source question: \(context.question)
-            Standalone interpretation: \(context.standaloneQuestion)
-            Answer summary: \(context.narration)
-            Result columns: \(context.result.columns.joined(separator: ", "))
-            Result row count: \(context.result.rowCount)\(context.result.isTruncated ? " (truncated)" : "")
-            First rows:
-            \(preview)
+            Question: \(question)
             """,
-          generating: FollowUpQuestionSet.self)
-        return response.content.questions
+          generating: ScopeVerdictProbe.self
+        ).content
+        // The probe's verdict string is constrained generation, but the
+        // mapping still refuses to invent a refusal on a parse miss.
+        let verdict =
+          ScopeVerdict(rawValue: probe.verdict) ?? .likelyAnswerableModelFailed
+        let subject = probe.missingSubject
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ScopeVerdictRecord(
+          verdict: verdict,
+          missingSubject: subject.isEmpty ? nil : subject)
       }
     )
   }
 
   /// Deterministic fallback used when the FM is unavailable on device:
   /// no rewriting, no gating, templated narration (per plan decision 10).
+  ///
+  /// Apple Intelligence is required (ADR 0011), so this is a mid-turn safety
+  /// net for a turn already in flight when availability flips — never a
+  /// designed experience.
   public static func fallback() -> FMClient {
     FMClient(
-      availability: { .unavailable(reason: "fallback") },
+      availability: { .unavailable(reason: .other("fallback")) },
       rewrite: { question, _ in question },
       gate: { _, _ in .proceed },
       narrate: { _, result in

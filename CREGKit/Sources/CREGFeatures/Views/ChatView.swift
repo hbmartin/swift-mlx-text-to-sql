@@ -2,6 +2,10 @@ import CREGEngine
 import ComposableArchitecture
 import SwiftUI
 
+#if canImport(UIKit)
+  import UIKit
+#endif
+
 /// The Messages-style chat surface: floating glass header, open transcript,
 /// and floating glass composer. Liquid Glass stays on the floating
 /// interactive layer; the transcript itself is plain content.
@@ -20,6 +24,7 @@ struct ChatView: View {
   @State private var isDeleteConfirmationPresented = false
   @Namespace private var glassNamespace
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @Environment(\.openURL) private var openURL
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -43,7 +48,8 @@ struct ChatView: View {
           }
           if store.messages.isEmpty && store.queued.isEmpty && !store.isProcessing {
             EmptyChatState(
-              isEnabled: chrome.modelReadiness == .ready,
+              isEnabled: chrome.modelReadiness == .ready
+                && chrome.fmAvailability == .available,
               submit: { store.send(.starterQuestionTapped($0)) })
           }
           ForEach(store.messages) { message in
@@ -262,6 +268,7 @@ struct ChatView: View {
           dismiss: chrome.dismissFailure)
       }
       readinessBanner
+      fmAvailabilityBanner
       if let interrupted = store.interruptedTurn {
         InterruptedTurnBanner(
           interrupted: interrupted,
@@ -294,7 +301,9 @@ struct ChatView: View {
         .textFieldStyle(.plain)
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .disabled(chrome.modelReadiness != .ready)
+        .disabled(
+          chrome.modelReadiness != .ready
+            || chrome.fmAvailability != .available)
         .focused($composerIsFocused)
         .onSubmit { requestSend() }
         .onChange(of: composerIsFocused) {
@@ -342,6 +351,7 @@ struct ChatView: View {
           .disabled(
             store.isSubmissionPending
               || chrome.modelReadiness != .ready
+              || chrome.fmAvailability != .available
               || store.composerText.trimmingCharacters(
                 in: .whitespacesAndNewlines
               ).isEmpty
@@ -400,6 +410,66 @@ struct ChatView: View {
           chrome.developerMode && failure.allowsCompatibilityRetry
           ? chrome.retryCompatibilityPreparation : nil)
     }
+  }
+
+  /// Apple Intelligence is required for every new turn (ADR 0011). The
+  /// enable-AI case is the product's only designed no-FM surface; asset
+  /// download is a transient state, and anything else renders honestly as
+  /// unavailable.
+  @ViewBuilder
+  private var fmAvailabilityBanner: some View {
+    if case .unavailable(let reason) = chrome.fmAvailability {
+      switch reason {
+      case .appleIntelligenceNotEnabled:
+        let calloutLayout =
+          dynamicTypeSize.isAccessibilitySize
+          ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+          : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        calloutLayout {
+          Label(
+            "CREG needs Apple Intelligence — turn it on in Settings",
+            systemImage: "apple.intelligence")
+            .font(.callout)
+          if !dynamicTypeSize.isAccessibilitySize {
+            Spacer()
+          }
+          Button("Open Settings") { openSystemSettings() }
+            .cregTextButtonTarget()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .cregGlassRounded(cornerRadius: 16)
+        .accessibilityIdentifier("apple-intelligence-callout")
+      case .modelNotReady:
+        HStack(spacing: 8) {
+          ProgressView()
+          Text("Preparing Apple Intelligence…")
+            .font(.callout)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cregGlassRounded(cornerRadius: 16)
+      case .deviceNotEligible, .other:
+        Label(
+          "Apple Intelligence is unavailable, so CREG can't answer right now.",
+          systemImage: "exclamationmark.triangle")
+          .font(.callout)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 8)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .cregGlassRounded(cornerRadius: 16)
+      }
+    }
+  }
+
+  private func openSystemSettings() {
+    #if canImport(UIKit)
+      guard let url = URL(string: UIApplication.openSettingsURLString) else {
+        return
+      }
+      openURL(url)
+    #endif
   }
 
   @ViewBuilder

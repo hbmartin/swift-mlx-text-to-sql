@@ -151,6 +151,7 @@ struct AppRootView: View {
           store: chatStore,
           chrome: ChatChrome(
             modelReadiness: store.modelReadiness,
+            fmAvailability: store.fmAvailability,
             modelPreparationReport: store.modelPreparationReport,
             developerMode: store.developerMode,
             resultTableTextSize: $store.resultTableTextSize,

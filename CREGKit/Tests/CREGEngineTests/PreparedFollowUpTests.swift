@@ -299,6 +299,157 @@ private enum FollowUpTestError: Error {
     #expect(decodedTelemetry?.candidateCount == 1)
   }
 
+  private static func failureContext(
+    scopeVerdict: ScopeVerdictRecord? = nil
+  ) -> FollowUpSuggestionContext {
+    FollowUpSuggestionContext(
+      sourceAssistantMessageID: UUID(1),
+      question: "Who manages each property day to day?",
+      standaloneQuestion: "Who manages each property day to day?",
+      seed: .turnFailure(
+        reason: .generationExhausted, scopeVerdict: scopeVerdict))
+  }
+
+  @Test func failureSeededPreparationStampsRecoveryOriginAndPolicy() async {
+    let pipeline = QueryPipeline.live(
+      fm: Self.fm(suggestions: ["Which fund holds the most value?"]),
+      sqlGen: testSQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.prepareFollowUps(Self.failureContext()))
+
+    let prepared = events.compactMap { event -> PreparedFollowUp? in
+      guard case .prepared(let prepared) = event else { return nil }
+      return prepared
+    }
+    #expect(!prepared.isEmpty)
+    for suggestion in prepared {
+      #expect(
+        suggestion.preparationTelemetry.queryOrigin == .recoverySuggestion)
+      #expect(
+        suggestion.provenance.preparationPolicyVersion
+          == PreparedQueryProvenance.recoverySuggestionPolicyVersion(
+            repairPolicyVersion: Self.configuration().repairPolicyVersion))
+      #expect(suggestion.result.rowCount > 0)
+    }
+  }
+
+  @Test func failureSeededProposalFailureFallsBackToStarterQueries() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in throw FollowUpTestError.failed })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        Issue.record("SQL generation must not run for starter fallback")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.prepareFollowUps(Self.failureContext()))
+
+    #expect(events.contains(.proposalFailed(reason: .generationFailed)))
+    let prepared = events.compactMap { event -> PreparedFollowUp? in
+      guard case .prepared(let prepared) = event else { return nil }
+      return prepared
+    }
+    #expect(
+      prepared.count == PreparedFollowUpBatch.maximumSuggestionCount)
+    let starterQuestions = Set(StarterQueryID.allCases.map(\.question))
+    for suggestion in prepared {
+      #expect(starterQuestions.contains(suggestion.question))
+      #expect(
+        suggestion.preparationTelemetry.queryOrigin == .recoverySuggestion)
+      #expect(suggestion.preparationTelemetry.selectionReason == .starterQuery)
+      #expect(suggestion.result.rowCount > 0)
+    }
+    #expect(events.last == .finished)
+  }
+
+  @Test func outsideRealEstateVerdictSkipsFMAndOffersStarters() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in
+        Issue.record(
+          "An out-of-domain question must not seed FM suggestion generation")
+        return []
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        Issue.record("SQL generation must not run for starter fallback")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(
+      pipeline.prepareFollowUps(
+        Self.failureContext(
+          scopeVerdict: ScopeVerdictRecord(verdict: .outsideRealEstate))))
+
+    #expect(
+      events.contains(
+        .started(
+          candidateCount: PreparedFollowUpBatch.maximumSuggestionCount)))
+    let prepared = events.compactMap { event -> PreparedFollowUp? in
+      guard case .prepared(let prepared) = event else { return nil }
+      return prepared
+    }
+    #expect(
+      prepared.count == PreparedFollowUpBatch.maximumSuggestionCount)
+    #expect(events.last == .finished)
+  }
+
+  @Test func answerSeededProposalFailureDoesNotFallBackToStarters() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in throw FollowUpTestError.failed })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(events.contains(.proposalFailed(reason: .generationFailed)))
+    let prepared = events.contains { event in
+      if case .prepared = event { return true }
+      return false
+    }
+    #expect(!prepared)
+  }
+
   @Test func proposalFailuresAreDistinctFromAnEmptyProposalSet() async {
     let fm = FMClient(
       availability: { .available },

@@ -304,3 +304,51 @@ The former `eval/out` files are preserved in
 fine-tuned artifact, missing complete training configuration/seed provenance,
 and other gaps. They may explain historical decisions but must not be used to
 reproduce or advertise the current production artifact.
+
+## Answerability
+
+Scope Verdicts (CONTEXT.md "Scope Verdict") are measured, never assumed. The
+corpus at `eval/gold/answerability.jsonl` holds 87 questions labelled
+`{id, question, expectedVerdict}` — no gold SQL, because answerability is
+judged, not executed — across four buckets:
+
+- `outside_real_estate` (21 authored)
+- `in_domain_but_not_tracked` (22 authored)
+- `needs_data_not_in_snapshot` (21 authored)
+- `likely_answerable_model_failed` (23): the distinct gold questions with
+  recorded real SQL failures, recovered by joining erroring `ItemResult.id`
+  in `eval/runs/*/*.json` against `gold_v1`/`gold_v2`/`binding_regressions`.
+  These are gold-set questions and therefore answerable by definition — this
+  bucket is the false-abstention guard, and `T2-21` (semantically the
+  `highest-vacancy-v1` Starter Query) is its keystone case. A few authored
+  items carry `acceptableVerdicts` for genuinely bucket-straddling questions;
+  answerable items never do.
+
+**Scoring** is pure and offline: `AnswerabilityScorer` in `CREGCore` (tests
+in `CREGCoreTests`) and the `creg-answerability-cli` executable emit a
+deterministic 4×4 confusion matrix reproducible byte-for-byte from a fixed
+input. Verdicts are captured on device (the dev Mac's macOS 15 cannot run
+Foundation Models) through the debug-only Settings capture and exported as
+JSONL; each capture is recorded under the run contract above with corpus,
+schema, and OS-version identity in its manifest.
+
+**Shipping gate for scope diagnosis** — the false-abstention rate: the share
+of `likely_answerable_model_failed` items judged as any not-covered bucket.
+The gate is **provisional at ≤ 1 of 23**, with `T2-21` correct as a hard
+requirement (`creg-answerability-cli … --max-false-abstentions 1` enforces
+both). Recalibration procedure after the first on-device capture: review
+every miss individually; if a miss is a prompt defect, fix the verdict prompt
+and re-capture; if all 23 pass cleanly, ratchet the gate to 0; only if a miss
+is judged irreducible does the ≤ 1 slack stand, recorded with the run id that
+justified it. SQLite binding errors are never admissible evidence for a scope
+claim — measured at 0/41 precision on the recovered failures (ADR 0010).
+
+## Event-line shape change (telemetry schema v7)
+
+`turnFinished` event lines persisted in the SQLite `event` table (and
+exported via `events.jsonl` in the Support Bundle) changed shape with
+telemetry schema v7: the outcome's `failed` case now carries a typed
+`reason` object instead of a display `message` string, and telemetry carries
+`failureReason` and optional `scopeVerdict` fields. Lines written by earlier
+builds remain valid as stored text; consumers reading exported JSONL must
+accept both shapes.

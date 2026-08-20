@@ -12,6 +12,7 @@ public struct RootView: View {
   } withDependencies: {
     $0.queryPipeline = LiveDependencies.pipeline
     $0.historyClient = LiveDependencies.history
+    $0.scopeDiagnosis = LiveDependencies.scopeDiagnosis
     $0.modelPreparationEnvironment = ModelPreparationEnvironmentClient {
       ModelPreparationEnvironment.snapshot().merging(
         ModelRuntimeDiagnostics.deviceContext()
