@@ -17,7 +17,8 @@ struct AnswerabilityCLI {
     var maxFalseAbstentions: Int?
     if let flagIndex = arguments.firstIndex(of: "--max-false-abstentions"),
       flagIndex + 1 < arguments.count,
-      let value = Int(arguments[flagIndex + 1])
+      let value = Int(arguments[flagIndex + 1]),
+      value >= 0
     {
       maxFalseAbstentions = value
       arguments.removeSubrange(flagIndex...(flagIndex + 1))
@@ -37,23 +38,14 @@ struct AnswerabilityCLI {
       corpus: corpus, judgements: judgements)
     print(score.report())
 
-    var failed = false
-    if let maxFalseAbstentions,
-      score.falseAbstentionIDs.count > maxFalseAbstentions
-    {
-      FileHandle.standardError.write(
-        Data(
-          "GATE FAILED: \(score.falseAbstentionIDs.count) false abstentions exceed the gate of \(maxFalseAbstentions)\n"
-            .utf8))
-      failed = true
+    if let maxFalseAbstentions {
+      let failures = score.shippingGateFailures(
+        maxFalseAbstentions: maxFalseAbstentions)
+      for failure in failures {
+        FileHandle.standardError.write(
+          Data("GATE FAILED: \(failure)\n".utf8))
+      }
+      if !failures.isEmpty { exit(1) }
     }
-    // T2-21 is the keystone case (ADR 0010): semantically the
-    // highest-vacancy-v1 Starter Query. Refusing it is always a gate failure.
-    if maxFalseAbstentions != nil, score.falseAbstentionIDs.contains("T2-21") {
-      FileHandle.standardError.write(
-        Data("GATE FAILED: T2-21 was misclassified (hard gate)\n".utf8))
-      failed = true
-    }
-    if failed { exit(1) }
   }
 }

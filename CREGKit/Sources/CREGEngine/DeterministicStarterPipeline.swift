@@ -64,7 +64,9 @@ package func deterministicStarterStream(
           usedFM: false,
           elapsedMicroseconds: 0))
 
+      var failureStage = "starter-query"
       do {
+        failureStage = "starter-validation"
         continuation.yield(.validationStarted(candidateID: candidateID))
         let validation = try await withPipelineDeadline(
           seconds: remainingSeconds(),
@@ -91,6 +93,7 @@ package func deterministicStarterStream(
           return
         }
 
+        failureStage = "starter-execution"
         continuation.yield(.executionStarted(candidateID: candidateID, sql: sql))
         let result = try await withPipelineDeadline(
           seconds: remainingSeconds(),
@@ -108,6 +111,7 @@ package func deterministicStarterStream(
             candidateID: candidateID,
             result: result))
 
+        failureStage = "starter-grounding"
         let groundingStarted = ContinuousClock.now
         let grounding = try await withPipelineDeadline(
           seconds: remainingSeconds(),
@@ -129,26 +133,42 @@ package func deterministicStarterStream(
         telemetry.selectionReason = .starterQuery
         telemetry.confidence = .confirmed
 
-        let fmAvailable = fm.availability() == .available
-        let activeFM = fmAvailable ? fm : .fallback()
+        failureStage = "starter-narration"
         continuation.yield(.narrationStarted)
         let narrationStarted = ContinuousClock.now
-        let narration = try await withPipelineDeadline(
-          seconds: remainingSeconds(),
-          stage: "starter-narration"
-        ) {
-          try await serializer.run(operation: .narration) {
-            try await activeFM.narrate(question, result)
+        let narration: String
+        let narrationUsedFM: Bool
+        if fm.availability() == .available {
+          do {
+            narration = try await withPipelineDeadline(
+              seconds: remainingSeconds(),
+              stage: "starter-narration"
+            ) {
+              try await serializer.run(operation: .narration) {
+                try await fm.narrate(question, result)
+              }
+            }
+            narrationUsedFM = true
+          } catch {
+            if error is PipelineDeadlineExceeded || error is CancellationError {
+              throw error
+            }
+            guard fm.availability() != .available else { throw error }
+            narration = try await FMClient.fallback().narrate(question, result)
+            narrationUsedFM = false
           }
+        } else {
+          narration = try await FMClient.fallback().narrate(question, result)
+          narrationUsedFM = false
         }
         let narrationElapsed =
           narrationStarted.duration(to: .now).microseconds
-        telemetry.narrationUsedFM = fmAvailable
+        telemetry.narrationUsedFM = narrationUsedFM
         telemetry.stageTimings.narrationMicroseconds = narrationElapsed
         continuation.yield(
           .narrationFinished(
             narration: narration,
-            usedFM: fmAvailable,
+            usedFM: narrationUsedFM,
             elapsedMicroseconds: narrationElapsed))
 
         let notice = grounding.findings.first?.userNotice
@@ -175,7 +195,9 @@ package func deterministicStarterStream(
         finish(
           .failed(
             reason: telemetry.timeoutStage.map(TurnFailureReason.interrupted)
-              ?? .starterQueryUnavailable))
+              ?? (failureStage == "starter-narration"
+                ? .languageServiceFailed(stage: failureStage)
+                : .starterQueryUnavailable)))
       }
     }
     continuation.onTermination = { _ in task.cancel() }

@@ -11,6 +11,8 @@ enum AnswerabilityCapture {
   struct Manifest: Codable {
     var capturedAt: Date
     var corpusSHA256: String
+    var schemaPromptSHA256: String
+    var scopeVerdictPolicyVersion: String
     var itemCount: Int
     var judgedCount: Int
     var osVersion: String
@@ -25,35 +27,45 @@ enum AnswerabilityCapture {
   }
 
   /// Runs the full capture and returns the ZIP to share, or nil when the
-  /// corpus cannot load or nothing could be judged.
+  /// corpus/schema cannot load, any item cannot be judged, or capture is
+  /// cancelled. The schema is loaded once and reused so the manifest records
+  /// the exact bytes that informed every verdict.
   static func run(
-    judge: @Sendable (String) async -> ScopeVerdictRecord?,
+    client: ScopeDiagnosisClient,
     capturedAt: Date
   ) async -> URL? {
     guard
       let jsonl = try? corpusJSONL(),
       let corpus = try? AnswerabilityScorer.parseCorpus(jsonl: jsonl),
-      !corpus.isEmpty
+      !corpus.isEmpty,
+      let schema = try? client.schemaPrompt(),
+      !schema.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else { return nil }
 
     var judgements: [AnswerabilityJudgement] = []
     for item in corpus {
-      guard let record = await judge(item.question) else { continue }
+      guard !Task.isCancelled else { return nil }
+      guard let record = await client.judgeWithSchema(item.question, schema)
+      else { return nil }
+      guard !Task.isCancelled else { return nil }
       judgements.append(
         AnswerabilityJudgement(
           id: item.id,
           verdict: record.verdict,
           missingSubject: record.missingSubject))
     }
-    guard !judgements.isEmpty else { return nil }
+    guard judgements.count == corpus.count else { return nil }
 
     let manifest = Manifest(
       capturedAt: capturedAt,
       corpusSHA256: PreparedFollowUpIntegrity.sha256(Data(jsonl.utf8)),
+      schemaPromptSHA256: PreparedFollowUpIntegrity.sha256(Data(schema.utf8)),
+      scopeVerdictPolicyVersion: client.policyVersion,
       itemCount: corpus.count,
       judgedCount: judgements.count,
       osVersion: ProcessInfo.processInfo.operatingSystemVersionString)
 
+    guard !Task.isCancelled else { return nil }
     do {
       let fileManager = FileManager.default
       let stage = fileManager.temporaryDirectory
@@ -81,10 +93,16 @@ enum AnswerabilityCapture {
         .appendingPathComponent("answerability-capture.zip")
       try? fileManager.removeItem(at: zipURL)
       let archive = try Archive(url: zipURL, accessMode: .create)
+      var archiveCompleted = false
+      defer {
+        if !archiveCompleted { try? fileManager.removeItem(at: zipURL) }
+      }
       for name in ["judgements.jsonl", "manifest.json"] {
+        guard !Task.isCancelled else { return nil }
         try archive.addEntry(
           with: name, relativeTo: stage, compressionMethod: .deflate)
       }
+      archiveCompleted = true
       return zipURL
     } catch {
       return nil

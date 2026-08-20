@@ -636,6 +636,45 @@ private enum FollowUpTestError: Error {
     #expect(events.last == .finished)
   }
 
+  @Test func recoveryProposalTimeoutFallsBackToStarterQueries() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in
+        try await Task.sleep(for: .seconds(5))
+        return ["Too late?"]
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        Issue.record("Starter recovery must not invoke SQL generation")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration(
+        deadlines: PipelineDeadlines(
+          generationSeconds: 0.05,
+          wholeTurnSeconds: 1)))
+
+    let events = await Array(
+      pipeline.prepareFollowUps(Self.failureContext()))
+
+    #expect(events.contains(.proposalFailed(reason: .generationTimedOut)))
+    #expect(
+      events.compactMap { event -> PreparedFollowUp? in
+        guard case .prepared(let prepared) = event else { return nil }
+        return prepared
+      }.count == PreparedFollowUpBatch.maximumSuggestionCount)
+    #expect(events.last == .finished)
+  }
+
   @Test func unexpectedProposalCancellationIsReportedAsFailure() async {
     let fm = FMClient(
       availability: { .available },
@@ -881,6 +920,7 @@ private enum FollowUpTestError: Error {
 
   @Test func legacyFingerprintSchemaFallsBackAsSchemaVersion() async {
     var prepared = Self.prepared(question: "Prepared?", rank: 1)
+    prepared.preparationTelemetry.queryOrigin = .recoverySuggestion
     prepared.provenance.schemaVersion = 2
     prepared.provenance.resultFingerprint = "legacy-v2-fingerprint"
     let pipeline = QueryPipeline.live(
@@ -904,6 +944,7 @@ private enum FollowUpTestError: Error {
       return
     }
     #expect(telemetry.preparedCacheMissReason == .schemaVersion)
+    #expect(telemetry.queryOrigin == .recoverySuggestion)
   }
 
   @Test func preparedFallbackTreatsTheChipQuestionAsStandalone() async {
@@ -1086,8 +1127,8 @@ private enum FollowUpTestError: Error {
       serializer: InferenceSerializer(),
       configuration: Self.configuration(
         deadlines: PipelineDeadlines(
-          generationSeconds: 0.05,
-          wholeTurnSeconds: 0.05)))
+          generationSeconds: 0.5,
+          wholeTurnSeconds: 0.5)))
 
     let events = await Array(pipeline.runPrepared(prepared, []))
 

@@ -68,6 +68,10 @@ import Testing
     #expect(throws: AnswerabilityScorerError.malformedLine(1)) {
       _ = try AnswerabilityScorer.parseCorpus(jsonl: "{not json}")
     }
+    #expect(throws: AnswerabilityScorerError.malformedLine(3)) {
+      _ = try AnswerabilityScorer.parseCorpus(
+        jsonl: "\n  \n{still not json}\n")
+    }
     let corpus = try AnswerabilityScorer.parseCorpus(jsonl: Self.corpusJSONL)
     #expect(throws: AnswerabilityScorerError.duplicateID("OR-01")) {
       _ = try AnswerabilityScorer.score(
@@ -77,6 +81,35 @@ import Testing
           AnswerabilityJudgement(id: "OR-01", verdict: .outsideRealEstate),
         ])
     }
+  }
+
+  @Test func shippingGateRequiresACompleteCorpusExactCapture() throws {
+    let corpus = try AnswerabilityScorer.parseCorpus(jsonl: Self.corpusJSONL)
+    let complete = corpus.map {
+      AnswerabilityJudgement(id: $0.id, verdict: $0.expectedVerdict)
+    }
+    let passing = try AnswerabilityScorer.score(
+      corpus: corpus,
+      judgements: complete)
+    #expect(passing.shippingGateFailures(maxFalseAbstentions: 1).isEmpty)
+
+    let withoutKeystone = try AnswerabilityScorer.score(
+      corpus: corpus,
+      judgements: complete.filter { $0.id != "T2-21" })
+    let missingFailures = withoutKeystone.shippingGateFailures(
+      maxFalseAbstentions: 1)
+    #expect(missingFailures.contains { $0.contains("judgements are missing") })
+    #expect(missingFailures.contains("T2-21 is missing (hard gate)"))
+
+    let withUnknown = try AnswerabilityScorer.score(
+      corpus: corpus,
+      judgements: complete + [
+        AnswerabilityJudgement(
+          id: "UNKNOWN", verdict: .likelyAnswerableModelFailed)
+      ])
+    #expect(
+      withUnknown.shippingGateFailures(maxFalseAbstentions: 1)
+        .contains { $0.contains("unknown judgement ids") })
   }
 
   /// The checked-in corpus itself: parses, holds exactly the 23 recovered
@@ -98,6 +131,9 @@ import Testing
     }
     #expect(answerable.count == 23)
     #expect(answerable.contains { $0.id == "T2-21" })
+    #expect(
+      answerable.first { $0.id == "MT-60" }?.question
+        == "Which tenants on active leases expiring in the next 12 months have a renewal option?")
     // Answerable items are recovered gold questions and never carry
     // acceptable alternates — a refusal on one is always a false abstention.
     #expect(answerable.allSatisfy { $0.acceptableVerdicts == nil })

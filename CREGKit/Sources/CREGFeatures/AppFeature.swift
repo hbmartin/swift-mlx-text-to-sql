@@ -104,8 +104,10 @@ public struct AppFeature: Sendable {
     }
   }
 
-  /// One Scope Verdict in flight for a rendered Turn Failure. Recovery
-  /// Suggestions (D) wait for this (C): the verdict decides their strategy.
+  /// One Scope Verdict in flight for a rendered Turn Failure, or its retained
+  /// Recovery Suggestion context after background cancellation. Recovery
+  /// Suggestions (D) normally wait for C; reactivation resumes D without the
+  /// optional verdict.
   public struct PendingScopeDiagnosis: Equatable, Sendable {
     public var conversationID: UUID
     public var messageID: UUID
@@ -343,6 +345,7 @@ public struct AppFeature: Sendable {
     case pipeline
     case followUpPreparation
     case scopeDiagnosis
+    case answerabilityCapture
     case search
     case deleteCountdown
     case bannerTimeout
@@ -438,14 +441,19 @@ public struct AppFeature: Sendable {
 
       case .appBecameActive:
         refreshFMAvailability(state: &state)
-        return resumeFollowUpPreparationIfIdle(state: &state)
+        let interruptedRecovery =
+          resumeInterruptedScopeDiagnosisIfIdle(state: &state)
+        let persistedPreparation = resumeFollowUpPreparationIfIdle(state: &state)
+        let queuedTurn = dispatchNextIfIdle(state: &state)
+        return .merge(interruptedRecovery, persistedPreparation, queuedTurn)
 
       case .appBecameInactive:
         let preparation = state.followUpPreparation
         state.followUpPreparation = nil
-        // A backgrounded scope diagnosis is dropped rather than resumed; the
-        // rendered reason-only failure is complete without it.
-        state.pendingScopeDiagnosis = nil
+        // Keep the pending context while cancelling its FM call. Reactivation
+        // starts Recovery Suggestion preparation without a verdict, preserving
+        // the lower-priority work without running it in the background.
+        state.isCapturingAnswerability = false
         var followOnEffects: [Effect<Action>] = []
         if let preparation, !preparation.eventLines.isEmpty {
           followOnEffects.append(
@@ -459,6 +467,7 @@ public struct AppFeature: Sendable {
         return .concatenate(
           .cancel(id: CancelID.followUpPreparation),
           .cancel(id: CancelID.scopeDiagnosis),
+          .cancel(id: CancelID.answerabilityCapture),
           .merge(followOnEffects))
 
       case .preparationJournalLoaded(let previous):
@@ -881,7 +890,10 @@ public struct AppFeature: Sendable {
           verdict: verdict)
 
       case .chat(.delegate(.submitQuestion(let submission))):
-        guard state.modelReadiness == .ready, let chat = state.chat
+        refreshFMAvailability(state: &state)
+        guard state.modelReadiness == .ready,
+          state.fmAvailability == .available,
+          let chat = state.chat
         else { return .none }
         let conversationID = chat.conversationID
         let preparation = state.followUpPreparation
@@ -996,19 +1008,33 @@ public struct AppFeature: Sendable {
           state.isCapturingAnswerability = true
           state.answerabilityCaptureExport = nil
           let capturedAt = now
+          let client = scopeDiagnosis
           return .run { send in
             let url = await AnswerabilityCapture.run(
-              judge: scopeDiagnosis.judge,
+              client: client,
               capturedAt: capturedAt)
             await send(.answerabilityCaptureReady(url))
           }
+          .cancellable(
+            id: CancelID.answerabilityCapture,
+            cancelInFlight: true)
         #else
           return .none
         #endif
 
       case .answerabilityCaptureReady(let url):
+        guard state.isCapturingAnswerability else { return .none }
         state.isCapturingAnswerability = false
         state.answerabilityCaptureExport = url
+        if url == nil {
+          state.presentedFailure = FailurePresentation(
+            code: "answerability_capture_failed",
+            title: "Capture failed",
+            message:
+              "CREG couldn't judge every corpus item. Keep Apple Intelligence available and try the capture again.",
+            diagnostic:
+              "Answerability capture returned no complete corpus-exact artifact.")
+        }
         return .none
 
       case .appIconLoaded(let variant, let supportsAlternates):

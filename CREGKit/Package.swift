@@ -162,6 +162,7 @@ let package = Package(
         "CREGTestSupport",
         .product(name: "AutoTableCharts", package: "AutoTableCharts"),
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
+        .product(name: "ZIPFoundation", package: "ZIPFoundation"),
       ]
     ),
   ]

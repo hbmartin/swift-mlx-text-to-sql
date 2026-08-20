@@ -2,10 +2,6 @@ import CREGEngine
 import ComposableArchitecture
 import SwiftUI
 
-#if canImport(UIKit)
-  import UIKit
-#endif
-
 /// The Messages-style chat surface: floating glass header, open transcript,
 /// and floating glass composer. Liquid Glass stays on the floating
 /// interactive layer; the transcript itself is plain content.
@@ -24,7 +20,6 @@ struct ChatView: View {
   @State private var isDeleteConfirmationPresented = false
   @Namespace private var glassNamespace
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-  @Environment(\.openURL) private var openURL
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -421,21 +416,11 @@ struct ChatView: View {
     if case .unavailable(let reason) = chrome.fmAvailability {
       switch reason {
       case .appleIntelligenceNotEnabled:
-        let calloutLayout =
-          dynamicTypeSize.isAccessibilitySize
-          ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
-          : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
-        calloutLayout {
-          Label(
-            "CREG needs Apple Intelligence — turn it on in Settings",
-            systemImage: "apple.intelligence")
-            .font(.callout)
-          if !dynamicTypeSize.isAccessibilitySize {
-            Spacer()
-          }
-          Button("Open Settings") { openSystemSettings() }
-            .cregTextButtonTarget()
-        }
+        Label(
+          "Turn on Apple Intelligence in Settings › Apple Intelligence & Siri.",
+          systemImage: "apple.intelligence")
+          .font(.callout)
+          .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .cregGlassRounded(cornerRadius: 16)
@@ -461,15 +446,6 @@ struct ChatView: View {
           .cregGlassRounded(cornerRadius: 16)
       }
     }
-  }
-
-  private func openSystemSettings() {
-    #if canImport(UIKit)
-      guard let url = URL(string: UIApplication.openSettingsURLString) else {
-        return
-      }
-      openURL(url)
-    #endif
   }
 
   @ViewBuilder

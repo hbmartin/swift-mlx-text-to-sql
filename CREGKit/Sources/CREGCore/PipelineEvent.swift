@@ -49,9 +49,15 @@ public enum PipelineEvent: Sendable, Equatable, Codable {
     narration: String,
     usedFM: Bool,
     elapsedMicroseconds: Int64)
-  /// The immutable telemetry snapshot is stored with the final event, in chat
-  /// history, and in JSONL so all three surfaces render the same record.
+  /// The terminal telemetry snapshot is stored with the final event and chat
+  /// history. Post-render enrichments are appended as their own typed events.
   case turnFinished(outcome: TurnOutcome, telemetry: TurnTelemetry)
+  /// Appended after a failed turn when the lower-priority FM scope diagnosis
+  /// completes. Keeping this distinct preserves the event log's append-only
+  /// ordering while making the rendered verdict export-visible.
+  case scopeDiagnosisFinished(
+    sourceAssistantMessageID: UUID,
+    verdict: ScopeVerdictRecord)
 }
 
 extension PipelineEvent {

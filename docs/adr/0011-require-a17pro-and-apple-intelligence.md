@@ -35,13 +35,15 @@ the Apple Intelligence line.
 2. **Apple Intelligence is required for all new turns.** `FMAvailability`
    carries typed reasons mapped from
    `SystemLanguageModel.Availability.UnavailableReason`; the reducer refreshes
-   availability on every scene activation and gates submission (free-form and
-   starter alike) on it:
-   - `appleIntelligenceNotEnabled` → a blocking callout with an Open Settings
-     link. This is the product's only designed no-FM surface.
+   availability on every scene activation and gates submission (free-form,
+   starter, benchmark, and queued dispatch alike) on it:
+   - `appleIntelligenceNotEnabled` → a blocking callout with the manual
+     Settings › Apple Intelligence & Siri path. This is the product's only
+     designed no-FM surface.
    - `modelNotReady` → a transient "Preparing Apple Intelligence" state.
-   - `deviceNotEligible` → unreachable behind the floor; asserted in Debug
-     and logged in Release.
+   - `deviceNotEligible` → logged and rendered as unavailable. It should be
+     unreachable in Release behind the floor, but Debug intentionally bypasses
+     that floor for previews and simulator work.
 3. **`FMClient.fallback()` survives strictly as a mid-turn safety net**: a
    turn already in flight when availability flips degrades gracefully
    (templated narration) instead of crashing. No feature is designed around

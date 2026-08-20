@@ -51,6 +51,7 @@ extension AppFeature {
       state.activeTurn == nil,
       state.queue.isEmpty,
       state.pendingTurnPersistence == nil,
+      state.pendingScopeDiagnosis == nil,
       state.followUpPreparation == nil,
       state.modelReadiness == .ready,
       state.fmAvailability == .available,
@@ -133,11 +134,33 @@ extension AppFeature {
 
   // MARK: - Scope diagnosis (C before D)
 
+  /// A backgrounded diagnosis retains its Recovery Suggestion context but not
+  /// the optional verdict. Resume D only after the app is active and the same
+  /// idle/model-availability gates used by ordinary preparation are satisfied.
+  func resumeInterruptedScopeDiagnosisIfIdle(
+    state: inout State
+  ) -> Effect<Action> {
+    guard
+      let pending = state.pendingScopeDiagnosis,
+      state.activeTurn == nil,
+      state.queue.isEmpty,
+      state.pendingTurnPersistence == nil,
+      state.followUpPreparation == nil,
+      state.modelReadiness == .ready,
+      state.fmAvailability == .available,
+      state.conversations[id: pending.conversationID] != nil
+    else { return .none }
+    state.pendingScopeDiagnosis = nil
+    return startFollowUpPreparation(
+      state: &state,
+      conversationID: pending.conversationID,
+      context: pending.context)
+  }
+
   /// Judges portfolio coverage of the failed question after the failure has
   /// rendered, then hands the verdict-enriched context to Recovery Suggestion
-  /// preparation. When the diagnosis cannot run — a turn started, FM went
-  /// unavailable, or the conversation is no longer on screen (its message is
-  /// not loaded to enrich) — preparation proceeds without a verdict.
+  /// preparation. Selection is irrelevant: background conversations still
+  /// complete C before D and persist the same verdict/event pair.
   func startScopeDiagnosis(
     state: inout State,
     conversationID: UUID,
@@ -148,8 +171,7 @@ extension AppFeature {
       context.isRecoverySeed,
       state.activeTurn == nil,
       state.queue.isEmpty,
-      state.fmAvailability == .available,
-      state.chat?.conversationID == conversationID
+      state.fmAvailability == .available
     else {
       return startFollowUpPreparation(
         state: &state,
@@ -163,6 +185,7 @@ extension AppFeature {
     let question = context.standaloneQuestion
     return .run(priority: .low) { send in
       let verdict = await scopeDiagnosis.judge(question)
+      guard !Task.isCancelled else { return }
       await send(
         .scopeDiagnosisFinished(
           conversationID: conversationID,
@@ -185,12 +208,13 @@ extension AppFeature {
     else { return .none }
     state.pendingScopeDiagnosis = nil
     var context = pending.context
-    var effects: [Effect<Action>] = []
+    var verdictPersistence: Effect<Action> = .none
 
     if let verdict, case .turnFailure(let reason, _) = context.seed {
       context.seed = .turnFailure(reason: reason, scopeVerdict: verdict)
-      // Enrich the rendered failure in place — the same revisioned-save
-      // pattern as preparedAnswer → .answer.
+      // Enrich the selected transcript immediately when it is loaded. The
+      // durable transaction below performs the same update regardless of the
+      // user's current selection.
       if state.chat?.conversationID == conversationID,
         let index = state.chat?.messages.index(id: messageID),
         var message = state.chat?.messages[index],
@@ -199,16 +223,15 @@ extension AppFeature {
         message.body = .failedTurn(reason: bodyReason, scopeVerdict: verdict)
         message.devInfo?.scopeVerdict = verdict
         state.chat?.messages[index] = message
-        let updated = message
-        effects.append(
-          .run { _ in
-            _ = try? await messageUpdateQueue.save(
-              conversationID: conversationID,
-              messageID: updated.id
-            ) {
-              try await history.updateMessage(conversationID, updated)
-            }
-          })
+      }
+      let event = PipelineEvent.scopeDiagnosisFinished(
+        sourceAssistantMessageID: messageID,
+        verdict: verdict)
+      if let line = try? event.jsonLine() {
+        verdictPersistence = .run { _ in
+          try? await history.persistScopeDiagnosis(
+            conversationID, messageID, verdict, line)
+        }
       }
       diagnostics.info(
         category: .submission,
@@ -220,12 +243,13 @@ extension AppFeature {
         ])
     }
 
-    effects.append(
-      startFollowUpPreparation(
-        state: &state,
-        conversationID: conversationID,
-        context: context))
-    return .merge(effects)
+    let preparation = startFollowUpPreparation(
+      state: &state,
+      conversationID: conversationID,
+      context: context)
+    // Persist C's message/event enrichment before D can append preparation
+    // events, preserving the intended C-before-D order in events.jsonl.
+    return .concatenate(verdictPersistence, preparation)
   }
 
   // MARK: - Conversation lifecycle helpers

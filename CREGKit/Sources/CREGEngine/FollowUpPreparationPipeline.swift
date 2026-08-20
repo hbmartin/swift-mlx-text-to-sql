@@ -109,6 +109,7 @@ func preparedFollowUpStream(
         // or spend the retry deadline waiting behind the first call.
         continuation.yield(
           .proposalFailed(reason: .generationTimedOut))
+        if context.isRecoverySeed { await prepareStarterFallback() }
         return
       } catch {
         continuation.yield(

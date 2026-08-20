@@ -350,7 +350,8 @@ public struct ChatFeature: Sendable {
         return commitSubmission(
           state: &state,
           submittedQuestion: question,
-          clearsComposer: false)
+          clearsComposer: false,
+          starter: message.devInfo?.starterQueryID)
 
       case .stopTapped:
         guard state.isProcessing else { return .none }

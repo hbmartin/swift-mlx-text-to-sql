@@ -31,6 +31,9 @@ func preparedAnswerStream(
             telemetry.sourceAnswerMessageID = prepared.sourceAssistantMessageID
             telemetry.preparedCacheHit = false
             telemetry.preparedCacheMissReason = reason
+            if prepared.preparationTelemetry.queryOrigin == .recoverySuggestion {
+              telemetry.queryOrigin = .recoverySuggestion
+            }
             if telemetry.timeoutStage == nil {
               telemetry.timeoutStage = timeoutStage
             }

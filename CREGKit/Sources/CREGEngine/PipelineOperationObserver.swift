@@ -348,6 +348,11 @@ struct PipelineOperationObserver {
         "pipeline_turn_finished",
         "Pipeline turn finished.",
         context: context)
+
+    case .scopeDiagnosisFinished:
+      // Scope diagnosis is an app-level post-render event and never belongs
+      // to a query-pipeline operation stream.
+      break
     }
   }
 

@@ -41,6 +41,13 @@ public struct HistoryClient: Sendable {
   public var appendEvents:
     @Sendable (_ conversationID: UUID, _ messageID: UUID, _ jsonLines: [String]) async throws ->
       Void
+  /// Atomically enriches a persisted failed message and appends the matching
+  /// post-render scope-diagnosis event.
+  public var persistScopeDiagnosis:
+    @Sendable (
+      _ conversationID: UUID, _ messageID: UUID,
+      _ verdict: ScopeVerdictRecord, _ jsonLine: String
+    ) async throws -> Void
   /// Atomically appends a user message and opens its interruption journal.
   public var persistUserTurn:
     @Sendable (
@@ -129,6 +136,10 @@ extension HistoryClient {
       },
       appendEvents: {
         try await store.appendEvents(conversationID: $0, messageID: $1, lines: $2)
+      },
+      persistScopeDiagnosis: {
+        try await store.persistScopeDiagnosis(
+          conversationID: $0, messageID: $1, verdict: $2, line: $3)
       },
       persistUserTurn: {
         try await store.persistUserTurn(

@@ -29,9 +29,6 @@ extension QueryPipeline {
             defer { continuation.finish() }
             continuation.yield(.turnStarted(question: question))
 
-            let fmAvailable = fm.availability() == .available
-            let activeFM = fmAvailable ? fm : .fallback()
-
             func finish(_ outcome: TurnOutcome) {
               if case .failed(let reason) = outcome {
                 telemetry.failureReason = reason
@@ -242,6 +239,8 @@ extension QueryPipeline {
                 candidate.error = "generation: \(error)"
                 if let deadline = error as? PipelineDeadlineExceeded {
                   telemetry.timeoutStage = deadline.stage
+                } else if error is CancellationError {
+                  telemetry.timeoutStage = "cancelled"
                 }
                 continuation.yield(
                   .executionFailed(
@@ -283,18 +282,39 @@ extension QueryPipeline {
               // standalone-question record with a zero-duration no-op.
               let rewriteStarted = ContinuousClock.now
               let standalone: String
+              let rewriteUsedFM: Bool
               if history.isEmpty {
                 standalone = question
+                rewriteUsedFM = false
               } else {
                 continuation.yield(.rewriteStarted)
                 fmStage = "rewrite"
-                standalone = try await withPipelineDeadline(
-                  seconds: remainingTurnSeconds(),
-                  stage: "rewrite"
-                ) {
-                  try await serializer.run(operation: .rewrite) {
-                    try await activeFM.rewrite(question, history)
+                if fm.availability() == .available {
+                  do {
+                    standalone = try await withPipelineDeadline(
+                      seconds: remainingTurnSeconds(),
+                      stage: "rewrite"
+                    ) {
+                      try await serializer.run(operation: .rewrite) {
+                        try await fm.rewrite(question, history)
+                      }
+                    }
+                    rewriteUsedFM = true
+                  } catch {
+                    if error is PipelineDeadlineExceeded
+                      || error is CancellationError
+                    {
+                      throw error
+                    }
+                    guard fm.availability() != .available else { throw error }
+                    standalone = try await FMClient.fallback().rewrite(
+                      question, history)
+                    rewriteUsedFM = false
                   }
+                } else {
+                  standalone = try await FMClient.fallback().rewrite(
+                    question, history)
+                  rewriteUsedFM = false
                 }
                 fmStage = nil
               }
@@ -302,7 +322,7 @@ extension QueryPipeline {
                 rewriteStarted.duration(to: .now).microseconds
               telemetry.standaloneQuestion = standalone
               telemetry.rewriteApplied = !history.isEmpty
-              telemetry.rewriteUsedFM = !history.isEmpty && fmAvailable
+              telemetry.rewriteUsedFM = rewriteUsedFM
               telemetry.stageTimings.rewriteMicroseconds = rewriteElapsed
               continuation.yield(
                 .questionResolved(
@@ -322,18 +342,37 @@ extension QueryPipeline {
                 telemetry.gateMode = .bypassed
               } else {
                 fmStage = "gate"
-                decision = try await withPipelineDeadline(
-                  seconds: remainingTurnSeconds(),
-                  stage: "gate"
-                ) {
-                  try await serializer.run(operation: .gate) {
-                    try await activeFM.gate(
+                if fm.availability() == .available {
+                  do {
+                    decision = try await withPipelineDeadline(
+                      seconds: remainingTurnSeconds(),
+                      stage: "gate"
+                    ) {
+                      try await serializer.run(operation: .gate) {
+                        try await fm.gate(
+                          standalone, configuration.gateSensitivity)
+                      }
+                    }
+                    gateUsedFM = true
+                  } catch {
+                    if error is PipelineDeadlineExceeded
+                      || error is CancellationError
+                    {
+                      throw error
+                    }
+                    guard fm.availability() != .available else { throw error }
+                    decision = try await FMClient.fallback().gate(
                       standalone, configuration.gateSensitivity)
+                    gateUsedFM = false
                   }
+                } else {
+                  decision = try await FMClient.fallback().gate(
+                    standalone, configuration.gateSensitivity)
+                  gateUsedFM = false
                 }
                 fmStage = nil
-                gateUsedFM = fmAvailable
-                telemetry.gateMode = fmAvailable ? .foundationModel : .fallback
+                telemetry.gateMode =
+                  gateUsedFM ? .foundationModel : .fallback
               }
               let gateElapsed =
                 gateStarted.duration(to: .now).microseconds
@@ -541,24 +580,45 @@ extension QueryPipeline {
               let narrationStarted = ContinuousClock.now
               let narrationResult = chosenResult
               fmStage = "narration"
-              let narration = try await withPipelineDeadline(
-                seconds: remainingTurnSeconds(),
-                stage: "narration"
-              ) {
-                try await serializer.run(operation: .narration) {
-                  try await activeFM.narrate(standalone, narrationResult)
+              let narration: String
+              let narrationUsedFM: Bool
+              if fm.availability() == .available {
+                do {
+                  narration = try await withPipelineDeadline(
+                    seconds: remainingTurnSeconds(),
+                    stage: "narration"
+                  ) {
+                    try await serializer.run(operation: .narration) {
+                      try await fm.narrate(standalone, narrationResult)
+                    }
+                  }
+                  narrationUsedFM = true
+                } catch {
+                  if error is PipelineDeadlineExceeded
+                    || error is CancellationError
+                  {
+                    throw error
+                  }
+                  guard fm.availability() != .available else { throw error }
+                  narration = try await FMClient.fallback().narrate(
+                    standalone, narrationResult)
+                  narrationUsedFM = false
                 }
+              } else {
+                narration = try await FMClient.fallback().narrate(
+                  standalone, narrationResult)
+                narrationUsedFM = false
               }
               fmStage = nil
               let narrationElapsed =
                 narrationStarted.duration(to: .now).microseconds
-              telemetry.narrationUsedFM = fmAvailable
+              telemetry.narrationUsedFM = narrationUsedFM
               telemetry.stageTimings.narrationMicroseconds =
                 narrationElapsed
               continuation.yield(
                 .narrationFinished(
                   narration: narration,
-                  usedFM: fmAvailable,
+                  usedFM: narrationUsedFM,
                   elapsedMicroseconds: narrationElapsed))
 
               let notices =

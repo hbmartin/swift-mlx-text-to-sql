@@ -191,6 +191,12 @@ import Testing
     // Component word of vacancy_loss — the T2-21 lesson.
     #expect(
       ScopeVerdictGuard.sanitize("vacancy", coveredPhrases: covered) == nil)
+    #expect(
+      ScopeVerdictGuard.sanitize("vacancies", coveredPhrases: covered) == nil)
+    #expect(
+      ScopeVerdictGuard.sanitize("vacancy.", coveredPhrases: covered) == nil)
+    #expect(
+      ScopeVerdictGuard.sanitize("vacancy_loss", coveredPhrases: covered) == nil)
     // Table name.
     #expect(
       ScopeVerdictGuard.sanitize("Properties", coveredPhrases: covered) == nil)
@@ -199,6 +205,13 @@ import Testing
     #expect(
       ScopeVerdictGuard.sanitize("property managers", coveredPhrases: covered)
         == "property managers")
+    #expect(
+      ScopeVerdictGuard.sanitize("PROPERTY-MANAGERS", coveredPhrases: covered)
+        == "property managers")
+    // Arbitrary FM paraphrases never become absolute scope claims.
+    #expect(
+      ScopeVerdictGuard.sanitize("loan interest rates", coveredPhrases: covered)
+        == nil)
   }
 
   @Test func guardCapsLengthAndStripsMarkup() {
@@ -206,8 +219,8 @@ import Testing
       fromSchemaPrompt: Self.schemaSnippet)
     #expect(
       ScopeVerdictGuard.sanitize(
-        "  tenant\ncontact `emails`  ", coveredPhrases: covered)
-        == "tenant contact emails")
+        "  tenant\n`contacts`  ", coveredPhrases: covered)
+        == "tenant contact details")
     #expect(
       ScopeVerdictGuard.sanitize(
         String(repeating: "x", count: 41), coveredPhrases: covered) == nil)
@@ -221,7 +234,8 @@ import Testing
       property_financials(gross_potential_rent, vacancy_loss, net_operating_income, occupancy_rate)
       """)
     for subject in [
-      "vacancy", "occupancy rate", "annual base rent", "renewal option",
+      "vacancy", "vacancies", "occupancy rate", "annual base rent",
+      "renewal option",
     ] {
       #expect(
         ScopeVerdictGuard.sanitize(subject, coveredPhrases: covered) == nil,

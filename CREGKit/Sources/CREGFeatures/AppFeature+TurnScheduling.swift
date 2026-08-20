@@ -12,11 +12,14 @@ extension AppFeature {
     submission: QuestionSubmission
   ) -> Effect<Action> {
     precondition(
-      state.activeTurn == nil && state.pendingTurnPersistence == nil,
-      "Dispatch requires an idle scheduler and a settled transcript write.")
+      state.activeTurn == nil && state.pendingTurnPersistence == nil
+        && state.modelReadiness == .ready
+        && state.fmAvailability == .available,
+      "Dispatch requires an idle, ready scheduler with Apple Intelligence available.")
     // A new turn owns the serializer; an in-flight scope diagnosis for an
     // older failure is abandoned rather than queued ahead of it.
     state.pendingScopeDiagnosis = nil
+    state.isCapturingAnswerability = false
     let question = submission.question
     let questionID = uuid()
     let startedAt = now
@@ -143,14 +146,20 @@ extension AppFeature {
     }
     return .merge(
       .cancel(id: CancelID.scopeDiagnosis),
+      .cancel(id: CancelID.answerabilityCapture),
       run.cancellable(id: CancelID.pipeline, cancelInFlight: true))
   }
 
   /// Visible-conversation priority: the oldest Queued Question in the
   /// selected Conversation, else the globally oldest.
   func dispatchNextIfIdle(state: inout State) -> Effect<Action> {
+    // Persistence completion can happen long after the last scene-activation
+    // snapshot. Re-read the synchronous system status before consuming a
+    // queued item so a mid-foreground availability flip also fails closed.
+    refreshFMAvailability(state: &state)
     guard state.activeTurn == nil, state.pendingTurnPersistence == nil,
-      state.modelReadiness == .ready
+      state.modelReadiness == .ready,
+      state.fmAvailability == .available
     else { return .none }
     let visibleID = state.chat?.conversationID
     let next =

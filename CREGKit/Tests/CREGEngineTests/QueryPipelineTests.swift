@@ -7,6 +7,14 @@ import Testing
 @testable import CREGData
 @testable import CREGEngine
 
+private final class TestFMAvailability: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value: FMAvailability = .available
+
+  func read() -> FMAvailability { lock.withLock { value } }
+  func set(_ value: FMAvailability) { lock.withLock { self.value = value } }
+}
+
 @Suite struct QueryPipelineTests {
   static let model = ModelReference(
     key: "test",
@@ -172,6 +180,93 @@ import Testing
     #expect(telemetry.generatedCount == 0)
     #expect(telemetry.selectionReason == .starterQuery)
     #expect(telemetry.confidence == .confirmed)
+  }
+
+  @Test func availabilityLossBeforeNarrationKeepsTheValidResult() async {
+    let availability = TestFMAvailability()
+    let result = QueryResult(columns: ["n"], rows: [[.integer(1)]])
+    let fm = FMClient(
+      availability: { availability.read() },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in
+        Issue.record("Live FM narration must not run after availability loss")
+        return "unreachable"
+      },
+      suggestFollowUps: { _, _ in [] })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in
+          availability.set(.unavailable(reason: .modelNotReady))
+          return result
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.config())
+
+    let events = await Array(pipeline.run("q", []))
+
+    guard
+      case .turnFinished(
+        .answered(let answeredResult, let narration, _, _), let telemetry) =
+        events.last
+    else {
+      Issue.record("Expected the validated result to survive FM availability loss")
+      return
+    }
+    #expect(answeredResult == result)
+    #expect(narration == PreparedAnswerFallback.narration(for: result))
+    #expect(telemetry.narrationUsedFM == false)
+  }
+
+  @Test func starterAvailabilityLossBeforeNarrationUsesTemplate() async {
+    let availability = TestFMAvailability()
+    let result = QueryResult(columns: ["n"], rows: [[.integer(1)]])
+    let fm = FMClient(
+      availability: { availability.read() },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in
+        Issue.record("Live FM narration must not run after availability loss")
+        return "unreachable"
+      },
+      suggestFollowUps: { _, _ in [] })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        Issue.record("Starter query must not generate SQL")
+        return SQLGeneration(
+          sql: "SELECT forbidden", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
+        validate: { _ in SQLValidationReport() },
+        execute: { _ in
+          availability.set(.unavailable(reason: .modelNotReady))
+          return result
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.config())
+
+    let events = await Array(
+      pipeline.runStarter(.leaseExpirationsNextTwelveMonthsV1))
+
+    guard
+      case .turnFinished(
+        .answered(let answeredResult, let narration, _, _), let telemetry) =
+        events.last
+    else {
+      Issue.record("Expected starter result with deterministic narration")
+      return
+    }
+    #expect(answeredResult == result)
+    #expect(narration == PreparedAnswerFallback.narration(for: result))
+    #expect(telemetry.narrationUsedFM == false)
   }
 
   @Test func repairStateMachineSuppressesRepeatsAndDiversifiesAttemptTwo() async {
@@ -719,7 +814,7 @@ import Testing
     let generationTimeout = QueryPipeline.live(
       fm: .fallback(),
       sqlGen: testSQLGenClient { _ in
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(for: .seconds(5))
         return SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
       },
       db: DatabaseClient { _ in QueryResult(columns: [], rows: []) },
@@ -729,7 +824,7 @@ import Testing
         gateSensitivity: 1, maxRepairAttempts: 2, selfConsistencyN: 3,
         sampleTemperature: 0.7, alwaysVote: true,
         deadlines: PipelineDeadlines(
-          generationSeconds: 0.01, wholeTurnSeconds: 1)))
+          generationSeconds: 0.5, wholeTurnSeconds: 5)))
     let generationEvents = await Array(generationTimeout.run("q", []))
     guard case .turnFinished(.failed, let generationTelemetry) = generationEvents.last else {
       Issue.record("expected generation timeout")
@@ -744,7 +839,7 @@ import Testing
       fm: .fallback(),
       sqlGen: testSQLGenClient { request in
         if request.repair != nil {
-          try await Task.sleep(for: .milliseconds(100))
+          try await Task.sleep(for: .seconds(5))
         }
         return SQLGeneration(
           sql: "SELECT missing", tokensPerSecond: 1, modelName: "test")
@@ -762,7 +857,7 @@ import Testing
         gateSensitivity: 0, maxRepairAttempts: 2, selfConsistencyN: 3,
         sampleTemperature: 0.7, alwaysVote: true,
         deadlines: PipelineDeadlines(
-          generationSeconds: 0.01, wholeTurnSeconds: 1)))
+          generationSeconds: 0.5, wholeTurnSeconds: 5)))
     let repairEvents = await Array(repairTimeout.run("q", []))
     guard case .turnFinished(.failed, let repairTelemetry) = repairEvents.last else {
       Issue.record("expected first-repair timeout")
@@ -776,7 +871,7 @@ import Testing
       availability: { .available },
       rewrite: { question, _ in question },
       gate: { _, _ in
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(for: .seconds(5))
         return .proceed
       },
       narrate: { _, _ in "unused" },
@@ -793,7 +888,7 @@ import Testing
         gateSensitivity: 1, maxRepairAttempts: 2, selfConsistencyN: 3,
         sampleTemperature: 0.7, alwaysVote: true,
         deadlines: PipelineDeadlines(
-          generationSeconds: 1, wholeTurnSeconds: 0.01)))
+          generationSeconds: 5, wholeTurnSeconds: 0.5)))
     let turnEvents = await Array(turnTimeout.run("q", []))
     guard case .turnFinished(.failed, let turnTelemetry) = turnEvents.last else {
       Issue.record("expected turn timeout")
