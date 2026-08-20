@@ -19,6 +19,15 @@ extension AppFeature {
     // A new turn owns the serializer; an in-flight scope diagnosis for an
     // older failure is abandoned rather than queued ahead of it.
     state.pendingScopeDiagnosis = nil
+    if state.isCapturingAnswerability {
+      // Cancellation drops the effect's completion action, so this is the
+      // only record that the capture died rather than finishing.
+      diagnostics.info(
+        category: .model,
+        code: "answerability_capture_cancelled",
+        summary:
+          "A dispatched turn cancelled the in-flight answerability capture; no export was produced.")
+    }
     state.isCapturingAnswerability = false
     let question = submission.question
     let questionID = uuid()
@@ -158,19 +167,36 @@ extension AppFeature {
     // queued item so a mid-foreground availability flip also fails closed.
     refreshFMAvailability(state: &state)
     guard state.activeTurn == nil, state.pendingTurnPersistence == nil,
-      state.modelReadiness == .ready,
-      state.fmAvailability == .available
+      state.modelReadiness == .ready
     else { return .none }
+    guard state.fmAvailability == .available else {
+      // fmAvailability is the one dispatch gate with no action to hook when
+      // it reopens: every other gate re-runs the scheduler from its own
+      // completion. While a Queued Question is stranded behind it, watch for
+      // recovery so the queue drains without waiting for the next scene
+      // activation. Deactivation cancels the watch.
+      guard !state.queue.isEmpty else { return .none }
+      return .run { send in
+        for await availability in fmStatus.availabilityUpdates() {
+          guard availability == .available else { continue }
+          await send(.dispatchNextIfIdle)
+          return
+        }
+      }
+      .cancellable(id: CancelID.fmAvailabilityWatch, cancelInFlight: true)
+    }
     let visibleID = state.chat?.conversationID
     let next =
       state.queue.first { $0.conversationID == visibleID }
       ?? state.queue.first
     guard let next else { return .none }
     state.queue.removeAll { $0.id == next.id }
-    return dispatch(
-      state: &state,
-      conversationID: next.conversationID,
-      submission: next.submission)
+    return .merge(
+      .cancel(id: CancelID.fmAvailabilityWatch),
+      dispatch(
+        state: &state,
+        conversationID: next.conversationID,
+        submission: next.submission))
   }
 
   /// Keeps queue dispatch behind the completed turn's durable history write.

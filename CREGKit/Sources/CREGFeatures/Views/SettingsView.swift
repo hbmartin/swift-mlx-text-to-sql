@@ -141,7 +141,8 @@ struct SettingsView: View {
         }
         .disabled(
           store.isCapturingAnswerability
-            || store.fmAvailability != .available)
+            || store.fmAvailability != .available
+            || !store.isInferenceIdle)
         if let export = store.answerabilityCaptureExport {
           ShareLink(item: export) {
             Label("Share capture", systemImage: "square.and.arrow.up")

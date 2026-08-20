@@ -228,6 +228,19 @@ import Testing
     #expect(ScopeVerdictGuard.sanitize("  ", coveredPhrases: covered) == nil)
   }
 
+  /// The dictionary's own doc comment promises the FM may answer with the
+  /// reviewed phrasing itself ("fund management fees"); every display phrase
+  /// must therefore round-trip through sanitize instead of silently dropping.
+  @Test func guardAcceptsItsOwnReviewedDisplayPhrases() {
+    let covered = ScopeVerdictGuard.coveredPhrases(
+      fromSchemaPrompt: Self.schemaSnippet)
+    for display in Set(ScopeVerdictGuard.reviewedMissingSubjects.values) {
+      #expect(
+        ScopeVerdictGuard.sanitize(display, coveredPhrases: covered) == display,
+        "\(display) is reviewed copy and must survive sanitize unchanged")
+    }
+  }
+
   @Test func realSchemaPromptCoversItsOwnVocabulary() {
     let covered = ScopeVerdictGuard.coveredPhrases(fromSchemaPrompt: """
       leases(lease_id, base_rent_psf, annual_base_rent, has_renewal_option)
