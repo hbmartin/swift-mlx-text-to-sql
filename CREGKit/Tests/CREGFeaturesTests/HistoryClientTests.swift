@@ -435,7 +435,7 @@ import Testing
 
     var stalePresentationWrite = provisional
     stalePresentationWrite.resultPresentation = ResultPresentationPreference(
-      mode: .table, specificationID: "policy|table")
+      mode: .table, specificationID: chartTestRecommendationID("policy|table"))
     try await client.updateResultPresentation(
       conversationID, stalePresentationWrite)
 
@@ -461,7 +461,7 @@ import Testing
 
     var preferenceWrite = original
     preferenceWrite.resultPresentation = ResultPresentationPreference(
-      mode: .table, specificationID: "policy|table")
+      mode: .table, specificationID: chartTestRecommendationID("policy|table"))
     try await client.updateResultPresentation(conversationID, preferenceWrite)
 
     var staleWholeMessage = original
@@ -496,7 +496,7 @@ import Testing
 
     var preferenceWrite = original
     preferenceWrite.resultPresentation = ResultPresentationPreference(
-      mode: .table, specificationID: "policy|table")
+      mode: .table, specificationID: chartTestRecommendationID("policy|table"))
     try await client.updateResultPresentation(conversationID, preferenceWrite)
 
     var staleWholeMessage = original
@@ -567,7 +567,7 @@ import Testing
     }
 
     message.resultPresentation = ResultPresentationPreference(
-      mode: .table, specificationID: "policy|table")
+      mode: .table, specificationID: chartTestRecommendationID("policy|table"))
     try await client.updateResultPresentation(conversationID, message)
 
     let stored = try #require(

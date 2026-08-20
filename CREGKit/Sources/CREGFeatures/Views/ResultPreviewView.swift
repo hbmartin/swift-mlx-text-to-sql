@@ -6,15 +6,20 @@ import SwiftUI
 /// The four-row Result Preview shown inline in the transcript; tapping it
 /// opens the full-screen Result Viewer.
 struct ResultPreviewView: View {
+  let messageID: UUID
+  let resultFingerprint: String
   let result: QueryResult
   let sql: String
   let question: String?
-  let chartAnalysis: ResultChartAnalysis
   let preference: ResultPresentationPreference?
   let setPreference: (ResultPresentationPreference) -> Void
   let open: () -> Void
 
   static let previewRowLimit = 4
+  @Dependency(\.chartAnalysis) private var chartAnalysisClient
+  @State private var analysis: AutoChartAnalysis<Int>?
+  @State private var preparedChart: AutoChartPreparedChart<Int>?
+  @State private var preparationFailed = false
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
   @State private var pinchHapticTrigger = 0
@@ -31,15 +36,11 @@ struct ResultPreviewView: View {
     setPreference: @escaping (ResultPresentationPreference) -> Void,
     open: @escaping () -> Void
   ) {
+    self.messageID = messageID
+    self.resultFingerprint = resultFingerprint
     self.result = result
     self.sql = sql
     self.question = question
-    self.chartAnalysis = ResultPreviewChartCache.analysis(
-      messageID: messageID,
-      resultFingerprint: resultFingerprint,
-      result: result,
-      sql: sql,
-      question: question)
     self.preference = preference
     self.setPreference = setPreference
     self.open = open
@@ -51,6 +52,20 @@ struct ResultPreviewView: View {
       : ResultViewerLogic.previewScale(for: pinchMagnification)
   }
 
+  private var selectedRecommendation: AutoChartRecommendation? {
+    guard let analysis else { return nil }
+    switch analysis.resolve(preference?.specificationID) {
+    case .exact(let recommendation), .defaulted(let recommendation, _):
+      return recommendation
+    case .unavailable:
+      return nil
+    }
+  }
+
+  private var analysisTaskID: String {
+    [messageID.uuidString, resultFingerprint, sql, question ?? ""].joined(separator: "|")
+  }
+
   var body: some View {
     if result.rows.isEmpty {
       Text("No matching rows.")
@@ -58,7 +73,7 @@ struct ResultPreviewView: View {
         .foregroundStyle(.secondary)
         .padding(10)
     } else {
-      let selected = selectedRecommendation(in: chartAnalysis.recommendations)
+      let selected = selectedRecommendation
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
         if selected != nil {
@@ -70,7 +85,7 @@ struct ResultPreviewView: View {
                 setPreference(
                   ResultPresentationPreference(
                     mode: newMode,
-                    specificationID: preference?.specificationID ?? selected?.id))
+                    specificationID: selected?.id))
               })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -84,12 +99,8 @@ struct ResultPreviewView: View {
 
         Button(action: open) {
           VStack(alignment: .leading, spacing: 6) {
-            if mode == .chart, let selected {
-              AutoChartView(
-                table: chartAnalysis.table,
-                recommendation: selected,
-                interaction: .preview,
-                height: 156)
+            if mode == .chart, selected != nil {
+              chartArea
             } else {
               tablePreview
             }
@@ -130,15 +141,67 @@ struct ResultPreviewView: View {
         )
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
+      .task(id: analysisTaskID) {
+        analysis = nil
+        preparedChart = nil
+        preparationFailed = false
+        do {
+          let loaded = try await chartAnalysisClient.analyze(
+            result: result,
+            sql: sql,
+            question: question,
+            resultFingerprint: resultFingerprint,
+            dataIdentity: "CREG.Result.v2:\(messageID.uuidString.lowercased())")
+          analysis = loaded
+          switch loaded.resolve(preference?.specificationID) {
+          case .exact(let recommendation), .defaulted(let recommendation, _):
+            preparedChart = loaded.primaryChart?.recommendation.id == recommendation.id
+              ? loaded.primaryChart : nil
+          case .unavailable:
+            preparedChart = nil
+          }
+        } catch is CancellationError {
+          return
+        } catch {
+          analysis = nil
+        }
+      }
+      .task(id: selected?.id) {
+        guard let analysis, let selected else {
+          preparedChart = nil
+          return
+        }
+        preparationFailed = false
+        if analysis.primaryChart?.recommendation.id == selected.id {
+          preparedChart = analysis.primaryChart
+          return
+        }
+        preparedChart = nil
+        do {
+          preparedChart = try await analysis.prepare(selected.id)
+        } catch is CancellationError {
+          return
+        } catch {
+          preparationFailed = true
+        }
+      }
     }
   }
 
-  private func selectedRecommendation(
-    in recommendations: [AutoChartRecommendation]
-  ) -> AutoChartRecommendation? {
-    CREGChartAdapter.resolvedRecommendation(
-      preferredID: preference?.specificationID,
-      in: recommendations)
+  @ViewBuilder
+  private var chartArea: some View {
+    if let preparedChart {
+      AutoChartView(
+        preparedChart: preparedChart,
+        presentation: .preview(plotHeight: 156),
+        formatters: CREGChartAdapter.formatters)
+    } else if preparationFailed {
+      tablePreview
+    } else {
+      ProgressView("Preparing chart")
+        .frame(maxWidth: .infinity)
+        .frame(height: 156)
+    }
   }
 
   private func effectiveMode(hasChart: Bool) -> ResultPresentationPreference.Mode {

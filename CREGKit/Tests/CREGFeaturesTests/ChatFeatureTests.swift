@@ -958,7 +958,7 @@ private actor UserPersistenceOrderingGate {
     let questionID = UUID(90)
     let provisionalID = UUID(91)
     let preference = ResultPresentationPreference(
-      mode: .table, specificationID: "policy|table")
+      mode: .table, specificationID: chartTestRecommendationID("policy|table"))
     var state = Self.appState(selected: Self.conversationA)
     var activeTurn = AppFeature.ActiveTurn(
       questionID: questionID,

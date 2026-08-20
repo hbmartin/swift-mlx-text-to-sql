@@ -50,6 +50,7 @@ public struct RootView: View {
 /// interruptible, and reversible.
 struct AppRootView: View {
   @Bindable var store: StoreOf<AppFeature>
+  @Dependency(\.chartAnalysis) private var chartAnalysis
   /// Fixed by previews; live rendering uses the current date.
   var now: Date = Date()
   /// In-flight gesture translation, composed with the settled reveal state.
@@ -119,14 +120,14 @@ struct AppRootView: View {
     .preferredColorScheme(store.appearance.colorScheme)
     .onChange(of: store.chat?.conversationID) { previous, current in
       guard previous != nil, previous != current else { return }
-      ResultPreviewChartCache.removeAll()
+      Task { await chartAnalysis.trimToMinimum() }
     }
     #if os(iOS)
       .onReceive(
         NotificationCenter.default.publisher(
           for: UIApplication.didReceiveMemoryWarningNotification)
       ) { _ in
-        ResultPreviewChartCache.removeAll()
+        Task { await chartAnalysis.trimToMinimum() }
       }
     #endif
   }
