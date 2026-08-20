@@ -970,6 +970,7 @@ private actor UserPersistenceOrderingGate {
     preparation.eventLines = ["{\"prepared\":true}"]
     state.followUpPreparation = preparation
     state.chat?.followUpBatch = batch
+    state.isCapturingAnswerability = true
     let eventWrites = CallRecorder()
     var history = HistoryClient.noop()
     history.appendEvents = { _, _, lines in
@@ -987,7 +988,64 @@ private actor UserPersistenceOrderingGate {
 
     #expect(store.state.followUpPreparation == nil)
     #expect(store.state.chat?.followUpBatch == batch)
+    #expect(store.state.isCapturingAnswerability == false)
     #expect(eventWrites.recorded == ["{\"prepared\":true}"])
+  }
+
+  @Test func foregroundStartsVerdictFreeRecoveryAfterDiagnosisWasInterrupted() async {
+    let sourceMessageID = UUID(77)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: sourceMessageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState()
+    state.pendingScopeDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: Self.conversationA,
+      messageID: sourceMessageID,
+      context: context)
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.finish()
+
+    #expect(store.state.pendingScopeDiagnosis?.context == context)
+    #expect(store.state.followUpPreparation == nil)
+    #expect(preparedContexts.value.isEmpty)
+
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(preparedContexts.value == [context])
+    guard
+      case .turnFailure(let reason, let verdict)? =
+        preparedContexts.value.first?.seed
+    else {
+      Issue.record("Expected verdict-free Recovery Suggestion context")
+      return
+    }
+    #expect(reason == .generationExhausted)
+    #expect(verdict == nil)
   }
 
   @Test func foregroundResumesAnIncompletePersistedBatch() async {

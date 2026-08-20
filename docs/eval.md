@@ -330,7 +330,9 @@ deterministic 4×4 confusion matrix reproducible byte-for-byte from a fixed
 input. Verdicts are captured on device (the dev Mac's macOS 15 cannot run
 Foundation Models) through the debug-only Settings capture and exported as
 JSONL; each capture is recorded under the run contract above with corpus,
-schema, and OS-version identity in its manifest.
+schema-prompt SHA-256, Scope Verdict policy version, and OS-version identity in
+its manifest. Capture loads the schema once and uses those exact bytes for both
+the digest and every recorded judgement.
 
 **Shipping gate for scope diagnosis** — the false-abstention rate: the share
 of `likely_answerable_model_failed` items judged as any not-covered bucket.

@@ -68,6 +68,10 @@ import Testing
     #expect(throws: AnswerabilityScorerError.malformedLine(1)) {
       _ = try AnswerabilityScorer.parseCorpus(jsonl: "{not json}")
     }
+    #expect(throws: AnswerabilityScorerError.malformedLine(3)) {
+      _ = try AnswerabilityScorer.parseCorpus(
+        jsonl: "\n  \n{still not json}\n")
+    }
     let corpus = try AnswerabilityScorer.parseCorpus(jsonl: Self.corpusJSONL)
     #expect(throws: AnswerabilityScorerError.duplicateID("OR-01")) {
       _ = try AnswerabilityScorer.score(
@@ -98,6 +102,9 @@ import Testing
     }
     #expect(answerable.count == 23)
     #expect(answerable.contains { $0.id == "T2-21" })
+    #expect(
+      answerable.first { $0.id == "MT-60" }?.question
+        == "Which tenants on active leases expiring in the next 12 months have a renewal option?")
     // Answerable items are recovered gold questions and never carry
     // acceptable alternates — a refusal on one is always a false abstention.
     #expect(answerable.allSatisfy { $0.acceptableVerdicts == nil })

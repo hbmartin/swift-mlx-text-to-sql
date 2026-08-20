@@ -17,6 +17,7 @@ extension AppFeature {
     // A new turn owns the serializer; an in-flight scope diagnosis for an
     // older failure is abandoned rather than queued ahead of it.
     state.pendingScopeDiagnosis = nil
+    state.isCapturingAnswerability = false
     let question = submission.question
     let questionID = uuid()
     let startedAt = now
@@ -143,6 +144,7 @@ extension AppFeature {
     }
     return .merge(
       .cancel(id: CancelID.scopeDiagnosis),
+      .cancel(id: CancelID.answerabilityCapture),
       run.cancellable(id: CancelID.pipeline, cancelInFlight: true))
   }
 

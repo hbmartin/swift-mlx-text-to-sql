@@ -372,25 +372,25 @@ enum LiveDependencies {
   /// Failure renders, outside the turn deadline, through the same shared
   /// serializer so it never overlaps FM or MLX inference. Nil on any failure —
   /// the reason-only copy is a complete experience without it.
-  static let scopeDiagnosis: ScopeDiagnosisClient = ScopeDiagnosisClient {
-    question in
-    let fm = FMClient.live()
-    guard fm.availability() == .available else { return nil }
-    guard
-      let schema = try? SQLGenClient.schemaPrompt(),
-      !schema.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    else { return nil }
-    guard
-      var record = try? await serializer.run(operation: .scopeVerdict, {
-        try await fm.scopeVerdict(question, schema)
-      })
-    else { return nil }
-    record.missingSubject = ScopeVerdictGuard.sanitize(
-      record.missingSubject,
-      coveredPhrases: ScopeVerdictGuard.coveredPhrases(
-        fromSchemaPrompt: schema))
-    return record
-  }
+  static let scopeDiagnosis = ScopeDiagnosisClient(
+    schemaPrompt: { try SQLGenClient.schemaPrompt() },
+    policyVersion: FMClient.scopeVerdictPolicyVersion,
+    judgeWithSchema: { question, schema in
+      let fm = FMClient.live()
+      guard fm.availability() == .available else { return nil }
+      guard
+        var record = try? await serializer.run(
+          operation: .scopeVerdict,
+          {
+            try await fm.scopeVerdict(question, schema)
+          })
+      else { return nil }
+      record.missingSubject = ScopeVerdictGuard.sanitize(
+        record.missingSubject,
+        coveredPhrases: ScopeVerdictGuard.coveredPhrases(
+          fromSchemaPrompt: schema))
+      return record
+    })
 
   private static func preparationPreflight(
     stage: ModelPreparationStage,

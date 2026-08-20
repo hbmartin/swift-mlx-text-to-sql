@@ -51,6 +51,7 @@ extension AppFeature {
       state.activeTurn == nil,
       state.queue.isEmpty,
       state.pendingTurnPersistence == nil,
+      state.pendingScopeDiagnosis == nil,
       state.followUpPreparation == nil,
       state.modelReadiness == .ready,
       state.fmAvailability == .available,
@@ -133,6 +134,29 @@ extension AppFeature {
 
   // MARK: - Scope diagnosis (C before D)
 
+  /// A backgrounded diagnosis retains its Recovery Suggestion context but not
+  /// the optional verdict. Resume D only after the app is active and the same
+  /// idle/model-availability gates used by ordinary preparation are satisfied.
+  func resumeInterruptedScopeDiagnosisIfIdle(
+    state: inout State
+  ) -> Effect<Action> {
+    guard
+      let pending = state.pendingScopeDiagnosis,
+      state.activeTurn == nil,
+      state.queue.isEmpty,
+      state.pendingTurnPersistence == nil,
+      state.followUpPreparation == nil,
+      state.modelReadiness == .ready,
+      state.fmAvailability == .available,
+      state.conversations[id: pending.conversationID] != nil
+    else { return .none }
+    state.pendingScopeDiagnosis = nil
+    return startFollowUpPreparation(
+      state: &state,
+      conversationID: pending.conversationID,
+      context: pending.context)
+  }
+
   /// Judges portfolio coverage of the failed question after the failure has
   /// rendered, then hands the verdict-enriched context to Recovery Suggestion
   /// preparation. When the diagnosis cannot run — a turn started, FM went
@@ -163,6 +187,7 @@ extension AppFeature {
     let question = context.standaloneQuestion
     return .run(priority: .low) { send in
       let verdict = await scopeDiagnosis.judge(question)
+      guard !Task.isCancelled else { return }
       await send(
         .scopeDiagnosisFinished(
           conversationID: conversationID,

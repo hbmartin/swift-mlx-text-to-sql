@@ -112,7 +112,7 @@ public enum AnswerabilityScorer {
     let decoder = JSONDecoder()
     var rows: [Row] = []
     for (index, line) in jsonl.split(
-      separator: "\n", omittingEmptySubsequences: true
+      separator: "\n", omittingEmptySubsequences: false
     ).enumerated() {
       let trimmed = line.trimmingCharacters(in: .whitespaces)
       guard !trimmed.isEmpty else { continue }

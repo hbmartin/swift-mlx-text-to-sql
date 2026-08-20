@@ -176,7 +176,8 @@ public enum ScopeVerdictGuard {
     subject = subject
       .replacingOccurrences(of: "\n", with: " ")
       .replacingOccurrences(of: "\r", with: " ")
-    subject.removeAll(where: { "`*_#<>[]{}|\"".contains($0) })
+      .replacingOccurrences(of: "_", with: " ")
+    subject.removeAll(where: { "`*#<>[]{}|\"".contains($0) })
     subject = subject
       .split(whereSeparator: \Character.isWhitespace)
       .joined(separator: " ")
@@ -191,7 +192,10 @@ public enum ScopeVerdictGuard {
   }
 
   private static func normalized(_ phrase: String) -> String {
-    phrase.hasSuffix("s") ? String(phrase.dropLast()) : phrase
+    if phrase.hasSuffix("ies"), phrase.count > 3 {
+      return String(phrase.dropLast(3)) + "y"
+    }
+    return phrase.hasSuffix("s") ? String(phrase.dropLast()) : phrase
   }
 }
 
@@ -200,13 +204,44 @@ public enum ScopeVerdictGuard {
 /// the schema prompt, serializes the FM call, and sanitizes `missingSubject`;
 /// nil means no verdict could be produced and the reason-only copy stands.
 public struct ScopeDiagnosisClient: Sendable {
+  /// Loads the exact schema bytes supplied to the live Scope Verdict prompt.
+  public var schemaPrompt: @Sendable () throws -> String
+  /// Stable identity for the instructions and generated response contract.
+  public var policyVersion: String
   public var judge:
     @Sendable (_ standaloneQuestion: String) async -> ScopeVerdictRecord?
+  /// Judges against caller-supplied schema bytes. Debug capture uses this path
+  /// so its manifest hashes the same bytes that informed every verdict.
+  public var judgeWithSchema:
+    @Sendable (_ standaloneQuestion: String, _ schema: String) async
+      -> ScopeVerdictRecord?
+
+  public init(
+    schemaPrompt: @escaping @Sendable () throws -> String,
+    policyVersion: String,
+    judgeWithSchema:
+      @escaping @Sendable (String, String) async
+      -> ScopeVerdictRecord?
+  ) {
+    self.schemaPrompt = schemaPrompt
+    self.policyVersion = policyVersion
+    self.judgeWithSchema = judgeWithSchema
+    self.judge = { question in
+      guard
+        let schema = try? schemaPrompt(),
+        !schema.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else { return nil }
+      return await judgeWithSchema(question, schema)
+    }
+  }
 
   public init(
     judge: @escaping @Sendable (String) async -> ScopeVerdictRecord?
   ) {
+    self.schemaPrompt = { "" }
+    self.policyVersion = "test"
     self.judge = judge
+    self.judgeWithSchema = { question, _ in await judge(question) }
   }
 }
 

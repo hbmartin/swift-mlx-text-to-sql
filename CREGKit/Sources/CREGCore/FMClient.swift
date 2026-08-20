@@ -108,6 +108,10 @@ public struct FMStatusClient: Sendable {
 }
 
 extension FMClient {
+  /// Bump whenever the Scope Verdict instructions, generated probe, or prompt
+  /// shape changes. On-device capture records this alongside its schema hash.
+  public static let scopeVerdictPolicyVersion = "scope-verdict-v1"
+
   public static func live() -> FMClient {
     if #available(macOS 26.0, iOS 26.0, *) {
       return foundationModelClient()
