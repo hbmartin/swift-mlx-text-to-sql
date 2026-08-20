@@ -26,7 +26,7 @@ A double-backtick symbol link to the same symbol does not resolve:
 
 Written in `CREGEngine/QueryPipeline.swift`, that fails with:
 
-```
+```text
 'InferenceSerializer' doesn't exist at '/CREGEngine/QueryPipeline'
 ```
 

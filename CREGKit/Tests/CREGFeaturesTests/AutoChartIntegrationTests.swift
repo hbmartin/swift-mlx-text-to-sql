@@ -565,6 +565,15 @@ import Testing
     var components = top.id.split(
       separator: "|", omittingEmptySubsequences: false)
     #expect(components.count > 1)
+    // Without this the substitution below is meaningless: if the id stops
+    // encoding the policy version in component 0, `policyV6ID` degenerates into
+    // an arbitrary unrecognized string and this test silently becomes a
+    // duplicate of `invalidStoredSpecificationFallsBackToCurrentTopRecommendation`.
+    // Each id component is length-prefixed, so this restates that encoding
+    // rather than hard-coding a version — a routine policy bump must not fail
+    // this test, but moving the version out of component 0 must.
+    let currentVersion = String(AutoTableCharts.recommendationPolicyVersion)
+    #expect(components[0] == "\(currentVersion.utf8.count):\(currentVersion)")
     components[0] = "1:6"
     let policyV6ID = components.joined(separator: "|")
     #expect(policyV6ID != top.id)
@@ -649,10 +658,15 @@ import Testing
   }
 }
 
-/// Both tests here mutate `ResultPreviewChartCache`, a process-wide store, so
-/// they must not run concurrently with each other.
+/// Every test here mutates `ResultPreviewChartCache` or, through it, the
+/// package's `AutoChartRenderCache` — both process-wide stores. They are one
+/// suite rather than two because `.serialized` orders only the tests within the
+/// suite it annotates; two separately serialized suites would still run
+/// concurrently with each other, and `ResultPreviewChartCache.removeAll()`
+/// would be free to clear the package's prepared renders underneath a test in
+/// the other suite.
 @MainActor
-@Suite(.serialized) struct PreviewChartCacheTests {
+@Suite(.serialized) struct ChartCacheTests {
   @Test func previewChartAnalysisSurvivesUndoAndIsInvalidatedByInput() async {
     ResultPreviewChartCache.removeAll()
     defer { ResultPreviewChartCache.removeAll() }
@@ -728,12 +742,12 @@ import Testing
     #expect(third !== afterRelease)
   }
 
-  /// Clearing CREG's analyses hands the release through to the package, whose
+  /// Clearing CREG's analyses hands a release through to the package, whose
   /// entries were all keyed on tables those analyses owned. The package exposes
-  /// no retained-entry count, so this pins the behavior CREG depends on across
-  /// the release: the same message re-prepares into a fresh analysis that still
-  /// resolves the same chart.
-  @Test func clearingPreviewAnalysesReleasesPreparedRendersAndReprepares() throws {
+  /// no public retained-entry count, so this does not verify that release; it
+  /// pins the behavior CREG depends on across it, which is that the same
+  /// message re-prepares into a fresh analysis resolving the same chart.
+  @Test func clearingPreviewAnalysesRepreparesTheSameChartDeterministically() throws {
     ResultPreviewChartCache.removeAll()
     defer { ResultPreviewChartCache.removeAll() }
     let messageID = UUID()
@@ -763,10 +777,7 @@ import Testing
     #expect(before !== after)
     #expect(afterRecommendation.id == beforeRecommendation.id)
   }
-}
 
-@MainActor
-@Suite struct CREGChartRenderCacheTests {
   /// Every `AutoChartView` CREG builds renders a table that came from a
   /// `ResultChartAnalysis`, so preparing one has to apply the host budget
   /// before the package can retain anything for it.
