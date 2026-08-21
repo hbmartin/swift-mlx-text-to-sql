@@ -1241,6 +1241,58 @@ private actor UserPersistenceOrderingGate {
     #expect(preparedContexts.value == [context])
   }
 
+  @Test func nilVerdictCompletionWhileInactiveRetainsRecoveryContext() async {
+    let messageID = UUID(81)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: messageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState()
+    state.pendingScopeDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: Self.conversationA,
+      messageID: messageID,
+      context: context)
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.send(
+      .scopeDiagnosisFinished(
+        conversationID: Self.conversationA,
+        messageID: messageID,
+        verdict: nil))
+    await store.finish()
+
+    #expect(preparedContexts.value.isEmpty)
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.pendingScopeDiagnosis?.context == context)
+
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(preparedContexts.value == [context])
+  }
+
   @Test func foregroundResumesAnIncompletePersistedBatch() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(

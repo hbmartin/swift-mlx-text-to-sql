@@ -305,8 +305,16 @@ extension AppFeature {
     .cancellable(id: CancelID.modelPreparation, cancelInFlight: true)
   }
 
-  func canStartModelPreparation(state: State) -> Bool {
-    !state.modelPreparationInFlight && state.isInferenceIdle
+  func canStartModelPreparation(
+    state: State,
+    allowingScopeDiagnosisAbandonment: Bool = false
+  ) -> Bool {
+    !state.modelPreparationInFlight
+      && state.isTurnSchedulerIdle
+      && state.followUpPreparation == nil
+      && !state.isCapturingAnswerability
+      && (allowingScopeDiagnosisAbandonment
+        || state.pendingScopeDiagnosis == nil)
   }
 
   func outcomeName(_ outcome: TurnOutcome) -> String {

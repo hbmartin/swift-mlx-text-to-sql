@@ -125,7 +125,10 @@ import Testing
     #expect(configuration.tables.maximumEntries == 8)
     #expect(configuration.analyses.maximumEntries == 64)
     #expect(configuration.preparedCharts.maximumEntries == 16)
-    #expect(configuration.maximumRetainedCost == 32 * 1_024 * 1_024)
+    #expect(
+      configuration.maximumRetainedCost
+        + CREGChartAnalysisClient.snapshotMaximumRetainedCost
+        == CREGChartAnalysisClient.maximumRetainedCost)
   }
 
   @Test func primaryIsEagerAndAlternativePreparationIsExplicit() async throws {
@@ -177,13 +180,68 @@ import Testing
     let beforeTrim = await client.cacheStatistics
     #expect(beforeTrim.analyses.hits >= 1)
     #expect(beforeTrim.analyses.entries == 1)
+    #expect(client.snapshotStatistics.entries == 1)
 
     await client.trimToMinimum()
     let afterTrim = await client.cacheStatistics
     #expect(afterTrim.tables.entries == 0)
     #expect(afterTrim.analyses.entries == 0)
     #expect(afterTrim.preparedCharts.entries == 0)
+    #expect(client.snapshotStatistics.entries == 0)
+    #expect(client.snapshotStatistics.retainedCost == 0)
     #expect(!heldPrimary.marks.isEmpty)
+  }
+
+  @Test func snapshotLRUEnforcesByteBudgetRevisionAndTrim() async throws {
+    let uncached = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached),
+      snapshots: .uncached)
+    let analysis = try await uncached.analyze(
+      result: PreviewFixtures.fundValueResult,
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question)
+    let snapshots = ChartAnalysisSnapshotStore(
+      capacity: 3, maximumRetainedCost: 100)
+
+    snapshots.store(
+      analysis, identity: "first", revision: "r1", retainedCost: 60)
+    snapshots.store(
+      analysis, identity: "second", revision: "r1", retainedCost: 60)
+
+    #expect(snapshots.analysis(identity: "first", revision: "r1") == nil)
+    #expect(snapshots.analysis(identity: "second", revision: "stale") == nil)
+    #expect(snapshots.analysis(identity: "second", revision: "r1") != nil)
+    #expect(snapshots.statistics.entries == 1)
+    #expect(snapshots.statistics.retainedCost == 60)
+    #expect(snapshots.statistics.evictions == 1)
+
+    snapshots.store(
+      analysis, identity: "oversized", revision: "r1", retainedCost: 101)
+    #expect(snapshots.statistics.entries == 1)
+
+    snapshots.trimToMinimum()
+    #expect(snapshots.statistics.entries == 0)
+    #expect(snapshots.statistics.retainedCost == 0)
+    #expect(snapshots.statistics.evictions == 2)
+  }
+
+  @Test func defaultTestDependencyNeverWarmStartsAcrossRequests() async throws {
+    let client = CREGChartAnalysisClient.testValue
+    let sql = StarterQueryID.portfolioValueByFundV1.sql
+    _ = try await client.analyze(
+      result: PreviewFixtures.fundValueResult,
+      sql: sql,
+      question: StarterQueryID.portfolioValueByFundV1.question,
+      resultFingerprint: "test-result",
+      dataIdentity: "shared-test-identity")
+
+    #expect(
+      client.cachedAnalysis(
+        resultFingerprint: "test-result",
+        sql: sql,
+        dataIdentity: "shared-test-identity") == nil)
+    #expect(client.snapshotStatistics.entries == 0)
+    #expect(client.snapshotStatistics.retainedCost == 0)
   }
 
   @Test func analyzersAreIsolatedAndTestsNeedNoGlobalSerialization() async throws {

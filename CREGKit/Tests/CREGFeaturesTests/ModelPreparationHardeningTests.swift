@@ -309,6 +309,15 @@ import Testing
         question: "Queued",
         submittedAt: Date(timeIntervalSince1970: 1))
     ]
+    let queuedDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: UUID(2),
+      messageID: UUID(20),
+      context: FollowUpSuggestionContext(
+        sourceAssistantMessageID: UUID(20),
+        question: "Queued recovery",
+        standaloneQuestion: "Queued recovery",
+        seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil)))
+    queuedState.pendingScopeDiagnosis = queuedDiagnosis
     let queuedStore = TestStore(initialState: queuedState) {
       AppFeature()
     } withDependencies: {
@@ -317,6 +326,7 @@ import Testing
     queuedStore.exhaustivity = .off
     await queuedStore.send(.retryPreparation)
     await queuedStore.finish()
+    #expect(queuedStore.state.pendingScopeDiagnosis == queuedDiagnosis)
 
     var activeState = AppFeature.State()
     activeState.$developerMode.withLock { $0 = true }
@@ -332,6 +342,15 @@ import Testing
       conversationID: UUID(2),
       question: "Running",
       startedAt: Date(timeIntervalSince1970: 1))
+    let activeDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: UUID(2),
+      messageID: UUID(21),
+      context: FollowUpSuggestionContext(
+        sourceAssistantMessageID: UUID(21),
+        question: "Active recovery",
+        standaloneQuestion: "Active recovery",
+        seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil)))
+    activeState.pendingScopeDiagnosis = activeDiagnosis
     let activeStore = TestStore(initialState: activeState) {
       AppFeature()
     } withDependencies: {
@@ -342,6 +361,7 @@ import Testing
     await activeStore.finish()
 
     #expect(modes.value.isEmpty)
+    #expect(activeStore.state.pendingScopeDiagnosis == activeDiagnosis)
   }
 
   @Test func compatibilityIsNotOfferedForBuildPolicyFailures() async {
