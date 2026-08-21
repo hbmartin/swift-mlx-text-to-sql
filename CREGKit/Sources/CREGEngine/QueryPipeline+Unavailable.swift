@@ -8,9 +8,10 @@ extension QueryPipeline {
   public static func unavailable(message: String) -> QueryPipeline {
     QueryPipeline { question, _ in
       AsyncStream { continuation in
+        let reason = TurnFailureReason.pipelineUnavailable(userMessage: message)
         var telemetry = TurnTelemetry(originalQuestion: question)
         telemetry.terminalError = message
-        telemetry.failureReason = .pipelineUnavailable
+        telemetry.failureReason = reason
         continuation.yield(.turnStarted(question: question))
         continuation.yield(
           .questionResolved(
@@ -20,7 +21,7 @@ extension QueryPipeline {
             elapsedMicroseconds: 0))
         continuation.yield(
           .turnFinished(
-            outcome: .failed(reason: .pipelineUnavailable),
+            outcome: .failed(reason: reason),
             telemetry: telemetry))
         continuation.finish()
       }

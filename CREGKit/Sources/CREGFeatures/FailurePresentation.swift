@@ -79,11 +79,11 @@ extension FailurePresentation {
       code = "turn_starter_query_unavailable"
       title = "Starter query unavailable"
       message = "That built-in portfolio query is temporarily unavailable."
-    case .pipelineUnavailable:
+    case .pipelineUnavailable(let userMessage):
       code = "turn_pipeline_unavailable"
       title = "SQL model unavailable"
-      message =
-        "CREG's SQL model isn't available right now, so this question couldn't run."
+      message = userMessage
+        ?? "CREG's SQL model isn't available right now, so this question couldn't run."
     case .unexpected:
       code = "turn_unexpected_failure"
       title = "Unable to answer"

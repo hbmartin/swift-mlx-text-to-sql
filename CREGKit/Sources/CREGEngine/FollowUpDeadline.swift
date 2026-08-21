@@ -107,3 +107,26 @@ func withFollowUpDeadline<Value: Sendable>(
     stage: stage,
     operation: operation)
 }
+
+public struct ScopeVerdictDeadlineExceeded: Error, Sendable {}
+
+/// Deadline for the app-level Scope Verdict FM call. The diagnosis runs
+/// outside the turn deadlines by design, but it is the one serialized
+/// inference with no bound of its own: a stalled call would hold the shared
+/// FIFO slot into the user's next turn, whose rewrite/gate stages would then
+/// queue behind it while their own deadlines tick. Apply the deadline inside
+/// the serializer slot so expiry releases the slot rather than abandoning a
+/// queued wait.
+public func withScopeVerdictDeadline<Value: Sendable>(
+  seconds: Double = 15,
+  operation: @escaping @Sendable () async throws -> Value
+) async throws -> Value {
+  do {
+    return try await withFollowUpDeadline(
+      seconds: seconds,
+      stage: "scope-verdict",
+      operation: operation)
+  } catch is FollowUpDeadlineExceeded {
+    throw ScopeVerdictDeadlineExceeded()
+  }
+}

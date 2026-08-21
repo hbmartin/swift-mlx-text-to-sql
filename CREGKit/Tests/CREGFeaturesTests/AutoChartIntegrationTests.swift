@@ -71,17 +71,30 @@ import Testing
     #expect(input.context.goal == .range)
   }
 
-  @Test func malformedQueryResultIsRejectedRatherThanPadded() {
+  /// A ragged row (a prepared result decoded from history written by an
+  /// older or buggy producer) pads with nulls — matching the defensive
+  /// padding in the hints closure — instead of throwing and silently
+  /// disabling charts for the whole result.
+  @Test func raggedQueryResultRowsPadToTheColumnCount() throws {
     let result = QueryResult(
       columns: ["fund", "current_market_value"],
-      rows: [[.text("Core")]])
+      rows: [
+        [.text("Core")],
+        [.text("Value-Add"), .real(1_000), .text("spurious extra cell")],
+      ])
 
-    #expect(throws: AutoChartDatasetError.self) {
-      _ = try CREGChartAdapter.analysisInput(
-        result: result,
-        sql: "SELECT fund, current_market_value FROM properties",
-        question: nil)
-    }
+    let input = try CREGChartAdapter.analysisInput(
+      result: result,
+      sql: "SELECT fund, current_market_value FROM properties",
+      question: nil)
+
+    #expect(input.dataset.chartRows.count == 2)
+    let valueColumn = input.dataset.chartColumns[1].id
+    #expect(
+      input.dataset.chartRows[0].chartValue(for: valueColumn) == .null)
+    #expect(
+      input.dataset.chartRows[1].chartValue(for: valueColumn)
+        == .double(1_000))
   }
 
   @Test func formattersRetainCREGTableFormattingInEveryChartContext() {

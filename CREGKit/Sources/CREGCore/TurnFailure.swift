@@ -28,8 +28,11 @@ public enum TurnFailureReason: Sendable, Equatable, Codable {
   /// A reviewed Starter Query failed validation or execution.
   case starterQueryUnavailable
   /// The pipeline itself never became available (model manifest or
-  /// configuration failure).
-  case pipelineUnavailable
+  /// configuration failure). Carries the bootstrap failure's human-authored
+  /// guidance (device floor, missing verified model, Metal runtime) so the
+  /// rendered Turn Failure shows the same actionable copy as the readiness
+  /// banner; nil falls back to the generic sentence in `CREGFeatures`.
+  case pipelineUnavailable(userMessage: String?)
   case unexpected
 
   /// Timeout and cancellation share one telemetry field (`timeoutStage`);

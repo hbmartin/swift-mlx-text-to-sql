@@ -9,6 +9,7 @@ extension AppFeature {
     context: FollowUpSuggestionContext
   ) -> Effect<Action> {
     guard
+      state.isSceneActive,
       state.isInferenceIdle,
       state.modelReadiness == .ready,
       state.fmAvailability == .available,
@@ -46,6 +47,7 @@ extension AppFeature {
     state: inout State
   ) -> Effect<Action> {
     guard
+      state.isSceneActive,
       state.isInferenceIdle,
       state.modelReadiness == .ready,
       state.fmAvailability == .available,
@@ -152,6 +154,7 @@ extension AppFeature {
     guard
       state.isTurnSchedulerIdle,
       state.followUpPreparation == nil,
+      !state.isCapturingAnswerability,
       state.modelReadiness == .ready,
       state.fmAvailability == .available
     else { return .none }
@@ -160,6 +163,25 @@ extension AppFeature {
       state: &state,
       conversationID: pending.conversationID,
       context: pending.context)
+  }
+
+  /// A retained scope diagnosis holds `isInferenceIdle` false, and while
+  /// Apple Intelligence is off nothing else can clear it — which would gate
+  /// the user's explicit model-preparation retry for the rest of the
+  /// session. The explicit retry outranks the passive recovery memo, exactly
+  /// as `dispatch` abandons an in-flight diagnosis rather than queueing
+  /// behind it.
+  func abandonScopeDiagnosisForModelMaintenance(
+    state: inout State
+  ) -> Effect<Action> {
+    guard state.pendingScopeDiagnosis != nil else { return .none }
+    state.pendingScopeDiagnosis = nil
+    diagnostics.info(
+      category: .submission,
+      code: "scope_diagnosis_abandoned_for_model_preparation",
+      summary:
+        "A pending scope diagnosis was abandoned so a user-requested model preparation could start.")
+    return .cancel(id: CancelID.scopeDiagnosis)
   }
 
   /// Judges portfolio coverage of the failed question after the failure has
@@ -172,6 +194,24 @@ extension AppFeature {
     messageID: UUID,
     context: FollowUpSuggestionContext
   ) -> Effect<Action> {
+    // The persistence barrier can settle after the user has already deleted
+    // the conversation (the durable delete defers on that same barrier). A
+    // verdict for a deleted conversation has nothing to enrich or persist,
+    // and parking it would hold `isInferenceIdle` false for nothing.
+    guard state.conversations[id: conversationID] != nil else { return .none }
+    guard state.isSceneActive else {
+      // The barrier can also settle while the app is inactive. Never start
+      // FM work in the background; retain the context exactly like a
+      // backgrounded diagnosis so reactivation resumes Recovery Suggestion
+      // preparation without a verdict.
+      if context.isRecoverySeed {
+        state.pendingScopeDiagnosis = PendingScopeDiagnosis(
+          conversationID: conversationID,
+          messageID: messageID,
+          context: context)
+      }
+      return .none
+    }
     guard
       context.isRecoverySeed,
       state.isTurnSchedulerIdle,

@@ -125,6 +125,8 @@ func followUpProposalFailureSummary(
     "Follow-up candidate proposal generation failed."
   case .generationTimedOut:
     "Follow-up candidate proposal generation timed out."
+  case .languageServiceUnavailable:
+    "Follow-up proposal stopped: Apple Intelligence became unavailable before the FM call could run."
   }
 }
 

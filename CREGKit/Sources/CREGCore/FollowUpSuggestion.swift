@@ -290,6 +290,9 @@ public enum FollowUpProposalFailure: String, Sendable, Equatable, Codable {
   case schemaLoadingFailed
   case generationFailed
   case generationTimedOut
+  /// Apple Intelligence became unavailable between the reducer's gate
+  /// snapshot and the preparation stream starting.
+  case languageServiceUnavailable
 }
 
 /// Payload-free preparation details retained when a candidate is rejected.
