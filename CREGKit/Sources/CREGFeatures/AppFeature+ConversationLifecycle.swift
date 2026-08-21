@@ -33,6 +33,7 @@ extension AppFeature {
       // A diagnosis for a deleted conversation can never resume, and a
       // retained one gates preparation and model maintenance session-long.
       state.pendingScopeDiagnosis = nil
+      state.isScopeDiagnosisInFlight = false
       effects.append(.cancel(id: CancelID.scopeDiagnosis))
     }
 
@@ -305,16 +306,13 @@ extension AppFeature {
     .cancellable(id: CancelID.modelPreparation, cancelInFlight: true)
   }
 
-  func canStartModelPreparation(
-    state: State,
-    allowingScopeDiagnosisAbandonment: Bool = false
-  ) -> Bool {
+  /// A retained Scope Verdict memo deliberately does not gate preparation:
+  /// both retry paths abandon it via
+  /// `abandonScopeDiagnosisForModelMaintenance`, because the explicit user
+  /// request outranks the passive recovery memo.
+  func canStartModelPreparation(state: State) -> Bool {
     !state.modelPreparationInFlight
-      && state.isTurnSchedulerIdle
-      && state.followUpPreparation == nil
-      && !state.isCapturingAnswerability
-      && (allowingScopeDiagnosisAbandonment
-        || state.pendingScopeDiagnosis == nil)
+      && state.isInferenceIdleIgnoringScopeDiagnosis
   }
 
   func outcomeName(_ outcome: TurnOutcome) -> String {

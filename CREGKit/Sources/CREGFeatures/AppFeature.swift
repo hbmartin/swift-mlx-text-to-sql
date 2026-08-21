@@ -206,6 +206,13 @@ public struct AppFeature: Sendable {
     public var deletionAwaitingTurnPersistence: UUID?
     public var followUpPreparation: FollowUpPreparationState?
     public var pendingScopeDiagnosis: PendingScopeDiagnosis?
+    /// True while the Scope Verdict judge effect is actually running.
+    /// `pendingScopeDiagnosis` alone cannot distinguish a live judge from an
+    /// interrupted memo, and the resume hooks (`.modelPrepared`,
+    /// `.dispatchNextIfIdle`, activation after a transient `.inactive`) must
+    /// never consume the memo out from under an in-flight judge — that would
+    /// start verdict-free preparation and discard the verdict on arrival.
+    public var isScopeDiagnosisInFlight = false
     /// Session-only Queued Questions across all Conversations, oldest first.
     public var queue: [QueuedQuestion] = []
     public var answerReadyBanner: AnswerReadyBanner?
@@ -298,6 +305,17 @@ public struct AppFeature: Sendable {
       activeTurn == nil && queue.isEmpty && pendingTurnPersistence == nil
     }
 
+    /// The idle core plus every lower-priority inference owner except the
+    /// pending Scope Verdict memo. The gates that deliberately consume or
+    /// abandon the memo — diagnosis resume, user-requested model
+    /// maintenance — start from here; everything else uses
+    /// `isInferenceIdle`.
+    public var isInferenceIdleIgnoringScopeDiagnosis: Bool {
+      isTurnSchedulerIdle
+        && followUpPreparation == nil
+        && !isCapturingAnswerability
+    }
+
     /// The idle core plus every lower-priority inference owner: no Scope
     /// Verdict outstanding, no follow-up preparation running, and no debug
     /// capture streaming its 87 serialized FM calls. Low-priority FM/MLX
@@ -305,10 +323,7 @@ public struct AppFeature: Sendable {
     /// captures) may start only from here, so every such gate shares this
     /// one predicate instead of hand-enumerating the conditions.
     public var isInferenceIdle: Bool {
-      isTurnSchedulerIdle
-        && pendingScopeDiagnosis == nil
-        && followUpPreparation == nil
-        && !isCapturingAnswerability
+      isInferenceIdleIgnoringScopeDiagnosis && pendingScopeDiagnosis == nil
     }
   }
 
@@ -317,6 +332,7 @@ public struct AppFeature: Sendable {
     case onAppear
     case appBecameActive
     case appBecameInactive
+    case appEnteredBackground
     case preparationJournalLoaded(ModelPreparationJournalSnapshot?)
     case retryPreparation
     case retryCompatibilityPreparation
@@ -485,7 +501,20 @@ public struct AppFeature: Sendable {
         return .merge(interruptedRecovery, persistedPreparation, queuedTurn)
 
       case .appBecameInactive:
+        // A transient interruption — Control Center, an app-switcher peek, a
+        // Face ID or permission dialog — passes through `.inactive` without
+        // ever backgrounding. Destroying in-flight capture, diagnosis, or
+        // preparation for a one-second blip would force a full FM/MLX re-run
+        // on the paired reactivation, so this only gates *new* low-priority
+        // starts; `.appEnteredBackground` performs the real teardown.
         state.isSceneActive = false
+        return .none
+
+      case .appEnteredBackground:
+        state.isSceneActive = false
+        // The judge effect is cancelled below; the memo survives as an
+        // interrupted diagnosis for activation to resume.
+        state.isScopeDiagnosisInFlight = false
         let preparation = state.followUpPreparation
         state.followUpPreparation = nil
         // Keep the pending context while cancelling its FM call. Reactivation
@@ -554,10 +583,7 @@ public struct AppFeature: Sendable {
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
-        guard
-          canStartModelPreparation(
-            state: state, allowingScopeDiagnosisAbandonment: true)
-        else { return .none }
+        guard canStartModelPreparation(state: state) else { return .none }
         switch state.modelReadiness {
         case .failed:
           break
@@ -580,8 +606,7 @@ public struct AppFeature: Sendable {
 
       case .retryCompatibilityPreparation:
         guard
-          canStartModelPreparation(
-            state: state, allowingScopeDiagnosisAbandonment: true),
+          canStartModelPreparation(state: state),
           state.developerMode,
           case .failed(let failure) = state.modelReadiness,
           failure.allowsCompatibilityRetry
@@ -611,8 +636,12 @@ public struct AppFeature: Sendable {
             "runtime_mode": report.mode.rawValue,
             "evaluated": String(report.mode.isEvaluated),
           ])
+        // A diagnosis memo retained while the model was preparing has no
+        // other foreground re-check hook; give it the same interrupted-first
+        // ordering activation uses.
         return .merge(
           startLaunchBenchmarkIfReady(state: &state),
+          resumeInterruptedScopeDiagnosisIfIdle(state: &state),
           resumeFollowUpPreparationIfIdle(state: &state),
           dispatchNextIfIdle(state: &state))
 
@@ -929,7 +958,15 @@ public struct AppFeature: Sendable {
         return .none
 
       case .dispatchNextIfIdle:
-        return dispatchNextIfIdle(state: &state)
+        // The FM-availability watch lands here on recovery. A retained
+        // diagnosis memo or persisted `.preparing` batch stranded behind the
+        // same outage must get its chance alongside the queue; each resume
+        // re-checks its own gates and no-ops when a turn dispatched.
+        let queuedTurn = dispatchNextIfIdle(state: &state)
+        return .merge(
+          queuedTurn,
+          resumeInterruptedScopeDiagnosisIfIdle(state: &state),
+          resumeFollowUpPreparationIfIdle(state: &state))
 
       case .followUpPreparationEvent(
         let conversationID, let sourceMessageID, let event):

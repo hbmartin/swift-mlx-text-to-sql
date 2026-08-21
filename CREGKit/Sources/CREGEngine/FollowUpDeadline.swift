@@ -25,9 +25,15 @@ private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
   private var result: Result<Value, any Error>?
   private var tasks: [Task<Void, Never>] = []
 
+  /// `armed` defers the deadline clock: the timer task awaits it before
+  /// sleeping, so time spent before the closure returns — e.g. FIFO queue
+  /// wait ahead of serialized model work — does not consume the budget. The
+  /// closure must be cancellation-responsive; it is cancelled when the
+  /// operation settles first.
   func wait(
     seconds: Double,
     stage: String,
+    armed: (@Sendable () async -> Void)? = nil,
     operation: @escaping @Sendable () async throws -> Value
   ) async throws -> Value {
     try await withTaskCancellationHandler {
@@ -42,6 +48,8 @@ private final class FollowUpDeadlineRace<Value: Sendable>: @unchecked Sendable {
         }
         let deadlineTask = Task {
           do {
+            await armed?()
+            try Task.checkCancellation()
             try await Task.sleep(for: .seconds(seconds))
             resolve(.failure(FollowUpDeadlineExceeded(stage: stage)))
           } catch is CancellationError {
@@ -133,12 +141,33 @@ public func withScopeVerdictDeadline<Value: Sendable>(
 /// the serializer's raw queue entry remains chained until cancellation-
 /// insensitive Foundation Models work really returns. A following FM or MLX
 /// operation therefore cannot overlap the timed-out verdict.
+///
+/// The deadline budgets Foundation Models time, not queue time: its clock
+/// arms only when the verdict acquires the shared slot, so a verdict queued
+/// behind long-running model work still gets its full budget — the congested
+/// pipeline is exactly the case the diagnosis exists for.
 public func withSerializedScopeVerdictDeadline<Value: Sendable>(
   serializer: InferenceSerializer,
   seconds: Double = 15,
   operation: @escaping @Sendable () async throws -> Value
 ) async throws -> Value {
-  try await withScopeVerdictDeadline(seconds: seconds) {
-    try await serializer.run(operation: .scopeVerdict, operation)
+  guard seconds > 0 else { throw ScopeVerdictDeadlineExceeded() }
+  let (slotAcquired, slotSignal) = AsyncStream<Void>.makeStream()
+  do {
+    return try await FollowUpDeadlineRace<Value>().wait(
+      seconds: seconds,
+      stage: "scope-verdict",
+      armed: {
+        for await _ in slotAcquired { break }
+      },
+      operation: {
+        try await serializer.run(operation: .scopeVerdict) {
+          slotSignal.yield()
+          slotSignal.finish()
+          return try await operation()
+        }
+      })
+  } catch is FollowUpDeadlineExceeded {
+    throw ScopeVerdictDeadlineExceeded()
   }
 }
