@@ -152,6 +152,7 @@ extension AppFeature {
       return .none
     }
     guard
+      state.isSceneActive,
       state.isTurnSchedulerIdle,
       state.followUpPreparation == nil,
       !state.isCapturingAnswerability,
@@ -250,7 +251,6 @@ extension AppFeature {
       pending.conversationID == conversationID,
       pending.messageID == messageID
     else { return .none }
-    state.pendingScopeDiagnosis = nil
     var context = pending.context
     var verdictPersistence: Effect<Action>?
 
@@ -288,11 +288,13 @@ extension AppFeature {
     }
 
     guard let verdictPersistence else {
-      return startFollowUpPreparation(
-        state: &state,
-        conversationID: conversationID,
-        context: context)
+      // Keep the recovery memo until every follow-on gate is open. In
+      // particular, deactivation can be reduced before this already-queued
+      // nil completion; consuming the memo here would leave nothing for the
+      // next activation to resume.
+      return resumeInterruptedScopeDiagnosisIfIdle(state: &state)
     }
+    state.pendingScopeDiagnosis = nil
     // Persist C's message/event enrichment before D can append preparation
     // events, preserving the intended C-before-D order in events.jsonl. D
     // starts through its own action so delivery re-checks the idle gates: a

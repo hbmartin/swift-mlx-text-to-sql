@@ -3,14 +3,19 @@ import CREGEngine
 import ComposableArchitecture
 import Foundation
 
-/// The one app-owned chart analysis service. Its analyzer owns all reusable
-/// snapshots, analyses, and prepared charts for CREG.
+/// The one app-owned chart analysis service. Its fixed memory budget is split
+/// between the analyzer's reusable work and synchronous first-frame snapshots.
 struct CREGChartAnalysisClient: Sendable {
+  /// One app-wide ceiling across both cache owners. The analyzer gets most
+  /// of the budget; the synchronous warm-start LRU gets the remainder.
+  static let maximumRetainedCost = 32 * 1_024 * 1_024
+  static let snapshotMaximumRetainedCost = 8 * 1_024 * 1_024
   static let configuration = AutoChartAnalyzerConfiguration(
     tables: .init(maximumEntries: 8),
     analyses: .init(maximumEntries: 64),
     preparedCharts: .init(maximumEntries: 16),
-    maximumRetainedCost: 32 * 1_024 * 1_024)
+    maximumRetainedCost:
+      maximumRetainedCost - snapshotMaximumRetainedCost)
 
   static let live = CREGChartAnalysisClient(
     analyzer: AutoChartAnalyzer(configuration: configuration))
@@ -46,7 +51,9 @@ struct CREGChartAnalysisClient: Sendable {
         analysis,
         identity: dataIdentity,
         revision: CREGChartAdapter.dataKeyRevision(
-          resultFingerprint: resultFingerprint, sql: sql))
+          resultFingerprint: resultFingerprint, sql: sql),
+        retainedCost: Self.estimatedSnapshotCost(
+          result: result, analysis: analysis))
     }
     return analysis
   }
@@ -66,7 +73,7 @@ struct CREGChartAnalysisClient: Sendable {
   }
 
   func trimToMinimum() async {
-    snapshots.removeAll()
+    snapshots.trimToMinimum()
     await analyzer.trim(to: .minimum)
   }
 
@@ -78,24 +85,102 @@ struct CREGChartAnalysisClient: Sendable {
   var cacheStatistics: AutoChartCacheStatistics {
     get async { await analyzer.cacheStatistics }
   }
+
+  var snapshotStatistics: ChartAnalysisSnapshotStore.Statistics {
+    snapshots.statistics
+  }
+
+  /// A conservative retained-cost estimate for the graph reachable from a
+  /// finished analysis. The package's exact prepared-source cost is private,
+  /// so this mirrors its per-column/row/cell accounting and adds headroom for
+  /// public analysis metadata and prepared marks.
+  private static func estimatedSnapshotCost(
+    result: QueryResult,
+    analysis: AutoChartAnalysis<Int>
+  ) -> Int {
+    var cost = 1_024
+    for column in result.columns {
+      add(1_024, to: &cost)
+      add(multiplied(column.utf8.count, by: 2), to: &cost)
+    }
+    for row in result.rows {
+      add(256, to: &cost)
+      for value in row {
+        add(192, to: &cost)
+        switch value {
+        case .text(let text):
+          add(multiplied(text.utf8.count, by: 2), to: &cost)
+        case .blob(let data):
+          add(multiplied(data.count, by: 2), to: &cost)
+        case .null, .integer, .real:
+          add(16, to: &cost)
+        }
+      }
+    }
+    add(multiplied(analysis.columnProfiles.count, by: 512), to: &cost)
+    add(multiplied(analysis.diagnostics.count, by: 1_024), to: &cost)
+    switch analysis.outcome {
+    case .charts(let recommendations):
+      add(multiplied(recommendations.count, by: 2_048), to: &cost)
+    case .tableFallback:
+      add(1_024, to: &cost)
+    }
+    add(
+      multiplied(analysis.primaryChart?.marks.count ?? 0, by: 384),
+      to: &cost)
+    return cost
+  }
+
+  private static func add(_ amount: Int, to total: inout Int) {
+    guard total != Int.max else { return }
+    let (sum, overflow) = total.addingReportingOverflow(max(0, amount))
+    total = overflow ? Int.max : sum
+  }
+
+  private static func multiplied(_ value: Int, by multiplier: Int) -> Int {
+    let (product, overflow) = value.multipliedReportingOverflow(by: multiplier)
+    return overflow ? Int.max : product
+  }
 }
 
 /// LRU snapshots of finished analyses keyed by chart-data identity. A
 /// revision mismatch (same message, different result bytes or SQL) misses
 /// rather than serving a stale analysis.
 final class ChartAnalysisSnapshotStore: @unchecked Sendable {
+  struct Statistics: Equatable, Sendable {
+    var entries = 0
+    var retainedCost = 0
+    var hits = 0
+    var misses = 0
+    var evictions = 0
+  }
+
+  static let uncached = ChartAnalysisSnapshotStore(
+    capacity: 0, maximumRetainedCost: 0)
+
   private struct Entry {
     var revision: String
     var analysis: AutoChartAnalysis<Int>
+    var retainedCost: Int
   }
 
   private let lock = NSLock()
   private var entries: [String: Entry] = [:]
   private var recency: [String] = []
   private let capacity: Int
+  private let maximumRetainedCost: Int
+  private var retainedCost = 0
+  private var hits = 0
+  private var misses = 0
+  private var evictions = 0
 
-  init(capacity: Int = 24) {
-    self.capacity = capacity
+  init(
+    capacity: Int = 24,
+    maximumRetainedCost: Int = CREGChartAnalysisClient
+      .snapshotMaximumRetainedCost
+  ) {
+    self.capacity = max(0, capacity)
+    self.maximumRetainedCost = max(0, maximumRetainedCost)
   }
 
   func analysis(
@@ -104,8 +189,10 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     guard let entry = entries[identity], entry.revision == revision else {
+      misses += 1
       return nil
     }
+    hits += 1
     recency.removeAll { $0 == identity }
     recency.append(identity)
     return entry.analysis
@@ -114,16 +201,52 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
   func store(
     _ analysis: AutoChartAnalysis<Int>,
     identity: String,
-    revision: String
+    revision: String,
+    retainedCost: Int
   ) {
     lock.lock()
     defer { lock.unlock() }
-    entries[identity] = Entry(revision: revision, analysis: analysis)
+    if let previous = entries.removeValue(forKey: identity) {
+      self.retainedCost -= previous.retainedCost
+      recency.removeAll { $0 == identity }
+    }
+    let retainedCost = max(0, retainedCost)
+    guard
+      capacity > 0,
+      retainedCost <= maximumRetainedCost
+    else { return }
+    entries[identity] = Entry(
+      revision: revision,
+      analysis: analysis,
+      retainedCost: retainedCost)
+    self.retainedCost += retainedCost
     recency.removeAll { $0 == identity }
     recency.append(identity)
-    while recency.count > capacity {
-      entries[recency.removeFirst()] = nil
+    while recency.count > capacity
+      || self.retainedCost > maximumRetainedCost
+    {
+      evictLeastRecent()
     }
+  }
+
+  var statistics: Statistics {
+    lock.lock()
+    defer { lock.unlock() }
+    return Statistics(
+      entries: entries.count,
+      retainedCost: retainedCost,
+      hits: hits,
+      misses: misses,
+      evictions: evictions)
+  }
+
+  func trimToMinimum() {
+    lock.lock()
+    defer { lock.unlock() }
+    evictions += entries.count
+    entries.removeAll()
+    recency.removeAll()
+    retainedCost = 0
   }
 
   func removeAll() {
@@ -131,6 +254,18 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     defer { lock.unlock() }
     entries.removeAll()
     recency.removeAll()
+    retainedCost = 0
+    hits = 0
+    misses = 0
+    evictions = 0
+  }
+
+  private func evictLeastRecent() {
+    guard !recency.isEmpty else { return }
+    let identity = recency.removeFirst()
+    guard let removed = entries.removeValue(forKey: identity) else { return }
+    retainedCost -= removed.retainedCost
+    evictions += 1
   }
 }
 
@@ -271,7 +406,8 @@ final class ResultChartLoader {
 extension CREGChartAnalysisClient: DependencyKey {
   static let liveValue = CREGChartAnalysisClient.live
   static let testValue = CREGChartAnalysisClient(
-    analyzer: AutoChartAnalyzer(configuration: .uncached))
+    analyzer: AutoChartAnalyzer(configuration: .uncached),
+    snapshots: .uncached)
 }
 
 extension DependencyValues {

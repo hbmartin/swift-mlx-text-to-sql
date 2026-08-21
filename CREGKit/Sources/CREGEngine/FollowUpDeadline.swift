@@ -111,12 +111,8 @@ func withFollowUpDeadline<Value: Sendable>(
 public struct ScopeVerdictDeadlineExceeded: Error, Sendable {}
 
 /// Deadline for the app-level Scope Verdict FM call. The diagnosis runs
-/// outside the turn deadlines by design, but it is the one serialized
-/// inference with no bound of its own: a stalled call would hold the shared
-/// FIFO slot into the user's next turn, whose rewrite/gate stages would then
-/// queue behind it while their own deadlines tick. Apply the deadline inside
-/// the serializer slot so expiry releases the slot rather than abandoning a
-/// queued wait.
+/// outside the turn deadlines by design, but still needs a bound so its
+/// caller can stop waiting when Foundation Models stalls.
 public func withScopeVerdictDeadline<Value: Sendable>(
   seconds: Double = 15,
   operation: @escaping @Sendable () async throws -> Value
@@ -128,5 +124,21 @@ public func withScopeVerdictDeadline<Value: Sendable>(
       operation: operation)
   } catch is FollowUpDeadlineExceeded {
     throw ScopeVerdictDeadlineExceeded()
+  }
+}
+
+/// Runs a Scope Verdict through the shared inference FIFO while timing out
+/// delivery to its caller. The deadline deliberately wraps `serializer.run`:
+/// cancelling the serializer caller releases the UI task immediately, while
+/// the serializer's raw queue entry remains chained until cancellation-
+/// insensitive Foundation Models work really returns. A following FM or MLX
+/// operation therefore cannot overlap the timed-out verdict.
+public func withSerializedScopeVerdictDeadline<Value: Sendable>(
+  serializer: InferenceSerializer,
+  seconds: Double = 15,
+  operation: @escaping @Sendable () async throws -> Value
+) async throws -> Value {
+  try await withScopeVerdictDeadline(seconds: seconds) {
+    try await serializer.run(operation: .scopeVerdict, operation)
   }
 }

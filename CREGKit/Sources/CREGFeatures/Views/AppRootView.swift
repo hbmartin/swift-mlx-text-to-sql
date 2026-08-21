@@ -67,6 +67,17 @@ struct AppRootView: View {
     min(containerWidth * 0.8, 340)
   }
 
+  static func lifecycleAction(for phase: ScenePhase) -> AppFeature.Action? {
+    switch phase {
+    case .active:
+      .appBecameActive
+    case .inactive, .background:
+      .appBecameInactive
+    @unknown default:
+      nil
+    }
+  }
+
   var body: some View {
     GeometryReader { proxy in
       let revealWidth = Self.revealWidth(for: proxy.size.width)
@@ -104,13 +115,8 @@ struct AppRootView: View {
       }
       .onAppear { store.send(.onAppear) }
       .onChange(of: scenePhase) { _, phase in
-        switch phase {
-        case .active:
-          store.send(.appBecameActive)
-        case .background:
-          store.send(.appBecameInactive)
-        default:
-          break
+        if let action = Self.lifecycleAction(for: phase) {
+          store.send(action)
         }
       }
     }

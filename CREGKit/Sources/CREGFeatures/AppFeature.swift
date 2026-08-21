@@ -554,9 +554,10 @@ public struct AppFeature: Sendable {
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
-        let abandonedDiagnosis =
-          abandonScopeDiagnosisForModelMaintenance(state: &state)
-        guard canStartModelPreparation(state: state) else { return .none }
+        guard
+          canStartModelPreparation(
+            state: state, allowingScopeDiagnosisAbandonment: true)
+        else { return .none }
         switch state.modelReadiness {
         case .failed:
           break
@@ -566,6 +567,8 @@ public struct AppFeature: Sendable {
         case .preparing:
           return .none
         }
+        let abandonedDiagnosis =
+          abandonScopeDiagnosisForModelMaintenance(state: &state)
         diagnostics.info(
           category: .submission,
           code: "model_preparation_retry_requested",
@@ -576,14 +579,15 @@ public struct AppFeature: Sendable {
         return .merge(abandonedDiagnosis, preparationEffect(mode: .evaluated))
 
       case .retryCompatibilityPreparation:
-        let abandonedDiagnosis =
-          abandonScopeDiagnosisForModelMaintenance(state: &state)
         guard
-          canStartModelPreparation(state: state),
+          canStartModelPreparation(
+            state: state, allowingScopeDiagnosisAbandonment: true),
           state.developerMode,
           case .failed(let failure) = state.modelReadiness,
           failure.allowsCompatibilityRetry
         else { return .none }
+        let abandonedDiagnosis =
+          abandonScopeDiagnosisForModelMaintenance(state: &state)
         diagnostics.info(
           category: .submission,
           code: "model_compatibility_preparation_requested",

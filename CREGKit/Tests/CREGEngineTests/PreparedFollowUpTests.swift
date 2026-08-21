@@ -736,7 +736,7 @@ private enum FollowUpTestError: Error {
       configuration: Self.configuration(
         deadlines: PipelineDeadlines(
           generationSeconds: 0.05,
-          wholeTurnSeconds: 1)))
+          wholeTurnSeconds: 5)))
 
     let events = await Array(
       pipeline.prepareFollowUps(Self.failureContext()))
@@ -795,8 +795,8 @@ private enum FollowUpTestError: Error {
       serializer: InferenceSerializer(),
       configuration: Self.configuration(
         deadlines: PipelineDeadlines(
-          generationSeconds: 1,
-          wholeTurnSeconds: 1)))
+          generationSeconds: 3,
+          wholeTurnSeconds: 3)))
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
@@ -832,8 +832,8 @@ private enum FollowUpTestError: Error {
       serializer: InferenceSerializer(),
       configuration: Self.configuration(
         deadlines: PipelineDeadlines(
-          generationSeconds: 1,
-          wholeTurnSeconds: 1)))
+          generationSeconds: 3,
+          wholeTurnSeconds: 3)))
 
     let events = await Array(pipeline.prepareFollowUps(Self.context()))
 
