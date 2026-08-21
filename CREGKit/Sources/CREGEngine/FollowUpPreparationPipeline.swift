@@ -25,27 +25,24 @@ func preparedFollowUpStream(
         continuation.yield(.finished)
         continuation.finish()
       }
-      guard fm.availability() == .available else {
-        continuation.yield(.started(candidateCount: 0))
-        return
-      }
 
-      @Sendable func prepareStarterFallback() async {
-        let starters = recoveryStarterQueries(excluding: [
-          context.question, context.standaloneQuestion,
-        ])
-        continuation.yield(.started(candidateCount: starters.count))
-        for (offset, starter) in starters.enumerated() {
+      @Sendable func prepareCandidates(
+        _ sources: [FollowUpCandidateSource]
+      ) async {
+        continuation.yield(.started(candidateCount: sources.count))
+        for (offset, source) in sources.enumerated() {
           guard !Task.isCancelled else { return }
           let rank = offset + 1
-          let outcome = await prepareStarterRecoveryCandidate(
-            starter: starter,
+          let outcome = await prepareFollowUpCandidate(
+            source: source,
             rank: rank,
             context: context,
+            sqlGen: sqlGen,
             db: db,
+            serializer: serializer,
             heuristics: heuristics,
             configuration: configuration,
-            runtimeMode: { await sqlGen.runtimeMode() },
+            randomSeed: randomSeed,
             uuid: uuid,
             now: now)
           guard !Task.isCancelled else { return }
@@ -62,6 +59,21 @@ func preparedFollowUpStream(
         }
       }
 
+      @Sendable func prepareStarterFallback() async {
+        let starters = recoveryStarterQueries(excluding: [
+          context.question, context.standaloneQuestion,
+        ])
+        await prepareCandidates(starters.map(FollowUpCandidateSource.starter))
+      }
+
+      /// Every proposal failure ends generated preparation the same way: a
+      /// Recovery-seeded batch still gets the reviewed Starter Query
+      /// fallback, an ordinary follow-up batch completes empty.
+      @Sendable func proposalFailed(_ reason: FollowUpProposalFailure) async {
+        continuation.yield(.proposalFailed(reason: reason))
+        if context.isRecoverySeed { await prepareStarterFallback() }
+      }
+
       // An out-of-domain question seeds nothing useful: skip FM generation
       // and offer reviewed Starter Queries as "here's what CREG can answer".
       if case .turnFailure(_, let scopeVerdict) = context.seed,
@@ -71,20 +83,25 @@ func preparedFollowUpStream(
         return
       }
 
+      // Availability can flip between the reducer's gate snapshot and this
+      // stream running. FM proposals are impossible then, but the reviewed
+      // Starter Query fallback needs no FM at all, so this check must never
+      // precede the recovery branches.
+      guard fm.availability() == .available else {
+        await proposalFailed(.languageServiceUnavailable)
+        return
+      }
+
       let schema: String
       do {
         schema = try sqlGen.schemaPrompt()
       } catch {
-        continuation.yield(
-          .proposalFailed(reason: .schemaLoadingFailed))
-        if context.isRecoverySeed { await prepareStarterFallback() }
+        await proposalFailed(.schemaLoadingFailed)
         return
       }
       guard !schema.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else {
-        continuation.yield(
-          .proposalFailed(reason: .schemaLoadingFailed))
-        if context.isRecoverySeed { await prepareStarterFallback() }
+        await proposalFailed(.schemaLoadingFailed)
         return
       }
       let proposed: [String]
@@ -99,56 +116,24 @@ func preparedFollowUpStream(
         }
       } catch is CancellationError {
         guard !Task.isCancelled else { return }
-        continuation.yield(
-          .proposalFailed(reason: .generationFailed))
-        if context.isRecoverySeed { await prepareStarterFallback() }
+        await proposalFailed(.generationFailed)
         return
       } catch is FollowUpDeadlineExceeded {
         // A timed-out FM call may continue to own the FIFO serializer until it
         // observes cancellation. Retrying here would either overlap inference
         // or spend the retry deadline waiting behind the first call.
-        continuation.yield(
-          .proposalFailed(reason: .generationTimedOut))
-        if context.isRecoverySeed { await prepareStarterFallback() }
+        await proposalFailed(.generationTimedOut)
         return
       } catch {
-        continuation.yield(
-          .proposalFailed(reason: .generationFailed))
-        if context.isRecoverySeed { await prepareStarterFallback() }
+        await proposalFailed(.generationFailed)
         return
       }
 
       let questions = normalizedFollowUpQuestions(
         proposed,
         excluding: [context.question, context.standaloneQuestion])
-      continuation.yield(.started(candidateCount: questions.count))
-      for (offset, question) in questions.enumerated() {
-        guard !Task.isCancelled else { return }
-        let rank = offset + 1
-        let outcome = await prepareFollowUpCandidate(
-          question: question,
-          rank: rank,
-          context: context,
-          sqlGen: sqlGen,
-          db: db,
-          serializer: serializer,
-          heuristics: heuristics,
-          configuration: configuration,
-          randomSeed: randomSeed,
-          uuid: uuid,
-          now: now)
-        guard !Task.isCancelled else { return }
-        switch outcome {
-        case .prepared(let prepared):
-          continuation.yield(.prepared(prepared))
-        case .rejected(let reason, let telemetry):
-          continuation.yield(
-            .rejected(
-              rank: rank,
-              reason: reason,
-              telemetry: FollowUpRejectionTelemetry(telemetry)))
-        }
-      }
+      await prepareCandidates(
+        questions.map { FollowUpCandidateSource.generated(question: $0) })
     }
     continuation.onTermination = { _ in task.cancel() }
   }
@@ -197,8 +182,31 @@ func normalizedFollowUpQuestions(
   return result
 }
 
+/// Where one candidate's SQL comes from: proposed by the FM and generated by
+/// the SQL model, or a reviewed Starter Query with fixed SQL. Both run the
+/// same validate → execute → ground → provenance ladder so the two Recovery
+/// surfaces can never silently diverge.
+private enum FollowUpCandidateSource {
+  case generated(question: String)
+  case starter(StarterQueryID)
+
+  var question: String {
+    switch self {
+    case .generated(let question): return question
+    case .starter(let starter): return starter.question
+    }
+  }
+
+  var isGenerated: Bool {
+    switch self {
+    case .generated: return true
+    case .starter: return false
+    }
+  }
+}
+
 private func prepareFollowUpCandidate(
-  question: String,
+  source: FollowUpCandidateSource,
   rank: Int,
   context: FollowUpSuggestionContext,
   sqlGen: SQLGenClient,
@@ -212,11 +220,18 @@ private func prepareFollowUpCandidate(
 ) async -> PreparedCandidateOutcome {
   let started = ContinuousClock.now
   let runtimeMode = await sqlGen.runtimeMode()
+  let question = source.question
   var telemetry = TurnTelemetry(
     originalQuestion: question,
     runtimeMode: runtimeMode)
-  telemetry.queryOrigin =
-    context.isRecoverySeed ? .recoverySuggestion : .preparedFollowUp
+  switch source {
+  case .generated:
+    telemetry.queryOrigin =
+      context.isRecoverySeed ? .recoverySuggestion : .preparedFollowUp
+  case .starter(let starter):
+    telemetry.queryOrigin = .recoverySuggestion
+    telemetry.starterQueryID = starter
+  }
   telemetry.executionPath = .preparedFollowUp
   telemetry.standaloneQuestion = question
   telemetry.gateMode = .bypassed
@@ -233,82 +248,104 @@ private func prepareFollowUpCandidate(
     if let candidate {
       rejectedTelemetry.candidates.append(candidate)
     }
-    rejectedTelemetry.generatedCount = rejectedTelemetry.candidates.count
+    rejectedTelemetry.generatedCount =
+      source.isGenerated ? rejectedTelemetry.candidates.count : 0
     rejectedTelemetry.stageTimings.totalMicroseconds =
       started.duration(to: .now).microseconds
     return .rejected(reason, telemetry: rejectedTelemetry)
   }
 
-  for attempt in 0...configuration.maxRepairAttempts {
+  // Reviewed starter SQL is never repaired: a failing starter is a build
+  // problem, not something the model should second-guess.
+  let maxRepairAttempts =
+    source.isGenerated ? configuration.maxRepairAttempts : 0
+  attempts: for attempt in 0...maxRepairAttempts {
     guard !Task.isCancelled else { return rejected(.cancelled) }
-    let candidateID = CandidateID(
-      rawValue: attempt == 0
-        ? "follow-up-\(rank)-initial"
-        : "follow-up-\(rank)-repair-\(attempt)")
+    let candidateID: CandidateID
+    let role: CandidateRole
+    let repair: RepairContext?
+    switch source {
+    case .starter(let starter):
+      candidateID = CandidateID(
+        rawValue: "recovery-starter-\(rank)-\(starter.rawValue)")
+      role = .starter(starter)
+      repair = nil
+    case .generated:
+      candidateID = CandidateID(
+        rawValue: attempt == 0
+          ? "follow-up-\(rank)-initial"
+          : "follow-up-\(rank)-repair-\(attempt)")
+      if attempt == 0 {
+        repair = nil
+        role = .followUpPreflight(rank: rank)
+      } else if let failedSQL, let currentIssue {
+        let guidance = ResultHeuristics.repairGuidance(
+          issue: currentIssue,
+          sql: failedSQL,
+          failedFingerprints: failedFingerprints.sorted())
+        repair = RepairContext(
+          failedSQL: failedSQL,
+          errorMessage: currentIssue.message,
+          guidance: guidance)
+        role = .repair(attempt: attempt)
+        telemetry.repairAttempts += 1
+      } else {
+        // No repairable issue survived the previous attempt.
+        break attempts
+      }
+    }
     let temperature =
       attempt <= 1 ? 0 : configuration.repairSampleTemperature
-    let repair: RepairContext?
-    let role: CandidateRole
-    if attempt == 0 {
-      repair = nil
-      role = .followUpPreflight(rank: rank)
-    } else if let failedSQL, let currentIssue {
-      let guidance = ResultHeuristics.repairGuidance(
-        issue: currentIssue,
-        sql: failedSQL,
-        failedFingerprints: failedFingerprints.sorted())
-      repair = RepairContext(
-        failedSQL: failedSQL,
-        errorMessage: currentIssue.message,
-        guidance: guidance)
-      role = .repair(attempt: attempt)
-      telemetry.repairAttempts += 1
-    } else {
-      break
-    }
     let request = SQLGenerationRequest(
       candidateID: candidateID,
       role: role,
       model: configuration.model,
       question: question,
       repair: repair,
-      gcd: configuration.gcd,
+      gcd: source.isGenerated ? configuration.gcd : .off,
       temperature: temperature,
       seed: temperature == 0 ? nil : randomSeed(),
       maxTokens: configuration.maxTokens)
     var candidate = CandidateTelemetry(request: request)
-    let generation: SQLGeneration
-    do {
-      generation = try await withFollowUpDeadline(
-        seconds: min(
-          configuration.deadlines.generationSeconds,
-          remainingPreparedAnswerSeconds(
-            since: started,
-            limit: configuration.deadlines.wholeTurnSeconds)),
-        stage: "follow-up-generation"
-      ) {
-        try await serializer.run(operation: .sqlGeneration) {
-          try await sqlGen.generate(request)
+    let sql: String
+    switch source {
+    case .starter(let starter):
+      sql = starter.sql
+    case .generated:
+      let generation: SQLGeneration
+      do {
+        generation = try await withFollowUpDeadline(
+          seconds: min(
+            configuration.deadlines.generationSeconds,
+            remainingPreparedAnswerSeconds(
+              since: started,
+              limit: configuration.deadlines.wholeTurnSeconds)),
+          stage: "follow-up-generation"
+        ) {
+          try await serializer.run(operation: .sqlGeneration) {
+            try await sqlGen.generate(request)
+          }
         }
+      } catch is CancellationError {
+        guard !Task.isCancelled else { return rejected(.cancelled) }
+        candidate.error = "generation: unexpected cancellation"
+        return rejected(.generationFailed, appending: candidate)
+      } catch let deadline as FollowUpDeadlineExceeded {
+        telemetry.timeoutStage = deadline.telemetryStage
+        candidate.error = "generation deadline exceeded"
+        return rejected(.generationTimedOut, appending: candidate)
+      } catch {
+        candidate.error = "generation: \(String(reflecting: type(of: error)))"
+        return rejected(.generationFailed, appending: candidate)
       }
-    } catch is CancellationError {
-      guard !Task.isCancelled else { return rejected(.cancelled) }
-      candidate.error = "generation: unexpected cancellation"
-      return rejected(.generationFailed, appending: candidate)
-    } catch let deadline as FollowUpDeadlineExceeded {
-      telemetry.timeoutStage = deadline.telemetryStage
-      candidate.error = "generation deadline exceeded"
-      return rejected(.generationTimedOut, appending: candidate)
-    } catch {
-      candidate.error = "generation: \(String(reflecting: type(of: error)))"
-      return rejected(.generationFailed, appending: candidate)
+      sql = generation.sql
+      candidate.tokensPerSecond = generation.tokensPerSecond
+      candidate.tokenCount = generation.tokenCount
+      candidate.speculation = generation.speculation
+      candidate.generationMicroseconds = generation.elapsedMicroseconds
     }
-    candidate.sql = generation.sql
-    candidate.tokensPerSecond = generation.tokensPerSecond
-    candidate.tokenCount = generation.tokenCount
-    candidate.speculation = generation.speculation
-    candidate.generationMicroseconds = generation.elapsedMicroseconds
-    let fingerprint = PreparedFollowUpIntegrity.fingerprint(sql: generation.sql)
+    candidate.sql = sql
+    let fingerprint = PreparedFollowUpIntegrity.fingerprint(sql: sql)
     candidate.sqlFingerprint = fingerprint
     guard failedFingerprints.insert(fingerprint).inserted else {
       candidate.error = "duplicate SQL matched an earlier failed preflight"
@@ -325,7 +362,7 @@ private func prepareFollowUpCandidate(
           limit: configuration.deadlines.wholeTurnSeconds),
         stage: "follow-up-validation"
       ) {
-        try await db.validate(generation.sql)
+        try await db.validate(sql)
       }
     } catch is CancellationError {
       guard !Task.isCancelled else { return rejected(.cancelled) }
@@ -348,10 +385,10 @@ private func prepareFollowUpCandidate(
     if let issue = validation.issue {
       candidate.error = issue.message
       telemetry.candidates.append(candidate)
-      guard issue.disposition == .repairable else {
+      guard source.isGenerated, issue.disposition == .repairable else {
         return rejected(.validationFailed)
       }
-      failedSQL = generation.sql
+      failedSQL = sql
       currentIssue = issue
       continue
     }
@@ -364,7 +401,7 @@ private func prepareFollowUpCandidate(
           limit: configuration.deadlines.wholeTurnSeconds),
         stage: "follow-up-execution"
       ) {
-        try await db.execute(generation.sql)
+        try await db.execute(sql)
       }
     } catch is CancellationError {
       guard !Task.isCancelled else { return rejected(.cancelled) }
@@ -379,10 +416,10 @@ private func prepareFollowUpCandidate(
       candidate.error = issue.message
       candidate.validationReport = SQLValidationReport(issue: issue)
       telemetry.candidates.append(candidate)
-      guard issue.disposition == .repairable else {
+      guard source.isGenerated, issue.disposition == .repairable else {
         return rejected(.executionFailed)
       }
-      failedSQL = generation.sql
+      failedSQL = sql
       currentIssue = issue
       continue
     }
@@ -401,9 +438,7 @@ private func prepareFollowUpCandidate(
           limit: configuration.deadlines.wholeTurnSeconds),
         stage: "follow-up-grounding"
       ) {
-        await heuristics.inspectDetailed(
-          sql: generation.sql,
-          result: result)
+        await heuristics.inspectDetailed(sql: sql, result: result)
       }
     } catch is CancellationError {
       guard !Task.isCancelled else { return rejected(.cancelled) }
@@ -421,16 +456,24 @@ private func prepareFollowUpCandidate(
       groundingStarted.duration(to: .now).microseconds
     telemetry.grounding = grounding
     guard !grounding.isUnhelpfulPreparedFollowUp else {
-      candidate.error = "preflight result was empty or not grounded"
+      candidate.error =
+        source.isGenerated
+        ? "preflight result was empty or not grounded"
+        : "starter result was empty or not grounded"
       telemetry.candidates.append(candidate)
       return rejected(.unhelpfulResult)
     }
 
     candidate.selected = true
     telemetry.candidates.append(candidate)
-    telemetry.generatedCount = telemetry.candidates.count
+    telemetry.generatedCount =
+      source.isGenerated ? telemetry.candidates.count : 0
     telemetry.selectedCandidateID = candidateID
-    telemetry.selectionReason = .preparedFollowUp
+    telemetry.selectionReason =
+      source.isGenerated ? .preparedFollowUp : .starterQuery
+    if !source.isGenerated {
+      telemetry.confidence = .confirmed
+    }
     telemetry.recoveryOutcome = attempt == 0 ? .notNeeded : .repaired
     telemetry.stageTimings.totalMicroseconds =
       started.duration(to: .now).microseconds
@@ -438,7 +481,7 @@ private func prepareFollowUpCandidate(
       modelKey: configuration.model.key,
       modelRevision: configuration.model.revision,
       runtimeMode: runtimeMode,
-      preparationPolicyVersion: context.isRecoverySeed
+      preparationPolicyVersion: !source.isGenerated || context.isRecoverySeed
         ? PreparedQueryProvenance.recoverySuggestionPolicyVersion(
           repairPolicyVersion: configuration.repairPolicyVersion)
         : PreparedQueryProvenance.followUpPolicyVersion(
@@ -452,7 +495,7 @@ private func prepareFollowUpCandidate(
         sourceAssistantMessageID: context.sourceAssistantMessageID,
         rank: rank,
         question: question,
-        sql: generation.sql,
+        sql: sql,
         result: result,
         preparationTelemetry: telemetry,
         provenance: provenance,
@@ -462,167 +505,4 @@ private func prepareFollowUpCandidate(
   return rejected(
     telemetry.candidates.last?.sql == nil
       ? .generationFailed : .validationFailed)
-}
-
-/// Prepares one reviewed Starter Query as a Recovery Suggestion: fixed SQL,
-/// no generation and no repairs — validate, execute, ground, and stamp
-/// provenance exactly like a generated candidate so tapping it renders
-/// instantly through the same prepared path.
-private func prepareStarterRecoveryCandidate(
-  starter: StarterQueryID,
-  rank: Int,
-  context: FollowUpSuggestionContext,
-  db: DatabaseClient,
-  heuristics: ResultHeuristics,
-  configuration: QueryPipeline.Configuration,
-  runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode,
-  uuid: @escaping @Sendable () -> UUID,
-  now: @escaping @Sendable () -> Date
-) async -> PreparedCandidateOutcome {
-  let started = ContinuousClock.now
-  let mode = await runtimeMode()
-  let question = starter.question
-  let sql = starter.sql
-  var telemetry = TurnTelemetry(
-    originalQuestion: question,
-    runtimeMode: mode)
-  telemetry.queryOrigin = .recoverySuggestion
-  telemetry.executionPath = .preparedFollowUp
-  telemetry.standaloneQuestion = question
-  telemetry.starterQueryID = starter
-  telemetry.gateMode = .bypassed
-  telemetry.repairPolicyVersion = configuration.repairPolicyVersion
-
-  let candidateID = CandidateID(
-    rawValue: "recovery-starter-\(rank)-\(starter.rawValue)")
-  var candidate = CandidateTelemetry(
-    request: SQLGenerationRequest(
-      candidateID: candidateID,
-      role: .starter(starter),
-      model: configuration.model,
-      question: question,
-      gcd: .off,
-      temperature: 0,
-      seed: nil,
-      maxTokens: configuration.maxTokens))
-  candidate.sql = sql
-  let fingerprint = PreparedFollowUpIntegrity.fingerprint(sql: sql)
-  candidate.sqlFingerprint = fingerprint
-
-  func rejected(
-    _ reason: FollowUpPreparationRejection
-  ) -> PreparedCandidateOutcome {
-    var rejectedTelemetry = telemetry
-    rejectedTelemetry.candidates.append(candidate)
-    rejectedTelemetry.generatedCount = 0
-    rejectedTelemetry.stageTimings.totalMicroseconds =
-      started.duration(to: .now).microseconds
-    return .rejected(reason, telemetry: rejectedTelemetry)
-  }
-
-  let validation: SQLValidationReport
-  do {
-    validation = try await withFollowUpDeadline(
-      seconds: configuration.deadlines.wholeTurnSeconds,
-      stage: "follow-up-validation"
-    ) {
-      try await db.validate(sql)
-    }
-  } catch let deadline as FollowUpDeadlineExceeded {
-    telemetry.timeoutStage = deadline.telemetryStage
-    candidate.error = "validation deadline exceeded"
-    return rejected(.validationTimedOut)
-  } catch {
-    guard !Task.isCancelled else { return rejected(.cancelled) }
-    candidate.error = SQLValidationIssue.classify(error).message
-    return rejected(.validationFailed)
-  }
-  candidate.validationReport = validation
-  telemetry.stageTimings.validationMicroseconds =
-    validation.elapsedMicroseconds
-  if let issue = validation.issue {
-    candidate.error = issue.message
-    return rejected(.validationFailed)
-  }
-
-  let result: QueryResult
-  do {
-    result = try await withFollowUpDeadline(
-      seconds: remainingPreparedAnswerSeconds(
-        since: started,
-        limit: configuration.deadlines.wholeTurnSeconds),
-      stage: "follow-up-execution"
-    ) {
-      try await db.execute(sql)
-    }
-  } catch let deadline as FollowUpDeadlineExceeded {
-    telemetry.timeoutStage = deadline.telemetryStage
-    candidate.error = "execution deadline exceeded"
-    return rejected(.executionTimedOut)
-  } catch {
-    guard !Task.isCancelled else { return rejected(.cancelled) }
-    candidate.error = SQLValidationIssue.classify(error).message
-    return rejected(.executionFailed)
-  }
-  candidate.executionMicroseconds = result.elapsedMicroseconds
-  candidate.result = result
-  if !result.isTruncated {
-    candidate.resultDigest = CanonicalSQLResult(result).digest
-  }
-
-  let grounding: GroundingReport
-  do {
-    grounding = try await withFollowUpDeadline(
-      seconds: remainingPreparedAnswerSeconds(
-        since: started,
-        limit: configuration.deadlines.wholeTurnSeconds),
-      stage: "follow-up-grounding"
-    ) {
-      await heuristics.inspectDetailed(sql: sql, result: result)
-    }
-  } catch let deadline as FollowUpDeadlineExceeded {
-    telemetry.timeoutStage = deadline.telemetryStage
-    candidate.error = "grounding deadline exceeded"
-    return rejected(.groundingTimedOut)
-  } catch {
-    guard !Task.isCancelled else { return rejected(.cancelled) }
-    candidate.error = "grounding: \(String(reflecting: type(of: error)))"
-    return rejected(.unhelpfulResult)
-  }
-  telemetry.grounding = grounding
-  guard !grounding.isUnhelpfulPreparedFollowUp else {
-    candidate.error = "starter result was empty or not grounded"
-    return rejected(.unhelpfulResult)
-  }
-
-  candidate.selected = true
-  telemetry.candidates = [candidate]
-  telemetry.generatedCount = 0
-  telemetry.selectedCandidateID = candidateID
-  telemetry.selectionReason = .starterQuery
-  telemetry.confidence = .confirmed
-  telemetry.recoveryOutcome = .notNeeded
-  telemetry.stageTimings.totalMicroseconds =
-    started.duration(to: .now).microseconds
-  return .prepared(
-    PreparedFollowUp(
-      id: uuid(),
-      sourceAssistantMessageID: context.sourceAssistantMessageID,
-      rank: rank,
-      question: question,
-      sql: sql,
-      result: result,
-      preparationTelemetry: telemetry,
-      provenance: PreparedQueryProvenance(
-        modelKey: configuration.model.key,
-        modelRevision: configuration.model.revision,
-        runtimeMode: mode,
-        preparationPolicyVersion:
-          PreparedQueryProvenance.recoverySuggestionPolicyVersion(
-            repairPolicyVersion: configuration.repairPolicyVersion),
-        databaseFingerprint: db.fingerprint,
-        sqlFingerprint: fingerprint,
-        resultFingerprint: PreparedFollowUpIntegrity.fingerprint(
-          result: result)),
-      createdAt: now()))
 }

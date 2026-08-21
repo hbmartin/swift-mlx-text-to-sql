@@ -141,7 +141,22 @@ extension ResultViewerView {
 
   var chartTypeMenu: some View {
     Menu {
-      Picker("Chart type", selection: $selectedSpecificationID) {
+      // The one user action that changes the chart specification: persist
+      // the preference here, and clear the exact-mark selection whose row
+      // indexes are meaningless under the newly picked chart.
+      Picker(
+        "Chart type",
+        selection: Binding(
+          get: { selectedSpecificationID },
+          set: { id in
+            guard id != selectedSpecificationID else { return }
+            selectedSpecificationID = id
+            chartSelection = nil
+            persistPreference(
+              ResultPresentationPreference(
+                mode: resultMode, specificationID: id))
+          })
+      ) {
         ForEach(chartRecommendations) { recommendation in
           Text(recommendation.specification.family.displayName)
             .tag(Optional(recommendation.id))

@@ -276,8 +276,19 @@ import Testing
       Issue.record("expected failed outcome")
       return
     }
-    #expect(reason == .pipelineUnavailable)
+    #expect(
+      reason
+        == .pipelineUnavailable(
+          userMessage:
+            "This build contains an incompatible model configuration. Rebuild and reinstall CREG."
+        ))
     let presentation = FailurePresentation.turnFailure(reason)
+    // The transcript renders the bootstrap failure's authored guidance, and
+    // the developer diagnostic never leaks into the user-facing copy.
+    #expect(
+      presentation.message
+        == "This build contains an incompatible model configuration. Rebuild and reinstall CREG."
+    )
     #expect(!presentation.message.contains("quantization"))
     #expect(
       terminal.1.terminalError
@@ -340,7 +351,12 @@ import Testing
     #expect(reason == .generationExhausted)
     #expect(
       !FailurePresentation.turnFailure(reason).message.contains("broken"))
-    #expect(recorder.events.map(\.code) == ["pipeline_database_execution_failed"])
+    // The diagnostics code derives from the typed reason — the same taxonomy
+    // the failure_reason context carries — never from telemetry sniffing.
+    #expect(recorder.events.map(\.code) == ["pipeline_generation_exhausted"])
+    #expect(
+      recorder.events.first?.context["failure_reason"]
+        == "generation_exhausted")
     #expect(recorder.events.first?.details?.contains("no such column") == true)
   }
 
@@ -385,7 +401,7 @@ import Testing
     ).reportingTerminalFailures(to: recorder.client)
 
     _ = await Array(pipeline.run("question", []))
-    #expect(recorder.events.map(\.code) == ["pipeline_database_execution_failed"])
+    #expect(recorder.events.map(\.code) == ["pipeline_generation_exhausted"])
   }
 
   @Test func foundationModelTerminalFailureIncludesStageWithoutQuestion() async throws {

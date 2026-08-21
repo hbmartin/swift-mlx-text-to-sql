@@ -97,28 +97,28 @@ extension FMUnavailabilityReason {
 /// all new turns on it.
 public struct FMStatusClient: Sendable {
   public var availability: @Sendable () -> FMAvailability
-  /// Emits whenever `availability` changes value. The system offers no push
-  /// notification, so the live stream polls the synchronous read at a low
-  /// cadence — it costs nothing unless someone is consuming it. The default
-  /// is an empty stream for clients whose availability never changes
-  /// mid-scene.
+  /// Yields the current value on subscription, then again whenever it
+  /// changes. Consumers arm this watch from a state snapshot that can be
+  /// stale by the time the stream starts, so the initial yield is what
+  /// guarantees a recovery in that arm gap is still observed. The system
+  /// offers no push notification, so the live stream polls the synchronous
+  /// read at a low cadence — it costs nothing unless someone is consuming
+  /// it. By default the stream is derived from `availability`, so a client
+  /// built from just the synchronous read still supports the watch.
   public var availabilityUpdates: @Sendable () -> AsyncStream<FMAvailability>
 
   public init(
     availability: @escaping @Sendable () -> FMAvailability,
-    availabilityUpdates: @escaping @Sendable () -> AsyncStream<FMAvailability> = {
-      AsyncStream { $0.finish() }
-    }
+    availabilityUpdates: (@Sendable () -> AsyncStream<FMAvailability>)? = nil
   ) {
     self.availability = availability
-    self.availabilityUpdates = availabilityUpdates
+    self.availabilityUpdates =
+      availabilityUpdates
+      ?? { Self.pollingUpdates(availability: availability) }
   }
 
   public static func live() -> FMStatusClient {
-    let availability = FMClient.live().availability
-    return FMStatusClient(
-      availability: availability,
-      availabilityUpdates: { pollingUpdates(availability: availability) })
+    FMStatusClient(availability: FMClient.live().availability)
   }
 
   static func pollingUpdates(
@@ -128,6 +128,7 @@ public struct FMStatusClient: Sendable {
     AsyncStream { continuation in
       let task = Task {
         var last = availability()
+        continuation.yield(last)
         while !Task.isCancelled {
           do { try await Task.sleep(for: interval) } catch { break }
           let current = availability()

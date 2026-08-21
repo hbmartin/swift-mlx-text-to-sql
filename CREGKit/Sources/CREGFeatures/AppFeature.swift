@@ -229,7 +229,17 @@ public struct AppFeature: Sendable {
     public var supportBundleExport: SupportBundleExport?
     /// Debug-only answerability capture (docs/eval.md "Answerability").
     public var isCapturingAnswerability = false
+    /// Identity of the in-flight capture. A completion action must present
+    /// this identity to be consumed; anything else is a stale completion
+    /// racing its own cancellation and is cleaned up instead.
+    public var answerabilityCaptureID: UUID?
     public var answerabilityCaptureExport: URL?
+    /// Scene activity per the deactivation invariant: low-priority FM/MLX
+    /// work (scope diagnosis, follow-up preparation, debug captures) must
+    /// never start while the app is inactive, even when the action that
+    /// would start it — a persistence barrier settling, a verdict write
+    /// completing — arrives in the background.
+    public var isSceneActive = true
     public var presentedFailure: FailurePresentation?
     public var modelPreparationReport: ModelPreparationReport?
     /// Appearance can re-fire while the root store remains alive. These
@@ -289,14 +299,16 @@ public struct AppFeature: Sendable {
     }
 
     /// The idle core plus every lower-priority inference owner: no Scope
-    /// Verdict outstanding and no follow-up preparation running. Low-priority
-    /// FM/MLX work (preparation, diagnosis resume, model preparation, debug
+    /// Verdict outstanding, no follow-up preparation running, and no debug
+    /// capture streaming its 87 serialized FM calls. Low-priority FM/MLX
+    /// work (preparation, diagnosis resume, model preparation, debug
     /// captures) may start only from here, so every such gate shares this
     /// one predicate instead of hand-enumerating the conditions.
     public var isInferenceIdle: Bool {
       isTurnSchedulerIdle
         && pendingScopeDiagnosis == nil
         && followUpPreparation == nil
+        && !isCapturingAnswerability
     }
   }
 
@@ -356,7 +368,7 @@ public struct AppFeature: Sendable {
     case supportBundleReady(SupportBundleExport)
     case supportBundleDismissed
     case answerabilityCaptureTapped
-    case answerabilityCaptureReady(URL?)
+    case answerabilityCaptureReady(id: UUID, url: URL?)
     case appIconLoaded(AppIconVariant, supportsAlternates: Bool)
     case appIconSelected(AppIconVariant)
     case appearanceSelected(AppearancePreference)
@@ -464,6 +476,7 @@ public struct AppFeature: Sendable {
         return .merge(effects)
 
       case .appBecameActive:
+        state.isSceneActive = true
         refreshFMAvailability(state: &state)
         let interruptedRecovery =
           resumeInterruptedScopeDiagnosisIfIdle(state: &state)
@@ -472,6 +485,7 @@ public struct AppFeature: Sendable {
         return .merge(interruptedRecovery, persistedPreparation, queuedTurn)
 
       case .appBecameInactive:
+        state.isSceneActive = false
         let preparation = state.followUpPreparation
         state.followUpPreparation = nil
         // Keep the pending context while cancelling its FM call. Reactivation
@@ -487,6 +501,7 @@ public struct AppFeature: Sendable {
               "Deactivation cancelled the in-flight answerability capture; no export was produced.")
         }
         state.isCapturingAnswerability = false
+        state.answerabilityCaptureID = nil
         var followOnEffects: [Effect<Action>] = []
         if let preparation, !preparation.eventLines.isEmpty {
           followOnEffects.append(
@@ -539,6 +554,8 @@ public struct AppFeature: Sendable {
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
+        let abandonedDiagnosis =
+          abandonScopeDiagnosisForModelMaintenance(state: &state)
         guard canStartModelPreparation(state: state) else { return .none }
         switch state.modelReadiness {
         case .failed:
@@ -556,9 +573,11 @@ public struct AppFeature: Sendable {
         setModelReadiness(.preparing, state: &state)
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
-        return preparationEffect(mode: .evaluated)
+        return .merge(abandonedDiagnosis, preparationEffect(mode: .evaluated))
 
       case .retryCompatibilityPreparation:
+        let abandonedDiagnosis =
+          abandonScopeDiagnosisForModelMaintenance(state: &state)
         guard
           canStartModelPreparation(state: state),
           state.developerMode,
@@ -573,7 +592,8 @@ public struct AppFeature: Sendable {
         setModelReadiness(.preparing, state: &state)
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
-        return preparationEffect(mode: .compatibility)
+        return .merge(
+          abandonedDiagnosis, preparationEffect(mode: .compatibility))
 
       case .modelPrepared(let report):
         state.modelPreparationInFlight = false
@@ -927,6 +947,20 @@ public struct AppFeature: Sendable {
         // Delivery re-checks the idle gates inside startFollowUpPreparation:
         // a turn dispatched or a conversation deleted while the verdict
         // persisted vetoes the preparation instead of racing it.
+        guard state.isSceneActive else {
+          // Deactivation raced the verdict write, which carries no cancel ID
+          // so the durable enrichment always lands. Never start FM/MLX work
+          // in the background; retain the verdict-enriched context exactly
+          // like a backgrounded diagnosis so reactivation resumes Recovery
+          // Suggestion preparation.
+          if state.conversations[id: conversationID] != nil {
+            state.pendingScopeDiagnosis = PendingScopeDiagnosis(
+              conversationID: conversationID,
+              messageID: context.sourceAssistantMessageID,
+              context: context)
+          }
+          return .none
+        }
         return startFollowUpPreparation(
           state: &state,
           conversationID: conversationID,
@@ -1059,19 +1093,28 @@ public struct AppFeature: Sendable {
           guard !state.isCapturingAnswerability else { return .none }
           // The capture's 87 serialized Scope Verdict calls share the
           // InferenceSerializer with turn stages, whose deadlines keep
-          // ticking while queued. Start only from a fully idle scheduler.
+          // ticking while queued, and the 1.75 GB model load must never
+          // overlap them. Start only from a fully idle scheduler with no
+          // model preparation in flight.
           guard state.fmAvailability == .available,
+            !state.modelPreparationInFlight,
             state.isInferenceIdle
           else { return .none }
+          let captureID = uuid()
           state.isCapturingAnswerability = true
+          state.answerabilityCaptureID = captureID
+          let previousExport = state.answerabilityCaptureExport
           state.answerabilityCaptureExport = nil
           let capturedAt = now
           let client = scopeDiagnosis
           return .run { send in
+            if let previousExport {
+              try? FileManager.default.removeItem(at: previousExport)
+            }
             let url = await AnswerabilityCapture.run(
               client: client,
               capturedAt: capturedAt)
-            await send(.answerabilityCaptureReady(url))
+            await send(.answerabilityCaptureReady(id: captureID, url: url))
           }
           .cancellable(
             id: CancelID.answerabilityCapture,
@@ -1080,15 +1123,19 @@ public struct AppFeature: Sendable {
           return .none
         #endif
 
-      case .answerabilityCaptureReady(let url):
-        guard state.isCapturingAnswerability else {
+      case .answerabilityCaptureReady(let captureID, let url):
+        guard state.isCapturingAnswerability,
+          state.answerabilityCaptureID == captureID
+        else {
           // A cancelled capture's completion can win the race with its
-          // cancellation. The surface that started it is gone, so remove the
-          // finished archive instead of orphaning it in tmp.
+          // cancellation, including while a NEWER capture is already in
+          // flight. The archive path is unique per capture, so removing a
+          // stale one can never touch a live capture's output.
           guard let url else { return .none }
           return .run { _ in try? FileManager.default.removeItem(at: url) }
         }
         state.isCapturingAnswerability = false
+        state.answerabilityCaptureID = nil
         state.answerabilityCaptureExport = url
         if url == nil {
           state.presentedFailure = FailurePresentation(

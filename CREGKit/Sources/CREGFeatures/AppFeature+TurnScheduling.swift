@@ -29,6 +29,7 @@ extension AppFeature {
           "A dispatched turn cancelled the in-flight answerability capture; no export was produced.")
     }
     state.isCapturingAnswerability = false
+    state.answerabilityCaptureID = nil
     let question = submission.question
     let questionID = uuid()
     let startedAt = now

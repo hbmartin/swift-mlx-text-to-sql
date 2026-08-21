@@ -380,6 +380,81 @@ private enum FollowUpTestError: Error {
     #expect(events.last == .finished)
   }
 
+  /// Availability can flip between the reducer's gate snapshot and the
+  /// stream task running. The reviewed Starter Query fallback needs no FM at
+  /// all, so a recovery-seeded batch must still produce it instead of
+  /// completing permanently empty.
+  @Test func recoverySeedStillGetsStartersWhenFMBecomesUnavailable() async {
+    let fm = FMClient(
+      availability: { .unavailable(reason: .appleIntelligenceNotEnabled) },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in
+        Issue.record("FM proposal must not run while unavailable")
+        return []
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        Issue.record("SQL generation must not run for starter fallback")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.prepareFollowUps(Self.failureContext()))
+
+    #expect(
+      events.contains(.proposalFailed(reason: .languageServiceUnavailable)))
+    let prepared = events.compactMap { event -> PreparedFollowUp? in
+      guard case .prepared(let prepared) = event else { return nil }
+      return prepared
+    }
+    #expect(prepared.count == PreparedFollowUpBatch.maximumSuggestionCount)
+    for suggestion in prepared {
+      #expect(suggestion.preparationTelemetry.selectionReason == .starterQuery)
+    }
+    #expect(events.last == .finished)
+  }
+
+  /// The same availability flip on an answer-seeded batch has no fallback to
+  /// offer: the batch reports the proposal failure and completes empty.
+  @Test func answerSeedCompletesEmptyWhenFMBecomesUnavailable() async {
+    let fm = FMClient(
+      availability: { .unavailable(reason: .appleIntelligenceNotEnabled) },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "unused" },
+      suggestFollowUps: { _, _ in
+        Issue.record("FM proposal must not run while unavailable")
+        return []
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { _ in
+        Issue.record("SQL generation must not run without a proposal")
+        return SQLGeneration(
+          sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "snapshot-v1",
+        execute: { _ in Self.result }),
+      serializer: InferenceSerializer(),
+      configuration: Self.configuration())
+
+    let events = await Array(pipeline.prepareFollowUps(Self.context()))
+
+    #expect(
+      events == [
+        .proposalFailed(reason: .languageServiceUnavailable), .finished,
+      ])
+  }
+
   @Test func outsideRealEstateVerdictSkipsFMAndOffersStarters() async {
     let fm = FMClient(
       availability: { .available },

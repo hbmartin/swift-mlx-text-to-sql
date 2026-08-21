@@ -33,11 +33,13 @@ extension QueryPipeline {
       runtimeMode: { failure.mode },
       run: { question, _ in
         AsyncStream { continuation in
+          let reason = TurnFailureReason.pipelineUnavailable(
+            userMessage: failure.userMessage)
           var telemetry = TurnTelemetry(
             originalQuestion: question,
             runtimeMode: failure.mode)
           telemetry.terminalError = "[\(failure.code)] \(failure.diagnostic)"
-          telemetry.failureReason = .pipelineUnavailable
+          telemetry.failureReason = reason
           continuation.yield(.turnStarted(question: question))
           continuation.yield(
             .questionResolved(
@@ -47,7 +49,7 @@ extension QueryPipeline {
               elapsedMicroseconds: 0))
           continuation.yield(
             .turnFinished(
-              outcome: .failed(reason: .pipelineUnavailable),
+              outcome: .failed(reason: reason),
               telemetry: telemetry))
           continuation.finish()
         }
@@ -86,6 +88,7 @@ extension QueryPipeline {
             // never rewrites the outcome, it enriches the log record and the
             // developer-facing terminalError.
             let failure = PipelineTerminalFailure(
+              reason: reason,
               stage: stage,
               telemetry: telemetry)
             telemetry.terminalError = "[\(failure.code)] \(failure.diagnostic)"
@@ -189,7 +192,15 @@ private struct PipelineTerminalFailure: Sendable {
     self.context = context
   }
 
-  init(stage: PipelineDiagnosticStage, telemetry: TurnTelemetry) {
+  /// The diagnostics code, category, and summary derive from the typed
+  /// reason alone — one mapping, no second failure taxonomy. Telemetry only
+  /// enriches the record with stage context and the best diagnostic string;
+  /// it never decides how the event is filed.
+  init(
+    reason: TurnFailureReason,
+    stage: PipelineDiagnosticStage,
+    telemetry: TurnTelemetry
+  ) {
     let lastFailure =
       telemetry.candidates.last(where: {
         $0.error != nil && $0.duplicateSuppressed != true
@@ -224,58 +235,65 @@ private struct PipelineTerminalFailure: Sendable {
       baseContext["generated_sql"] = String(lastFailure.sql != nil)
       baseContext["produced_result"] = String(lastFailure.result != nil)
     }
-
     if let timeoutStage = telemetry.timeoutStage {
-      let cancelled = timeoutStage == "cancelled"
-      self.init(
-        category: .pipeline,
-        code: cancelled
-          ? "pipeline_turn_cancelled" : "pipeline_deadline_exceeded",
-        summary: cancelled
-          ? "The on-device query turn was cancelled."
-          : "The on-device query turn exceeded its deadline.",
-        diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
-        context: baseContext.merging(["timeout_stage": timeoutStage]) {
-          current, _ in current
-        })
-    } else if [.rewrite, .gate, .narration].contains(stage),
-      let terminalDiagnostic
-    {
-      self.init(
-        category: .pipeline,
-        code: "pipeline_foundation_model_failed",
-        summary: "The on-device language service failed.",
-        diagnostic: terminalDiagnostic,
-        context: baseContext)
-    } else if lastFailure?.validationReport?.issue?.kind == .databaseUnavailable {
-      self.init(
-        category: .database,
-        code: "pipeline_portfolio_database_unavailable",
-        summary: "The bundled portfolio database is unavailable.",
-        diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
-        context: baseContext)
-    } else if let lastFailure, lastFailure.sql == nil {
-      self.init(
-        category: .pipeline,
-        code: "pipeline_model_generation_failed",
-        summary: "The SQL model failed to generate a query.",
-        diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
-        context: baseContext)
-    } else if lastFailure != nil {
-      self.init(
-        category: .database,
-        code: "pipeline_database_execution_failed",
-        summary: "The generated portfolio query could not be executed.",
-        diagnostic: candidateDiagnostic ?? fallbackDiagnostic,
-        context: baseContext)
-    } else {
-      self.init(
-        category: .pipeline,
-        code: "pipeline_unexpected_failure",
-        summary: "The query pipeline ended unexpectedly.",
-        diagnostic: fallbackDiagnostic,
-        context: baseContext)
+      baseContext["timeout_stage"] = timeoutStage
     }
+
+    let category: DiagnosticEvent.Category
+    let code: String
+    let summary: String
+    var diagnostic = candidateDiagnostic ?? fallbackDiagnostic
+    switch reason {
+    case .timedOut:
+      category = .pipeline
+      code = "pipeline_deadline_exceeded"
+      summary = "The on-device query turn exceeded its deadline."
+    case .cancelled:
+      category = .pipeline
+      code = "pipeline_turn_cancelled"
+      summary = "The on-device query turn was cancelled."
+    case .databaseUnavailable:
+      category = .database
+      code = "pipeline_portfolio_database_unavailable"
+      summary = "The bundled portfolio database is unavailable."
+    case .generationFailed:
+      category = .pipeline
+      code = "pipeline_model_generation_failed"
+      summary = "The SQL model failed to generate a query."
+    case .generationExhausted:
+      category = .pipeline
+      code = "pipeline_generation_exhausted"
+      summary = "Every generated candidate failed validation or execution."
+    case .noCandidateSelected:
+      category = .pipeline
+      code = "pipeline_no_candidate_selected"
+      summary = "No generated candidate produced a selectable answer."
+    case .languageServiceFailed:
+      category = .pipeline
+      code = "pipeline_foundation_model_failed"
+      summary = "The on-device language service failed."
+      diagnostic = terminalDiagnostic ?? diagnostic
+    case .starterQueryUnavailable:
+      category = .database
+      code = "pipeline_starter_query_unavailable"
+      summary = "A reviewed Starter Query could not run."
+    case .pipelineUnavailable:
+      category = .pipeline
+      code = "pipeline_unavailable"
+      summary = "The query pipeline is unavailable."
+      diagnostic = terminalDiagnostic ?? diagnostic
+    case .unexpected:
+      category = .pipeline
+      code = "pipeline_unexpected_failure"
+      summary = "The query pipeline ended unexpectedly."
+      diagnostic = fallbackDiagnostic
+    }
+    self.init(
+      category: category,
+      code: code,
+      summary: summary,
+      diagnostic: diagnostic,
+      context: baseContext)
   }
 }
 

@@ -135,7 +135,9 @@ import Testing
       .timedOut(stage: "generation"), .cancelled, .databaseUnavailable,
       .generationFailed, .generationExhausted, .noCandidateSelected,
       .languageServiceFailed(stage: "narration"), .starterQueryUnavailable,
-      .pipelineUnavailable, .unexpected,
+      .pipelineUnavailable(userMessage: nil),
+      .pipelineUnavailable(userMessage: "Requires an iPhone 15 Pro or later."),
+      .unexpected,
     ]
     for reason in reasons {
       let data = try JSONEncoder().encode(reason)
@@ -147,6 +149,15 @@ import Testing
     let data = try JSONEncoder().encode(record)
     #expect(
       try JSONDecoder().decode(ScopeVerdictRecord.self, from: data) == record)
+  }
+
+  /// History rows written before the case carried the bootstrap guidance
+  /// encode the bare `{"pipelineUnavailable":{}}` shape; they must keep
+  /// decoding, as a nil message.
+  @Test func legacyPipelineUnavailableDecodesWithNilMessage() throws {
+    let legacy = Data(#"{"pipelineUnavailable":{}}"#.utf8)
+    let decoded = try JSONDecoder().decode(TurnFailureReason.self, from: legacy)
+    #expect(decoded == .pipelineUnavailable(userMessage: nil))
   }
 
   @Test func schemaV6TelemetryDecodesWithNilReason() throws {

@@ -89,9 +89,11 @@ enum AnswerabilityCapture {
       try manifestEncoder.encode(manifest)
         .write(to: stage.appendingPathComponent("manifest.json"))
 
+      // Unique per capture: a stale completion racing a newer capture must
+      // be removable without ever touching the newer capture's archive.
       let zipURL = fileManager.temporaryDirectory
-        .appendingPathComponent("answerability-capture.zip")
-      try? fileManager.removeItem(at: zipURL)
+        .appendingPathComponent(
+          "answerability-capture-\(UUID().uuidString).zip")
       let archive = try Archive(url: zipURL, accessMode: .create)
       var archiveCompleted = false
       defer {

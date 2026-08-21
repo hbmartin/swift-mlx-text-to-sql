@@ -16,17 +16,15 @@ struct ResultViewerView: View {
   let resultFingerprint: String
   let chartDataIdentity: String?
   let persistPreference: (ResultPresentationPreference) -> Void
-  @Dependency(\.chartAnalysis) var chartAnalysisClient
+  let chartRequest: ResultChartLoader.Request
   @Binding var textSize: ResultTableTextSize
+  @State var chart: ResultChartLoader
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
   @State var resultMode: ResultPresentationPreference.Mode
   @State var selectedSpecificationID: AutoChartRecommendationID?
   @State var chartSelection: AutoChartSelection<Int>?
-  @State var chartAnalysis: AutoChartAnalysis<Int>?
-  @State var preparedChart: AutoChartPreparedChart<Int>?
-  @State var chartPreparationFailed = false
   @State var copyFeedbackMessage: String?
   @State var copyFeedbackTrigger = 0
   @Environment(\.dismiss) var dismiss
@@ -119,11 +117,14 @@ struct ResultViewerView: View {
     self.runtimeMode = runtimeMode
     self.sql = sql
     self.question = question
-    self.resultFingerprint = cacheIdentity?.resultFingerprint
+    let resultFingerprint =
+      cacheIdentity?.resultFingerprint
       ?? PreparedFollowUpIntegrity.fingerprint(result: result)
-    self.chartDataIdentity = cacheIdentity.map {
-      "CREG.Result.v2:\($0.messageID.uuidString.lowercased())"
+    self.resultFingerprint = resultFingerprint
+    let chartDataIdentity = cacheIdentity.map {
+      CREGChartAdapter.resultDataIdentity(messageID: $0.messageID)
     }
+    self.chartDataIdentity = chartDataIdentity
     self.persistPreference = persistPreference
     self._textSize = textSize
     self._searchText = State(initialValue: initialSearchText)
@@ -132,17 +133,27 @@ struct ResultViewerView: View {
       initialValue: preference?.mode ?? .chart)
     self._selectedSpecificationID = State(initialValue: preference?.specificationID)
     self._chartSelection = State(initialValue: initialChartSelection)
+    let request = ResultChartLoader.Request(
+      result: result,
+      sql: sql,
+      question: question,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: chartDataIdentity)
+    self.chartRequest = request
+    self._chart = State(
+      initialValue: ResultChartLoader(
+        client: Dependency(\.chartAnalysis).wrappedValue,
+        warmStart: request,
+        preferredSpecificationID: preference?.specificationID))
   }
 
   var chartRecommendations: [AutoChartRecommendation] {
-    guard let chartAnalysis, case .charts(let recommendations) = chartAnalysis.outcome else {
+    guard let analysis = chart.analysis,
+      case .charts(let recommendations) = analysis.outcome
+    else {
       return []
     }
     return recommendations
-  }
-
-  var analysisTaskID: String {
-    [resultFingerprint, chartDataIdentity ?? "", sql, question ?? ""].joined(separator: "|")
   }
 
   func columnWidths() -> [CGFloat] {
@@ -172,8 +183,8 @@ struct ResultViewerView: View {
   }
 
   var selectedRecommendation: AutoChartRecommendation? {
-    guard let chartAnalysis else { return nil }
-    switch chartAnalysis.resolve(selectedSpecificationID) {
+    guard let analysis = chart.analysis else { return nil }
+    switch analysis.resolve(selectedSpecificationID) {
     case .exact(let recommendation), .defaulted(let recommendation, _):
       return recommendation
     case .unavailable:
@@ -219,7 +230,22 @@ struct ResultViewerView: View {
     NavigationStack {
       VStack(spacing: 0) {
         if !chartRecommendations.isEmpty {
-          Picker("Result view", selection: $resultMode) {
+          // Persistence rides the binding's setter, not an onChange handler:
+          // only the user's own tap may write the stored preference, never a
+          // programmatic mode flip from the analysis or preparation tasks.
+          Picker(
+            "Result view",
+            selection: Binding(
+              get: { resultMode },
+              set: { mode in
+                guard mode != resultMode else { return }
+                resultMode = mode
+                persistPreference(
+                  ResultPresentationPreference(
+                    mode: mode,
+                    specificationID: selectedRecommendation?.id))
+              })
+          ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
               .tag(ResultPresentationPreference.Mode.chart)
             Label("Table", systemImage: "tablecells")
@@ -233,7 +259,7 @@ struct ResultViewerView: View {
 
         if resultMode == .chart, let selectedRecommendation {
           ScrollView {
-            if let preparedChart {
+            if let preparedChart = chart.preparedChart {
               AutoChartView(
                 preparedChart: preparedChart,
                 selection: $chartSelection,
@@ -301,63 +327,28 @@ struct ResultViewerView: View {
     .onChange(of: chartSelection) { _, _ in
       selectedCell = nil
     }
-    .onChange(of: resultMode) { _, mode in
-      persistPreference(
-        ResultPresentationPreference(
-          mode: mode,
-          specificationID: selectedRecommendation?.id))
-    }
-    .onChange(of: selectedSpecificationID) { _, id in
-      chartSelection = nil
-      persistPreference(
-        ResultPresentationPreference(mode: resultMode, specificationID: id))
-    }
-    .task(id: analysisTaskID) {
-      chartAnalysis = nil
-      preparedChart = nil
-      chartPreparationFailed = false
-      do {
-        let analysis = try await chartAnalysisClient.analyze(
-          result: result,
-          sql: sql,
-          question: question,
-          resultFingerprint: resultFingerprint,
-          dataIdentity: chartDataIdentity)
-        chartAnalysis = analysis
-        switch analysis.resolve(selectedSpecificationID) {
-        case .exact(let recommendation), .defaulted(let recommendation, _):
-          preparedChart = analysis.primaryChart?.recommendation.id == recommendation.id
-            ? analysis.primaryChart : nil
-          selectedSpecificationID = recommendation.id
-        case .unavailable:
-          resultMode = .table
-          selectedSpecificationID = nil
-        }
-      } catch is CancellationError {
-        return
-      } catch {
-        chartAnalysis = nil
+    .task(id: chartRequest.key) {
+      switch await chart.analyze(
+        chartRequest, preferredSpecificationID: selectedSpecificationID)
+      {
+      case .resolved(let recommendation)?:
+        // Programmatic selection of the resolved recommendation; only a
+        // user's own pick in `chartTypeMenu` persists a preference.
+        selectedSpecificationID = recommendation.id
+      case .unavailable?:
+        resultMode = .table
+        selectedSpecificationID = nil
+      case nil:
+        break
       }
     }
     .task(id: selectedRecommendation?.id) {
-      chartSelection = nil
-      chartPreparationFailed = false
-      guard let chartAnalysis, let selectedRecommendation else {
-        preparedChart = nil
-        return
-      }
-      if chartAnalysis.primaryChart?.recommendation.id == selectedRecommendation.id {
-        preparedChart = chartAnalysis.primaryChart
-        return
-      }
-      preparedChart = nil
-      do {
-        preparedChart = try await chartAnalysis.prepare(selectedRecommendation.id)
-      } catch is CancellationError {
-        return
-      } catch {
-        chartPreparationFailed = true
+      // The initial chart selection (deep links, the preview harness) must
+      // survive this task's first run; a user switching chart types clears
+      // it in `chartTypeMenu` where the stale row indexes actually die.
+      guard await chart.prepareSelected(selectedRecommendation) else {
         resultMode = .table
+        return
       }
     }
   }

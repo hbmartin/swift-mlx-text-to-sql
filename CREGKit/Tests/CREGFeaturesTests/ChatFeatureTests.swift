@@ -1099,6 +1099,148 @@ private actor UserPersistenceOrderingGate {
     #expect(verdict == nil)
   }
 
+  /// A scope diagnosis retained across deactivation holds `isInferenceIdle`
+  /// false, and with Apple Intelligence off nothing else can clear it. The
+  /// user's explicit preparation retry must abandon the memo and run instead
+  /// of silently no-oping for the rest of the session.
+  @Test func retainedScopeDiagnosisDoesNotBlockAnExplicitPreparationRetry() async {
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = Self.appState()
+    state.modelReadiness = .failed(
+      ModelPreparationFailure(
+        code: "model_container_load_failed",
+        stage: .containerLoad,
+        mode: .evaluated,
+        userMessage: "failed",
+        diagnostic: "safe"))
+    state.fmAvailability = .unavailable(reason: .appleIntelligenceNotEnabled)
+    state.pendingScopeDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: Self.conversationA,
+      messageID: UUID(77),
+      context: FollowUpSuggestionContext(
+        sourceAssistantMessageID: UUID(77),
+        question: "Who manages each property?",
+        standaloneQuestion: "Who manages each property?",
+        seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil)))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.retryPreparation)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(modes.value == [.evaluated])
+    #expect(store.state.modelReadiness == .ready)
+  }
+
+  /// The persistence barrier can settle after the user has already deleted
+  /// the conversation (the durable delete defers on that barrier). A scope
+  /// diagnosis for the deleted conversation must never launch: it would run
+  /// a full-schema FM call whose verdict has nothing to enrich, and park a
+  /// pending record that holds `isInferenceIdle` false for its duration.
+  @Test func persistenceBarrierSettlingAfterDeleteSkipsScopeDiagnosis() async {
+    let questionID = UUID(90)
+    let messageID = UUID(91)
+    var state = Self.appState()
+    state.conversations.remove(id: Self.conversationB)
+    state.deletionAwaitingTurnPersistence = Self.conversationB
+    var pending = AppFeature.PendingTurnPersistence(
+      questionID: questionID,
+      conversationID: Self.conversationB)
+    pending.terminalMessageID = messageID
+    pending.followUpContext = FollowUpSuggestionContext(
+      sourceAssistantMessageID: messageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    state.pendingTurnPersistence = pending
+    let judged = LockIsolated(0)
+    let deletes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.deleteConversation = { id in deletes.record(id.uuidString) }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
+        judged.withValue { $0 += 1 }
+        return nil
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.turnPersistenceFinished(questionID))
+    await store.finish()
+
+    #expect(judged.value == 0)
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(store.state.pendingTurnPersistence == nil)
+    #expect(deletes.recorded == [Self.conversationB.uuidString])
+  }
+
+  /// The verdict-persistence write deliberately carries no cancel ID, so its
+  /// completion can arrive after deactivation. Recovery Suggestion
+  /// preparation must not start FM/MLX work in the background; the enriched
+  /// context is retained and reactivation resumes it.
+  @Test func verdictPersistedWhileInactiveRetainsRecoveryContext() async {
+    let messageID = UUID(78)
+    let verdict = ScopeVerdictRecord(verdict: .likelyAnswerableModelFailed)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: messageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: verdict))
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.send(
+      .scopeDiagnosisPersisted(
+        conversationID: Self.conversationA, context: context))
+    await store.finish()
+
+    #expect(preparedContexts.value.isEmpty)
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.pendingScopeDiagnosis?.context == context)
+
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(preparedContexts.value == [context])
+  }
+
   @Test func foregroundResumesAnIncompletePersistedBatch() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
@@ -2456,7 +2598,7 @@ private actor UserPersistenceOrderingGate {
     }
     store.exhaustivity = .off
 
-    await store.send(.answerabilityCaptureReady(url))
+    await store.send(.answerabilityCaptureReady(id: UUID(91), url: url))
     await store.finish()
 
     #expect(store.state.answerabilityCaptureExport == nil)

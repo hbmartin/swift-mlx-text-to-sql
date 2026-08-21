@@ -382,7 +382,12 @@ enum LiveDependencies {
         var record = try? await serializer.run(
           operation: .scopeVerdict,
           {
-            try await fm.scopeVerdict(question, schema)
+            // The one serialized FM call that runs outside the turn
+            // deadlines still needs a bound, or a stalled verdict holds the
+            // FIFO slot into the user's next turn.
+            try await withScopeVerdictDeadline {
+              try await fm.scopeVerdict(question, schema)
+            }
           })
       else { return nil }
       record.missingSubject = ScopeVerdictGuard.sanitize(

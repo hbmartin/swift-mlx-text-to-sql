@@ -8,6 +8,13 @@ struct CREGChartAnalysisInput: Sendable {
 }
 
 enum CREGChartAdapter {
+  /// The one chart-data identity for a transcript message, shared by the
+  /// inline preview and the full-screen viewer so analyzer caching keys off
+  /// the same string everywhere.
+  static func resultDataIdentity(messageID: UUID) -> String {
+    "CREG.Result.v2:\(messageID.uuidString.lowercased())"
+  }
+
   static func analysisInput(
     result: QueryResult,
     sql: String,
@@ -28,12 +35,15 @@ enum CREGChartAdapter {
             row.indices.contains(index) ? row[index] : .null
           }))
     }
+    // Pad (or clamp) every row to the column count: a ragged row otherwise
+    // makes the dataset initializer throw and silently disables charts for
+    // the whole result, while the hints above already treat the missing
+    // cells as null.
     let rows = result.rows.map { row in
-      row.enumerated().map { columnIndex, value in
+      result.columns.indices.map { columnIndex in
         CREGChartAdapter.value(
-          value,
-          temporal: columns.indices.contains(columnIndex)
-            && columns[columnIndex].hints.semanticType == .temporal)
+          row.indices.contains(columnIndex) ? row[columnIndex] : .null,
+          temporal: columns[columnIndex].hints.semanticType == .temporal)
       }
     }
     let fingerprint = resultFingerprint

@@ -16,10 +16,8 @@ struct ResultPreviewView: View {
   let open: () -> Void
 
   static let previewRowLimit = 4
-  @Dependency(\.chartAnalysis) private var chartAnalysisClient
-  @State private var analysis: AutoChartAnalysis<Int>?
-  @State private var preparedChart: AutoChartPreparedChart<Int>?
-  @State private var preparationFailed = false
+  let chartRequest: ResultChartLoader.Request
+  @State private var chart: ResultChartLoader
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
   @State private var pinchHapticTrigger = 0
@@ -44,6 +42,18 @@ struct ResultPreviewView: View {
     self.preference = preference
     self.setPreference = setPreference
     self.open = open
+    let request = ResultChartLoader.Request(
+      result: result,
+      sql: sql,
+      question: question,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
+    self.chartRequest = request
+    self._chart = State(
+      initialValue: ResultChartLoader(
+        client: Dependency(\.chartAnalysis).wrappedValue,
+        warmStart: request,
+        preferredSpecificationID: preference?.specificationID))
   }
 
   private var renderedScale: CGFloat {
@@ -53,17 +63,13 @@ struct ResultPreviewView: View {
   }
 
   private var selectedRecommendation: AutoChartRecommendation? {
-    guard let analysis else { return nil }
+    guard let analysis = chart.analysis else { return nil }
     switch analysis.resolve(preference?.specificationID) {
     case .exact(let recommendation), .defaulted(let recommendation, _):
       return recommendation
     case .unavailable:
       return nil
     }
-  }
-
-  private var analysisTaskID: String {
-    [messageID.uuidString, resultFingerprint, sql, question ?? ""].joined(separator: "|")
   }
 
   var body: some View {
@@ -141,61 +147,27 @@ struct ResultPreviewView: View {
         )
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
-      .task(id: analysisTaskID) {
-        analysis = nil
-        preparedChart = nil
-        preparationFailed = false
-        do {
-          let loaded = try await chartAnalysisClient.analyze(
-            result: result,
-            sql: sql,
-            question: question,
-            resultFingerprint: resultFingerprint,
-            dataIdentity: "CREG.Result.v2:\(messageID.uuidString.lowercased())")
-          analysis = loaded
-          switch loaded.resolve(preference?.specificationID) {
-          case .exact(let recommendation), .defaulted(let recommendation, _):
-            preparedChart = loaded.primaryChart?.recommendation.id == recommendation.id
-              ? loaded.primaryChart : nil
-          case .unavailable:
-            preparedChart = nil
-          }
-        } catch is CancellationError {
-          return
-        } catch {
-          analysis = nil
-        }
+      .task(id: chartRequest.key) {
+        _ = await chart.analyze(
+          chartRequest,
+          preferredSpecificationID: preference?.specificationID)
       }
       .task(id: selected?.id) {
-        guard let analysis, let selected else {
-          preparedChart = nil
-          return
-        }
-        preparationFailed = false
-        if analysis.primaryChart?.recommendation.id == selected.id {
-          preparedChart = analysis.primaryChart
-          return
-        }
-        preparedChart = nil
-        do {
-          preparedChart = try await analysis.prepare(selected.id)
-        } catch is CancellationError {
-          return
-        } catch {
-          preparationFailed = true
-        }
+        // Preview policy: a failed preparation falls back to the inline
+        // table (`chartArea` reads `chart.preparationFailed`).
+        _ = await chart.prepareSelected(selected)
       }
     }
   }
 
   @ViewBuilder
   private var chartArea: some View {
-    if let preparedChart {
+    if let preparedChart = chart.preparedChart {
       AutoChartView(
         preparedChart: preparedChart,
         presentation: .preview(plotHeight: 156),
         formatters: CREGChartAdapter.formatters)
-    } else if preparationFailed {
+    } else if chart.preparationFailed {
       tablePreview
     } else {
       ProgressView("Preparing chart")
