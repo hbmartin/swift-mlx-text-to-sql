@@ -1184,6 +1184,83 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.modelReadiness == .ready)
   }
 
+  /// If availability is already known unavailable when terminal persistence
+  /// settles, the recovery context must survive until the foreground watch
+  /// observes recovery instead of falling through two identical closed gates.
+  @Test func knownFMUnavailabilityRetainsRecoveryUntilItReturns() async {
+    let questionID = UUID(83)
+    let messageID = UUID(84)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: messageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState()
+    state.fmAvailability = .unavailable(reason: .modelNotReady)
+    var pending = AppFeature.PendingTurnPersistence(
+      questionID: questionID,
+      conversationID: Self.conversationA)
+    pending.terminalMessageID = messageID
+    pending.followUpContext = context
+    state.pendingTurnPersistence = pending
+
+    let availability = LockIsolated<FMAvailability>(
+      .unavailable(reason: .modelNotReady))
+    let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
+    let judged = LockIsolated(0)
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.fmStatus = FMStatusClient(
+        availability: { availability.value },
+        availabilityUpdates: {
+          AsyncStream { continuation in
+            watchers.withValue { $0.append(continuation) }
+            continuation.yield(availability.value)
+          }
+        })
+      $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
+        judged.withValue { $0 += 1 }
+        return nil
+      }
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.turnPersistenceFinished(questionID))
+    await store.receive(.dispatchNextIfIdle)
+
+    #expect(store.state.pendingScopeDiagnosis?.context == context)
+    #expect(store.state.isScopeDiagnosisInFlight == false)
+    #expect(judged.value == 0)
+    #expect(preparedContexts.value.isEmpty)
+    while watchers.value.isEmpty { await Task.yield() }
+
+    availability.setValue(.available)
+    watchers.value.forEach { $0.yield(.available) }
+    await store.receive(.dispatchNextIfIdle)
+    watchers.value.forEach { $0.finish() }
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(preparedContexts.value == [context])
+    #expect(judged.value == 0)
+  }
+
   /// The persistence barrier can settle after the user has already deleted
   /// the conversation (the durable delete defers on that barrier). A scope
   /// diagnosis for the deleted conversation must never launch: it would run
@@ -1331,6 +1408,38 @@ private actor UserPersistenceOrderingGate {
     #expect(preparedContexts.value == [context])
   }
 
+  /// Completion actions are identity-bearing because cancellation can race
+  /// delivery. A stale judge must not make the current judge resumable.
+  @Test func staleScopeDiagnosisCompletionKeepsTheCurrentJudgeInFlight() async {
+    let currentMessageID = UUID(85)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: currentMessageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState()
+    let pending = AppFeature.PendingScopeDiagnosis(
+      conversationID: Self.conversationA,
+      messageID: currentMessageID,
+      context: context)
+    state.pendingScopeDiagnosis = pending
+    state.isScopeDiagnosisInFlight = true
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .scopeDiagnosisFinished(
+        conversationID: Self.conversationA,
+        messageID: UUID(86),
+        verdict: nil))
+    await store.finish()
+
+    #expect(store.state.pendingScopeDiagnosis == pending)
+    #expect(store.state.isScopeDiagnosisInFlight)
+  }
+
   /// A verdict can complete nil while the model is still preparing; the memo
   /// is then retained with no deactivation coming. `.modelPrepared` must give
   /// the retained diagnosis its foreground re-check instead of stranding
@@ -1426,6 +1535,77 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.followUpPreparation == nil)
     #expect(store.state.chat?.followUpBatch?.status == .completed)
     #expect(store.state.chat?.followUpBatch?.suggestions == [prepared])
+  }
+
+  /// A persisted batch can be loaded after the scene activation action has
+  /// already run. Its own availability watch must resume it when FM recovers
+  /// without requiring another navigation or foreground transition.
+  @Test func loadedPersistedBatchResumesWhenFMRecoversInForeground() async throws {
+    let prepared = Self.preparedFollowUp()
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context,
+      status: .preparing,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.fmAvailability = .unavailable(reason: .modelNotReady)
+    let snapshot = ConversationSnapshot(
+      summary: try #require(state.conversations[id: Self.conversationA]),
+      followUpBatch: batch)
+    let availability = LockIsolated<FMAvailability>(
+      .unavailable(reason: .modelNotReady))
+    let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
+    let preparations = CallRecorder()
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { _ in
+        preparations.record("resumed")
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.fmStatus = FMStatusClient(
+        availability: { availability.value },
+        availabilityUpdates: {
+          AsyncStream { continuation in
+            watchers.withValue { $0.append(continuation) }
+            continuation.yield(availability.value)
+          }
+        })
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.conversationLoaded(snapshot))
+    while watchers.value.isEmpty { await Task.yield() }
+
+    #expect(preparations.recorded.isEmpty)
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.chat?.followUpBatch == batch)
+
+    availability.setValue(.available)
+    watchers.value.forEach { $0.yield(.available) }
+    await store.receive(.dispatchNextIfIdle)
+    watchers.value.forEach { $0.finish() }
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(preparations.recorded == ["resumed"])
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.chat?.followUpBatch?.status == .completed)
   }
 
   @Test func completionPrefersVisibleConversationQueuedQuestion() async {

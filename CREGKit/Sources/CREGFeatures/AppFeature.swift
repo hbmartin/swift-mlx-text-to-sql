@@ -733,6 +733,11 @@ public struct AppFeature: Sendable {
           effects.append(.cancel(id: CancelID.bannerTimeout))
         }
         effects.append(startLaunchBenchmarkIfReady(state: &state))
+        // Loading can reveal a persisted `.preparing` batch after the scene's
+        // activation action already ran. Refresh/arm first so an unavailable
+        // FM has a foreground recovery hook, then resume immediately when the
+        // refreshed status is already available.
+        effects.append(watchFMAvailabilityIfStranded(state: &state))
         effects.append(resumeFollowUpPreparationIfIdle(state: &state))
         return .merge(effects)
 

@@ -197,9 +197,13 @@ extension AppFeature {
   /// the background cancels the watch.
   func watchFMAvailabilityIfStranded(state: inout State) -> Effect<Action> {
     refreshFMAvailability(state: &state)
+    let hasPersistedPreparation =
+      state.chat?.followUpBatch?.status == .preparing
+      && state.chat?.followUpBatch?.context != nil
     guard
       state.fmAvailability != .available,
       !state.queue.isEmpty || state.pendingScopeDiagnosis != nil
+        || hasPersistedPreparation
     else { return .none }
     return .run { send in
       for await availability in fmStatus.availabilityUpdates() {
