@@ -1030,7 +1030,8 @@ public struct AppFeature: Sendable {
           }
           try? await history.clearFollowUpBatch(conversationID)
         }
-        if state.isTurnSchedulerIdle,
+        if state.isSceneActive,
+          state.isTurnSchedulerIdle,
           state.modelReadiness == .ready,
           state.fmAvailability == .available
         {

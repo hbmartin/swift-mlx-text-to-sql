@@ -1043,10 +1043,10 @@ private actor UserPersistenceOrderingGate {
     #expect(eventWrites.recorded == ["{\"prepared\":true}"])
   }
 
-  /// A transient `.inactive` blip — Control Center, a system dialog — must
-  /// gate new starts without destroying in-flight preparation or capture;
-  /// only backgrounding pays the teardown.
-  @Test func transientInactivityGatesStartsWithoutCancellingInFlightWork() async {
+  /// A transient `.inactive` blip — Control Center, a system dialog — must not
+  /// destroy in-flight preparation or capture; only backgrounding pays the
+  /// teardown.
+  @Test func transientInactivityDoesNotCancelInFlightWork() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
       sourceAssistantMessageID: prepared.sourceAssistantMessageID,
@@ -1079,6 +1079,39 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.isSceneActive == false)
     #expect(store.state.followUpPreparation != nil)
     #expect(store.state.isCapturingAnswerability)
+  }
+
+  @Test func transientInactivityQueuesNewQuestionUntilReactivation() async {
+    let runs = CallRecorder()
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.send(
+      .chat(
+        .delegate(
+          .submitQuestion(
+            QuestionSubmission(question: "Run after reactivation")))))
+    await store.finish()
+
+    #expect(runs.recorded.isEmpty)
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.queue.map(\.question) == ["Run after reactivation"])
+
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(runs.recorded == ["Run after reactivation"])
+    #expect(store.state.queue.isEmpty)
   }
 
   @Test func foregroundStartsVerdictFreeRecoveryAfterDiagnosisWasInterrupted() async {

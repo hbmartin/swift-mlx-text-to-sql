@@ -168,7 +168,8 @@ extension AppFeature {
     // snapshot. Re-read the synchronous system status before consuming a
     // queued item so a mid-foreground availability flip also fails closed.
     refreshFMAvailability(state: &state)
-    guard state.activeTurn == nil, state.pendingTurnPersistence == nil,
+    guard state.isSceneActive,
+      state.activeTurn == nil, state.pendingTurnPersistence == nil,
       state.modelReadiness == .ready
     else { return .none }
     guard state.fmAvailability == .available else {
