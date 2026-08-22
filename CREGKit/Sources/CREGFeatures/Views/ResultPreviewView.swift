@@ -17,6 +17,7 @@ struct ResultPreviewView: View {
 
   static let previewRowLimit = 4
   let chartRequest: ResultChartLoader.Request
+  @Dependency(\.chartAnalysis) private var chartAnalysis
   @State private var chart: ResultChartLoader
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
@@ -51,7 +52,7 @@ struct ResultPreviewView: View {
     self.chartRequest = request
     self._chart = State(
       initialValue: ResultChartLoader(
-        client: Dependency(\.chartAnalysis).wrappedValue,
+        client: _chartAnalysis.wrappedValue,
         warmStart: request,
         preferredSpecificationID: preference?.specificationID))
   }

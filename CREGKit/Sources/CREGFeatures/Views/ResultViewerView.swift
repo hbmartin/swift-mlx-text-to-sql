@@ -257,7 +257,9 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-view-mode")
         }
 
-        if resultMode == .chart, let selectedRecommendation {
+        if resultMode == .chart, let selectedRecommendation,
+          !chart.preparationFailed
+        {
           ScrollView {
             if let preparedChart = chart.preparedChart {
               AutoChartView(

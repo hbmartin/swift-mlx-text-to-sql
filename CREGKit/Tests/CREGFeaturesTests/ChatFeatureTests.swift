@@ -2725,6 +2725,27 @@ private actor UserPersistenceOrderingGate {
     #expect(judged.value == 0)
   }
 
+  @Test func answerabilityCaptureRefusesToStartWhileSceneIsInactive() async {
+    var state = Self.appState()
+    state.isSceneActive = false
+    let judged = LockIsolated(0)
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
+        judged.withValue { $0 += 1 }
+        return nil
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.answerabilityCaptureTapped)
+    await store.finish()
+
+    #expect(store.state.isCapturingAnswerability == false)
+    #expect(judged.value == 0)
+  }
+
   /// A capture completion that lost the race with its cancellation must not
   /// leave the finished archive orphaned in tmp.
   @Test func staleCaptureCompletionRemovesTheOrphanedArchive() async throws {

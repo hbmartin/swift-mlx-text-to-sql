@@ -1137,7 +1137,8 @@ public struct AppFeature: Sendable {
           // ticking while queued, and the 1.75 GB model load must never
           // overlap them. Start only from a fully idle scheduler with no
           // model preparation in flight.
-          guard state.fmAvailability == .available,
+          guard state.isSceneActive,
+            state.fmAvailability == .available,
             !state.modelPreparationInFlight,
             state.isInferenceIdle
           else { return .none }
