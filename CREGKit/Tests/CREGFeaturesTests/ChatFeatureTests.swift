@@ -1000,7 +1000,7 @@ private actor UserPersistenceOrderingGate {
     #expect(writes.recorded.contains("table"))
   }
 
-  @Test func appInactivityCancelsPreparationAndPersistsItsEventsForResume() async {
+  @Test func backgroundingCancelsPreparationAndPersistsItsEventsForResume() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
       sourceAssistantMessageID: prepared.sourceAssistantMessageID,
@@ -1034,13 +1034,51 @@ private actor UserPersistenceOrderingGate {
     }
     store.exhaustivity = .off
 
-    await store.send(.appBecameInactive)
+    await store.send(.appEnteredBackground)
     await store.finish()
 
     #expect(store.state.followUpPreparation == nil)
     #expect(store.state.chat?.followUpBatch == batch)
     #expect(store.state.isCapturingAnswerability == false)
     #expect(eventWrites.recorded == ["{\"prepared\":true}"])
+  }
+
+  /// A transient `.inactive` blip — Control Center, a system dialog — must
+  /// gate new starts without destroying in-flight preparation or capture;
+  /// only backgrounding pays the teardown.
+  @Test func transientInactivityGatesStartsWithoutCancellingInFlightWork() async {
+    let prepared = Self.preparedFollowUp()
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.followUpPreparation = AppFeature.FollowUpPreparationState(
+      conversationID: Self.conversationA,
+      context: context,
+      batch: batch)
+    state.chat?.followUpBatch = batch
+    state.isCapturingAnswerability = true
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.historyClient = .noop()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.finish()
+
+    #expect(store.state.isSceneActive == false)
+    #expect(store.state.followUpPreparation != nil)
+    #expect(store.state.isCapturingAnswerability)
   }
 
   @Test func foregroundStartsVerdictFreeRecoveryAfterDiagnosisWasInterrupted() async {
@@ -1286,6 +1324,54 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.pendingScopeDiagnosis?.context == context)
 
     await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(preparedContexts.value == [context])
+  }
+
+  /// A verdict can complete nil while the model is still preparing; the memo
+  /// is then retained with no deactivation coming. `.modelPrepared` must give
+  /// the retained diagnosis its foreground re-check instead of stranding
+  /// `isInferenceIdle` false until the user backgrounds the app.
+  @Test func modelPreparedResumesARetainedScopeDiagnosis() async {
+    let messageID = UUID(82)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: messageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var state = Self.appState()
+    state.modelReadiness = .preparing
+    state.modelPreparationInFlight = true
+    state.pendingScopeDiagnosis = AppFeature.PendingScopeDiagnosis(
+      conversationID: Self.conversationA,
+      messageID: messageID,
+      context: context)
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .modelPrepared(
+        ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 0)))
     await store.finish()
     await store.skipReceivedActions()
 

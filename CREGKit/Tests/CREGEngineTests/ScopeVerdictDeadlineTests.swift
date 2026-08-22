@@ -43,6 +43,40 @@ import Testing
     #expect(try await next.value == 2)
     #expect(await nextStarted.value)
   }
+
+  /// The deadline budgets Foundation Models time, not FIFO time: a verdict
+  /// queued behind long-running model work must still get its full budget
+  /// once the slot frees, because the congested pipeline is exactly the case
+  /// the diagnosis exists for.
+  @Test func queueWaitDoesNotConsumeTheVerdictBudget() async throws {
+    let diagnostics = ScopeDeadlineDiagnosticRecorder()
+    let serializer = InferenceSerializer(diagnostics: diagnostics.client)
+    let blockerGate = CancellationInsensitiveScopeVerdictGate()
+
+    let blocker = Task {
+      try await serializer.run(operation: .sqlGeneration) {
+        await blockerGate.holdUntilReleased()
+        return 1
+      }
+    }
+    await blockerGate.waitUntilStarted()
+
+    let verdict = Task {
+      try await withSerializedScopeVerdictDeadline(
+        serializer: serializer,
+        seconds: 0.05
+      ) { 2 }
+    }
+    _ = await diagnostics.waitForAny(["inference_queued"])
+    // Hold the slot for several multiples of the verdict deadline; an
+    // enqueue-anchored clock would have expired the verdict long before the
+    // release.
+    try await Task.sleep(for: .seconds(0.25))
+    await blockerGate.release()
+
+    #expect(try await verdict.value == 2)
+    #expect(try await blocker.value == 1)
+  }
 }
 
 private actor ScopeDeadlineFlag {

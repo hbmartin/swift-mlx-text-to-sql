@@ -125,10 +125,13 @@ import Testing
     #expect(configuration.tables.maximumEntries == 8)
     #expect(configuration.analyses.maximumEntries == 64)
     #expect(configuration.preparedCharts.maximumEntries == 16)
+    // Literal pins, not the subtraction the source performs: the 32 MiB
+    // app-wide contract and its split are the regression surface here.
     #expect(
-      configuration.maximumRetainedCost
-        + CREGChartAnalysisClient.snapshotMaximumRetainedCost
-        == CREGChartAnalysisClient.maximumRetainedCost)
+      CREGChartAnalysisClient.maximumRetainedCost == 32 * 1_024 * 1_024)
+    #expect(
+      CREGChartAnalysisClient.snapshotMaximumRetainedCost == 8 * 1_024 * 1_024)
+    #expect(configuration.maximumRetainedCost == 24 * 1_024 * 1_024)
   }
 
   @Test func primaryIsEagerAndAlternativePreparationIsExplicit() async throws {
@@ -215,10 +218,24 @@ import Testing
     #expect(snapshots.statistics.retainedCost == 60)
     #expect(snapshots.statistics.evictions == 1)
 
+    // A same-identity, same-revision store is a recency refresh, never a
+    // replacement: the retained cost must not change.
+    snapshots.store(
+      analysis, identity: "second", revision: "r1", retainedCost: 999)
+    #expect(snapshots.statistics.entries == 1)
+    #expect(snapshots.statistics.retainedCost == 60)
+
+    // A snapshot larger than the whole budget still warm-starts — large
+    // results are where re-analysis hurts most — evicting everything else
+    // and remaining as the sole resident.
     snapshots.store(
       analysis, identity: "oversized", revision: "r1", retainedCost: 101)
     #expect(snapshots.statistics.entries == 1)
+    #expect(snapshots.statistics.retainedCost == 101)
+    #expect(snapshots.analysis(identity: "oversized", revision: "r1") != nil)
+    #expect(snapshots.statistics.evictions == 2)
 
+    // Memory-pressure trims clear everything but are not LRU evictions.
     snapshots.trimToMinimum()
     #expect(snapshots.statistics.entries == 0)
     #expect(snapshots.statistics.retainedCost == 0)

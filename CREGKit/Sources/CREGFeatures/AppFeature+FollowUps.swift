@@ -143,7 +143,10 @@ extension AppFeature {
   func resumeInterruptedScopeDiagnosisIfIdle(
     state: inout State
   ) -> Effect<Action> {
-    guard let pending = state.pendingScopeDiagnosis else { return .none }
+    guard
+      let pending = state.pendingScopeDiagnosis,
+      !state.isScopeDiagnosisInFlight
+    else { return .none }
     guard state.conversations[id: pending.conversationID] != nil else {
       // The retained diagnosis can never resume once its conversation is
       // gone; keeping it would gate preparation, resume, and model
@@ -153,9 +156,7 @@ extension AppFeature {
     }
     guard
       state.isSceneActive,
-      state.isTurnSchedulerIdle,
-      state.followUpPreparation == nil,
-      !state.isCapturingAnswerability,
+      state.isInferenceIdleIgnoringScopeDiagnosis,
       state.modelReadiness == .ready,
       state.fmAvailability == .available
     else { return .none }
@@ -177,6 +178,7 @@ extension AppFeature {
   ) -> Effect<Action> {
     guard state.pendingScopeDiagnosis != nil else { return .none }
     state.pendingScopeDiagnosis = nil
+    state.isScopeDiagnosisInFlight = false
     diagnostics.info(
       category: .submission,
       code: "scope_diagnosis_abandoned_for_model_preparation",
@@ -227,6 +229,7 @@ extension AppFeature {
       conversationID: conversationID,
       messageID: messageID,
       context: context)
+    state.isScopeDiagnosisInFlight = true
     let question = context.standaloneQuestion
     return .run(priority: .low) { send in
       let verdict = await scopeDiagnosis.judge(question)
@@ -246,6 +249,9 @@ extension AppFeature {
     messageID: UUID,
     verdict: ScopeVerdictRecord?
   ) -> Effect<Action> {
+    // Any delivered completion means a judge ended; overlapping judges are
+    // impossible (`cancelInFlight`) and cancelled effects never send.
+    state.isScopeDiagnosisInFlight = false
     guard
       let pending = state.pendingScopeDiagnosis,
       pending.conversationID == conversationID,
@@ -253,8 +259,10 @@ extension AppFeature {
     else { return .none }
     var context = pending.context
     var verdictPersistence: Effect<Action>?
+    var verdictAttached = false
 
     if let verdict, case .turnFailure(let reason, _) = context.seed {
+      verdictAttached = true
       context.seed = .turnFailure(reason: reason, scopeVerdict: verdict)
       // Enrich the selected transcript immediately when it is loaded. The
       // durable transaction below performs the same update regardless of the
@@ -287,12 +295,18 @@ extension AppFeature {
         ])
     }
 
-    guard let verdictPersistence else {
+    guard verdictAttached else {
       // Keep the recovery memo until every follow-on gate is open. In
       // particular, deactivation can be reduced before this already-queued
       // nil completion; consuming the memo here would leave nothing for the
-      // next activation to resume.
-      return resumeInterruptedScopeDiagnosisIfIdle(state: &state)
+      // next activation to resume. A nil verdict also often means Apple
+      // Intelligence went unavailable mid-session — re-read availability so
+      // the resume gates see fresh state, and watch for recovery so the
+      // retained memo does not strand while the app stays foregrounded.
+      refreshFMAvailability(state: &state)
+      return .merge(
+        resumeInterruptedScopeDiagnosisIfIdle(state: &state),
+        watchFMAvailabilityIfStranded(state: &state))
     }
     state.pendingScopeDiagnosis = nil
     // Persist C's message/event enrichment before D can append preparation
@@ -302,9 +316,11 @@ extension AppFeature {
     // the preparation. Chaining the raw preparation effect here would defer
     // its cancel-ID registration behind the write, turning any
     // `.cancel(id: .followUpPreparation)` issued in that window into a no-op
-    // and letting the preparation run as an uncancellable zombie.
+    // and letting the preparation run as an uncancellable zombie. A failed
+    // event encoding skips only the durable write: the verdict-enriched
+    // context still reaches preparation.
     return .concatenate(
-      verdictPersistence,
+      verdictPersistence ?? .none,
       .send(
         .scopeDiagnosisPersisted(
           conversationID: conversationID, context: context)))

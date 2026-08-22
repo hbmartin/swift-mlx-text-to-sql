@@ -67,12 +67,18 @@ struct AppRootView: View {
     min(containerWidth * 0.8, 340)
   }
 
+  /// `.inactive` covers momentary interruptions (Control Center, the app
+  /// switcher, system dialogs) as well as the instant before backgrounding,
+  /// so it only gates new low-priority starts; the destructive teardown of
+  /// in-flight inference waits for a real `.background` transition.
   static func lifecycleAction(for phase: ScenePhase) -> AppFeature.Action? {
     switch phase {
     case .active:
       .appBecameActive
-    case .inactive, .background:
+    case .inactive:
       .appBecameInactive
+    case .background:
+      .appEnteredBackground
     @unknown default:
       nil
     }
@@ -114,7 +120,11 @@ struct AppRootView: View {
             store.appearance.colorScheme ?? systemColorScheme)
       }
       .onAppear { store.send(.onAppear) }
-      .onChange(of: scenePhase) { _, phase in
+      // `initial: true` delivers the launch phase itself: a prewarmed or
+      // background launch never transitions, and `isSceneActive` defaults to
+      // true, so without it the inference gates would treat an invisible
+      // scene as active.
+      .onChange(of: scenePhase, initial: true) { _, phase in
         if let action = Self.lifecycleAction(for: phase) {
           store.send(action)
         }

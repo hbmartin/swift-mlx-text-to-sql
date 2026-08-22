@@ -92,54 +92,41 @@ struct CREGChartAnalysisClient: Sendable {
 
   /// A conservative retained-cost estimate for the graph reachable from a
   /// finished analysis. The package's exact prepared-source cost is private,
-  /// so this mirrors its per-column/row/cell accounting and adds headroom for
-  /// public analysis metadata and prepared marks.
+  /// so this mirrors its per-column/row/cell accounting and adds headroom
+  /// for public analysis metadata and prepared marks. The walk touches every
+  /// cell, so `store` evaluates it lazily — only when the snapshot is new.
   private static func estimatedSnapshotCost(
     result: QueryResult,
     analysis: AutoChartAnalysis<Int>
   ) -> Int {
     var cost = 1_024
     for column in result.columns {
-      add(1_024, to: &cost)
-      add(multiplied(column.utf8.count, by: 2), to: &cost)
+      cost += 1_024 + column.utf8.count * 2
     }
     for row in result.rows {
-      add(256, to: &cost)
+      cost += 256
       for value in row {
-        add(192, to: &cost)
+        cost += 192
         switch value {
         case .text(let text):
-          add(multiplied(text.utf8.count, by: 2), to: &cost)
+          cost += text.utf8.count * 2
         case .blob(let data):
-          add(multiplied(data.count, by: 2), to: &cost)
+          cost += data.count * 2
         case .null, .integer, .real:
-          add(16, to: &cost)
+          cost += 16
         }
       }
     }
-    add(multiplied(analysis.columnProfiles.count, by: 512), to: &cost)
-    add(multiplied(analysis.diagnostics.count, by: 1_024), to: &cost)
+    cost += analysis.columnProfiles.count * 512
+    cost += analysis.diagnostics.count * 1_024
     switch analysis.outcome {
     case .charts(let recommendations):
-      add(multiplied(recommendations.count, by: 2_048), to: &cost)
+      cost += recommendations.count * 2_048
     case .tableFallback:
-      add(1_024, to: &cost)
+      cost += 1_024
     }
-    add(
-      multiplied(analysis.primaryChart?.marks.count ?? 0, by: 384),
-      to: &cost)
+    cost += (analysis.primaryChart?.marks.count ?? 0) * 384
     return cost
-  }
-
-  private static func add(_ amount: Int, to total: inout Int) {
-    guard total != Int.max else { return }
-    let (sum, overflow) = total.addingReportingOverflow(max(0, amount))
-    total = overflow ? Int.max : sum
-  }
-
-  private static func multiplied(_ value: Int, by multiplier: Int) -> Int {
-    let (product, overflow) = value.multipliedReportingOverflow(by: multiplier)
-    return overflow ? Int.max : product
   }
 }
 
@@ -155,8 +142,12 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     var evictions = 0
   }
 
-  static let uncached = ChartAnalysisSnapshotStore(
-    capacity: 0, maximumRetainedCost: 0)
+  /// A fresh zero-capacity store per access. A shared singleton would
+  /// accumulate hit/miss statistics across parallel tests, making any future
+  /// counter assertion order-dependent.
+  static var uncached: ChartAnalysisSnapshotStore {
+    ChartAnalysisSnapshotStore(capacity: 0, maximumRetainedCost: 0)
+  }
 
   private struct Entry {
     var revision: String
@@ -202,28 +193,42 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     _ analysis: AutoChartAnalysis<Int>,
     identity: String,
     revision: String,
-    retainedCost: Int
+    retainedCost: @autoclosure () -> Int
   ) {
+    guard capacity > 0 else { return }
+    lock.lock()
+    if let existing = entries[identity], existing.revision == revision {
+      // The inline preview and the full-screen viewer analyze the same
+      // message; an identical snapshot only needs its recency refreshed,
+      // never a cost re-estimate.
+      recency.removeAll { $0 == identity }
+      recency.append(identity)
+      lock.unlock()
+      return
+    }
+    lock.unlock()
+    // Evaluated outside the lock: the estimate walks every result cell and
+    // must not block synchronous first-frame reads. A racing store of the
+    // same identity is last-writer-wins.
+    let cost = max(0, retainedCost())
     lock.lock()
     defer { lock.unlock() }
     if let previous = entries.removeValue(forKey: identity) {
       self.retainedCost -= previous.retainedCost
       recency.removeAll { $0 == identity }
     }
-    let retainedCost = max(0, retainedCost)
-    guard
-      capacity > 0,
-      retainedCost <= maximumRetainedCost
-    else { return }
     entries[identity] = Entry(
       revision: revision,
       analysis: analysis,
-      retainedCost: retainedCost)
-    self.retainedCost += retainedCost
-    recency.removeAll { $0 == identity }
+      retainedCost: cost)
+    self.retainedCost += cost
     recency.append(identity)
-    while recency.count > capacity
-      || self.retainedCost > maximumRetainedCost
+    // Budget pressure evicts older entries but never the snapshot just
+    // stored: a single result larger than the whole budget keeps its warm
+    // start as the sole resident — large results are exactly where
+    // re-analysis hurts most — and the memory-warning trim still clears it.
+    while recency.count > 1,
+      recency.count > capacity || self.retainedCost > maximumRetainedCost
     {
       evictLeastRecent()
     }
@@ -240,10 +245,12 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
       evictions: evictions)
   }
 
+  /// Memory-pressure trims deliberately do not count as `evictions`: that
+  /// counter measures LRU budget pressure, and conflating the two would make
+  /// the cache read as thrashing after a few background cycles.
   func trimToMinimum() {
     lock.lock()
     defer { lock.unlock() }
-    evictions += entries.count
     entries.removeAll()
     recency.removeAll()
     retainedCost = 0
@@ -405,9 +412,13 @@ final class ResultChartLoader {
 
 extension CREGChartAnalysisClient: DependencyKey {
   static let liveValue = CREGChartAnalysisClient.live
-  static let testValue = CREGChartAnalysisClient(
-    analyzer: AutoChartAnalyzer(configuration: .uncached),
-    snapshots: .uncached)
+  /// Computed so each access constructs a fresh uncached client; a shared
+  /// `let` would let statistics accumulate across parallel tests.
+  static var testValue: CREGChartAnalysisClient {
+    CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached),
+      snapshots: .uncached)
+  }
 }
 
 extension DependencyValues {
