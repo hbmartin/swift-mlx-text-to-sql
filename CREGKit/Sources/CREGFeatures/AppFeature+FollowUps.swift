@@ -3,17 +3,57 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
+  /// The one gate Recovery Suggestion / Prepared Follow-Up preparation
+  /// starts from. `startOrRetainFollowUpPreparation` reads the same
+  /// predicate to decide whether to retain instead, so a start that cannot
+  /// happen and a context that must be parked can never disagree.
+  func canStartFollowUpPreparation(
+    state: State,
+    conversationID: UUID
+  ) -> Bool {
+    state.canStartLowPriorityInference
+      && state.modelReadiness == .ready
+      && state.fmAvailability == .available
+      && state.conversations[id: conversationID] != nil
+  }
+
+  /// Every path that hands a follow-up context to preparation shares this
+  /// seam. An open gate starts the work; a closed one parks the context as
+  /// the pending memo that activation, `.modelPrepared`, and the
+  /// FM-availability watch already resume. The only context dropped here is
+  /// one whose conversation is gone — parking that would hold
+  /// `isInferenceIdle` false for the rest of the session with nothing left
+  /// to prepare. Callers refresh availability immediately before calling.
+  func startOrRetainFollowUpPreparation(
+    state: inout State,
+    conversationID: UUID,
+    context: FollowUpSuggestionContext
+  ) -> Effect<Action> {
+    guard state.conversations[id: conversationID] != nil else { return .none }
+    guard
+      canStartFollowUpPreparation(
+        state: state, conversationID: conversationID)
+    else {
+      state.pendingScopeDiagnosis = PendingScopeDiagnosis(
+        conversationID: conversationID,
+        messageID: context.sourceAssistantMessageID,
+        context: context)
+      return watchFMAvailabilityIfStranded(state: &state)
+    }
+    return startFollowUpPreparation(
+      state: &state,
+      conversationID: conversationID,
+      context: context)
+  }
+
   func startFollowUpPreparation(
     state: inout State,
     conversationID: UUID,
     context: FollowUpSuggestionContext
   ) -> Effect<Action> {
     guard
-      state.isSceneActive,
-      state.isInferenceIdle,
-      state.modelReadiness == .ready,
-      state.fmAvailability == .available,
-      state.conversations[id: conversationID] != nil
+      canStartFollowUpPreparation(
+        state: state, conversationID: conversationID)
     else { return .none }
     let batch = PreparedFollowUpBatch(
       sourceAssistantMessageID: context.sourceAssistantMessageID,
@@ -47,13 +87,11 @@ extension AppFeature {
     state: inout State
   ) -> Effect<Action> {
     guard
-      state.isSceneActive,
-      state.isInferenceIdle,
+      state.canStartLowPriorityInference,
       state.modelReadiness == .ready,
       state.fmAvailability == .available,
       let chat = state.chat,
-      let batch = chat.followUpBatch,
-      batch.status == .preparing,
+      let batch = state.resumableFollowUpBatch,
       let context = batch.context
     else { return .none }
     state.followUpPreparation = FollowUpPreparationState(
@@ -155,8 +193,7 @@ extension AppFeature {
       return .none
     }
     guard
-      state.isSceneActive,
-      state.isInferenceIdleIgnoringScopeDiagnosis,
+      state.canStartLowPriorityInferenceIgnoringScopeDiagnosis,
       state.modelReadiness == .ready,
       state.fmAvailability == .available
     else { return .none }
@@ -202,36 +239,22 @@ extension AppFeature {
     // verdict for a deleted conversation has nothing to enrich or persist,
     // and parking it would hold `isInferenceIdle` false for nothing.
     guard state.conversations[id: conversationID] != nil else { return .none }
-    guard state.isSceneActive else {
-      // The barrier can also settle while the app is inactive. Never start
-      // FM work in the background; retain the context exactly like a
-      // backgrounded diagnosis so reactivation resumes Recovery Suggestion
-      // preparation without a verdict.
-      if context.isRecoverySeed {
-        state.pendingScopeDiagnosis = PendingScopeDiagnosis(
-          conversationID: conversationID,
-          messageID: messageID,
-          context: context)
-      }
-      return .none
-    }
-    guard context.isRecoverySeed, state.isTurnSchedulerIdle else {
-      return startFollowUpPreparation(
+    // The judge needs Apple Intelligence and the serializer, not the SQL
+    // model, so readiness is deliberately absent here. Every gate that is
+    // closed would fail the identical gate inside preparation, so hand the
+    // context to the retain seam instead of falling through it: the only
+    // copy of a Recovery Suggestion context survives to the next foreground
+    // idle window rather than being discarded.
+    guard
+      context.isRecoverySeed,
+      state.isSceneActive,
+      state.isTurnSchedulerIdle,
+      state.fmAvailability == .available
+    else {
+      return startOrRetainFollowUpPreparation(
         state: &state,
         conversationID: conversationID,
         context: context)
-    }
-    // Availability may already be known unavailable when the persistence
-    // barrier settles. Falling through to preparation would fail the same
-    // gate and discard the only recovery context, so retain it and wait for
-    // the foreground availability watch to reopen the path.
-    refreshFMAvailability(state: &state)
-    guard state.fmAvailability == .available else {
-      state.pendingScopeDiagnosis = PendingScopeDiagnosis(
-        conversationID: conversationID,
-        messageID: messageID,
-        context: context)
-      return watchFMAvailabilityIfStranded(state: &state)
     }
     state.pendingScopeDiagnosis = PendingScopeDiagnosis(
       conversationID: conversationID,

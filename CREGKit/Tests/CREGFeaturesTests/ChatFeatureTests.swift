@@ -100,6 +100,22 @@ private actor UserPersistenceOrderingGate {
   var recordedEvents: [String] { events }
 }
 
+/// Waits for the reducer to arm its FM-availability watch. Bounded so a
+/// regression that stops arming one fails the test instead of spinning the
+/// suite until its global timeout.
+@MainActor
+private func awaitArmedFMWatch(
+  _ watchers: LockIsolated<[AsyncStream<FMAvailability>.Continuation]>
+) async {
+  for _ in 0..<1_000 {
+    if !watchers.value.isEmpty { break }
+    await Task.yield()
+  }
+  #expect(
+    !watchers.value.isEmpty,
+    "The FM-availability watch was never armed.")
+}
+
 @MainActor
 @Suite struct AppFeatureSchedulerTests {
   static let conversationA = UUID(10)
@@ -1280,18 +1296,246 @@ private actor UserPersistenceOrderingGate {
     #expect(store.state.isScopeDiagnosisInFlight == false)
     #expect(judged.value == 0)
     #expect(preparedContexts.value.isEmpty)
-    while watchers.value.isEmpty { await Task.yield() }
+    await awaitArmedFMWatch(watchers)
 
     availability.setValue(.available)
     watchers.value.forEach { $0.yield(.available) }
-    await store.receive(.dispatchNextIfIdle)
     watchers.value.forEach { $0.finish() }
+    // `.turnPersistenceFinished` arms a watch and merges its own
+    // `.dispatchNextIfIdle`, whose scheduler pass arms a second one before
+    // TCA retires the first — cancellation is asynchronous. Either may
+    // deliver the recovery, so drain what arrives instead of asserting a
+    // timing-dependent action count.
+    await store.skipReceivedActions(strict: false)
     await store.finish()
-    await store.skipReceivedActions()
+    await store.skipReceivedActions(strict: false)
 
     #expect(store.state.pendingScopeDiagnosis == nil)
     #expect(preparedContexts.value == [context])
     #expect(judged.value == 0)
+  }
+
+  /// An answered turn's Prepared Follow-Up context reaches the barrier with
+  /// no verdict to judge, and unlike a recovery seed nothing has persisted a
+  /// `.preparing` batch for it yet. A transient `.inactive` blip at that
+  /// instant — Control Center, a permission sheet — must retain it: the
+  /// memo is the only copy left, and dropping it costs the turn its
+  /// suggestions permanently.
+  @Test func answeredTurnContextSurvivesDeactivationAtTheBarrier() async {
+    let questionID = UUID(120)
+    let messageID = UUID(121)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: messageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    var state = Self.appState()
+    var pending = AppFeature.PendingTurnPersistence(
+      questionID: questionID,
+      conversationID: Self.conversationA)
+    pending.terminalMessageID = messageID
+    pending.followUpContext = context
+    state.pendingTurnPersistence = pending
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.send(.turnPersistenceFinished(questionID))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    #expect(preparedContexts.value.isEmpty)
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.pendingScopeDiagnosis?.context == context)
+
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(preparedContexts.value == [context])
+  }
+
+  /// A completed turn's write can outlive a compatibility re-preparation, so
+  /// the verdict lands while the SQL model is still unready. The judge only
+  /// needs Apple Intelligence, so it still runs and still enriches the
+  /// failure — but preparation gates on readiness, and dropping the enriched
+  /// context there would leave the diagnosed failure with no suggestions at
+  /// all. Retaining it lets `.modelPrepared` finish the work.
+  @Test func unpreparedModelKeepsTheEnrichedContextUntilPreparation() async {
+    let questionID = UUID(122)
+    let messageID = UUID(123)
+    let verdict = ScopeVerdictRecord(verdict: .likelyAnswerableModelFailed)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: messageID,
+      question: "Who manages each property?",
+      standaloneQuestion: "Who manages each property?",
+      seed: .turnFailure(reason: .generationExhausted, scopeVerdict: nil))
+    var enriched = context
+    enriched.seed = .turnFailure(
+      reason: .generationExhausted, scopeVerdict: verdict)
+    var state = Self.appState()
+    state.modelReadiness = .preparing
+    var pending = AppFeature.PendingTurnPersistence(
+      questionID: questionID,
+      conversationID: Self.conversationA)
+    pending.terminalMessageID = messageID
+    pending.followUpContext = context
+    state.pendingTurnPersistence = pending
+    let judged = LockIsolated(0)
+    let preparedContexts = LockIsolated<[FollowUpSuggestionContext]>([])
+    let pipeline = QueryPipeline(
+      run: { _, _ in AsyncStream { $0.finish() } },
+      prepareFollowUps: { context in
+        preparedContexts.withValue { $0.append(context) }
+        return AsyncStream { continuation in
+          continuation.yield(.finished)
+          continuation.finish()
+        }
+      })
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [pipeline] in
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
+        judged.withValue { $0 += 1 }
+        return verdict
+      }
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.turnPersistenceFinished(questionID))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    #expect(judged.value == 1)
+    #expect(preparedContexts.value.isEmpty)
+    #expect(store.state.pendingScopeDiagnosis?.context == enriched)
+
+    await store.send(
+      .modelPrepared(
+        ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 0)))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    #expect(store.state.pendingScopeDiagnosis == nil)
+    #expect(preparedContexts.value == [enriched])
+  }
+
+  /// The watch's live stream polls `SystemLanguageModel.availability` on a
+  /// timer, so arming one is background work the deactivation invariant
+  /// forbids — and the recovery it would send is refused by that same
+  /// invariant. A load landing after deactivation must wait for activation
+  /// to arm it.
+  @Test func inactiveSceneNeverArmsTheAvailabilityWatch() async throws {
+    let prepared = Self.preparedFollowUp()
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: "Which property leads?",
+      standaloneQuestion: "Which property leads?",
+      narration: "One property found.",
+      result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context,
+      status: .preparing,
+      suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.fmAvailability = .unavailable(reason: .modelNotReady)
+    let snapshot = ConversationSnapshot(
+      summary: try #require(state.conversations[id: Self.conversationA]),
+      followUpBatch: batch)
+    let availability = LockIsolated<FMAvailability>(
+      .unavailable(reason: .modelNotReady))
+    let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = QueryPipeline { _, _ in AsyncStream { $0.finish() } }
+      $0.historyClient = .noop()
+      $0.fmStatus = FMStatusClient(
+        availability: { availability.value },
+        availabilityUpdates: {
+          AsyncStream { continuation in
+            watchers.withValue { $0.append(continuation) }
+            continuation.yield(availability.value)
+          }
+        })
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.send(.conversationLoaded(snapshot))
+    for _ in 0..<50 { await Task.yield() }
+
+    #expect(watchers.value.isEmpty)
+
+    await store.send(.appBecameActive)
+    await awaitArmedFMWatch(watchers)
+
+    watchers.value.forEach { $0.finish() }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+  }
+
+  /// A benchmark turn is an ordinary MLX dispatch that also wipes the
+  /// transcript, so it takes the same deactivation gate as every other start
+  /// path. Readiness reached in the background waits for activation.
+  @Test func launchBenchmarkWaitsForActivationInsteadOfRunningInactive() async {
+    var state = Self.appState()
+    state.modelReadiness = .preparing
+    state.launchBenchmarkQuestion = "Which property leads?"
+    let runs = CallRecorder()
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await store.send(
+      .modelPrepared(
+        ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 0)))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    #expect(!store.state.launchBenchmarkStarted)
+    #expect(runs.recorded.isEmpty)
+
+    await store.send(.appBecameActive)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    #expect(store.state.launchBenchmarkStarted)
+    #expect(runs.recorded == ["Which property leads?"])
   }
 
   /// The persistence barrier can settle after the user has already deleted
@@ -1623,7 +1867,7 @@ private actor UserPersistenceOrderingGate {
     store.exhaustivity = .off
 
     await store.send(.conversationLoaded(snapshot))
-    while watchers.value.isEmpty { await Task.yield() }
+    await awaitArmedFMWatch(watchers)
 
     #expect(preparations.recorded.isEmpty)
     #expect(store.state.followUpPreparation == nil)
@@ -2698,7 +2942,7 @@ private actor UserPersistenceOrderingGate {
 
     #expect(runs.recorded.isEmpty)
     #expect(store.state.queue.count == 1)
-    while watchers.value.isEmpty { await Task.yield() }
+    await awaitArmedFMWatch(watchers)
 
     // Availability recovers with the app still foregrounded: the armed
     // watch re-runs the scheduler and the stranded question dispatches.

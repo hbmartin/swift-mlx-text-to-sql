@@ -325,6 +325,46 @@ public struct AppFeature: Sendable {
     public var isInferenceIdle: Bool {
       isInferenceIdleIgnoringScopeDiagnosis && pendingScopeDiagnosis == nil
     }
+
+    /// The deactivation invariant folded into the dispatch gate: a turn may
+    /// start only from a foregrounded scene with the serializer free and the
+    /// SQL model ready. `queue.isEmpty` is deliberately absent — the
+    /// scheduler dispatches *from* the queue — and Apple Intelligence
+    /// availability is checked separately by the callers that arm the
+    /// recovery watch on it. Every start path shares this rather than
+    /// re-spelling the scene check, and `dispatch` asserts it.
+    public var canDispatchTurn: Bool {
+      isSceneActive
+        && activeTurn == nil
+        && pendingTurnPersistence == nil
+        && modelReadiness == .ready
+    }
+
+    /// `isInferenceIdle` under the same invariant. Low-priority FM/MLX work
+    /// — follow-up preparation, scope diagnosis, debug captures — may start
+    /// only from here.
+    public var canStartLowPriorityInference: Bool {
+      isSceneActive && isInferenceIdle
+    }
+
+    /// The variant for the paths that consume the pending Scope Verdict memo
+    /// instead of waiting behind it.
+    public var canStartLowPriorityInferenceIgnoringScopeDiagnosis: Bool {
+      isSceneActive && isInferenceIdleIgnoringScopeDiagnosis
+    }
+
+    /// The selected conversation's persisted batch when a resume can
+    /// actually pick it up. The FM-availability watch arms on exactly what
+    /// `resumeFollowUpPreparationIfIdle` resumes on, so the arm condition
+    /// and the resume condition cannot drift into arming for batches that
+    /// can never resume — or failing to arm for ones that can.
+    public var resumableFollowUpBatch: PreparedFollowUpBatch? {
+      guard let batch = chat?.followUpBatch,
+        batch.status == .preparing,
+        batch.context != nil
+      else { return nil }
+      return batch
+    }
   }
 
   public enum Action: BindableAction, Sendable, Equatable {
@@ -494,11 +534,17 @@ public struct AppFeature: Sendable {
       case .appBecameActive:
         state.isSceneActive = true
         refreshFMAvailability(state: &state)
+        // Readiness reached while the app was inactive — a prewarmed launch,
+        // or a load that completed after backgrounding — leaves the benchmark
+        // undispatched by the deactivation invariant. Activation is its only
+        // other hook.
+        let benchmark = startLaunchBenchmarkIfReady(state: &state)
         let interruptedRecovery =
           resumeInterruptedScopeDiagnosisIfIdle(state: &state)
         let persistedPreparation = resumeFollowUpPreparationIfIdle(state: &state)
         let queuedTurn = dispatchNextIfIdle(state: &state)
-        return .merge(interruptedRecovery, persistedPreparation, queuedTurn)
+        return .merge(
+          benchmark, interruptedRecovery, persistedPreparation, queuedTurn)
 
       case .appBecameInactive:
         // A transient interruption — Control Center, an app-switcher peek, a
@@ -627,6 +673,7 @@ public struct AppFeature: Sendable {
       case .modelPrepared(let report):
         state.modelPreparationInFlight = false
         setModelReadiness(.ready, state: &state)
+        refreshFMAvailability(state: &state)
         state.modelPreparationReport = report
         diagnostics.info(
           category: .submission,
@@ -681,6 +728,7 @@ public struct AppFeature: Sendable {
         state.chat = ChatFeature.State(conversationID: summary.id)
         syncSchedulerProjection(into: &state)
         state.isBrowserRevealed = false
+        refreshFMAvailability(state: &state)
         return startLaunchBenchmarkIfReady(state: &state)
 
       case .conversationLoaded(let snapshot):
@@ -696,6 +744,9 @@ public struct AppFeature: Sendable {
           preservingPreparedAnswerID: activePreparedAnswerID)
         syncSchedulerProjection(into: &state)
         state.isBrowserRevealed = false
+        // One availability read serves all three gates below: the launch
+        // benchmark's dispatch, the stranded-work watch, and the resume.
+        refreshFMAvailability(state: &state)
         var effects: [Effect<Action>] = []
         let recovered = snapshot.messages.compactMap { message -> ChatMessage? in
           guard message.id != activePreparedAnswerID else { return nil }
@@ -912,6 +963,11 @@ public struct AppFeature: Sendable {
             })
         }
         if let context = pending.followUpContext {
+          // The barrier can settle long after the last availability
+          // snapshot, and every branch below reads it — the judge gate, the
+          // preparation gate, and the retention decision. One read serves
+          // them all.
+          refreshFMAvailability(state: &state)
           // A failure-seeded context runs the Scope Verdict first (C before
           // D): the verdict decides the suggestion strategy and enriches the
           // rendered failure in place.
@@ -924,7 +980,7 @@ public struct AppFeature: Sendable {
                 context: context))
           } else {
             effects.append(
-              startFollowUpPreparation(
+              startOrRetainFollowUpPreparation(
                 state: &state,
                 conversationID: pending.conversationID,
                 context: context))
@@ -990,24 +1046,14 @@ public struct AppFeature: Sendable {
           verdict: verdict)
 
       case .scopeDiagnosisPersisted(let conversationID, let context):
-        // Delivery re-checks the idle gates inside startFollowUpPreparation:
-        // a turn dispatched or a conversation deleted while the verdict
-        // persisted vetoes the preparation instead of racing it.
-        guard state.isSceneActive else {
-          // Deactivation raced the verdict write, which carries no cancel ID
-          // so the durable enrichment always lands. Never start FM/MLX work
-          // in the background; retain the verdict-enriched context exactly
-          // like a backgrounded diagnosis so reactivation resumes Recovery
-          // Suggestion preparation.
-          if state.conversations[id: conversationID] != nil {
-            state.pendingScopeDiagnosis = PendingScopeDiagnosis(
-              conversationID: conversationID,
-              messageID: context.sourceAssistantMessageID,
-              context: context)
-          }
-          return .none
-        }
-        return startFollowUpPreparation(
+        // Delivery re-checks the gates: a turn dispatched or a conversation
+        // deleted while the verdict persisted vetoes the preparation instead
+        // of racing it. The write carries no cancel ID, so its completion
+        // always lands — including after deactivation or after Apple
+        // Intelligence went away — and every other closed gate retains the
+        // verdict-enriched context rather than discarding the only copy.
+        refreshFMAvailability(state: &state)
+        return startOrRetainFollowUpPreparation(
           state: &state,
           conversationID: conversationID,
           context: context)
@@ -1030,9 +1076,8 @@ public struct AppFeature: Sendable {
           }
           try? await history.clearFollowUpBatch(conversationID)
         }
-        if state.isSceneActive,
-          state.isTurnSchedulerIdle,
-          state.modelReadiness == .ready,
+        if state.canDispatchTurn,
+          state.queue.isEmpty,
           state.fmAvailability == .available
         {
           let userTurn = dispatch(
@@ -1143,10 +1188,9 @@ public struct AppFeature: Sendable {
           // ticking while queued, and the 1.75 GB model load must never
           // overlap them. Start only from a fully idle scheduler with no
           // model preparation in flight.
-          guard state.isSceneActive,
+          guard state.canStartLowPriorityInference,
             state.fmAvailability == .available,
-            !state.modelPreparationInFlight,
-            state.isInferenceIdle
+            !state.modelPreparationInFlight
           else { return .none }
           let captureID = uuid()
           state.isCapturingAnswerability = true
