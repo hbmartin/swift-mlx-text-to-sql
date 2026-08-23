@@ -276,6 +276,16 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
   }
 }
 
+/// Identity of one SwiftUI chart-preparation task. Recommendation identity is
+/// not sufficient on its own: replacement analyses can recommend the same
+/// specification, and an explicit retry must also rerun preparation without a
+/// selection change.
+struct ResultChartPreparationTaskKey: Equatable {
+  var analysisGeneration: Int
+  var recommendationID: AutoChartRecommendationID?
+  var attempt: Int
+}
+
 /// The one chart-loading state machine shared by the inline Result Preview
 /// and the full-screen Result Viewer. Views keep their own presentation
 /// policy — what to select, when to fall back to the table, what to persist —
@@ -316,7 +326,7 @@ final class ResultChartLoader {
   /// for a new request; SwiftUI has not re-evaluated the body yet, so that
   /// prepare is not cancelled. Its result is discarded rather than written
   /// as a chart for data the loader no longer holds.
-  private var analysisGeneration = 0
+  private(set) var analysisGeneration = 0
 
   init(
     client: CREGChartAnalysisClient,

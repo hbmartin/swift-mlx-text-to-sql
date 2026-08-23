@@ -276,6 +276,66 @@ import Testing
     #expect(firstStatistics.analyses.entries == 1)
     #expect(secondStatistics.analyses.entries == 0)
   }
+
+  /// Two result revisions can resolve to the same chart specification. The
+  /// preparation task must still restart for the replacement analysis, and an
+  /// explicit retry must restart it again without changing the selection.
+  @MainActor
+  @Test func preparationTaskIdentityIncludesAnalysisGenerationAndRetry() async throws {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached),
+      snapshots: .uncached)
+    let firstResult = PreviewFixtures.fundValueResult
+    let secondResult = QueryResult(
+      columns: firstResult.columns,
+      rows: [
+        [.text("Meridian Core Fund I"), .real(430_000_000)],
+        [.text("Meridian Value-Add II"), .real(275_000_000)],
+        [.text("Harborline Opportunistic"), .real(160_000_000)],
+        [.text("Coastal Core-Plus III"), .real(105_000_000)],
+      ])
+    let sql = StarterQueryID.portfolioValueByFundV1.sql
+    let question = StarterQueryID.portfolioValueByFundV1.question
+    let loader = ResultChartLoader(client: client, warmStart: nil)
+
+    _ = await loader.analyze(
+      ResultChartLoader.Request(
+        result: firstResult,
+        sql: sql,
+        question: question,
+        resultFingerprint: "first-revision",
+        dataIdentity: "message-1"),
+      preferredSpecificationID: nil)
+    let firstRecommendationID = try #require(
+      loader.analysis?.primaryChart?.recommendation.id)
+    let firstKey = ResultChartPreparationTaskKey(
+      analysisGeneration: loader.analysisGeneration,
+      recommendationID: firstRecommendationID,
+      attempt: 0)
+
+    _ = await loader.analyze(
+      ResultChartLoader.Request(
+        result: secondResult,
+        sql: sql,
+        question: question,
+        resultFingerprint: "second-revision",
+        dataIdentity: "message-1"),
+      preferredSpecificationID: nil)
+    let secondRecommendationID = try #require(
+      loader.analysis?.primaryChart?.recommendation.id)
+    let replacementKey = ResultChartPreparationTaskKey(
+      analysisGeneration: loader.analysisGeneration,
+      recommendationID: secondRecommendationID,
+      attempt: 0)
+    let retryKey = ResultChartPreparationTaskKey(
+      analysisGeneration: loader.analysisGeneration,
+      recommendationID: secondRecommendationID,
+      attempt: 1)
+
+    #expect(firstRecommendationID == secondRecommendationID)
+    #expect(firstKey != replacementKey)
+    #expect(replacementKey != retryKey)
+  }
 }
 
 @MainActor
