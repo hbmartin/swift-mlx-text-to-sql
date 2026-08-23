@@ -21,9 +21,9 @@ struct ResultViewerView: View {
   @Binding var textSize: ResultTableTextSize
   @State var chart: ResultChartLoader
   /// Re-keys the prepare task for an explicit retry. Preparation is
-  /// otherwise keyed only on the recommendation, so a failure would leave
-  /// Chart mode with no way back.
-  @State var chartPreparationAttempt = 0
+  /// otherwise keyed on the analysis and recommendation, so a failure on an
+  /// unchanged selection needs this additional identity to try again.
+  @State private var chartPreparationAttempt = 0
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
@@ -44,13 +44,6 @@ struct ResultViewerView: View {
   struct CacheIdentity {
     var messageID: UUID
     var resultFingerprint: String
-  }
-
-  /// Identity of the prepare task: the selected recommendation plus the
-  /// retry attempt that re-runs preparation for an unchanged selection.
-  struct ChartPreparationKey: Equatable {
-    var recommendationID: AutoChartRecommendationID?
-    var attempt: Int
   }
 
   /// Cacheless harness/preview initializer for results that are not backed by
@@ -366,7 +359,8 @@ struct ResultViewerView: View {
       }
     }
     .task(
-      id: ChartPreparationKey(
+      id: ResultChartPreparationTaskKey(
+        analysisGeneration: chart.analysisGeneration,
         recommendationID: selectedRecommendation?.id,
         attempt: chartPreparationAttempt)
     ) {
