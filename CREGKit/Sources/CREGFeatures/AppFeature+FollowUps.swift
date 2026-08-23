@@ -215,15 +215,23 @@ extension AppFeature {
       }
       return .none
     }
-    guard
-      context.isRecoverySeed,
-      state.isTurnSchedulerIdle,
-      state.fmAvailability == .available
-    else {
+    guard context.isRecoverySeed, state.isTurnSchedulerIdle else {
       return startFollowUpPreparation(
         state: &state,
         conversationID: conversationID,
         context: context)
+    }
+    // Availability may already be known unavailable when the persistence
+    // barrier settles. Falling through to preparation would fail the same
+    // gate and discard the only recovery context, so retain it and wait for
+    // the foreground availability watch to reopen the path.
+    refreshFMAvailability(state: &state)
+    guard state.fmAvailability == .available else {
+      state.pendingScopeDiagnosis = PendingScopeDiagnosis(
+        conversationID: conversationID,
+        messageID: messageID,
+        context: context)
+      return watchFMAvailabilityIfStranded(state: &state)
     }
     state.pendingScopeDiagnosis = PendingScopeDiagnosis(
       conversationID: conversationID,
@@ -249,14 +257,14 @@ extension AppFeature {
     messageID: UUID,
     verdict: ScopeVerdictRecord?
   ) -> Effect<Action> {
-    // Any delivered completion means a judge ended; overlapping judges are
-    // impossible (`cancelInFlight`) and cancelled effects never send.
-    state.isScopeDiagnosisInFlight = false
     guard
       let pending = state.pendingScopeDiagnosis,
       pending.conversationID == conversationID,
       pending.messageID == messageID
     else { return .none }
+    // Clear only the judge identified by this completion. A stale completion
+    // from a cancelled effect must not make a newer diagnosis look resumable.
+    state.isScopeDiagnosisInFlight = false
     var context = pending.context
     var verdictPersistence: Effect<Action>?
     var verdictAttached = false

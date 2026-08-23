@@ -733,6 +733,11 @@ public struct AppFeature: Sendable {
           effects.append(.cancel(id: CancelID.bannerTimeout))
         }
         effects.append(startLaunchBenchmarkIfReady(state: &state))
+        // Loading can reveal a persisted `.preparing` batch after the scene's
+        // activation action already ran. Refresh/arm first so an unavailable
+        // FM has a foreground recovery hook, then resume immediately when the
+        // refreshed status is already available.
+        effects.append(watchFMAvailabilityIfStranded(state: &state))
         effects.append(resumeFollowUpPreparationIfIdle(state: &state))
         return .merge(effects)
 
@@ -1025,7 +1030,8 @@ public struct AppFeature: Sendable {
           }
           try? await history.clearFollowUpBatch(conversationID)
         }
-        if state.isTurnSchedulerIdle,
+        if state.isSceneActive,
+          state.isTurnSchedulerIdle,
           state.modelReadiness == .ready,
           state.fmAvailability == .available
         {
@@ -1137,7 +1143,8 @@ public struct AppFeature: Sendable {
           // ticking while queued, and the 1.75 GB model load must never
           // overlap them. Start only from a fully idle scheduler with no
           // model preparation in flight.
-          guard state.fmAvailability == .available,
+          guard state.isSceneActive,
+            state.fmAvailability == .available,
             !state.modelPreparationInFlight,
             state.isInferenceIdle
           else { return .none }

@@ -168,7 +168,8 @@ extension AppFeature {
     // snapshot. Re-read the synchronous system status before consuming a
     // queued item so a mid-foreground availability flip also fails closed.
     refreshFMAvailability(state: &state)
-    guard state.activeTurn == nil, state.pendingTurnPersistence == nil,
+    guard state.isSceneActive,
+      state.activeTurn == nil, state.pendingTurnPersistence == nil,
       state.modelReadiness == .ready
     else { return .none }
     guard state.fmAvailability == .available else {
@@ -197,9 +198,13 @@ extension AppFeature {
   /// the background cancels the watch.
   func watchFMAvailabilityIfStranded(state: inout State) -> Effect<Action> {
     refreshFMAvailability(state: &state)
+    let hasPersistedPreparation =
+      state.chat?.followUpBatch?.status == .preparing
+      && state.chat?.followUpBatch?.context != nil
     guard
       state.fmAvailability != .available,
       !state.queue.isEmpty || state.pendingScopeDiagnosis != nil
+        || hasPersistedPreparation
     else { return .none }
     return .run { send in
       for await availability in fmStatus.availabilityUpdates() {

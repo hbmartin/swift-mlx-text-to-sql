@@ -342,7 +342,9 @@ final class ResultChartLoader {
     if let analysis, loadedKey == request.key {
       loaded = analysis
     } else {
+      analysis = nil
       preparedChart = nil
+      loadedKey = nil
       do {
         loaded = try await client.analyze(
           result: request.result,
