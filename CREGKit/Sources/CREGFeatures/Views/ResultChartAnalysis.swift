@@ -310,6 +310,13 @@ final class ResultChartLoader {
   private(set) var preparedChart: AutoChartPreparedChart<Int>?
   private(set) var preparationFailed = false
   private var loadedKey: String?
+  /// Identity of the analysis this loader currently owns. The analyze and
+  /// prepare tasks are keyed independently by the views, so a prepare can
+  /// still be suspended on the previous analysis when `analyze` clears state
+  /// for a new request; SwiftUI has not re-evaluated the body yet, so that
+  /// prepare is not cancelled. Its result is discarded rather than written
+  /// as a chart for data the loader no longer holds.
+  private var analysisGeneration = 0
 
   init(
     client: CREGChartAnalysisClient,
@@ -345,6 +352,7 @@ final class ResultChartLoader {
       analysis = nil
       preparedChart = nil
       loadedKey = nil
+      analysisGeneration += 1
       do {
         loaded = try await client.analyze(
           result: request.result,
@@ -383,15 +391,28 @@ final class ResultChartLoader {
       return true
     }
     preparedChart = nil
+    let generation = analysisGeneration
     do {
-      preparedChart = try await analysis.prepare(recommendation.id)
+      let prepared = try await analysis.prepare(recommendation.id)
+      guard generation == analysisGeneration else { return true }
+      preparedChart = prepared
       return true
     } catch is CancellationError {
       return true
     } catch {
+      // A superseded prepare must not report failure either: the caller
+      // would fall back to the table for an analysis that is still loading.
+      guard generation == analysisGeneration else { return true }
       preparationFailed = true
       return false
     }
+  }
+
+  /// Clears a recorded preparation failure so a surface's explicit retry
+  /// re-enters the chart path immediately, instead of rendering its table
+  /// fallback until the re-keyed prepare task gets to run.
+  func clearPreparationFailure() {
+    preparationFailed = false
   }
 
   @discardableResult

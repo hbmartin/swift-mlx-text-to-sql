@@ -233,20 +233,25 @@ extension AppFeature {
     state.conversations.sort { $0.lastActivityAt > $1.lastActivityAt }
   }
 
+  /// Callers refresh availability immediately before calling.
   func startLaunchBenchmarkIfReady(
     state: inout State
   ) -> Effect<Action> {
-    refreshFMAvailability(state: &state)
     guard
       let question = state.launchBenchmarkQuestion?
         .trimmingCharacters(in: .whitespacesAndNewlines),
       !question.isEmpty,
       !state.launchBenchmarkStarted,
-      state.modelReadiness == .ready,
+      // A benchmark turn wipes the transcript and dispatches like any other
+      // turn, so it takes the same gates. `canStartLowPriorityInference`
+      // additionally keeps it off an in-flight preparation or capture: this
+      // path does not clear `followUpPreparation` the way `.submitQuestion`
+      // does, and dispatching over one would strand it non-nil forever once
+      // its `.finished` event is dropped.
+      state.canDispatchTurn,
+      state.canStartLowPriorityInference,
       state.fmAvailability == .available,
-      state.chat != nil,
-      state.activeTurn == nil,
-      state.pendingTurnPersistence == nil
+      state.chat != nil
     else { return .none }
 
     // A launch benchmark is a standalone turn. Do not let a prior installed

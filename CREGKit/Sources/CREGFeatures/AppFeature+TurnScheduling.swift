@@ -5,17 +5,19 @@ import Foundation
 extension AppFeature {
   // MARK: - Scheduler (ADR 0008)
 
-  /// Starts a turn immediately. Callers guarantee no turn is active.
+  /// Starts a turn immediately. Callers guarantee no turn is active and the
+  /// scene is foregrounded; asserting `canDispatchTurn` here is what keeps
+  /// the deactivation invariant from being a per-call-site convention a new
+  /// start path can forget.
   func dispatch(
     state: inout State,
     conversationID: UUID,
     submission: QuestionSubmission
   ) -> Effect<Action> {
     precondition(
-      state.activeTurn == nil && state.pendingTurnPersistence == nil
-        && state.modelReadiness == .ready
-        && state.fmAvailability == .available,
-      "Dispatch requires an idle, ready scheduler with Apple Intelligence available.")
+      state.canDispatchTurn && state.fmAvailability == .available,
+      "Dispatch requires an active scene and an idle, ready scheduler with Apple Intelligence available."
+    )
     // A new turn owns the serializer; an in-flight scope diagnosis for an
     // older failure is abandoned rather than queued ahead of it.
     state.pendingScopeDiagnosis = nil
@@ -168,10 +170,7 @@ extension AppFeature {
     // snapshot. Re-read the synchronous system status before consuming a
     // queued item so a mid-foreground availability flip also fails closed.
     refreshFMAvailability(state: &state)
-    guard state.isSceneActive,
-      state.activeTurn == nil, state.pendingTurnPersistence == nil,
-      state.modelReadiness == .ready
-    else { return .none }
+    guard state.canDispatchTurn else { return .none }
     guard state.fmAvailability == .available else {
       return watchFMAvailabilityIfStranded(state: &state)
     }
@@ -191,20 +190,26 @@ extension AppFeature {
 
   /// fmAvailability is the one gate with no action to hook when it reopens:
   /// every other gate re-runs its work from a completion. While stranded work
-  /// waits behind an unavailable Apple Intelligence — a Queued Question or a
-  /// retained Scope Verdict memo — watch for recovery so it proceeds without
-  /// waiting for the next scene activation. Recovery re-runs the scheduler,
-  /// whose action also gives the low-priority resumes their chance. Entering
-  /// the background cancels the watch.
+  /// waits behind an unavailable Apple Intelligence — a Queued Question, a
+  /// retained Scope Verdict memo, a persisted `.preparing` batch — watch for
+  /// recovery so it proceeds without waiting for the next scene activation.
+  /// Recovery re-runs the scheduler, whose action also gives the low-priority
+  /// resumes their chance.
+  ///
+  /// An inactive scene never arms one: the live stream polls
+  /// `SystemLanguageModel.availability` on a timer, which is exactly the
+  /// background work the deactivation invariant forbids, and its recovery
+  /// send would be refused by the same invariant anyway. `.appBecameActive`
+  /// re-arms through the scheduler; entering the background cancels the
+  /// watch. Callers refresh availability immediately before calling, so this
+  /// reads the value they just gated on rather than paying a second
+  /// synchronous system read.
   func watchFMAvailabilityIfStranded(state: inout State) -> Effect<Action> {
-    refreshFMAvailability(state: &state)
-    let hasPersistedPreparation =
-      state.chat?.followUpBatch?.status == .preparing
-      && state.chat?.followUpBatch?.context != nil
     guard
+      state.isSceneActive,
       state.fmAvailability != .available,
       !state.queue.isEmpty || state.pendingScopeDiagnosis != nil
-        || hasPersistedPreparation
+        || state.resumableFollowUpBatch != nil
     else { return .none }
     return .run { send in
       for await availability in fmStatus.availabilityUpdates() {
