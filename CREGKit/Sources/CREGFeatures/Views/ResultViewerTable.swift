@@ -200,11 +200,10 @@ extension ResultViewerView {
   func selectionAccessory(
     _ selected: SelectedResultCell
   ) -> some View {
-    let layout =
-      dynamicTypeSize.isAccessibilitySize
-      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-      : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
-    return layout {
+    CREGAccessibilityActionLayout(
+      horizontalSpacing: 12,
+      accessibilitySpacing: 8
+    ) {
       VStack(alignment: .leading, spacing: 2) {
         Text("Row \(selected.selection.row + 1) · \(selected.columnName)")
           .font(.caption.weight(.semibold))
@@ -214,9 +213,7 @@ extension ResultViewerView {
           .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
           .textSelection(.enabled)
       }
-      if !dynamicTypeSize.isAccessibilitySize {
-        Spacer(minLength: 0)
-      }
+    } actions: {
       selectionActions(selected)
     }
     .padding(.horizontal, 14)
@@ -254,9 +251,9 @@ extension ResultViewerView {
       copy(selected.displayedValue, confirmation: "Value copied")
     } label: {
       Label("Copy Value", systemImage: "doc.on.doc")
+        .cregTextButtonLabelTarget()
     }
     .buttonStyle(.borderedProminent)
-    .cregStyledTextButtonTarget()
   }
 
   func selectionMoreMenu(_ selected: SelectedResultCell) -> some View {
@@ -277,9 +274,9 @@ extension ResultViewerView {
       }
     } label: {
       Label("More", systemImage: "ellipsis.circle")
+        .cregTextButtonLabelTarget()
     }
     .buttonStyle(.bordered)
-    .cregStyledTextButtonTarget()
   }
 
   var clearSelectionButton: some View {

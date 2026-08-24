@@ -164,10 +164,12 @@ struct ConversationRow: View {
 
   var body: some View {
     Button(action: select) {
-      let rowLayout = dynamicTypeSize.isAccessibilitySize
-        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-        : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
-      rowLayout {
+      CREGAccessibilityActionLayout(
+        horizontalAlignment: .top,
+        horizontalSpacing: 10,
+        accessibilitySpacing: 8,
+        spacerMinLength: 4
+      ) {
         VStack(alignment: .leading, spacing: 3) {
           HStack(spacing: 6) {
             Text(summary.displayTitle)
@@ -193,9 +195,7 @@ struct ConversationRow: View {
               .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
           }
         }
-        if !dynamicTypeSize.isAccessibilitySize {
-          Spacer(minLength: 4)
-        }
+      } actions: {
         HStack(spacing: 8) {
           Text(relativeTime)
             .font(.caption2)

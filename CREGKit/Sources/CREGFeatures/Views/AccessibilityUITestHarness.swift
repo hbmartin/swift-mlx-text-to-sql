@@ -15,6 +15,7 @@ import SwiftUI
       case settings
       case resultPreview = "result-preview"
       case resultExplorer = "result-explorer"
+      case resultChartRecovery = "result-chart-recovery"
       case transientBanners = "transient-banners"
     }
 
@@ -62,6 +63,19 @@ import SwiftUI
           textSize: .constant(.standard),
           sql: StarterQueryID.portfolioValueByFundV1.sql,
           question: StarterQueryID.portfolioValueByFundV1.question)
+
+      case .resultChartRecovery:
+        VStack(spacing: 0) {
+          ResultChartRecoveryControls(
+            spacing: 12,
+            keepTable: {},
+            retryChart: {}
+          )
+          .padding(.horizontal)
+          .accessibilityIdentifier("result-chart-recovery")
+          Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
       case .processingQueue:
         ChatView(
