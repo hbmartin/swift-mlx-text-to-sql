@@ -243,9 +243,11 @@ struct InterruptedTurnBanner: View {
         Spacer(minLength: 4)
       }
       HStack(spacing: 4) {
-        Button("Ask Again", action: askAgain)
-          .font(.footnote.weight(.semibold))
-          .cregTextButtonTarget()
+        Button(action: askAgain) {
+          Text("Ask Again")
+            .cregTextButtonLabelTarget()
+        }
+        .font(.footnote.weight(.semibold))
         Button(action: dismiss) {
           Image(systemName: "xmark")
             .foregroundStyle(.secondary)

@@ -81,7 +81,13 @@ func analyzeResultPresentation(
           specificationID: authoritative.id,
           preference: .retained(authoritativePreference))
       case .unavailable:
-        return .unavailable
+        // The outer resolution proves this immutable analysis has a chart, so
+        // resolving another preference cannot become unavailable. Preserve the
+        // committed reconciliation if that package invariant ever changes.
+        assertionFailure("A resolved chart analysis became unavailable.")
+        return .resolved(
+          specificationID: recommendation.id,
+          preference: .retained(authoritativePreference))
       }
     case .messageMissing:
       return .resolved(

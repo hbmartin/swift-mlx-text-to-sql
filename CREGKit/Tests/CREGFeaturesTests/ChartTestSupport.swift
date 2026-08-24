@@ -26,6 +26,30 @@ func chartTestAnswerMessage() -> ChatMessage {
     createdAt: Date(timeIntervalSince1970: 1))
 }
 
+func chartTestRequest(
+  result: QueryResult = PreviewFixtures.fundValueResult,
+  sql: String = StarterQueryID.portfolioValueByFundV1.sql,
+  question: String? = StarterQueryID.portfolioValueByFundV1.question,
+  resultFingerprint: String,
+  dataIdentity: String? = "message-1"
+) -> ResultChartLoader.Request {
+  ResultChartLoader.Request(
+    result: result,
+    sql: sql,
+    question: question,
+    resultFingerprint: resultFingerprint,
+    dataIdentity: dataIdentity)
+}
+
+func chartTestRecommendations(
+  from analysis: AutoChartAnalysis<Int>
+) -> [AutoChartRecommendation] {
+  switch analysis.outcome {
+  case .charts(let recommendations): recommendations
+  case .tableFallback: []
+  }
+}
+
 enum PreferenceSaveTestError: Error, Sendable {
   case failed
 }

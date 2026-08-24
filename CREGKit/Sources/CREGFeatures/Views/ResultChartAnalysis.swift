@@ -321,9 +321,16 @@ final class ResultChartLoader {
   private let client: CREGChartAnalysisClient
   private(set) var analysis: AutoChartAnalysis<Int>?
   private(set) var preparedChart: AutoChartPreparedChart<Int>?
-  private(set) var preparationFailed = false
+  private var failedPreparationRecommendationID: AutoChartRecommendationID?
+  var preparationFailed: Bool {
+    failedPreparationRecommendationID != nil
+  }
   private let prepareChart: PrepareChart
   private var loadedKey: String?
+  /// The recommendation the loader most recently resolved or was asked to
+  /// prepare. A resolution change supersedes preparation still suspended for
+  /// the previous recommendation, even when the analysis itself is reused.
+  private var resolvedRecommendationID: AutoChartRecommendationID?
   /// Every call supersedes earlier preparation calls, including calls for a
   /// different recommendation in the same analysis generation.
   private var preparationGeneration = 0
@@ -372,7 +379,8 @@ final class ResultChartLoader {
     if let analysis, loadedKey == request.key {
       loaded = analysis
     } else {
-      preparationFailed = false
+      failedPreparationRecommendationID = nil
+      resolvedRecommendationID = nil
       analysis = nil
       preparedChart = nil
       loadedKey = nil
@@ -406,7 +414,8 @@ final class ResultChartLoader {
   ) async {
     preparationGeneration += 1
     let preparation = preparationGeneration
-    preparationFailed = false
+    failedPreparationRecommendationID = nil
+    resolvedRecommendationID = recommendation?.id
     guard let chartAnalysis = analysis, let recommendation else {
       preparedChart = nil
       return
@@ -420,16 +429,18 @@ final class ResultChartLoader {
     do {
       let prepared = try await prepareChart(chartAnalysis, recommendation.id)
       guard requestAnalysisGeneration == analysisGeneration,
-        preparation == preparationGeneration
+        preparation == preparationGeneration,
+        resolvedRecommendationID == recommendation.id
       else { return }
       preparedChart = prepared
     } catch is CancellationError {
       return
     } catch {
       guard requestAnalysisGeneration == analysisGeneration,
-        preparation == preparationGeneration
+        preparation == preparationGeneration,
+        resolvedRecommendationID == recommendation.id
       else { return }
-      preparationFailed = true
+      failedPreparationRecommendationID = recommendation.id
     }
   }
 
@@ -449,7 +460,7 @@ final class ResultChartLoader {
   /// preparation-generation guard still prevents an older attempt from
   /// committing after this retry begins.
   func retryPreparation() {
-    preparationFailed = false
+    failedPreparationRecommendationID = nil
     preparationAttempt += 1
   }
 
@@ -460,14 +471,27 @@ final class ResultChartLoader {
   ) -> Resolution {
     switch loaded.resolve(preferred) {
     case .exact(let recommendation), .defaulted(let recommendation, _):
+      if resolvedRecommendationID != recommendation.id {
+        preparationGeneration += 1
+        failedPreparationRecommendationID = nil
+      }
+      resolvedRecommendationID = recommendation.id
       if preparedChart?.recommendation.id != recommendation.id {
         preparedChart =
           loaded.primaryChart?.recommendation.id == recommendation.id
           ? loaded.primaryChart : nil
       }
+      if preparedChart != nil {
+        failedPreparationRecommendationID = nil
+      }
       return .resolved(recommendation, analysis: loaded)
     case .unavailable:
+      if resolvedRecommendationID != nil {
+        preparationGeneration += 1
+      }
+      resolvedRecommendationID = nil
       preparedChart = nil
+      failedPreparationRecommendationID = nil
       return .unavailable
     }
   }

@@ -378,8 +378,12 @@ struct ChatView: View {
           if !dynamicTypeSize.isAccessibilitySize {
             Spacer()
           }
-          Button("Retry evaluated") { chrome.retryPreparation() }
-            .cregTextButtonTarget()
+          Button {
+            chrome.retryPreparation()
+          } label: {
+            Text("Retry evaluated")
+              .cregTextButtonLabelTarget()
+          }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

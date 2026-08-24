@@ -141,11 +141,7 @@ import Testing
       result: PreviewFixtures.fundValueResult,
       sql: StarterQueryID.portfolioValueByFundV1.sql,
       question: StarterQueryID.portfolioValueByFundV1.question)
-    let recommendations: [AutoChartRecommendation]
-    switch analysis.outcome {
-    case .charts(let values): recommendations = values
-    case .tableFallback: recommendations = []
-    }
+    let recommendations = chartTestRecommendations(from: analysis)
 
     let primary = try #require(analysis.primaryChart)
     #expect(primary.recommendation.id == recommendations.first?.id)
@@ -299,7 +295,7 @@ import Testing
     let loader = ResultChartLoader(client: client, warmStart: nil)
 
     _ = await loader.analyze(
-      ResultChartLoader.Request(
+      chartTestRequest(
         result: firstResult,
         sql: sql,
         question: question,
@@ -312,7 +308,7 @@ import Testing
       recommendationID: firstRecommendationID)
 
     _ = await loader.analyze(
-      ResultChartLoader.Request(
+      chartTestRequest(
         result: secondResult,
         sql: sql,
         question: question,
@@ -324,11 +320,8 @@ import Testing
     try #require(firstRecommendationID == secondRecommendationID)
     let replacementKey = loader.preparationTaskKey(
       recommendationID: secondRecommendationID)
-    let recommendations: [AutoChartRecommendation]
-    switch try #require(loader.analysis).outcome {
-    case .charts(let values): recommendations = values
-    case .tableFallback: recommendations = []
-    }
+    let recommendations = chartTestRecommendations(
+      from: try #require(loader.analysis))
     let alternativeID = try #require(recommendations.dropFirst().first?.id)
     let alternativeKey = loader.preparationTaskKey(
       recommendationID: alternativeID)

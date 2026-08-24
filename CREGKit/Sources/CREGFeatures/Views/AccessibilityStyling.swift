@@ -16,7 +16,12 @@ extension View {
       .contentShape(Rectangle())
   }
 
-  func cregTextButtonTarget() -> some View {
+  /// Expands a text control's label to the minimum interactive height.
+  ///
+  /// Apply this inside a `Button` or `Menu` label so the control's gesture owns
+  /// the complete shaped region. Keeping label and control geometry together
+  /// avoids visually large but only partially tappable outer frames.
+  func cregTextButtonLabelTarget() -> some View {
     self
       .frame(minHeight: 44)
       .contentShape(Rectangle())
