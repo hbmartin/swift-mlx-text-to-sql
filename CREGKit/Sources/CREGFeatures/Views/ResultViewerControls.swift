@@ -150,18 +150,13 @@ extension ResultViewerView {
           get: { selectedSpecificationID },
           set: { id in
             guard id != selectedSpecificationID else { return }
-            let isRecoveringFromFailure = chart.preparationFailed
             selectedSpecificationID = id
-            persistedSpecificationID = id
             chartSelection = nil
-            if isRecoveringFromFailure {
-              chart.retryPreparation()
-              resultMode = .chart
-            }
-            persistPreference(
-              ResultViewerLogic.presentationPreference(
-                mode: isRecoveringFromFailure ? .chart : resultMode,
-                preserving: id))
+            let updated = ResultPresentationPreference(
+              mode: presentationPreference.mode,
+              specificationID: id)
+            presentationPreference = updated
+            persistPreference(updated)
           })
       ) {
         ForEach(chartRecommendations) { recommendation in

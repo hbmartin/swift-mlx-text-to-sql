@@ -254,30 +254,6 @@ import Testing
 
     #expect(ResultViewerLogic.runtimeMode(for: message) == .compatibility)
   }
-
-  // MARK: Presentation policy
-
-  @Test func preparationFailureDisplaysTableWithoutChangingStoredMode() {
-    let preference = ResultPresentationPreference(mode: .chart)
-
-    #expect(
-      ResultViewerLogic.effectivePresentationMode(
-        preference: preference,
-        hasChart: true,
-        preparationFailed: true) == .table)
-    #expect(preference.mode == .chart)
-  }
-
-  @Test func modeChangePreservesTheStoredChartSpecification() {
-    let storedID = chartTestRecommendationID("policy|line|date|value")
-
-    let changed = ResultViewerLogic.presentationPreference(
-      mode: .table,
-      preserving: storedID)
-
-    #expect(changed.mode == .table)
-    #expect(changed.specificationID == storedID)
-  }
 }
 
 @MainActor

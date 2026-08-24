@@ -435,7 +435,6 @@ public struct ChatFeature: Sendable {
 
       case .resultPresentationChanged(let messageID, let preference):
         guard var message = state.messages[id: messageID] else { return .none }
-        guard message.resultPresentation != preference else { return .none }
         message.resultPresentation = preference
         state.messages[id: messageID] = message
         let conversationID = state.conversationID

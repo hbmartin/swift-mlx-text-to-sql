@@ -23,9 +23,8 @@ struct ResultViewerView: View {
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
-  @State var resultMode: ResultPresentationPreference.Mode
+  @State var presentationPreference: ResultPresentationPreference
   @State var selectedSpecificationID: AutoChartRecommendationID?
-  @State var persistedSpecificationID: AutoChartRecommendationID?
   @State var chartSelection: AutoChartSelection<Int>?
   @State var copyFeedbackMessage: String?
   @State var copyFeedbackTrigger = 0
@@ -131,11 +130,9 @@ struct ResultViewerView: View {
     self._textSize = textSize
     self._searchText = State(initialValue: initialSearchText)
     self._selectedCell = State(initialValue: initialSelection)
-    self._resultMode = State(
-      initialValue: preference?.mode ?? .chart)
+    self._presentationPreference = State(
+      initialValue: preference ?? ResultPresentationPreference(mode: .chart))
     self._selectedSpecificationID = State(initialValue: preference?.specificationID)
-    self._persistedSpecificationID = State(
-      initialValue: preference?.specificationID)
     self._chartSelection = State(initialValue: initialChartSelection)
     let request = ResultChartLoader.Request(
       result: result,
@@ -196,6 +193,13 @@ struct ResultViewerView: View {
     }
   }
 
+  var effectiveResultMode: ResultPresentationPreference.Mode {
+    ResultViewerLogic.effectivePresentationMode(
+      requestedMode: presentationPreference.mode,
+      hasChart: selectedRecommendation != nil,
+      preparationFailed: chart.preparationFailed)
+  }
+
   var filteredResult: QueryResult {
     guard let indexes = chartSelection?.sourceRowIDs else {
       return result
@@ -240,20 +244,19 @@ struct ResultViewerView: View {
           Picker(
             "Result view",
             selection: Binding(
-              get: { resultMode },
+              get: { effectiveResultMode },
               set: { mode in
-                guard mode != resultMode else { return }
-                // A failure changes only the local visible mode. Returning to
-                // Chart clears that fallback and advances the loader-owned
-                // preparation identity for the unchanged recommendation.
-                if mode == .chart, chart.preparationFailed {
-                  chart.retryPreparation()
-                }
-                resultMode = mode
-                persistPreference(
-                  ResultViewerLogic.presentationPreference(
-                    mode: mode,
-                    preserving: persistedSpecificationID))
+                guard
+                  let updated = ResultViewerLogic.preferenceForModeSelection(
+                    mode,
+                    requestedMode: presentationPreference.mode,
+                    specificationID:
+                      selectedSpecificationID
+                      ?? presentationPreference.specificationID,
+                    preparationFailed: chart.preparationFailed)
+                else { return }
+                presentationPreference = updated
+                persistPreference(updated)
               })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -267,9 +270,7 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-view-mode")
         }
 
-        if resultMode == .chart, let selectedRecommendation,
-          !chart.preparationFailed
-        {
+        if effectiveResultMode == .chart, let selectedRecommendation {
           ScrollView {
             if let preparedChart = chart.preparedChart {
               AutoChartView(
@@ -323,8 +324,7 @@ struct ResultViewerView: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
           if chartRecommendations.count > 1,
-            resultMode == .chart || chart.preparationFailed
-          {
+            presentationPreference.mode == .chart || chart.preparationFailed {
             chartTypeMenu
           }
           textSizeMenu
@@ -343,14 +343,17 @@ struct ResultViewerView: View {
     }
     .task(id: chartRequest.key) {
       switch await chart.analyze(
-        chartRequest, preferredSpecificationID: persistedSpecificationID)
-      {
+        chartRequest,
+        preferredSpecificationID: presentationPreference.specificationID) {
       case .resolved(let recommendation)?:
-        // Programmatic selection of the resolved recommendation; only a
-        // user's own pick in `chartTypeMenu` persists a preference.
         selectedSpecificationID = recommendation.id
+        if let migrated = ResultViewerLogic.migratedPreference(
+          presentationPreference,
+          resolvedSpecificationID: recommendation.id) {
+          presentationPreference = migrated
+          persistPreference(migrated)
+        }
       case .unavailable?:
-        resultMode = .table
         selectedSpecificationID = nil
       case nil:
         break
@@ -363,11 +366,7 @@ struct ResultViewerView: View {
       // The initial chart selection (deep links, the preview harness) must
       // survive this task's first run; a user switching chart types clears
       // it in `chartTypeMenu` where the stale row indexes actually die.
-      if !(await chart.prepareSelected(selectedRecommendation)) {
-        resultMode = .table
-      }
+      await chart.prepareSelected(selectedRecommendation)
     }
   }
-
-
 }
