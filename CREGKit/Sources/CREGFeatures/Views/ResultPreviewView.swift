@@ -168,16 +168,11 @@ struct ResultPreviewView: View {
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
       .task(id: chartRequest.key) {
-        guard
-          let previous = preference,
-          case .resolved(let recommendation)? = await chart.analyze(
-            chartRequest,
-            preferredSpecificationID: preference?.specificationID),
-          let migrated = ResultViewerLogic.migratedPreference(
-            previous,
-            resolvedSpecificationID: recommendation.id)
-        else { return }
-        migratePreference(previous, migrated)
+        await Self.analyzeChart(
+          chart,
+          request: chartRequest,
+          preference: preference,
+          migratePreference: migratePreference)
       }
       .task(
         id: chart.preparationTaskKey(
@@ -186,6 +181,28 @@ struct ResultPreviewView: View {
         await chart.prepareSelected(selected)
       }
     }
+  }
+
+  @MainActor
+  static func analyzeChart(
+    _ chart: ResultChartLoader,
+    request: ResultChartLoader.Request,
+    preference: ResultPresentationPreference?,
+    migratePreference: (
+      ResultPresentationPreference, ResultPresentationPreference
+    ) -> Void
+  ) async {
+    let resolution = await chart.analyze(
+      request,
+      preferredSpecificationID: preference?.specificationID)
+    guard
+      case .resolved(let recommendation)? = resolution,
+      let previous = preference,
+      let migrated = ResultViewerLogic.migratedPreference(
+        previous,
+        resolvedSpecificationID: recommendation.id)
+    else { return }
+    migratePreference(previous, migrated)
   }
 
   @ViewBuilder

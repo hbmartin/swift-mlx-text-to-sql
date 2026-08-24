@@ -108,6 +108,38 @@ import Testing
 }
 
 @MainActor
+@Suite struct ResultPreviewAnalysisTests {
+  @Test func automaticPreferenceAnalyzesAChartOnAColdLoader() async throws {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached),
+      snapshots: .uncached)
+    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let request = ResultChartLoader.Request(
+      result: PreviewFixtures.fundValueResult,
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question,
+      resultFingerprint: "automatic-preview-cold-loader",
+      dataIdentity: "automatic-preview-message")
+    var migrationCalled = false
+
+    await ResultPreviewView.analyzeChart(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, _ in migrationCalled = true })
+
+    let analysis = try #require(loader.analysis)
+    switch analysis.resolve(nil) {
+    case .exact, .defaulted:
+      break
+    case .unavailable:
+      Issue.record("The chartable fixture should resolve a preview chart.")
+    }
+    #expect(!migrationCalled)
+  }
+}
+
+@MainActor
 @Suite struct ResultChartLoaderSupersessionTests {
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
     let client = CREGChartAnalysisClient(
