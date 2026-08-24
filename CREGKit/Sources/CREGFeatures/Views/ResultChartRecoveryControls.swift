@@ -12,11 +12,15 @@ struct ResultChartRecoveryControls: View {
       Label("Chart unavailable", systemImage: "exclamationmark.triangle")
         .foregroundStyle(.secondary)
       Spacer(minLength: 0)
-      Button("Keep Table", action: keepTable)
-        .cregTextButtonTarget()
-      Button("Retry Chart", action: retryChart)
+      Button(action: keepTable) {
+        Text("Keep Table")
+          .cregTextButtonTarget()
+      }
+      Button(action: retryChart) {
+        Text("Retry Chart")
+          .cregTextButtonTarget()
+      }
         .buttonStyle(.borderedProminent)
-        .cregTextButtonTarget()
     }
     .font(.caption)
   }

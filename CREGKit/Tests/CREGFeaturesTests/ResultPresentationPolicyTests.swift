@@ -101,8 +101,7 @@ import Testing
 
   @Test func policyVersionBumpClearsTheExpiredPinWithoutPinningTheDefault() throws {
     let currentVersion = AutoTableCharts.recommendationPolicyVersion
-    try #require(currentVersion > 0)
-    let previousVersion = currentVersion - 1
+    let previousVersion = currentVersion == 0 ? 1 : currentVersion - 1
     let storedID = chartTestRecommendationID(
       "policy|line|date|value",
       policyVersion: previousVersion)
@@ -124,9 +123,7 @@ import Testing
 @MainActor
 @Suite struct ResultPreviewAnalysisTests {
   @Test func automaticPreferenceAnalyzesAChartOnAColdLoader() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
+    let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
     let request = ResultChartLoader.Request(
       result: PreviewFixtures.fundValueResult,
@@ -136,13 +133,13 @@ import Testing
       dataIdentity: "automatic-preview-message")
     var migrationCalled = false
 
-    await ResultPreviewView.analyzeChart(
+    _ = await analyzeResultPresentation(
       loader,
       request: request,
       preference: nil,
       migratePreference: { _, updated in
         migrationCalled = true
-        return updated
+        return .retained(updated)
       })
 
     let analysis = try #require(loader.analysis)
@@ -159,9 +156,7 @@ import Testing
 @MainActor
 @Suite struct ResultViewerAnalysisTests {
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
+    let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
     let request = ResultChartLoader.Request(
       result: PreviewFixtures.fundValueResult,
@@ -177,18 +172,20 @@ import Testing
       specificationID: nil)
     var proposedMigration: ResultPresentationPreference?
 
-    let update = await ResultViewerView.analyzeChart(
+    let update = await analyzeResultPresentation(
       loader,
       request: request,
       preference: previous,
       migratePreference: { receivedPrevious, updated in
         #expect(receivedPrevious == previous)
         proposedMigration = updated
-        return authoritative
+        return .retained(authoritative)
       })
 
     guard
-      case .resolved(let specificationID, let retainedPreference)? = update
+      case .resolved(
+        let specificationID,
+        preference: .retained(let retainedPreference))? = update
     else {
       Issue.record("The chartable fixture should resolve a viewer chart.")
       return
@@ -202,7 +199,114 @@ import Testing
 }
 
 @MainActor
+@Suite struct ResultPresentationMigrationHandlerTests {
+  @Test func acceptedMigrationReturnsTheStoredPreference() {
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|stale"))
+    let updated = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|current"))
+    var message = chartTestAnswerMessage()
+    message.resultPresentation = previous
+    var state = ChatFeature.State(conversationID: UUID())
+    state.messages.append(message)
+    let store = migrationStore(state: state)
+
+    let outcome = resultPresentationMigrationHandler(
+      store: store,
+      messageID: message.id
+    )(previous, updated)
+
+    #expect(outcome == .retained(updated))
+    #expect(store.messages[id: message.id]?.resultPresentation == updated)
+  }
+
+  @Test func rejectedMigrationReturnsAnAuthoritativeNilPreference() {
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|stale"))
+    let updated = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|current"))
+    let message = chartTestAnswerMessage()
+    var state = ChatFeature.State(conversationID: UUID())
+    state.messages.append(message)
+    let store = migrationStore(state: state)
+
+    let outcome = resultPresentationMigrationHandler(
+      store: store,
+      messageID: message.id
+    )(previous, updated)
+
+    #expect(outcome == .retained(nil))
+    #expect(store.messages[id: message.id]?.resultPresentation == nil)
+  }
+
+  @Test func missingMessageIsNotReportedAsThePreviousPreference() {
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|stale"))
+    let updated = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|current"))
+    let store = migrationStore(
+      state: ChatFeature.State(conversationID: UUID()))
+
+    let outcome = resultPresentationMigrationHandler(
+      store: store,
+      messageID: UUID()
+    )(previous, updated)
+
+    #expect(outcome == .messageMissing)
+  }
+
+  private func migrationStore(
+    state: ChatFeature.State
+  ) -> StoreOf<ChatFeature> {
+    Store(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
+      $0.historyClient = .noop()
+    }
+  }
+}
+
+@MainActor
 @Suite struct ResultChartLoaderSupersessionTests {
+  @Test func reusedAnalysisPreservesItsMatchingPreparedChart() async throws {
+    let client = CREGChartAnalysisClient.testValue
+    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let request = ResultChartLoader.Request(
+      result: PreviewFixtures.fundValueResult,
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question,
+      resultFingerprint: "reused-analysis-preparation",
+      dataIdentity: "message-1")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis)
+    let recommendations: [AutoChartRecommendation]
+    switch analysis.outcome {
+    case .charts(let values): recommendations = values
+    case .tableFallback: recommendations = []
+    }
+    let alternative = try #require(recommendations.dropFirst().first)
+
+    await loader.prepareSelected(alternative)
+    let preparationKey = loader.preparationTaskKey(
+      recommendationID: alternative.id)
+    #expect(loader.preparedChart?.recommendation.id == alternative.id)
+
+    _ = await loader.analyze(
+      request,
+      preferredSpecificationID: alternative.id)
+
+    #expect(loader.preparedChart?.recommendation.id == alternative.id)
+    #expect(
+      loader.preparationTaskKey(recommendationID: alternative.id)
+        == preparationKey)
+  }
+
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
     let client = CREGChartAnalysisClient(
       analyzer: AutoChartAnalyzer(configuration: .uncached),
@@ -253,14 +357,13 @@ import Testing
       prepareChart: { _, _ in
         throw PreferenceSaveTestError.failed
       })
-    _ = await loader.analyze(
-      ResultChartLoader.Request(
-        result: PreviewFixtures.fundValueResult,
-        sql: StarterQueryID.portfolioValueByFundV1.sql,
-        question: StarterQueryID.portfolioValueByFundV1.question,
-        resultFingerprint: "retry-preparation",
-        dataIdentity: "message-1"),
-      preferredSpecificationID: nil)
+    let request = ResultChartLoader.Request(
+      result: PreviewFixtures.fundValueResult,
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question,
+      resultFingerprint: "retry-preparation",
+      dataIdentity: "message-1")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
     let analysis = try #require(loader.analysis)
     let recommendations: [AutoChartRecommendation]
     switch analysis.outcome {
@@ -273,6 +376,13 @@ import Testing
     let failedKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
     #expect(loader.preparationFailed)
+
+    _ = await loader.analyze(
+      request,
+      preferredSpecificationID: alternative.id)
+    #expect(loader.preparationFailed)
+    #expect(
+      loader.preparationTaskKey(recommendationID: alternative.id) == failedKey)
 
     loader.retryPreparation()
     let retryKey = loader.preparationTaskKey(
