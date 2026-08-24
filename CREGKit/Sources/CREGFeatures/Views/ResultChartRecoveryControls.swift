@@ -7,30 +7,25 @@ struct ResultChartRecoveryControls: View {
   var spacing: CGFloat
   var keepTable: () -> Void
   var retryChart: () -> Void
-  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
-    let layout =
-      dynamicTypeSize.isAccessibilitySize
-      ? AnyLayout(
-        VStackLayout(alignment: .leading, spacing: spacing))
-      : AnyLayout(HStackLayout(spacing: spacing))
-    layout {
+    CREGAccessibilityActionLayout(
+      horizontalSpacing: spacing,
+      accessibilitySpacing: spacing
+    ) {
       Label("Chart unavailable", systemImage: "exclamationmark.triangle")
         .foregroundStyle(.secondary)
-      if !dynamicTypeSize.isAccessibilitySize {
-        Spacer(minLength: 0)
-      }
+    } actions: {
       Button(action: keepTable) {
         Text("Keep Table")
+          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.bordered)
-      .cregStyledTextButtonTarget()
       Button(action: retryChart) {
         Text("Retry Chart")
+          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.borderedProminent)
-      .cregStyledTextButtonTarget()
     }
     .font(.caption)
   }

@@ -153,6 +153,14 @@ import Testing
 
 @MainActor
 @Suite struct ResultViewerAnalysisTests {
+  @Test func unavailableAnalysisInvalidatesExactMarkSelection() {
+    let update = ResultPresentationAnalysisUpdate.unavailable
+
+    #expect(update.resolvedSpecificationID == nil)
+    #expect(update.preferenceReconciliation == .unchanged)
+    #expect(update.invalidatesChartSelection)
+  }
+
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)

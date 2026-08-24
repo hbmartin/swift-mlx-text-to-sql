@@ -21,7 +21,25 @@ enum ResultPresentationAnalysisUpdate: Equatable {
   case resolved(
     specificationID: AutoChartRecommendationID,
     preference: ResultPresentationPreferenceReconciliation)
-  case unavailable(preference: ResultPresentationPreferenceReconciliation)
+  case unavailable
+
+  var resolvedSpecificationID: AutoChartRecommendationID? {
+    switch self {
+    case .resolved(let specificationID, _): specificationID
+    case .unavailable: nil
+    }
+  }
+
+  var preferenceReconciliation: ResultPresentationPreferenceReconciliation {
+    switch self {
+    case .resolved(_, let preference): preference
+    case .unavailable: .unchanged
+    }
+  }
+
+  var invalidatesChartSelection: Bool {
+    if case .unavailable = self { true } else { false }
+  }
 }
 
 /// Sends an automatic chart-ID migration and reports the preference that the
@@ -82,10 +100,12 @@ func analyzeResultPresentation(
           preference: .retained(authoritativePreference))
       case .unavailable:
         // The outer resolution proves this immutable analysis has a chart, so
-        // resolving another preference cannot become unavailable. If that
-        // package invariant ever changes, keep availability and the committed
-        // reconciliation as separate, internally consistent facts.
-        return .unavailable(
+        // resolving another preference cannot become unavailable. Preserve the
+        // committed reconciliation if that package invariant ever changes,
+        // while retaining the chart the analysis already resolved.
+        assertionFailure("A resolved chart analysis became unavailable.")
+        return .resolved(
+          specificationID: recommendation.id,
           preference: .retained(authoritativePreference))
       }
     case .messageMissing:
@@ -94,7 +114,7 @@ func analyzeResultPresentation(
         preference: .messageMissing)
     }
   case .unavailable?:
-    return .unavailable(preference: .unchanged)
+    return .unavailable
   case nil:
     return nil
   }

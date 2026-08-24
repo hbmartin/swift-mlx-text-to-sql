@@ -351,26 +351,22 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .task(id: chartRequest.key) {
-      switch await analyzeResultPresentation(
-        chart,
-        request: chartRequest,
-        preference: presentationPreference,
-        migratePreference: migratePreference
-      ) {
-      case .resolved(let specificationID, let preferenceReconciliation)?:
-        selectedSpecificationID = specificationID
-        if case .retained(let authoritativePreference) = preferenceReconciliation {
-          presentationPreference =
-            authoritativePreference ?? ResultPresentationPreference(mode: .chart)
-        }
-      case .unavailable(let preferenceReconciliation)?:
-        selectedSpecificationID = nil
-        if case .retained(let authoritativePreference) = preferenceReconciliation {
-          presentationPreference =
-            authoritativePreference ?? ResultPresentationPreference(mode: .chart)
-        }
-      case nil:
-        break
+      guard
+        let update = await analyzeResultPresentation(
+          chart,
+          request: chartRequest,
+          preference: presentationPreference,
+          migratePreference: migratePreference
+        )
+      else { return }
+
+      selectedSpecificationID = update.resolvedSpecificationID
+      if update.invalidatesChartSelection {
+        chartSelection = nil
+      }
+      if case .retained(let authoritativePreference) = update.preferenceReconciliation {
+        presentationPreference =
+          authoritativePreference ?? ResultPresentationPreference(mode: .chart)
       }
     }
     .task(

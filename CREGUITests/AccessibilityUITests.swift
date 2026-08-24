@@ -11,6 +11,7 @@ final class AccessibilityUITests: XCTestCase {
     "settings",
     "result-preview",
     "result-explorer",
+    "result-chart-recovery",
     "transient-banners",
   ]
 
@@ -67,6 +68,24 @@ final class AccessibilityUITests: XCTestCase {
       assertAccessibleControl("Dismiss interrupted question", in: recovery)
       assertAccessibleControl("Dismiss correction", in: recovery)
       recovery.terminate()
+    }
+  }
+
+  func testChartRecoveryControlsOwnFullLeadingTouchTargets() {
+    for size in ["large", "ax5"] {
+      let app = launch(scenario: "result-chart-recovery", dynamicType: size)
+      assertAccessibleControl("Keep Table", in: app)
+      assertAccessibleControl("Retry Chart", in: app)
+
+      if size == "ax5" {
+        let status = app.staticTexts["Chart unavailable"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertLessThan(
+          status.frame.midX,
+          app.frame.midX,
+          "The accessibility stack should remain aligned to the leading edge")
+      }
+      app.terminate()
     }
   }
 
