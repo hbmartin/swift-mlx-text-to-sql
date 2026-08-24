@@ -65,6 +65,16 @@ import Testing
             specificationID: specificationID)))
   }
 
+  @Test func selectingAChartTypeFromTableRequestsChartPresentation() {
+    let specificationID = chartTestRecommendationID("policy|bar|fund|value")
+
+    let preference = ResultViewerLogic.chartTypeSelectionPreference(
+      specificationID: specificationID)
+
+    #expect(preference.mode == .chart)
+    #expect(preference.specificationID == specificationID)
+  }
+
   @Test func staleChartSpecificationMigratesToTheResolvedRecommendation() throws {
     let staleID = chartTestRecommendationID("old-policy|line|date|value")
     let resolvedID = chartTestRecommendationID("new-policy|bar|fund|value")
@@ -89,9 +99,10 @@ import Testing
         resolvedSpecificationID: resolvedID) == nil)
   }
 
-  @Test func policyVersionBumpDoesNotOverwriteAnExplicitChartPick() {
+  @Test func policyVersionBumpClearsTheExpiredPinWithoutPinningTheDefault() throws {
     let currentVersion = AutoTableCharts.recommendationPolicyVersion
-    let previousVersion = currentVersion == 0 ? 1 : currentVersion - 1
+    try #require(currentVersion > 0)
+    let previousVersion = currentVersion - 1
     let storedID = chartTestRecommendationID(
       "policy|line|date|value",
       policyVersion: previousVersion)
@@ -100,10 +111,13 @@ import Testing
       mode: .chart,
       specificationID: storedID)
 
-    #expect(
+    let migrated = try #require(
       ResultViewerLogic.migratedPreference(
         preference,
-        resolvedSpecificationID: resolvedID) == nil)
+        resolvedSpecificationID: resolvedID))
+
+    #expect(migrated.mode == .chart)
+    #expect(migrated.specificationID == nil)
   }
 }
 
@@ -126,7 +140,10 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, _ in migrationCalled = true })
+      migratePreference: { _, updated in
+        migrationCalled = true
+        return updated
+      })
 
     let analysis = try #require(loader.analysis)
     switch analysis.resolve(nil) {
@@ -136,6 +153,51 @@ import Testing
       Issue.record("The chartable fixture should resolve a preview chart.")
     }
     #expect(!migrationCalled)
+  }
+}
+
+@MainActor
+@Suite struct ResultViewerAnalysisTests {
+  @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached),
+      snapshots: .uncached)
+    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let request = ResultChartLoader.Request(
+      result: PreviewFixtures.fundValueResult,
+      sql: StarterQueryID.portfolioValueByFundV1.sql,
+      question: StarterQueryID.portfolioValueByFundV1.question,
+      resultFingerprint: "viewer-migration-compare-and-set",
+      dataIdentity: "viewer-migration-message")
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("missing-specification"))
+    let authoritative = ResultPresentationPreference(
+      mode: .table,
+      specificationID: nil)
+    var proposedMigration: ResultPresentationPreference?
+
+    let update = await ResultViewerView.analyzeChart(
+      loader,
+      request: request,
+      preference: previous,
+      migratePreference: { receivedPrevious, updated in
+        #expect(receivedPrevious == previous)
+        proposedMigration = updated
+        return authoritative
+      })
+
+    guard
+      case .resolved(let specificationID, let retainedPreference)? = update
+    else {
+      Issue.record("The chartable fixture should resolve a viewer chart.")
+      return
+    }
+    let analysis = try #require(loader.analysis)
+    let primary = try #require(analysis.primaryChart?.recommendation)
+    #expect(proposedMigration?.specificationID == primary.id)
+    #expect(retainedPreference == authoritative)
+    #expect(specificationID == primary.id)
   }
 }
 

@@ -55,6 +55,7 @@ import SwiftUI
         answeredChat
 
       case .resultExplorer:
+        // This scenario has no transcript store, matching the preview harness.
         ResultViewerView(
           result: PreviewFixtures.fundValueResult,
           runtimeMode: .evaluated,
