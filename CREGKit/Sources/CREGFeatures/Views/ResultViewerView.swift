@@ -16,9 +16,7 @@ struct ResultViewerView: View {
   let resultFingerprint: String
   let chartDataIdentity: String?
   let persistPreference: (ResultPresentationPreference) -> Void
-  let migratePreference: (
-    ResultPresentationPreference, ResultPresentationPreference
-  ) -> Void
+  let migratePreference: ResultPresentationMigrationHandler
   let chartRequest: ResultChartLoader.Request
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Binding var textSize: ResultTableTextSize
@@ -46,7 +44,8 @@ struct ResultViewerView: View {
   }
 
   /// Cacheless harness/preview initializer for results that are not backed by
-  /// a transcript message.
+  /// a transcript message. Automatic migrations remain local because there is
+  /// no authoritative store to update.
   init(
     result: QueryResult,
     runtimeMode: ModelRuntimeMode,
@@ -55,9 +54,6 @@ struct ResultViewerView: View {
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
     persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
-    migratePreference: @escaping (
-      ResultPresentationPreference, ResultPresentationPreference
-    ) -> Void = { _, _ in },
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection<Int>? = nil
@@ -71,7 +67,7 @@ struct ResultViewerView: View {
       question: question,
       preference: preference,
       persistPreference: persistPreference,
-      migratePreference: migratePreference,
+      migratePreference: { _, updated in updated },
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
       initialChartSelection: initialChartSelection)
@@ -89,9 +85,7 @@ struct ResultViewerView: View {
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
     persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
-    migratePreference: @escaping (
-      ResultPresentationPreference, ResultPresentationPreference
-    ) -> Void = { _, _ in },
+    migratePreference: @escaping ResultPresentationMigrationHandler,
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection<Int>? = nil
@@ -121,9 +115,7 @@ struct ResultViewerView: View {
     question: String?,
     preference: ResultPresentationPreference?,
     persistPreference: @escaping (ResultPresentationPreference) -> Void,
-    migratePreference: @escaping (
-      ResultPresentationPreference, ResultPresentationPreference
-    ) -> Void,
+    migratePreference: @escaping ResultPresentationMigrationHandler,
     initialSearchText: String,
     initialSelection: ResultCellSelection?,
     initialChartSelection: AutoChartSelection<Int>?
@@ -277,15 +269,11 @@ struct ResultViewerView: View {
         if chart.preparationFailed,
           presentationPreference.mode == .chart
         {
-          HStack(spacing: 12) {
-            Label("Chart unavailable", systemImage: "exclamationmark.triangle")
-              .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            Button("Keep Table") { selectMode(.table) }
-            Button("Retry Chart") { selectMode(.chart) }
-              .buttonStyle(.borderedProminent)
-          }
-          .font(.caption)
+          ResultChartRecoveryControls(
+            spacing: 12,
+            keepTable: { selectMode(.table) },
+            retryChart: { selectMode(.chart) }
+          )
           .padding(.horizontal)
           .padding(.bottom, 8)
           .accessibilityIdentifier("result-chart-recovery")
@@ -363,17 +351,16 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .task(id: chartRequest.key) {
-      let previous = presentationPreference
-      switch await chart.analyze(
-        chartRequest,
-        preferredSpecificationID: previous.specificationID) {
-      case .resolved(let recommendation)?:
-        selectedSpecificationID = recommendation.id
-        if let migrated = ResultViewerLogic.migratedPreference(
-          previous,
-          resolvedSpecificationID: recommendation.id) {
-          presentationPreference = migrated
-          migratePreference(previous, migrated)
+      switch await Self.analyzeChart(
+        chart,
+        request: chartRequest,
+        preference: presentationPreference,
+        migratePreference: migratePreference
+      ) {
+      case .resolved(let specificationID, let authoritativePreference)?:
+        selectedSpecificationID = specificationID
+        if let authoritativePreference {
+          presentationPreference = authoritativePreference
         }
       case .unavailable?:
         selectedSpecificationID = nil
@@ -389,6 +376,56 @@ struct ResultViewerView: View {
       // survive this task's first run; a user switching chart types clears
       // it in `chartTypeMenu` where the stale row indexes actually die.
       await chart.prepareSelected(selectedRecommendation)
+    }
+  }
+
+  enum ChartAnalysisUpdate: Equatable {
+    case resolved(
+      specificationID: AutoChartRecommendationID,
+      authoritativePreference: ResultPresentationPreference?)
+    case unavailable
+  }
+
+  @MainActor
+  static func analyzeChart(
+    _ chart: ResultChartLoader,
+    request: ResultChartLoader.Request,
+    preference: ResultPresentationPreference,
+    migratePreference: ResultPresentationMigrationHandler
+  ) async -> ChartAnalysisUpdate? {
+    switch await chart.analyze(
+      request,
+      preferredSpecificationID: preference.specificationID
+    ) {
+    case .resolved(let recommendation)?:
+      guard
+        let migrated = ResultViewerLogic.migratedPreference(
+          preference,
+          resolvedSpecificationID: recommendation.id)
+      else {
+        return .resolved(
+          specificationID: recommendation.id,
+          authoritativePreference: nil)
+      }
+      let authoritativePreference = migratePreference(preference, migrated)
+      let authoritativeSpecificationID: AutoChartRecommendationID
+      if let analysis = chart.analysis {
+        switch analysis.resolve(authoritativePreference.specificationID) {
+        case .exact(let authoritative), .defaulted(let authoritative, _):
+          authoritativeSpecificationID = authoritative.id
+        case .unavailable:
+          authoritativeSpecificationID = recommendation.id
+        }
+      } else {
+        authoritativeSpecificationID = recommendation.id
+      }
+      return .resolved(
+        specificationID: authoritativeSpecificationID,
+        authoritativePreference: authoritativePreference)
+    case .unavailable?:
+      return .unavailable
+    case nil:
+      return nil
     }
   }
 

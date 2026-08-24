@@ -153,8 +153,7 @@ extension ResultViewerView {
             let isRecoveringFromFailure = chart.preparationFailed
             selectedSpecificationID = id
             chartSelection = nil
-            let updated = ResultPresentationPreference(
-              mode: presentationPreference.mode,
+            let updated = ResultViewerLogic.chartTypeSelectionPreference(
               specificationID: id)
             presentationPreference = updated
             persistPreference(updated)

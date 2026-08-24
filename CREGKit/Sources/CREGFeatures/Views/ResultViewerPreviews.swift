@@ -4,6 +4,7 @@ import ComposableArchitecture
 import Foundation
 import SwiftUI
 
+// Standalone previews intentionally use ResultViewerView's cacheless harness.
 #Preview("Result Viewer — Range Chart — Light") {
   ResultViewerView(
     result: PreviewFixtures.leaseListingResult,

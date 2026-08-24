@@ -67,14 +67,9 @@ extension View {
               .resultPresentationChanged(
                 messageID: item.messageID, preference: $0))
           },
-          migratePreference: { previous, updated in
-            store.send(
-              .resultPresentationMigrated(
-                .init(
-                  messageID: item.messageID,
-                  previous: previous,
-                  updated: updated)))
-          })
+          migratePreference: resultPresentationMigrationHandler(
+            store: store,
+            messageID: item.messageID))
       }
     #else
       self.sheet(item: binding) { item in
@@ -92,14 +87,9 @@ extension View {
               .resultPresentationChanged(
                 messageID: item.messageID, preference: $0))
           },
-          migratePreference: { previous, updated in
-            store.send(
-              .resultPresentationMigrated(
-                .init(
-                  messageID: item.messageID,
-                  previous: previous,
-                  updated: updated)))
-          })
+          migratePreference: resultPresentationMigrationHandler(
+            store: store,
+            messageID: item.messageID))
       }
     #endif
   }

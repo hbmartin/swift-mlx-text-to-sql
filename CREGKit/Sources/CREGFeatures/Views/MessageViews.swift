@@ -75,14 +75,9 @@ struct MessageCell: View {
               .resultPresentationChanged(
                 messageID: message.id, preference: $0))
           },
-          migratePreference: { previous, updated in
-            store.send(
-              .resultPresentationMigrated(
-                .init(
-                  messageID: message.id,
-                  previous: previous,
-                  updated: updated)))
-          },
+          migratePreference: resultPresentationMigrationHandler(
+            store: store,
+            messageID: message.id),
           open: {
             store.send(.resultViewerPresented(messageID: message.id))
           })
@@ -128,14 +123,9 @@ struct MessageCell: View {
                 .resultPresentationChanged(
                   messageID: message.id, preference: $0))
             },
-            migratePreference: { previous, updated in
-              store.send(
-                .resultPresentationMigrated(
-                  .init(
-                    messageID: message.id,
-                    previous: previous,
-                    updated: updated)))
-            },
+            migratePreference: resultPresentationMigrationHandler(
+              store: store,
+              messageID: message.id),
             open: {
               store.send(.resultViewerPresented(messageID: message.id))
             })

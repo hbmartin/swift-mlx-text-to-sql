@@ -13,9 +13,7 @@ struct ResultPreviewView: View {
   let question: String?
   let preference: ResultPresentationPreference?
   let setPreference: (ResultPresentationPreference) -> Void
-  let migratePreference: (
-    ResultPresentationPreference, ResultPresentationPreference
-  ) -> Void
+  let migratePreference: ResultPresentationMigrationHandler
   let open: () -> Void
 
   static let previewRowLimit = 4
@@ -36,9 +34,7 @@ struct ResultPreviewView: View {
     question: String?,
     preference: ResultPresentationPreference?,
     setPreference: @escaping (ResultPresentationPreference) -> Void,
-    migratePreference: @escaping (
-      ResultPresentationPreference, ResultPresentationPreference
-    ) -> Void = { _, _ in },
+    migratePreference: @escaping ResultPresentationMigrationHandler,
     open: @escaping () -> Void
   ) {
     self.messageID = messageID
@@ -92,12 +88,10 @@ struct ResultPreviewView: View {
       VStack(alignment: .leading, spacing: 8) {
         if selected != nil {
           Picker(
-              "Result preview",
-              selection: Binding(
-                get: { effectiveMode(hasChart: true) },
-                set: { selectedMode in
-                  selectMode(selectedMode)
-                })
+            "Result preview",
+            selection: Binding(
+              get: { effectiveMode(hasChart: true) },
+              set: { selectMode($0) })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
               .tag(ResultPresentationPreference.Mode.chart)
@@ -111,15 +105,11 @@ struct ResultPreviewView: View {
         if chart.preparationFailed,
           (preference?.mode ?? .chart) == .chart
         {
-          HStack(spacing: 10) {
-            Label("Chart unavailable", systemImage: "exclamationmark.triangle")
-              .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            Button("Keep Table") { selectMode(.table) }
-            Button("Retry Chart") { selectMode(.chart) }
-              .buttonStyle(.borderedProminent)
-          }
-          .font(.caption)
+          ResultChartRecoveryControls(
+            spacing: 10,
+            keepTable: { selectMode(.table) },
+            retryChart: { selectMode(.chart) }
+          )
           .accessibilityIdentifier("result-preview-chart-recovery")
         }
 
@@ -168,16 +158,11 @@ struct ResultPreviewView: View {
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
       .task(id: chartRequest.key) {
-        guard
-          let previous = preference,
-          case .resolved(let recommendation)? = await chart.analyze(
-            chartRequest,
-            preferredSpecificationID: preference?.specificationID),
-          let migrated = ResultViewerLogic.migratedPreference(
-            previous,
-            resolvedSpecificationID: recommendation.id)
-        else { return }
-        migratePreference(previous, migrated)
+        await Self.analyzeChart(
+          chart,
+          request: chartRequest,
+          preference: preference,
+          migratePreference: migratePreference)
       }
       .task(
         id: chart.preparationTaskKey(
@@ -186,6 +171,26 @@ struct ResultPreviewView: View {
         await chart.prepareSelected(selected)
       }
     }
+  }
+
+  @MainActor
+  static func analyzeChart(
+    _ chart: ResultChartLoader,
+    request: ResultChartLoader.Request,
+    preference: ResultPresentationPreference?,
+    migratePreference: ResultPresentationMigrationHandler
+  ) async {
+    let resolution = await chart.analyze(
+      request,
+      preferredSpecificationID: preference?.specificationID)
+    guard
+      case .resolved(let recommendation)? = resolution,
+      let previous = preference,
+      let migrated = ResultViewerLogic.migratedPreference(
+        previous,
+        resolvedSpecificationID: recommendation.id)
+    else { return }
+    _ = migratePreference(previous, migrated)
   }
 
   @ViewBuilder

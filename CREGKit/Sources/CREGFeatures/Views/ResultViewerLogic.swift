@@ -164,16 +164,33 @@ public enum ResultViewerLogic {
         specificationID: specificationID))
   }
 
+  /// Choosing a chart type is also an explicit request to show a chart. This
+  /// matters while the recovery menu remains available over a Table fallback.
+  static func chartTypeSelectionPreference(
+    specificationID: AutoChartRecommendationID?
+  ) -> ResultPresentationPreference {
+    ResultPresentationPreference(
+      mode: .chart,
+      specificationID: specificationID)
+  }
+
   /// Migrates a stored chart ID when analysis resolves it to a current
-  /// recommendation. An automatic nil preference remains automatic.
+  /// recommendation. A policy bump invalidates the obsolete explicit pin but
+  /// does not misrepresent the newly defaulted chart as a user selection.
+  /// An automatic nil preference remains automatic.
   static func migratedPreference(
     _ preference: ResultPresentationPreference?,
     resolvedSpecificationID: AutoChartRecommendationID
   ) -> ResultPresentationPreference? {
-    guard let preference, let storedID = preference.specificationID,
-      storedID.policyVersion == resolvedSpecificationID.policyVersion,
-      storedID != resolvedSpecificationID
-    else { return nil }
+    guard let preference, let storedID = preference.specificationID else {
+      return nil
+    }
+    if storedID.policyVersion != resolvedSpecificationID.policyVersion {
+      return ResultPresentationPreference(
+        mode: preference.mode,
+        specificationID: nil)
+    }
+    guard storedID != resolvedSpecificationID else { return nil }
     return ResultPresentationPreference(
       mode: preference.mode,
       specificationID: resolvedSpecificationID)
