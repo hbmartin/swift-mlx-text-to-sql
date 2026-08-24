@@ -314,7 +314,7 @@ final class ResultChartLoader {
   }
 
   enum Resolution {
-    case resolved(AutoChartRecommendation)
+    case resolved(AutoChartRecommendation, analysis: AutoChartAnalysis<Int>)
     case unavailable
   }
 
@@ -368,11 +368,11 @@ final class ResultChartLoader {
     _ request: Request,
     preferredSpecificationID: AutoChartRecommendationID?
   ) async -> Resolution? {
-    preparationFailed = false
     let loaded: AutoChartAnalysis<Int>
     if let analysis, loadedKey == request.key {
       loaded = analysis
     } else {
+      preparationFailed = false
       analysis = nil
       preparedChart = nil
       loadedKey = nil
@@ -460,10 +460,12 @@ final class ResultChartLoader {
   ) -> Resolution {
     switch loaded.resolve(preferred) {
     case .exact(let recommendation), .defaulted(let recommendation, _):
-      preparedChart =
-        loaded.primaryChart?.recommendation.id == recommendation.id
-        ? loaded.primaryChart : nil
-      return .resolved(recommendation)
+      if preparedChart?.recommendation.id != recommendation.id {
+        preparedChart =
+          loaded.primaryChart?.recommendation.id == recommendation.id
+          ? loaded.primaryChart : nil
+      }
+      return .resolved(recommendation, analysis: loaded)
     case .unavailable:
       preparedChart = nil
       return .unavailable

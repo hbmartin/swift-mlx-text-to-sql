@@ -67,7 +67,7 @@ struct ResultViewerView: View {
       question: question,
       preference: preference,
       persistPreference: persistPreference,
-      migratePreference: { _, updated in updated },
+      migratePreference: { _, updated in .retained(updated) },
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
       initialChartSelection: initialChartSelection)
@@ -351,16 +351,17 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .task(id: chartRequest.key) {
-      switch await Self.analyzeChart(
+      switch await analyzeResultPresentation(
         chart,
         request: chartRequest,
         preference: presentationPreference,
         migratePreference: migratePreference
       ) {
-      case .resolved(let specificationID, let authoritativePreference)?:
+      case .resolved(let specificationID, let preferenceReconciliation)?:
         selectedSpecificationID = specificationID
-        if let authoritativePreference {
-          presentationPreference = authoritativePreference
+        if case .retained(let authoritativePreference) = preferenceReconciliation {
+          presentationPreference =
+            authoritativePreference ?? ResultPresentationPreference(mode: .chart)
         }
       case .unavailable?:
         selectedSpecificationID = nil
@@ -376,56 +377,6 @@ struct ResultViewerView: View {
       // survive this task's first run; a user switching chart types clears
       // it in `chartTypeMenu` where the stale row indexes actually die.
       await chart.prepareSelected(selectedRecommendation)
-    }
-  }
-
-  enum ChartAnalysisUpdate: Equatable {
-    case resolved(
-      specificationID: AutoChartRecommendationID,
-      authoritativePreference: ResultPresentationPreference?)
-    case unavailable
-  }
-
-  @MainActor
-  static func analyzeChart(
-    _ chart: ResultChartLoader,
-    request: ResultChartLoader.Request,
-    preference: ResultPresentationPreference,
-    migratePreference: ResultPresentationMigrationHandler
-  ) async -> ChartAnalysisUpdate? {
-    switch await chart.analyze(
-      request,
-      preferredSpecificationID: preference.specificationID
-    ) {
-    case .resolved(let recommendation)?:
-      guard
-        let migrated = ResultViewerLogic.migratedPreference(
-          preference,
-          resolvedSpecificationID: recommendation.id)
-      else {
-        return .resolved(
-          specificationID: recommendation.id,
-          authoritativePreference: nil)
-      }
-      let authoritativePreference = migratePreference(preference, migrated)
-      let authoritativeSpecificationID: AutoChartRecommendationID
-      if let analysis = chart.analysis {
-        switch analysis.resolve(authoritativePreference.specificationID) {
-        case .exact(let authoritative), .defaulted(let authoritative, _):
-          authoritativeSpecificationID = authoritative.id
-        case .unavailable:
-          authoritativeSpecificationID = recommendation.id
-        }
-      } else {
-        authoritativeSpecificationID = recommendation.id
-      }
-      return .resolved(
-        specificationID: authoritativeSpecificationID,
-        authoritativePreference: authoritativePreference)
-    case .unavailable?:
-      return .unavailable
-    case nil:
-      return nil
     }
   }
 

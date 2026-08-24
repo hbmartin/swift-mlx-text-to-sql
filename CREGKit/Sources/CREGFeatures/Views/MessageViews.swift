@@ -70,16 +70,16 @@ struct MessageCell: View {
           sql: prepared.sql,
           question: prepared.question,
           preference: message.resultPresentation,
-          setPreference: {
+          setPreference: { [messageID = message.id] preference in
             store.send(
               .resultPresentationChanged(
-                messageID: message.id, preference: $0))
+                messageID: messageID, preference: preference))
           },
           migratePreference: resultPresentationMigrationHandler(
             store: store,
             messageID: message.id),
-          open: {
-            store.send(.resultViewerPresented(messageID: message.id))
+          open: { [messageID = message.id] in
+            store.send(.resultViewerPresented(messageID: messageID))
           })
         if developerMode {
           DevInfoSectionsView(
@@ -118,16 +118,16 @@ struct MessageCell: View {
             sql: sql,
             question: message.devInfo?.originalQuestion,
             preference: message.resultPresentation,
-            setPreference: {
+            setPreference: { [messageID = message.id] preference in
               store.send(
                 .resultPresentationChanged(
-                  messageID: message.id, preference: $0))
+                  messageID: messageID, preference: preference))
             },
             migratePreference: resultPresentationMigrationHandler(
               store: store,
               messageID: message.id),
-            open: {
-              store.send(.resultViewerPresented(messageID: message.id))
+            open: { [messageID = message.id] in
+              store.send(.resultViewerPresented(messageID: messageID))
             })
         }
         AnswerActionsRow(

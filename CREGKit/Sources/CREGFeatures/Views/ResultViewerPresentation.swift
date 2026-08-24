@@ -62,10 +62,10 @@ extension View {
           sql: item.sql,
           question: item.question,
           preference: item.preference,
-          persistPreference: {
+          persistPreference: { [messageID = item.messageID] preference in
             store.send(
               .resultPresentationChanged(
-                messageID: item.messageID, preference: $0))
+                messageID: messageID, preference: preference))
           },
           migratePreference: resultPresentationMigrationHandler(
             store: store,
@@ -82,10 +82,10 @@ extension View {
           sql: item.sql,
           question: item.question,
           preference: item.preference,
-          persistPreference: {
+          persistPreference: { [messageID = item.messageID] preference in
             store.send(
               .resultPresentationChanged(
-                messageID: item.messageID, preference: $0))
+                messageID: messageID, preference: preference))
           },
           migratePreference: resultPresentationMigrationHandler(
             store: store,

@@ -1,12 +1,32 @@
+import AutoTableCharts
 import ComposableArchitecture
 import Foundation
 
+enum ResultPresentationMigrationOutcome: Equatable {
+  case retained(ResultPresentationPreference?)
+  case messageMissing
+}
+
 typealias ResultPresentationMigrationHandler = (
   ResultPresentationPreference, ResultPresentationPreference
-) -> ResultPresentationPreference
+) -> ResultPresentationMigrationOutcome
 
-/// Sends an automatic chart-ID migration and returns the preference that the
-/// compare-and-set reducer actually retained. Capturing the stable ID keeps
+enum ResultPresentationPreferenceReconciliation: Equatable {
+  case unchanged
+  case retained(ResultPresentationPreference?)
+  case messageMissing
+}
+
+enum ResultPresentationAnalysisUpdate: Equatable {
+  case resolved(
+    specificationID: AutoChartRecommendationID,
+    preference: ResultPresentationPreferenceReconciliation)
+  case unavailable
+}
+
+/// Sends an automatic chart-ID migration and reports the preference that the
+/// compare-and-set reducer actually retained. A missing message is distinct
+/// from a retained automatic `nil` preference. Capturing the stable ID keeps
 /// view callbacks from retaining an entire message or result-viewer item.
 @MainActor
 func resultPresentationMigrationHandler(
@@ -20,6 +40,57 @@ func resultPresentationMigrationHandler(
           messageID: messageID,
           previous: previous,
           updated: updated)))
-    return store.messages[id: messageID]?.resultPresentation ?? previous
+    guard let message = store.messages[id: messageID] else {
+      return .messageMissing
+    }
+    return .retained(message.resultPresentation)
+  }
+}
+
+/// Shared analysis and compare-and-set reconciliation for the inline preview
+/// and full-screen viewer. Each surface remains responsible only for applying
+/// the returned presentation update to its own state model.
+@MainActor
+func analyzeResultPresentation(
+  _ chart: ResultChartLoader,
+  request: ResultChartLoader.Request,
+  preference: ResultPresentationPreference?,
+  migratePreference: ResultPresentationMigrationHandler
+) async -> ResultPresentationAnalysisUpdate? {
+  switch await chart.analyze(
+    request,
+    preferredSpecificationID: preference?.specificationID
+  ) {
+  case .resolved(let recommendation, let analysis)?:
+    guard
+      let previous = preference,
+      let migrated = ResultViewerLogic.migratedPreference(
+        previous,
+        resolvedSpecificationID: recommendation.id)
+    else {
+      return .resolved(
+        specificationID: recommendation.id,
+        preference: .unchanged)
+    }
+
+    switch migratePreference(previous, migrated) {
+    case .retained(let authoritativePreference):
+      switch analysis.resolve(authoritativePreference?.specificationID) {
+      case .exact(let authoritative), .defaulted(let authoritative, _):
+        return .resolved(
+          specificationID: authoritative.id,
+          preference: .retained(authoritativePreference))
+      case .unavailable:
+        return .unavailable
+      }
+    case .messageMissing:
+      return .resolved(
+        specificationID: recommendation.id,
+        preference: .messageMissing)
+    }
+  case .unavailable?:
+    return .unavailable
+  case nil:
+    return nil
   }
 }
