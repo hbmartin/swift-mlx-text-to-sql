@@ -92,10 +92,14 @@ struct FailureMessageView: View {
           .accessibilityIdentifier("scope-verdict-notice")
       }
       if let retry {
-        Button("Try again") { retry() }
-          .cregTextButtonTarget()
-          .font(.callout.weight(.semibold))
-          .accessibilityIdentifier("failed-turn-retry")
+        Button {
+          retry()
+        } label: {
+          Text("Try again")
+            .cregTextButtonLabelTarget()
+        }
+        .font(.callout.weight(.semibold))
+        .accessibilityIdentifier("failed-turn-retry")
       }
       if let details = presentation.technicalDetails(
         developerMode: developerMode)
@@ -127,11 +131,19 @@ struct ModelPreparationFailureBanner: View {
         ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
         : AnyLayout(HStackLayout(spacing: 12))
       actionLayout {
-        Button("Retry") { retry() }
-          .cregTextButtonTarget()
+        Button {
+          retry()
+        } label: {
+          Text("Retry")
+            .cregTextButtonLabelTarget()
+        }
         if let retryCompatibility {
-          Button("Retry in compatibility mode") { retryCompatibility() }
-            .cregTextButtonTarget()
+          Button {
+            retryCompatibility()
+          } label: {
+            Text("Retry in compatibility mode")
+              .cregTextButtonLabelTarget()
+          }
         }
       }
       .font(.callout.weight(.semibold))

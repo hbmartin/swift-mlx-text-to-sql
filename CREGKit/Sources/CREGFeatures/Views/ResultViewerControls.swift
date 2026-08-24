@@ -44,9 +44,9 @@ extension ResultViewerView {
     } label: {
       Label("Clear chart filter", systemImage: "xmark.circle.fill")
         .font(.caption.weight(.medium))
+        .cregTextButtonLabelTarget()
     }
     .buttonStyle(.bordered)
-    .cregTextButtonTarget()
     .accessibilityIdentifier("clear-chart-selection")
   }
 
@@ -89,9 +89,9 @@ extension ResultViewerView {
         .foregroundStyle(CREGBrand.blue)
         .padding(.horizontal, 10)
         .background(CREGBrand.blue.opacity(0.1), in: Capsule())
+        .cregTextButtonLabelTarget()
       }
       .buttonStyle(.plain)
-      .cregTextButtonTarget()
       .accessibilityLabel(
         "Clear sort by \(result.columns[sort.column]), \(sort.ascending ? "ascending" : "descending")"
       )
@@ -104,9 +104,13 @@ extension ResultViewerView {
     } description: {
       Text("No returned row contains “\(normalizedSearchText)”.")
     } actions: {
-      Button("Clear Search") { searchText = "" }
-        .buttonStyle(.borderedProminent)
-        .cregTextButtonTarget()
+      Button {
+        searchText = ""
+      } label: {
+        Text("Clear Search")
+          .cregTextButtonLabelTarget()
+      }
+      .buttonStyle(.borderedProminent)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CREGBrand.chatSurface.opacity(0.96))

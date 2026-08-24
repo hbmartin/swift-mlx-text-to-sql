@@ -28,9 +28,9 @@ struct ConversationBrowserView: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 10)
           .contentShape(Rectangle())
+          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.plain)
-      .cregTextButtonTarget()
       .padding(.horizontal, 8)
 
       if isSearching {
@@ -50,9 +50,9 @@ struct ConversationBrowserView: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 10)
           .contentShape(Rectangle())
+          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.plain)
-      .cregTextButtonTarget()
       .padding(.horizontal, 8)
       .padding(.bottom, 8)
     }

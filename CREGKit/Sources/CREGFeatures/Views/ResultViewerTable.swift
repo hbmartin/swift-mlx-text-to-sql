@@ -254,9 +254,9 @@ extension ResultViewerView {
       copy(selected.displayedValue, confirmation: "Value copied")
     } label: {
       Label("Copy Value", systemImage: "doc.on.doc")
+        .cregTextButtonLabelTarget()
     }
     .buttonStyle(.borderedProminent)
-    .cregTextButtonTarget()
   }
 
   func selectionMoreMenu(_ selected: SelectedResultCell) -> some View {
@@ -277,9 +277,9 @@ extension ResultViewerView {
       }
     } label: {
       Label("More", systemImage: "ellipsis.circle")
+        .cregTextButtonLabelTarget()
     }
     .buttonStyle(.bordered)
-    .cregTextButtonTarget()
   }
 
   var clearSelectionButton: some View {

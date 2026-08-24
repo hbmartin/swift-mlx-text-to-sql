@@ -288,11 +288,13 @@ struct AppRootView: View {
         Text("Deleted “\(pending.summary.displayTitle)”")
           .font(.subheadline)
           .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-        Button("Undo") {
+        Button {
           store.send(.undoDeleteTapped)
+        } label: {
+          Text("Undo")
+            .cregTextButtonLabelTarget()
         }
         .font(.subheadline.weight(.semibold))
-        .cregTextButtonTarget()
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 12)

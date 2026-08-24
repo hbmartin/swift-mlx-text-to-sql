@@ -101,7 +101,8 @@ import Testing
 
   @Test func policyVersionBumpClearsTheExpiredPinWithoutPinningTheDefault() throws {
     let currentVersion = AutoTableCharts.recommendationPolicyVersion
-    let previousVersion = currentVersion == 0 ? 1 : currentVersion - 1
+    try #require(currentVersion > 0)
+    let previousVersion = currentVersion - 1
     let storedID = chartTestRecommendationID(
       "policy|line|date|value",
       policyVersion: previousVersion)
@@ -125,10 +126,7 @@ import Testing
   @Test func automaticPreferenceAnalyzesAChartOnAColdLoader() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
-    let request = ResultChartLoader.Request(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question,
+    let request = chartTestRequest(
       resultFingerprint: "automatic-preview-cold-loader",
       dataIdentity: "automatic-preview-message")
     var migrationCalled = false
@@ -158,10 +156,7 @@ import Testing
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
-    let request = ResultChartLoader.Request(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question,
+    let request = chartTestRequest(
       resultFingerprint: "viewer-migration-compare-and-set",
       dataIdentity: "viewer-migration-message")
     let previous = ResultPresentationPreference(
@@ -277,19 +272,11 @@ import Testing
   @Test func reusedAnalysisPreservesItsMatchingPreparedChart() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
-    let request = ResultChartLoader.Request(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question,
-      resultFingerprint: "reused-analysis-preparation",
-      dataIdentity: "message-1")
+    let request = chartTestRequest(
+      resultFingerprint: "reused-analysis-preparation")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
     let analysis = try #require(loader.analysis)
-    let recommendations: [AutoChartRecommendation]
-    switch analysis.outcome {
-    case .charts(let values): recommendations = values
-    case .tableFallback: recommendations = []
-    }
+    let recommendations = chartTestRecommendations(from: analysis)
     let alternative = try #require(recommendations.dropFirst().first)
 
     await loader.prepareSelected(alternative)
@@ -307,6 +294,38 @@ import Testing
         == preparationKey)
   }
 
+  @Test func resolvingPreparedPrimaryClearsAnAlternativePreparationFailure()
+    async throws
+  {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached),
+      snapshots: .uncached)
+    let loader = ResultChartLoader(
+      client: client,
+      warmStart: nil,
+      prepareChart: { _, _ in
+        throw PreferenceSaveTestError.failed
+      })
+    let request = chartTestRequest(
+      resultFingerprint: "failure-followed-by-primary-resolution")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis)
+    let recommendations = chartTestRecommendations(from: analysis)
+    let primary = try #require(recommendations.first)
+    let alternative = try #require(recommendations.dropFirst().first)
+
+    await loader.prepareSelected(alternative)
+    #expect(loader.preparedChart == nil)
+    #expect(loader.preparationFailed)
+
+    _ = await loader.analyze(
+      request,
+      preferredSpecificationID: primary.id)
+
+    #expect(loader.preparedChart?.recommendation.id == primary.id)
+    #expect(!loader.preparationFailed)
+  }
+
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
     let client = CREGChartAnalysisClient(
       analyzer: AutoChartAnalyzer(configuration: .uncached),
@@ -319,19 +338,10 @@ import Testing
         try await gate.prepare(analysis, recommendationID: recommendationID)
       })
     _ = await loader.analyze(
-      ResultChartLoader.Request(
-        result: PreviewFixtures.fundValueResult,
-        sql: StarterQueryID.portfolioValueByFundV1.sql,
-        question: StarterQueryID.portfolioValueByFundV1.question,
-        resultFingerprint: "superseded-preparation",
-        dataIdentity: "message-1"),
+      chartTestRequest(resultFingerprint: "superseded-preparation"),
       preferredSpecificationID: nil)
     let analysis = try #require(loader.analysis)
-    let recommendations: [AutoChartRecommendation]
-    switch analysis.outcome {
-    case .charts(let values): recommendations = values
-    case .tableFallback: recommendations = []
-    }
+    let recommendations = chartTestRecommendations(from: analysis)
     let primary = try #require(recommendations.first)
     let alternative = try #require(recommendations.dropFirst().first)
 
@@ -357,19 +367,10 @@ import Testing
       prepareChart: { _, _ in
         throw PreferenceSaveTestError.failed
       })
-    let request = ResultChartLoader.Request(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question,
-      resultFingerprint: "retry-preparation",
-      dataIdentity: "message-1")
+    let request = chartTestRequest(resultFingerprint: "retry-preparation")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
     let analysis = try #require(loader.analysis)
-    let recommendations: [AutoChartRecommendation]
-    switch analysis.outcome {
-    case .charts(let values): recommendations = values
-    case .tableFallback: recommendations = []
-    }
+    let recommendations = chartTestRecommendations(from: analysis)
     let alternative = try #require(recommendations.dropFirst().first)
 
     await loader.prepareSelected(alternative)

@@ -14,13 +14,14 @@ struct ResultChartRecoveryControls: View {
       Spacer(minLength: 0)
       Button(action: keepTable) {
         Text("Keep Table")
-          .cregTextButtonTarget()
+          .cregTextButtonLabelTarget()
       }
+      .buttonStyle(.bordered)
       Button(action: retryChart) {
         Text("Retry Chart")
-          .cregTextButtonTarget()
+          .cregTextButtonLabelTarget()
       }
-        .buttonStyle(.borderedProminent)
+      .buttonStyle(.borderedProminent)
     }
     .font(.caption)
   }

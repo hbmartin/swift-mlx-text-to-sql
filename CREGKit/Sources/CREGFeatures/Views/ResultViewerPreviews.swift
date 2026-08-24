@@ -97,3 +97,16 @@ import SwiftUI
     .frame(width: 402, height: 874)
     .environment(\.dynamicTypeSize, .accessibility3)
 }
+
+#Preview("Result Chart Recovery Controls — Standard") {
+  ResultChartRecoveryControls(spacing: 12, keepTable: {}, retryChart: {})
+    .padding()
+    .frame(width: 402)
+}
+
+#Preview("Result Chart Recovery Controls — Accessibility") {
+  ResultChartRecoveryControls(spacing: 12, keepTable: {}, retryChart: {})
+    .padding()
+    .frame(width: 402)
+    .environment(\.dynamicTypeSize, .accessibility3)
+}

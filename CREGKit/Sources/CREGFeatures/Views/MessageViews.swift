@@ -70,7 +70,7 @@ struct MessageCell: View {
           sql: prepared.sql,
           question: prepared.question,
           preference: message.resultPresentation,
-          setPreference: { [messageID = message.id] preference in
+          setPreference: { [store, messageID = message.id] preference in
             store.send(
               .resultPresentationChanged(
                 messageID: messageID, preference: preference))
@@ -78,7 +78,7 @@ struct MessageCell: View {
           migratePreference: resultPresentationMigrationHandler(
             store: store,
             messageID: message.id),
-          open: { [messageID = message.id] in
+          open: { [store, messageID = message.id] in
             store.send(.resultViewerPresented(messageID: messageID))
           })
         if developerMode {
@@ -118,7 +118,7 @@ struct MessageCell: View {
             sql: sql,
             question: message.devInfo?.originalQuestion,
             preference: message.resultPresentation,
-            setPreference: { [messageID = message.id] preference in
+            setPreference: { [store, messageID = message.id] preference in
               store.send(
                 .resultPresentationChanged(
                   messageID: messageID, preference: preference))
@@ -126,7 +126,7 @@ struct MessageCell: View {
             migratePreference: resultPresentationMigrationHandler(
               store: store,
               messageID: message.id),
-            open: { [messageID = message.id] in
+            open: { [store, messageID = message.id] in
               store.send(.resultViewerPresented(messageID: messageID))
             })
         }
