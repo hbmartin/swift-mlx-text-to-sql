@@ -18,14 +18,14 @@ struct ResultChartRecoveryControls: View {
     } actions: {
       Button(action: keepTable) {
         Text("Keep Table")
-          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.bordered)
+      .cregStyledTextButtonTarget()
       Button(action: retryChart) {
         Text("Retry Chart")
-          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.borderedProminent)
+      .cregStyledTextButtonTarget()
     }
     .font(.caption)
   }

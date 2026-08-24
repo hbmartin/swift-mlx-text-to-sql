@@ -125,6 +125,10 @@ import SwiftUI
     AccessibilityPreviewFrame(scenario: .resultChartRecovery, size: .accessibility3)
   }
 
+  #Preview("Result Chart Recovery — Large") {
+    AccessibilityPreviewFrame(scenario: .resultChartRecovery, size: .large)
+  }
+
   #if os(iOS)
     #Preview("Chat — Answered — AX5 — Landscape") {
       AccessibilityPreviewFrame(scenario: .answeredChat, size: .accessibility5)

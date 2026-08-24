@@ -360,10 +360,10 @@ struct ResultViewerView: View {
         )
       else { return }
 
-      selectedSpecificationID = update.resolvedSpecificationID
-      if update.invalidatesChartSelection {
+      if update.invalidatesChartSelection(chartSelection) {
         chartSelection = nil
       }
+      selectedSpecificationID = update.resolvedSpecificationID
       if case .retained(let authoritativePreference) = update.preferenceReconciliation {
         presentationPreference =
           authoritativePreference ?? ResultPresentationPreference(mode: .chart)
@@ -373,9 +373,9 @@ struct ResultViewerView: View {
       id: chart.preparationTaskKey(
         recommendationID: selectedRecommendation?.id)
     ) {
-      // The initial chart selection (deep links, the preview harness) must
-      // survive this task's first run; a user switching chart types clears
-      // it in `chartTypeMenu` where the stale row indexes actually die.
+      // Analysis reconciliation and chart-type changes own selection
+      // invalidation. Preparation preserves a matching initial selection from
+      // deep links and the preview harness.
       await chart.prepareSelected(selectedRecommendation)
     }
   }

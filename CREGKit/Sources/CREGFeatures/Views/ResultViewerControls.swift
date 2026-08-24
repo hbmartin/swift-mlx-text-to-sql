@@ -44,9 +44,9 @@ extension ResultViewerView {
     } label: {
       Label("Clear chart filter", systemImage: "xmark.circle.fill")
         .font(.caption.weight(.medium))
-        .cregTextButtonLabelTarget()
     }
     .buttonStyle(.bordered)
+    .cregStyledTextButtonTarget()
     .accessibilityIdentifier("clear-chart-selection")
   }
 
@@ -108,9 +108,9 @@ extension ResultViewerView {
         searchText = ""
       } label: {
         Text("Clear Search")
-          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.borderedProminent)
+      .cregStyledTextButtonTarget()
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CREGBrand.chatSurface.opacity(0.96))
