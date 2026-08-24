@@ -1140,6 +1140,15 @@ public struct AppFeature: Sendable {
         state.activeTurn?.resultPresentationPreference = preference
         return .none
 
+      case .chat(.resultPresentationMigrated(let migration)):
+        guard
+          state.activeTurn?.conversationID == state.chat?.conversationID,
+          state.activeTurn?.provisionalAssistantMessageID == migration.messageID,
+          state.activeTurn?.resultPresentationPreference == migration.previous
+        else { return .none }
+        state.activeTurn?.resultPresentationPreference = migration.updated
+        return .none
+
       case .chat(.operationFailed(let failure)):
         return .send(.operationFailed(failure))
 

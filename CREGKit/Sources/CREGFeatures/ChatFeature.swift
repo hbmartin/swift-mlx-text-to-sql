@@ -61,6 +61,22 @@ public struct ChatFeature: Sendable {
     }
   }
 
+  public struct ResultPresentationMigration: Equatable, Sendable {
+    public var messageID: UUID
+    public var previous: ResultPresentationPreference
+    public var updated: ResultPresentationPreference
+
+    public init(
+      messageID: UUID,
+      previous: ResultPresentationPreference,
+      updated: ResultPresentationPreference
+    ) {
+      self.messageID = messageID
+      self.previous = previous
+      self.updated = updated
+    }
+  }
+
   @ObservableState
   public struct State: Equatable {
     public var conversationID: UUID
@@ -174,6 +190,10 @@ public struct ChatFeature: Sendable {
     case resultPresentationChanged(
       messageID: UUID,
       preference: ResultPresentationPreference)
+    /// Compare-and-set migration emitted by chart analysis. A second surface
+    /// resolving the same stale preference is ignored after the first one
+    /// updates state, while explicit identical user writes remain retryable.
+    case resultPresentationMigrated(ResultPresentationMigration)
     case renameTapped
     case renameCommitted
     case exportTapped
@@ -434,27 +454,20 @@ public struct ChatFeature: Sendable {
         return .none
 
       case .resultPresentationChanged(let messageID, let preference):
-        guard var message = state.messages[id: messageID] else { return .none }
-        message.resultPresentation = preference
-        state.messages[id: messageID] = message
-        let conversationID = state.conversationID
-        let updatedMessage = message
-        let revision = resultPresentationSaveRevisionCounter.next()
-        return .run { send in
-          do {
-            try await messageUpdateQueue.save(
-              conversationID: conversationID,
-              messageID: updatedMessage.id,
-              revision: revision
-            ) {
-              try await history.updateResultPresentation(
-                conversationID, updatedMessage)
-            }
-          } catch {
-            await send(
-              .operationFailed(.history(operation: .messageSave, error: error)))
-          }
-        }
+        return persistResultPresentation(
+          state: &state,
+          messageID: messageID,
+          preference: preference)
+
+      case .resultPresentationMigrated(let migration):
+        guard
+          state.messages[id: migration.messageID]?.resultPresentation
+            == migration.previous
+        else { return .none }
+        return persistResultPresentation(
+          state: &state,
+          messageID: migration.messageID,
+          preference: migration.updated)
 
       case .renameTapped:
         state.renameDraft = state.title
@@ -507,6 +520,34 @@ public struct ChatFeature: Sendable {
 
       case .delegate:
         return .none
+      }
+    }
+  }
+
+  private func persistResultPresentation(
+    state: inout State,
+    messageID: UUID,
+    preference: ResultPresentationPreference
+  ) -> Effect<Action> {
+    guard var message = state.messages[id: messageID] else { return .none }
+    message.resultPresentation = preference
+    state.messages[id: messageID] = message
+    let conversationID = state.conversationID
+    let updatedMessage = message
+    let revision = resultPresentationSaveRevisionCounter.next()
+    return .run { send in
+      do {
+        try await messageUpdateQueue.save(
+          conversationID: conversationID,
+          messageID: updatedMessage.id,
+          revision: revision
+        ) {
+          try await history.updateResultPresentation(
+            conversationID, updatedMessage)
+        }
+      } catch {
+        await send(
+          .operationFailed(.history(operation: .messageSave, error: error)))
       }
     }
   }

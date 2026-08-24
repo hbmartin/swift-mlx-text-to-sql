@@ -13,6 +13,9 @@ struct ResultPreviewView: View {
   let question: String?
   let preference: ResultPresentationPreference?
   let setPreference: (ResultPresentationPreference) -> Void
+  let migratePreference: (
+    ResultPresentationPreference, ResultPresentationPreference
+  ) -> Void
   let open: () -> Void
 
   static let previewRowLimit = 4
@@ -33,6 +36,9 @@ struct ResultPreviewView: View {
     question: String?,
     preference: ResultPresentationPreference?,
     setPreference: @escaping (ResultPresentationPreference) -> Void,
+    migratePreference: @escaping (
+      ResultPresentationPreference, ResultPresentationPreference
+    ) -> Void = { _, _ in },
     open: @escaping () -> Void
   ) {
     self.messageID = messageID
@@ -42,6 +48,7 @@ struct ResultPreviewView: View {
     self.question = question
     self.preference = preference
     self.setPreference = setPreference
+    self.migratePreference = migratePreference
     self.open = open
     let request = ResultChartLoader.Request(
       result: result,
@@ -85,19 +92,12 @@ struct ResultPreviewView: View {
       VStack(alignment: .leading, spacing: 8) {
         if selected != nil {
           Picker(
-            "Result preview",
-            selection: Binding(
-              get: { effectiveMode(hasChart: true) },
-              set: { newMode in
-                guard
-                  let updated = ResultViewerLogic.preferenceForModeSelection(
-                    newMode,
-                    requestedMode: preference?.mode ?? .chart,
-                    specificationID: selected?.id ?? preference?.specificationID,
-                    preparationFailed: chart.preparationFailed)
-                else { return }
-                setPreference(updated)
-              })
+              "Result preview",
+              selection: Binding(
+                get: { effectiveMode(hasChart: true) },
+                set: { selectedMode in
+                  selectMode(selectedMode)
+                })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
               .tag(ResultPresentationPreference.Mode.chart)
@@ -106,6 +106,21 @@ struct ResultPreviewView: View {
           }
           .pickerStyle(.segmented)
           .accessibilityIdentifier("result-preview-mode")
+        }
+
+        if chart.preparationFailed,
+          (preference?.mode ?? .chart) == .chart
+        {
+          HStack(spacing: 10) {
+            Label("Chart unavailable", systemImage: "exclamationmark.triangle")
+              .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button("Keep Table") { selectMode(.table) }
+            Button("Retry Chart") { selectMode(.chart) }
+              .buttonStyle(.borderedProminent)
+          }
+          .font(.caption)
+          .accessibilityIdentifier("result-preview-chart-recovery")
         }
 
         Button(action: open) {
@@ -154,14 +169,15 @@ struct ResultPreviewView: View {
       }
       .task(id: chartRequest.key) {
         guard
+          let previous = preference,
           case .resolved(let recommendation)? = await chart.analyze(
             chartRequest,
             preferredSpecificationID: preference?.specificationID),
           let migrated = ResultViewerLogic.migratedPreference(
-            preference,
+            previous,
             resolvedSpecificationID: recommendation.id)
         else { return }
-        setPreference(migrated)
+        migratePreference(previous, migrated)
       }
       .task(
         id: chart.preparationTaskKey(
@@ -191,6 +207,25 @@ struct ResultPreviewView: View {
       requestedMode: preference?.mode ?? .chart,
       hasChart: hasChart,
       preparationFailed: chart.preparationFailed)
+  }
+
+  private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
+    switch ResultViewerLogic.modeSelectionIntent(
+      selectedMode,
+      requestedMode: preference?.mode ?? .chart,
+      preserving: preference?.specificationID,
+      preparationFailed: chart.preparationFailed
+    ) {
+    case .none:
+      break
+    case .persist(let updated):
+      setPreference(updated)
+    case .retryChart(let updated):
+      chart.retryPreparation()
+      if let updated {
+        setPreference(updated)
+      }
+    }
   }
 
   private var tablePreview: some View {

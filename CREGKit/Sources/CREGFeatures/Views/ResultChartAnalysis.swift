@@ -282,6 +282,7 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
 struct ResultChartPreparationTaskKey: Equatable {
   fileprivate var analysisGeneration: Int
   fileprivate var recommendationID: AutoChartRecommendationID?
+  fileprivate var attempt: Int
 }
 
 /// The one chart-loading state machine shared by the inline Result Preview
@@ -326,6 +327,9 @@ final class ResultChartLoader {
   /// Every call supersedes earlier preparation calls, including calls for a
   /// different recommendation in the same analysis generation.
   private var preparationGeneration = 0
+  /// Explicit retries re-key SwiftUI's preparation task even when the analysis
+  /// and recommendation are unchanged.
+  private var preparationAttempt = 0
   /// Identity of the analysis this loader currently owns. The analyze and
   /// prepare tasks are keyed independently by the views, so a prepare can
   /// still be suspended on the previous analysis when `analyze` clears state
@@ -437,7 +441,16 @@ final class ResultChartLoader {
   ) -> ResultChartPreparationTaskKey {
     ResultChartPreparationTaskKey(
       analysisGeneration: analysisGeneration,
-      recommendationID: recommendationID)
+      recommendationID: recommendationID,
+      attempt: preparationAttempt)
+  }
+
+  /// Clears the visible failure and advances the task identity. The
+  /// preparation-generation guard still prevents an older attempt from
+  /// committing after this retry begins.
+  func retryPreparation() {
+    preparationFailed = false
+    preparationAttempt += 1
   }
 
   @discardableResult

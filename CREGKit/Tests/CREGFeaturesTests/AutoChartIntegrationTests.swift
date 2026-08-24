@@ -279,9 +279,9 @@ import Testing
 
   /// Two result revisions can resolve to the same chart specification. The
   /// preparation task must still restart for the replacement analysis, while
-  /// selecting an alternative recommendation re-keys the same analysis.
+  /// selecting an alternative or explicitly retrying re-keys the same analysis.
   @MainActor
-  @Test func preparationTaskIdentityIncludesAnalysisAndRecommendation() async throws {
+  @Test func preparationTaskIdentityIncludesAnalysisRecommendationAndRetry() async throws {
     let client = CREGChartAnalysisClient(
       analyzer: AutoChartAnalyzer(configuration: .uncached),
       snapshots: .uncached)
@@ -332,9 +332,13 @@ import Testing
     let alternativeID = try #require(recommendations.dropFirst().first?.id)
     let alternativeKey = loader.preparationTaskKey(
       recommendationID: alternativeID)
+    loader.retryPreparation()
+    let retryKey = loader.preparationTaskKey(
+      recommendationID: alternativeID)
 
     #expect(firstKey != replacementKey)
     #expect(replacementKey != alternativeKey)
+    #expect(alternativeKey != retryKey)
   }
 }
 
@@ -381,7 +385,7 @@ import Testing
   }
 
   @Test func legacyMessageWithoutPreferenceDecodesAsAutomatic() throws {
-    let message = Self.answerMessage()
+    let message = chartTestAnswerMessage()
     let encoded = try JSONEncoder().encode(message)
     var object = try #require(
       JSONSerialization.jsonObject(with: encoded) as? [String: Any])
@@ -395,7 +399,7 @@ import Testing
   @Test func preferenceRoundTripsAndSurvivesPreparedFinalization() throws {
     let preference = ResultPresentationPreference(
       mode: .chart, specificationID: chartTestRecommendationID("policy|bar|fund|value"))
-    var message = Self.answerMessage()
+    var message = chartTestAnswerMessage()
     message.resultPresentation = preference
     let decoded = try JSONDecoder().decode(
       ChatMessage.self, from: JSONEncoder().encode(message))
@@ -414,7 +418,7 @@ import Testing
   }
 
   @Test func reducerUpdatesAndPersistsTheMessagePreference() async {
-    let message = Self.answerMessage()
+    let message = chartTestAnswerMessage()
     let preference = ResultPresentationPreference(
       mode: .table, specificationID: chartTestRecommendationID("policy|bar|fund|value"))
     let recorder = PreferenceRecorder()
@@ -453,7 +457,7 @@ import Testing
       mode: .chart, specificationID: chartTestRecommendationID("policy|line|date|value"))
     _ = try await history.createConversation(
       conversationID, Date(timeIntervalSince1970: 0))
-    var message = Self.answerMessage()
+    var message = chartTestAnswerMessage()
     message.resultPresentation = preference
     try await history.appendMessage(conversationID, message)
 
@@ -470,7 +474,7 @@ import Testing
     let conversationID = UUID()
     _ = try await liveHistory.createConversation(
       conversationID, Date(timeIntervalSince1970: 0))
-    let message = Self.answerMessage()
+    let message = chartTestAnswerMessage()
     try await liveHistory.appendMessage(conversationID, message)
 
     let gate = FirstPreferenceSaveGate()
@@ -787,19 +791,6 @@ import Testing
     }
   }
 
-  private static func answerMessage() -> ChatMessage {
-    ChatMessage(
-      id: UUID(), role: .assistant,
-      body: .answer(
-        result: QueryResult(
-          columns: ["fund", "current_market_value"],
-          rows: [[.text("Core"), .real(10)]]),
-        narration: "Core is worth $10.",
-        sql: "SELECT fund, SUM(value) AS current_market_value FROM properties GROUP BY fund",
-        notice: nil),
-      createdAt: Date(timeIntervalSince1970: 1))
-  }
-
   private static func preparedFollowUp() -> PreparedFollowUp {
     let sql = "SELECT fund, SUM(value) AS current_market_value FROM properties GROUP BY fund"
     let result = QueryResult(
@@ -854,43 +845,6 @@ private actor FirstPreferenceSaveGate {
   func releaseFirstSave() {
     releaseContinuation?.resume()
     releaseContinuation = nil
-  }
-}
-
-private enum PreferenceSaveTestError: Error, Sendable {
-  case failed
-}
-
-private final class PreferenceRecorder: @unchecked Sendable {
-  private let lock = NSLock()
-  private var storedConversationID: UUID?
-  private var storedPreference: ResultPresentationPreference?
-  private var storedWriteCount = 0
-
-  func record(conversationID: UUID, message: ChatMessage) {
-    lock.lock()
-    storedConversationID = conversationID
-    storedPreference = message.resultPresentation
-    storedWriteCount += 1
-    lock.unlock()
-  }
-
-  var conversationID: UUID? {
-    lock.lock()
-    defer { lock.unlock() }
-    return storedConversationID
-  }
-
-  var preference: ResultPresentationPreference? {
-    lock.lock()
-    defer { lock.unlock() }
-    return storedPreference
-  }
-
-  var writeCount: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return storedWriteCount
   }
 }
 

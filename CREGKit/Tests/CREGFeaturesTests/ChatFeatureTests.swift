@@ -954,6 +954,19 @@ private func awaitArmedFMWatch(
         .resultPresentationChanged(
           messageID: provisionalID, preference: preference)))
     #expect(store.state.activeTurn?.resultPresentationPreference == preference)
+    let migratedPreference = ResultPresentationPreference(
+      mode: .table,
+      specificationID: chartTestRecommendationID("policy|table"))
+    await store.send(
+      .chat(
+        .resultPresentationMigrated(
+          .init(
+            messageID: provisionalID,
+            previous: preference,
+            updated: migratedPreference))))
+    #expect(
+      store.state.activeTurn?.resultPresentationPreference
+        == migratedPreference)
 
     let backgroundSnapshot = ConversationSnapshot(
       summary: try #require(state.conversations[id: Self.conversationB]))
