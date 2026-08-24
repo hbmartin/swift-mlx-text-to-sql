@@ -27,6 +27,14 @@ extension View {
       .contentShape(Rectangle())
   }
 
+  /// Gives a system-styled text control a minimum layout target without
+  /// making the style draw its border around an already 44-point-tall label.
+  func cregStyledTextButtonTarget() -> some View {
+    self
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+  }
+
   @ViewBuilder
   func cregLargeContentViewer(
     _ title: LocalizedStringKey,

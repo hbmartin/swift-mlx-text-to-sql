@@ -155,7 +155,7 @@ struct MessageCell: View {
           title: batch.context?.isRecoverySeed == true
             ? "Try one of these instead" : "Ask a follow-up",
           suggestions: batch.suggestions,
-          select: { store.send(.preparedFollowUpTapped($0)) }
+          select: { [store] in store.send(.preparedFollowUpTapped($0)) }
         )
         .disabled(!store.isSubmissionEnabled)
       }
@@ -170,7 +170,9 @@ struct MessageCell: View {
     switch reason {
     case .timedOut, .cancelled:
       guard store.isSubmissionEnabled else { return nil }
-      return { store.send(.retryFailedTurnTapped(messageID: message.id)) }
+      return { [store, messageID = message.id] in
+        store.send(.retryFailedTurnTapped(messageID: messageID))
+      }
     default:
       return nil
     }
