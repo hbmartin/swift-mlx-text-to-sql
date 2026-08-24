@@ -19,7 +19,6 @@ struct ResultPreviewView: View {
   let chartRequest: ResultChartLoader.Request
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @State private var chart: ResultChartLoader
-  @State private var chartPreparationAttempt = 0
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
   @State private var pinchHapticTrigger = 0
@@ -90,18 +89,18 @@ struct ResultPreviewView: View {
             selection: Binding(
               get: { effectiveMode(hasChart: true) },
               set: { newMode in
+                guard newMode != effectiveMode(hasChart: true) else { return }
                 // Returning to Chart after a preparation failure is an
                 // explicit retry, matching the full-screen viewer. Clear the
                 // fallback immediately and re-key the task even though the
                 // selected recommendation has not changed.
                 if newMode == .chart, chart.preparationFailed {
-                  chart.clearPreparationFailure()
-                  chartPreparationAttempt += 1
+                  chart.retryPreparation()
                 }
                 setPreference(
-                  ResultPresentationPreference(
+                  ResultViewerLogic.presentationPreference(
                     mode: newMode,
-                    specificationID: selected?.id))
+                    preserving: preference?.specificationID))
               })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -163,13 +162,11 @@ struct ResultPreviewView: View {
           preferredSpecificationID: preference?.specificationID)
       }
       .task(
-        id: ResultChartPreparationTaskKey(
-          analysisGeneration: chart.analysisGeneration,
-          recommendationID: selected?.id,
-          attempt: chartPreparationAttempt)
+        id: chart.preparationTaskKey(
+          recommendationID: selected?.id)
       ) {
-        // Preview policy: a failed preparation falls back to the inline
-        // table (`chartArea` reads `chart.preparationFailed`).
+        // Preview policy: a failed preparation falls back without persisting
+        // Table, leaving the visible Table segment available for Chart retry.
         _ = await chart.prepareSelected(selected)
       }
     }
@@ -192,8 +189,10 @@ struct ResultPreviewView: View {
   }
 
   private func effectiveMode(hasChart: Bool) -> ResultPresentationPreference.Mode {
-    guard hasChart else { return .table }
-    return preference?.mode ?? .chart
+    ResultViewerLogic.effectivePresentationMode(
+      preference: preference,
+      hasChart: hasChart,
+      preparationFailed: chart.preparationFailed)
   }
 
   private var tablePreview: some View {

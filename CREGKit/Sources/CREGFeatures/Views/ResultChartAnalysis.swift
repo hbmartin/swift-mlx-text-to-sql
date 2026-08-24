@@ -281,9 +281,9 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
 /// specification, and an explicit retry must also rerun preparation without a
 /// selection change.
 struct ResultChartPreparationTaskKey: Equatable {
-  var analysisGeneration: Int
-  var recommendationID: AutoChartRecommendationID?
-  var attempt: Int
+  fileprivate var analysisGeneration: Int
+  fileprivate var recommendationID: AutoChartRecommendationID?
+  fileprivate var attempt: Int
 }
 
 /// The one chart-loading state machine shared by the inline Result Preview
@@ -320,13 +320,14 @@ final class ResultChartLoader {
   private(set) var preparedChart: AutoChartPreparedChart<Int>?
   private(set) var preparationFailed = false
   private var loadedKey: String?
+  private var preparationAttempt = 0
   /// Identity of the analysis this loader currently owns. The analyze and
   /// prepare tasks are keyed independently by the views, so a prepare can
   /// still be suspended on the previous analysis when `analyze` clears state
   /// for a new request; SwiftUI has not re-evaluated the body yet, so that
   /// prepare is not cancelled. Its result is discarded rather than written
   /// as a chart for data the loader no longer holds.
-  private(set) var analysisGeneration = 0
+  private var analysisGeneration = 0
 
   init(
     client: CREGChartAnalysisClient,
@@ -418,11 +419,23 @@ final class ResultChartLoader {
     }
   }
 
-  /// Clears a recorded preparation failure so a surface's explicit retry
-  /// re-enters the chart path immediately, instead of rendering its table
-  /// fallback until the re-keyed prepare task gets to run.
-  func clearPreparationFailure() {
+  /// Identity used by both chart surfaces for their preparation task. Keeping
+  /// the loader's generations private prevents either view from reimplementing
+  /// only part of the retry and replacement-analysis contract.
+  func preparationTaskKey(
+    recommendationID: AutoChartRecommendationID?
+  ) -> ResultChartPreparationTaskKey {
+    ResultChartPreparationTaskKey(
+      analysisGeneration: analysisGeneration,
+      recommendationID: recommendationID,
+      attempt: preparationAttempt)
+  }
+
+  /// Clears a recorded failure and advances the preparation identity so an
+  /// explicit retry reruns even when the recommendation has not changed.
+  func retryPreparation() {
     preparationFailed = false
+    preparationAttempt += 1
   }
 
   @discardableResult

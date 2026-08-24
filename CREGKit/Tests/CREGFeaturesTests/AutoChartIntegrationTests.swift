@@ -308,10 +308,8 @@ import Testing
       preferredSpecificationID: nil)
     let firstRecommendationID = try #require(
       loader.analysis?.primaryChart?.recommendation.id)
-    let firstKey = ResultChartPreparationTaskKey(
-      analysisGeneration: loader.analysisGeneration,
-      recommendationID: firstRecommendationID,
-      attempt: 0)
+    let firstKey = loader.preparationTaskKey(
+      recommendationID: firstRecommendationID)
 
     _ = await loader.analyze(
       ResultChartLoader.Request(
@@ -323,16 +321,13 @@ import Testing
       preferredSpecificationID: nil)
     let secondRecommendationID = try #require(
       loader.analysis?.primaryChart?.recommendation.id)
-    let replacementKey = ResultChartPreparationTaskKey(
-      analysisGeneration: loader.analysisGeneration,
-      recommendationID: secondRecommendationID,
-      attempt: 0)
-    let retryKey = ResultChartPreparationTaskKey(
-      analysisGeneration: loader.analysisGeneration,
-      recommendationID: secondRecommendationID,
-      attempt: 1)
+    try #require(firstRecommendationID == secondRecommendationID)
+    let replacementKey = loader.preparationTaskKey(
+      recommendationID: secondRecommendationID)
+    loader.retryPreparation()
+    let retryKey = loader.preparationTaskKey(
+      recommendationID: secondRecommendationID)
 
-    #expect(firstRecommendationID == secondRecommendationID)
     #expect(firstKey != replacementKey)
     #expect(replacementKey != retryKey)
   }
@@ -440,6 +435,34 @@ import Testing
 
     #expect(recorder.preference == preference)
     #expect(recorder.conversationID == state.conversationID)
+  }
+
+  @Test func reducerIgnoresAnIdenticalPreferenceWrite() async {
+    let preference = ResultPresentationPreference(
+      mode: .table,
+      specificationID: chartTestRecommendationID("policy|bar|fund|value"))
+    var message = Self.answerMessage()
+    message.resultPresentation = preference
+    let recorder = PreferenceRecorder()
+    var history = HistoryClient.noop()
+    history.updateResultPresentation = { conversationID, updated in
+      recorder.record(conversationID: conversationID, message: updated)
+    }
+    var state = ChatFeature.State(conversationID: UUID())
+    state.messages.append(message)
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
+      $0.historyClient = history
+    }
+
+    await store.send(
+      .resultPresentationChanged(
+        messageID: message.id,
+        preference: preference))
+    await store.finish()
+
+    #expect(recorder.writeCount == 0)
   }
 
   @Test func historyReloadPreservesPresentationPreference() async throws {
@@ -865,11 +888,13 @@ private final class PreferenceRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var storedConversationID: UUID?
   private var storedPreference: ResultPresentationPreference?
+  private var storedWriteCount = 0
 
   func record(conversationID: UUID, message: ChatMessage) {
     lock.lock()
     storedConversationID = conversationID
     storedPreference = message.resultPresentation
+    storedWriteCount += 1
     lock.unlock()
   }
 
@@ -883,6 +908,12 @@ private final class PreferenceRecorder: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return storedPreference
+  }
+
+  var writeCount: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedWriteCount
   }
 }
 
