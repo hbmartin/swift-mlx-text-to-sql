@@ -89,18 +89,14 @@ struct ResultPreviewView: View {
             selection: Binding(
               get: { effectiveMode(hasChart: true) },
               set: { newMode in
-                guard newMode != effectiveMode(hasChart: true) else { return }
-                // Returning to Chart after a preparation failure is an
-                // explicit retry, matching the full-screen viewer. Clear the
-                // fallback immediately and re-key the task even though the
-                // selected recommendation has not changed.
-                if newMode == .chart, chart.preparationFailed {
-                  chart.retryPreparation()
-                }
-                setPreference(
-                  ResultViewerLogic.presentationPreference(
-                    mode: newMode,
-                    preserving: preference?.specificationID))
+                guard
+                  let updated = ResultViewerLogic.preferenceForModeSelection(
+                    newMode,
+                    requestedMode: preference?.mode ?? .chart,
+                    specificationID: selected?.id ?? preference?.specificationID,
+                    preparationFailed: chart.preparationFailed)
+                else { return }
+                setPreference(updated)
               })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -157,17 +153,21 @@ struct ResultPreviewView: View {
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
       .task(id: chartRequest.key) {
-        _ = await chart.analyze(
-          chartRequest,
-          preferredSpecificationID: preference?.specificationID)
+        guard
+          case .resolved(let recommendation)? = await chart.analyze(
+            chartRequest,
+            preferredSpecificationID: preference?.specificationID),
+          let migrated = ResultViewerLogic.migratedPreference(
+            preference,
+            resolvedSpecificationID: recommendation.id)
+        else { return }
+        setPreference(migrated)
       }
       .task(
         id: chart.preparationTaskKey(
           recommendationID: selected?.id)
       ) {
-        // Preview policy: a failed preparation falls back without persisting
-        // Table, leaving the visible Table segment available for Chart retry.
-        _ = await chart.prepareSelected(selected)
+        await chart.prepareSelected(selected)
       }
     }
   }
@@ -179,8 +179,6 @@ struct ResultPreviewView: View {
         preparedChart: preparedChart,
         presentation: .preview(plotHeight: 156),
         formatters: CREGChartAdapter.formatters)
-    } else if chart.preparationFailed {
-      tablePreview
     } else {
       ProgressView("Preparing chart")
         .frame(maxWidth: .infinity)
@@ -190,7 +188,7 @@ struct ResultPreviewView: View {
 
   private func effectiveMode(hasChart: Bool) -> ResultPresentationPreference.Mode {
     ResultViewerLogic.effectivePresentationMode(
-      preference: preference,
+      requestedMode: preference?.mode ?? .chart,
       hasChart: hasChart,
       preparationFailed: chart.preparationFailed)
   }

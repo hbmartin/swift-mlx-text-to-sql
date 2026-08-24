@@ -120,25 +120,44 @@ public enum ResultViewerLogic {
 
   /// The visible mode may temporarily fall back without rewriting the user's
   /// persisted choice. This keeps the picker and rendered content consistent
-  /// after chart preparation fails while leaving Chart available as a retry.
+  /// while chart analysis or preparation makes Chart unavailable.
   static func effectivePresentationMode(
-    preference: ResultPresentationPreference?,
+    requestedMode: ResultPresentationPreference.Mode,
     hasChart: Bool,
     preparationFailed: Bool
   ) -> ResultPresentationPreference.Mode {
     guard hasChart, !preparationFailed else { return .table }
-    return preference?.mode ?? .chart
+    return requestedMode
   }
 
-  /// A Chart/Table toggle changes only the mode. Chart specification changes
-  /// are reserved for the chart-type picker.
-  static func presentationPreference(
-    mode: ResultPresentationPreference.Mode,
-    preserving specificationID: AutoChartRecommendationID?
-  ) -> ResultPresentationPreference {
-    ResultPresentationPreference(
-      mode: mode,
+  /// Returns a new persisted preference only when a user selection changes
+  /// the requested mode. A deterministically failed chart cannot be selected
+  /// again until the chart-type picker chooses another recommendation.
+  static func preferenceForModeSelection(
+    _ selectedMode: ResultPresentationPreference.Mode,
+    requestedMode: ResultPresentationPreference.Mode,
+    specificationID: AutoChartRecommendationID?,
+    preparationFailed: Bool
+  ) -> ResultPresentationPreference? {
+    guard !(selectedMode == .chart && preparationFailed) else { return nil }
+    guard selectedMode != requestedMode else { return nil }
+    return ResultPresentationPreference(
+      mode: selectedMode,
       specificationID: specificationID)
+  }
+
+  /// Migrates a stored chart ID when analysis resolves it to a current
+  /// recommendation. An automatic nil preference remains automatic.
+  static func migratedPreference(
+    _ preference: ResultPresentationPreference?,
+    resolvedSpecificationID: AutoChartRecommendationID
+  ) -> ResultPresentationPreference? {
+    guard let preference, let storedID = preference.specificationID,
+      storedID != resolvedSpecificationID
+    else { return nil }
+    return ResultPresentationPreference(
+      mode: preference.mode,
+      specificationID: resolvedSpecificationID)
   }
 
   /// Pinch arming uses hysteresis so tiny reversals around the activation

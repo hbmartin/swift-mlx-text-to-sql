@@ -278,12 +278,10 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
 
 /// Identity of one SwiftUI chart-preparation task. Recommendation identity is
 /// not sufficient on its own: replacement analyses can recommend the same
-/// specification, and an explicit retry must also rerun preparation without a
-/// selection change.
+/// specification.
 struct ResultChartPreparationTaskKey: Equatable {
   fileprivate var analysisGeneration: Int
   fileprivate var recommendationID: AutoChartRecommendationID?
-  fileprivate var attempt: Int
 }
 
 /// The one chart-loading state machine shared by the inline Result Preview
@@ -296,6 +294,10 @@ struct ResultChartPreparationTaskKey: Equatable {
 @MainActor
 @Observable
 final class ResultChartLoader {
+  typealias PrepareChart = @Sendable (
+    AutoChartAnalysis<Int>, AutoChartRecommendationID
+  ) async throws -> AutoChartPreparedChart<Int>
+
   struct Request {
     var result: QueryResult
     var sql: String
@@ -319,8 +321,11 @@ final class ResultChartLoader {
   private(set) var analysis: AutoChartAnalysis<Int>?
   private(set) var preparedChart: AutoChartPreparedChart<Int>?
   private(set) var preparationFailed = false
+  private let prepareChart: PrepareChart
   private var loadedKey: String?
-  private var preparationAttempt = 0
+  /// Every call supersedes earlier preparation calls, including calls for a
+  /// different recommendation in the same analysis generation.
+  private var preparationGeneration = 0
   /// Identity of the analysis this loader currently owns. The analyze and
   /// prepare tasks are keyed independently by the views, so a prepare can
   /// still be suspended on the previous analysis when `analyze` clears state
@@ -332,9 +337,13 @@ final class ResultChartLoader {
   init(
     client: CREGChartAnalysisClient,
     warmStart request: Request?,
-    preferredSpecificationID: AutoChartRecommendationID? = nil
+    preferredSpecificationID: AutoChartRecommendationID? = nil,
+    prepareChart: PrepareChart? = nil
   ) {
     self.client = client
+    self.prepareChart = prepareChart ?? { analysis, recommendationID in
+      try await analysis.prepare(recommendationID)
+    }
     guard
       let request,
       let dataIdentity = request.dataIdentity,
@@ -386,56 +395,49 @@ final class ResultChartLoader {
   }
 
   /// Prepares the selected recommendation's chart, reusing the analysis's
-  /// primary chart when it matches. Returns false only when preparation
-  /// genuinely failed (not on cancellation); the caller applies its own
-  /// fallback policy.
+  /// primary chart when it matches. Only the latest invocation may commit;
+  /// cancellation is cooperative and therefore cannot be the commit guard.
   func prepareSelected(
     _ recommendation: AutoChartRecommendation?
-  ) async -> Bool {
+  ) async {
+    preparationGeneration += 1
+    let preparation = preparationGeneration
     preparationFailed = false
-    guard let analysis, let recommendation else {
+    guard let chartAnalysis = analysis, let recommendation else {
       preparedChart = nil
-      return true
+      return
     }
-    if analysis.primaryChart?.recommendation.id == recommendation.id {
-      preparedChart = analysis.primaryChart
-      return true
+    if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
+      preparedChart = chartAnalysis.primaryChart
+      return
     }
     preparedChart = nil
-    let generation = analysisGeneration
+    let requestAnalysisGeneration = analysisGeneration
     do {
-      let prepared = try await analysis.prepare(recommendation.id)
-      guard generation == analysisGeneration else { return true }
+      let prepared = try await prepareChart(chartAnalysis, recommendation.id)
+      guard requestAnalysisGeneration == analysisGeneration,
+        preparation == preparationGeneration
+      else { return }
       preparedChart = prepared
-      return true
     } catch is CancellationError {
-      return true
+      return
     } catch {
-      // A superseded prepare must not report failure either: the caller
-      // would fall back to the table for an analysis that is still loading.
-      guard generation == analysisGeneration else { return true }
+      guard requestAnalysisGeneration == analysisGeneration,
+        preparation == preparationGeneration
+      else { return }
       preparationFailed = true
-      return false
     }
   }
 
   /// Identity used by both chart surfaces for their preparation task. Keeping
   /// the loader's generations private prevents either view from reimplementing
-  /// only part of the retry and replacement-analysis contract.
+  /// only part of the selection and replacement-analysis contract.
   func preparationTaskKey(
     recommendationID: AutoChartRecommendationID?
   ) -> ResultChartPreparationTaskKey {
     ResultChartPreparationTaskKey(
       analysisGeneration: analysisGeneration,
-      recommendationID: recommendationID,
-      attempt: preparationAttempt)
-  }
-
-  /// Clears a recorded failure and advances the preparation identity so an
-  /// explicit retry reruns even when the recommendation has not changed.
-  func retryPreparation() {
-    preparationFailed = false
-    preparationAttempt += 1
+      recommendationID: recommendationID)
   }
 
   @discardableResult

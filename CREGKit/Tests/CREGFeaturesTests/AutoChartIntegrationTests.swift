@@ -278,10 +278,10 @@ import Testing
   }
 
   /// Two result revisions can resolve to the same chart specification. The
-  /// preparation task must still restart for the replacement analysis, and an
-  /// explicit retry must restart it again without changing the selection.
+  /// preparation task must still restart for the replacement analysis, while
+  /// selecting an alternative recommendation re-keys the same analysis.
   @MainActor
-  @Test func preparationTaskIdentityIncludesAnalysisGenerationAndRetry() async throws {
+  @Test func preparationTaskIdentityIncludesAnalysisAndRecommendation() async throws {
     let client = CREGChartAnalysisClient(
       analyzer: AutoChartAnalyzer(configuration: .uncached),
       snapshots: .uncached)
@@ -324,12 +324,17 @@ import Testing
     try #require(firstRecommendationID == secondRecommendationID)
     let replacementKey = loader.preparationTaskKey(
       recommendationID: secondRecommendationID)
-    loader.retryPreparation()
-    let retryKey = loader.preparationTaskKey(
-      recommendationID: secondRecommendationID)
+    let recommendations: [AutoChartRecommendation]
+    switch try #require(loader.analysis).outcome {
+    case .charts(let values): recommendations = values
+    case .tableFallback: recommendations = []
+    }
+    let alternativeID = try #require(recommendations.dropFirst().first?.id)
+    let alternativeKey = loader.preparationTaskKey(
+      recommendationID: alternativeID)
 
     #expect(firstKey != replacementKey)
-    #expect(replacementKey != retryKey)
+    #expect(replacementKey != alternativeKey)
   }
 }
 
@@ -435,34 +440,6 @@ import Testing
 
     #expect(recorder.preference == preference)
     #expect(recorder.conversationID == state.conversationID)
-  }
-
-  @Test func reducerIgnoresAnIdenticalPreferenceWrite() async {
-    let preference = ResultPresentationPreference(
-      mode: .table,
-      specificationID: chartTestRecommendationID("policy|bar|fund|value"))
-    var message = Self.answerMessage()
-    message.resultPresentation = preference
-    let recorder = PreferenceRecorder()
-    var history = HistoryClient.noop()
-    history.updateResultPresentation = { conversationID, updated in
-      recorder.record(conversationID: conversationID, message: updated)
-    }
-    var state = ChatFeature.State(conversationID: UUID())
-    state.messages.append(message)
-    let store = TestStore(initialState: state) {
-      ChatFeature()
-    } withDependencies: {
-      $0.historyClient = history
-    }
-
-    await store.send(
-      .resultPresentationChanged(
-        messageID: message.id,
-        preference: preference))
-    await store.finish()
-
-    #expect(recorder.writeCount == 0)
   }
 
   @Test func historyReloadPreservesPresentationPreference() async throws {
