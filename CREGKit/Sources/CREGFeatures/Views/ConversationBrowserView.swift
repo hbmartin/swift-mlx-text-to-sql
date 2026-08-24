@@ -27,7 +27,6 @@ struct ConversationBrowserView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 12)
           .padding(.vertical, 10)
-          .contentShape(Rectangle())
           .cregTextButtonLabelTarget()
       }
       .buttonStyle(.plain)
@@ -49,7 +48,6 @@ struct ConversationBrowserView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 12)
           .padding(.vertical, 10)
-          .contentShape(Rectangle())
           .cregTextButtonLabelTarget()
       }
       .buttonStyle(.plain)

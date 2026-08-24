@@ -363,8 +363,12 @@ struct ResultViewerView: View {
           presentationPreference =
             authoritativePreference ?? ResultPresentationPreference(mode: .chart)
         }
-      case .unavailable?:
+      case .unavailable(let preferenceReconciliation)?:
         selectedSpecificationID = nil
+        if case .retained(let authoritativePreference) = preferenceReconciliation {
+          presentationPreference =
+            authoritativePreference ?? ResultPresentationPreference(mode: .chart)
+        }
       case nil:
         break
       }

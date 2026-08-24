@@ -297,9 +297,7 @@ import Testing
   @Test func resolvingPreparedPrimaryClearsAnAlternativePreparationFailure()
     async throws
   {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
+    let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(
       client: client,
       warmStart: nil,
@@ -327,9 +325,7 @@ import Testing
   }
 
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
+    let client = CREGChartAnalysisClient.testValue
     let gate = SupersededChartPreparationGate()
     let loader = ResultChartLoader(
       client: client,
@@ -358,9 +354,7 @@ import Testing
   }
 
   @Test func explicitRetryClearsFailureAndRekeysTheRecommendation() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
+    let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(
       client: client,
       warmStart: nil,
@@ -391,6 +385,34 @@ import Testing
 
     #expect(!loader.preparationFailed)
     #expect(failedKey != retryKey)
+  }
+
+  @Test func retryInvalidatesSuspendedPreparationBeforeReplacementStarts()
+    async throws
+  {
+    let gate = SupersededChartPreparationGate()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      prepareChart: { analysis, recommendationID in
+        try await gate.prepare(analysis, recommendationID: recommendationID)
+      })
+    _ = await loader.analyze(
+      chartTestRequest(resultFingerprint: "retry-suspended-preparation"),
+      preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis)
+    let recommendation = try #require(
+      chartTestRecommendations(from: analysis).dropFirst().first)
+
+    let suspended = Task { await loader.prepareSelected(recommendation) }
+    await gate.waitUntilFirstPreparationStarts()
+
+    loader.retryPreparation()
+    #expect(!loader.preparationFailed)
+
+    await gate.releaseFirstPreparation()
+    await suspended.value
+    #expect(!loader.preparationFailed)
   }
 }
 

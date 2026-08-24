@@ -456,11 +456,11 @@ final class ResultChartLoader {
       attempt: preparationAttempt)
   }
 
-  /// Clears the visible failure and advances the task identity. The
-  /// preparation-generation guard still prevents an older attempt from
-  /// committing after this retry begins.
+  /// Clears the visible failure, invalidates suspended preparation, and
+  /// advances the task identity so SwiftUI starts a fresh attempt.
   func retryPreparation() {
     failedPreparationRecommendationID = nil
+    preparationGeneration += 1
     preparationAttempt += 1
   }
 
@@ -481,14 +481,8 @@ final class ResultChartLoader {
           loaded.primaryChart?.recommendation.id == recommendation.id
           ? loaded.primaryChart : nil
       }
-      if preparedChart != nil {
-        failedPreparationRecommendationID = nil
-      }
       return .resolved(recommendation, analysis: loaded)
     case .unavailable:
-      if resolvedRecommendationID != nil {
-        preparationGeneration += 1
-      }
       resolvedRecommendationID = nil
       preparedChart = nil
       failedPreparationRecommendationID = nil
