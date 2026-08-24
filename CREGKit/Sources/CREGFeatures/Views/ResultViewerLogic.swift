@@ -130,20 +130,38 @@ public enum ResultViewerLogic {
     return requestedMode
   }
 
-  /// Returns a new persisted preference only when a user selection changes
-  /// the requested mode. A deterministically failed chart cannot be selected
-  /// again until the chart-type picker chooses another recommendation.
-  static func preferenceForModeSelection(
+  enum ModeSelectionIntent: Equatable {
+    case none
+    case persist(ResultPresentationPreference)
+    /// A failed chart can be retried without rewriting an existing Chart
+    /// preference. When the user is changing from Table to Chart, the new
+    /// preference accompanies the retry.
+    case retryChart(ResultPresentationPreference?)
+  }
+
+  /// Interprets a Chart/Table action without conflating the resolved chart
+  /// recommendation with the persisted one. This preserves `nil` as automatic
+  /// and keeps retry behavior explicit and testable.
+  static func modeSelectionIntent(
     _ selectedMode: ResultPresentationPreference.Mode,
     requestedMode: ResultPresentationPreference.Mode,
-    specificationID: AutoChartRecommendationID?,
+    preserving specificationID: AutoChartRecommendationID?,
     preparationFailed: Bool
-  ) -> ResultPresentationPreference? {
-    guard !(selectedMode == .chart && preparationFailed) else { return nil }
-    guard selectedMode != requestedMode else { return nil }
-    return ResultPresentationPreference(
-      mode: selectedMode,
-      specificationID: specificationID)
+  ) -> ModeSelectionIntent {
+    if selectedMode == .chart, preparationFailed {
+      let updated =
+        selectedMode == requestedMode
+        ? nil
+        : ResultPresentationPreference(
+          mode: selectedMode,
+          specificationID: specificationID)
+      return .retryChart(updated)
+    }
+    guard selectedMode != requestedMode else { return .none }
+    return .persist(
+      ResultPresentationPreference(
+        mode: selectedMode,
+        specificationID: specificationID))
   }
 
   /// Migrates a stored chart ID when analysis resolves it to a current
@@ -153,6 +171,7 @@ public enum ResultViewerLogic {
     resolvedSpecificationID: AutoChartRecommendationID
   ) -> ResultPresentationPreference? {
     guard let preference, let storedID = preference.specificationID,
+      storedID.policyVersion == resolvedSpecificationID.policyVersion,
       storedID != resolvedSpecificationID
     else { return nil }
     return ResultPresentationPreference(

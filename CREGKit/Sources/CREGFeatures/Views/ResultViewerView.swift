@@ -16,6 +16,9 @@ struct ResultViewerView: View {
   let resultFingerprint: String
   let chartDataIdentity: String?
   let persistPreference: (ResultPresentationPreference) -> Void
+  let migratePreference: (
+    ResultPresentationPreference, ResultPresentationPreference
+  ) -> Void
   let chartRequest: ResultChartLoader.Request
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Binding var textSize: ResultTableTextSize
@@ -52,6 +55,9 @@ struct ResultViewerView: View {
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
     persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
+    migratePreference: @escaping (
+      ResultPresentationPreference, ResultPresentationPreference
+    ) -> Void = { _, _ in },
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection<Int>? = nil
@@ -65,6 +71,7 @@ struct ResultViewerView: View {
       question: question,
       preference: preference,
       persistPreference: persistPreference,
+      migratePreference: migratePreference,
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
       initialChartSelection: initialChartSelection)
@@ -82,6 +89,9 @@ struct ResultViewerView: View {
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
     persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
+    migratePreference: @escaping (
+      ResultPresentationPreference, ResultPresentationPreference
+    ) -> Void = { _, _ in },
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection<Int>? = nil
@@ -96,6 +106,7 @@ struct ResultViewerView: View {
       question: question,
       preference: preference,
       persistPreference: persistPreference,
+      migratePreference: migratePreference,
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
       initialChartSelection: initialChartSelection)
@@ -110,6 +121,9 @@ struct ResultViewerView: View {
     question: String?,
     preference: ResultPresentationPreference?,
     persistPreference: @escaping (ResultPresentationPreference) -> Void,
+    migratePreference: @escaping (
+      ResultPresentationPreference, ResultPresentationPreference
+    ) -> Void,
     initialSearchText: String,
     initialSelection: ResultCellSelection?,
     initialChartSelection: AutoChartSelection<Int>?
@@ -127,6 +141,7 @@ struct ResultViewerView: View {
     }
     self.chartDataIdentity = chartDataIdentity
     self.persistPreference = persistPreference
+    self.migratePreference = migratePreference
     self._textSize = textSize
     self._searchText = State(initialValue: initialSearchText)
     self._selectedCell = State(initialValue: initialSelection)
@@ -238,25 +253,14 @@ struct ResultViewerView: View {
     NavigationStack {
       VStack(spacing: 0) {
         if !chartRecommendations.isEmpty {
-          // Persistence rides the binding's setter, not an onChange handler:
-          // only the user's own tap may write the stored preference, never a
-          // programmatic mode flip from the analysis or preparation tasks.
+          // Requested-mode persistence rides the binding's setter. Analysis
+          // migrations use their separate compare-and-set callback below.
           Picker(
             "Result view",
             selection: Binding(
               get: { effectiveResultMode },
-              set: { mode in
-                guard
-                  let updated = ResultViewerLogic.preferenceForModeSelection(
-                    mode,
-                    requestedMode: presentationPreference.mode,
-                    specificationID:
-                      selectedSpecificationID
-                      ?? presentationPreference.specificationID,
-                    preparationFailed: chart.preparationFailed)
-                else { return }
-                presentationPreference = updated
-                persistPreference(updated)
+              set: { selectedMode in
+                selectMode(selectedMode)
               })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -268,6 +272,23 @@ struct ResultViewerView: View {
           .padding(.horizontal)
           .padding(.vertical, 8)
           .accessibilityIdentifier("result-view-mode")
+        }
+
+        if chart.preparationFailed,
+          presentationPreference.mode == .chart
+        {
+          HStack(spacing: 12) {
+            Label("Chart unavailable", systemImage: "exclamationmark.triangle")
+              .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button("Keep Table") { selectMode(.table) }
+            Button("Retry Chart") { selectMode(.chart) }
+              .buttonStyle(.borderedProminent)
+          }
+          .font(.caption)
+          .padding(.horizontal)
+          .padding(.bottom, 8)
+          .accessibilityIdentifier("result-chart-recovery")
         }
 
         if effectiveResultMode == .chart, let selectedRecommendation {
@@ -342,16 +363,17 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .task(id: chartRequest.key) {
+      let previous = presentationPreference
       switch await chart.analyze(
         chartRequest,
-        preferredSpecificationID: presentationPreference.specificationID) {
+        preferredSpecificationID: previous.specificationID) {
       case .resolved(let recommendation)?:
         selectedSpecificationID = recommendation.id
         if let migrated = ResultViewerLogic.migratedPreference(
-          presentationPreference,
+          previous,
           resolvedSpecificationID: recommendation.id) {
           presentationPreference = migrated
-          persistPreference(migrated)
+          migratePreference(previous, migrated)
         }
       case .unavailable?:
         selectedSpecificationID = nil
@@ -367,6 +389,27 @@ struct ResultViewerView: View {
       // survive this task's first run; a user switching chart types clears
       // it in `chartTypeMenu` where the stale row indexes actually die.
       await chart.prepareSelected(selectedRecommendation)
+    }
+  }
+
+  private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
+    switch ResultViewerLogic.modeSelectionIntent(
+      selectedMode,
+      requestedMode: presentationPreference.mode,
+      preserving: presentationPreference.specificationID,
+      preparationFailed: chart.preparationFailed
+    ) {
+    case .none:
+      break
+    case .persist(let updated):
+      presentationPreference = updated
+      persistPreference(updated)
+    case .retryChart(let updated):
+      chart.retryPreparation()
+      if let updated {
+        presentationPreference = updated
+        persistPreference(updated)
+      }
     }
   }
 }

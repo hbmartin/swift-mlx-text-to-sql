@@ -7,7 +7,7 @@ import Testing
 @testable import CREGFeatures
 
 @Suite struct ResultPresentationPolicyTests {
-  @Test func preparationFailureDisplaysTableAndAllowsPersistingTable() throws {
+  @Test func preparationFailureDisplaysTableAndAllowsPersistingTable() {
     let specificationID = chartTestRecommendationID("policy|line|date|value")
 
     #expect(
@@ -15,23 +15,54 @@ import Testing
         requestedMode: .chart,
         hasChart: true,
         preparationFailed: true) == .table)
-    let changed = try #require(
-      ResultViewerLogic.preferenceForModeSelection(
-        .table,
-        requestedMode: .chart,
-        specificationID: specificationID,
-        preparationFailed: true))
+    let intent = ResultViewerLogic.modeSelectionIntent(
+      .table,
+      requestedMode: .chart,
+      preserving: specificationID,
+      preparationFailed: true)
+    guard case .persist(let changed) = intent else {
+      Issue.record("Keeping the visible fallback must persist Table.")
+      return
+    }
     #expect(changed.mode == .table)
     #expect(changed.specificationID == specificationID)
   }
 
-  @Test func deterministicPreparationFailureCannotBlindlyRetryChart() {
+  @Test func preparationFailureProducesAnExplicitRetryIntent() {
     #expect(
-      ResultViewerLogic.preferenceForModeSelection(
+      ResultViewerLogic.modeSelectionIntent(
+        .chart,
+        requestedMode: .chart,
+        preserving: chartTestRecommendationID("policy|line|date|value"),
+        preparationFailed: true) == .retryChart(nil))
+  }
+
+  @Test func automaticModeSelectionDoesNotPinTheResolvedChart() {
+    let intent = ResultViewerLogic.modeSelectionIntent(
+      .table,
+      requestedMode: .chart,
+      preserving: nil,
+      preparationFailed: false)
+
+    #expect(
+      intent == .persist(
+        ResultPresentationPreference(
+          mode: .table,
+          specificationID: nil)))
+  }
+
+  @Test func selectingChartFromFailedTablePersistsAndRetries() {
+    let specificationID = chartTestRecommendationID("policy|line|date|value")
+
+    #expect(
+      ResultViewerLogic.modeSelectionIntent(
         .chart,
         requestedMode: .table,
-        specificationID: chartTestRecommendationID("policy|line|date|value"),
-        preparationFailed: true) == nil)
+        preserving: specificationID,
+        preparationFailed: true) == .retryChart(
+          ResultPresentationPreference(
+            mode: .chart,
+            specificationID: specificationID)))
   }
 
   @Test func staleChartSpecificationMigratesToTheResolvedRecommendation() throws {
@@ -55,6 +86,23 @@ import Testing
     #expect(
       ResultViewerLogic.migratedPreference(
         nil,
+        resolvedSpecificationID: resolvedID) == nil)
+  }
+
+  @Test func policyVersionBumpDoesNotOverwriteAnExplicitChartPick() {
+    let currentVersion = AutoTableCharts.recommendationPolicyVersion
+    let previousVersion = currentVersion == 0 ? 1 : currentVersion - 1
+    let storedID = chartTestRecommendationID(
+      "policy|line|date|value",
+      policyVersion: previousVersion)
+    let resolvedID = chartTestRecommendationID("policy|bar|fund|value")
+    let preference = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: storedID)
+
+    #expect(
+      ResultViewerLogic.migratedPreference(
+        preference,
         resolvedSpecificationID: resolvedID) == nil)
   }
 }
@@ -100,6 +148,45 @@ import Testing
     #expect(loader.preparedChart?.recommendation.id == primary.id)
     #expect(!loader.preparationFailed)
   }
+
+  @Test func explicitRetryClearsFailureAndRekeysTheRecommendation() async throws {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached),
+      snapshots: .uncached)
+    let loader = ResultChartLoader(
+      client: client,
+      warmStart: nil,
+      prepareChart: { _, _ in
+        throw PreferenceSaveTestError.failed
+      })
+    _ = await loader.analyze(
+      ResultChartLoader.Request(
+        result: PreviewFixtures.fundValueResult,
+        sql: StarterQueryID.portfolioValueByFundV1.sql,
+        question: StarterQueryID.portfolioValueByFundV1.question,
+        resultFingerprint: "retry-preparation",
+        dataIdentity: "message-1"),
+      preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis)
+    let recommendations: [AutoChartRecommendation]
+    switch analysis.outcome {
+    case .charts(let values): recommendations = values
+    case .tableFallback: recommendations = []
+    }
+    let alternative = try #require(recommendations.dropFirst().first)
+
+    await loader.prepareSelected(alternative)
+    let failedKey = loader.preparationTaskKey(
+      recommendationID: alternative.id)
+    #expect(loader.preparationFailed)
+
+    loader.retryPreparation()
+    let retryKey = loader.preparationTaskKey(
+      recommendationID: alternative.id)
+
+    #expect(!loader.preparationFailed)
+    #expect(failedKey != retryKey)
+  }
 }
 
 @MainActor
@@ -108,21 +195,13 @@ import Testing
     let preference = ResultPresentationPreference(
       mode: .table,
       specificationID: chartTestRecommendationID("policy|bar|fund|value"))
-    let message = ChatMessage(
-      id: UUID(),
-      role: .assistant,
-      body: .answer(
-        result: QueryResult(columns: ["fund"], rows: [[.text("Core")]]),
-        narration: "Saved answer.",
-        sql: "SELECT fund FROM portfolio",
-        notice: nil),
-      createdAt: Date(timeIntervalSince1970: 1),
-      devInfo: nil)
-    let recorder = FailingPreferenceRecorder()
+    let message = chartTestAnswerMessage()
+    let recorder = PreferenceRecorder()
     var history = HistoryClient.noop()
-    history.updateResultPresentation = { _, updated in
-      if recorder.recordAttempt(message: updated) {
-        throw ResultPresentationPolicyTestError.failed
+    history.updateResultPresentation = { conversationID, updated in
+      recorder.record(conversationID: conversationID, message: updated)
+      if recorder.writeCount == 1 {
+        throw PreferenceSaveTestError.failed
       }
     }
     var state = ChatFeature.State(conversationID: UUID())
@@ -144,7 +223,7 @@ import Testing
       .operationFailed(
         .history(
           operation: .messageSave,
-          error: ResultPresentationPolicyTestError.failed)))
+          error: PreferenceSaveTestError.failed)))
 
     await store.send(
       .resultPresentationChanged(
@@ -152,8 +231,51 @@ import Testing
         preference: preference))
     await store.finish()
 
-    #expect(recorder.attemptCount == 2)
+    #expect(recorder.writeCount == 2)
     #expect(recorder.preference == preference)
+  }
+
+  @Test func duplicateAutomaticMigrationPersistsOnlyOnce() async {
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|stale"))
+    let migrated = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|current"))
+    var message = chartTestAnswerMessage()
+    message.resultPresentation = previous
+    let recorder = PreferenceRecorder()
+    var history = HistoryClient.noop()
+    history.updateResultPresentation = { conversationID, updated in
+      recorder.record(conversationID: conversationID, message: updated)
+    }
+    var state = ChatFeature.State(conversationID: UUID())
+    state.messages.append(message)
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
+      $0.historyClient = history
+    }
+
+    await store.send(
+      .resultPresentationMigrated(
+        .init(
+          messageID: message.id,
+          previous: previous,
+          updated: migrated))
+    ) {
+      $0.messages[id: message.id]?.resultPresentation = migrated
+    }
+    await store.send(
+      .resultPresentationMigrated(
+        .init(
+          messageID: message.id,
+          previous: previous,
+          updated: migrated)))
+    await store.finish()
+
+    #expect(recorder.writeCount == 1)
+    #expect(recorder.preference == migrated)
   }
 }
 
@@ -178,7 +300,7 @@ private actor SupersededChartPreparationGate {
     await withCheckedContinuation { continuation in
       releaseContinuation = continuation
     }
-    throw ResultPresentationPolicyTestError.failed
+    throw PreferenceSaveTestError.failed
   }
 
   func waitUntilFirstPreparationStarts() async {
@@ -191,38 +313,5 @@ private actor SupersededChartPreparationGate {
   func releaseFirstPreparation() {
     releaseContinuation?.resume()
     releaseContinuation = nil
-  }
-}
-
-private enum ResultPresentationPolicyTestError: Error, Sendable {
-  case failed
-}
-
-private final class FailingPreferenceRecorder: @unchecked Sendable {
-  private let lock = NSLock()
-  private var storedAttemptCount = 0
-  private var storedPreference: ResultPresentationPreference?
-
-  /// Returns true only for the first attempt, which the test dependency turns
-  /// into a durable-write failure.
-  func recordAttempt(message: ChatMessage) -> Bool {
-    lock.lock()
-    defer { lock.unlock() }
-    storedAttemptCount += 1
-    guard storedAttemptCount > 1 else { return true }
-    storedPreference = message.resultPresentation
-    return false
-  }
-
-  var attemptCount: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return storedAttemptCount
-  }
-
-  var preference: ResultPresentationPreference? {
-    lock.lock()
-    defer { lock.unlock() }
-    return storedPreference
   }
 }

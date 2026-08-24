@@ -66,6 +66,14 @@ extension View {
             store.send(
               .resultPresentationChanged(
                 messageID: item.messageID, preference: $0))
+          },
+          migratePreference: { previous, updated in
+            store.send(
+              .resultPresentationMigrated(
+                .init(
+                  messageID: item.messageID,
+                  previous: previous,
+                  updated: updated)))
           })
       }
     #else
@@ -83,6 +91,14 @@ extension View {
             store.send(
               .resultPresentationChanged(
                 messageID: item.messageID, preference: $0))
+          },
+          migratePreference: { previous, updated in
+            store.send(
+              .resultPresentationMigrated(
+                .init(
+                  messageID: item.messageID,
+                  previous: previous,
+                  updated: updated)))
           })
       }
     #endif
