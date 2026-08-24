@@ -20,15 +20,12 @@ struct ResultViewerView: View {
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Binding var textSize: ResultTableTextSize
   @State var chart: ResultChartLoader
-  /// Re-keys the prepare task for an explicit retry. Preparation is
-  /// otherwise keyed on the analysis and recommendation, so a failure on an
-  /// unchanged selection needs this additional identity to try again.
-  @State private var chartPreparationAttempt = 0
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
   @State var resultMode: ResultPresentationPreference.Mode
   @State var selectedSpecificationID: AutoChartRecommendationID?
+  @State var persistedSpecificationID: AutoChartRecommendationID?
   @State var chartSelection: AutoChartSelection<Int>?
   @State var copyFeedbackMessage: String?
   @State var copyFeedbackTrigger = 0
@@ -137,6 +134,8 @@ struct ResultViewerView: View {
     self._resultMode = State(
       initialValue: preference?.mode ?? .chart)
     self._selectedSpecificationID = State(initialValue: preference?.specificationID)
+    self._persistedSpecificationID = State(
+      initialValue: preference?.specificationID)
     self._chartSelection = State(initialValue: initialChartSelection)
     let request = ResultChartLoader.Request(
       result: result,
@@ -244,20 +243,17 @@ struct ResultViewerView: View {
               get: { resultMode },
               set: { mode in
                 guard mode != resultMode else { return }
-                // The prepare task falls back to Table on failure but stays
-                // keyed on the recommendation, so returning to Chart is the
-                // only retry the user has. Clear the recorded failure and
-                // re-key the task; without this the picker would read
-                // "Chart" over a permanently rendered table.
+                // A failure changes only the local visible mode. Returning to
+                // Chart clears that fallback and advances the loader-owned
+                // preparation identity for the unchanged recommendation.
                 if mode == .chart, chart.preparationFailed {
-                  chart.clearPreparationFailure()
-                  chartPreparationAttempt += 1
+                  chart.retryPreparation()
                 }
                 resultMode = mode
                 persistPreference(
-                  ResultPresentationPreference(
+                  ResultViewerLogic.presentationPreference(
                     mode: mode,
-                    specificationID: selectedRecommendation?.id))
+                    preserving: persistedSpecificationID))
               })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -326,7 +322,9 @@ struct ResultViewerView: View {
           Button("Done") { dismiss() }
         }
         ToolbarItemGroup(placement: .primaryAction) {
-          if resultMode == .chart, chartRecommendations.count > 1 {
+          if chartRecommendations.count > 1,
+            resultMode == .chart || chart.preparationFailed
+          {
             chartTypeMenu
           }
           textSizeMenu
@@ -345,7 +343,7 @@ struct ResultViewerView: View {
     }
     .task(id: chartRequest.key) {
       switch await chart.analyze(
-        chartRequest, preferredSpecificationID: selectedSpecificationID)
+        chartRequest, preferredSpecificationID: persistedSpecificationID)
       {
       case .resolved(let recommendation)?:
         // Programmatic selection of the resolved recommendation; only a
@@ -359,17 +357,14 @@ struct ResultViewerView: View {
       }
     }
     .task(
-      id: ResultChartPreparationTaskKey(
-        analysisGeneration: chart.analysisGeneration,
-        recommendationID: selectedRecommendation?.id,
-        attempt: chartPreparationAttempt)
+      id: chart.preparationTaskKey(
+        recommendationID: selectedRecommendation?.id)
     ) {
       // The initial chart selection (deep links, the preview harness) must
       // survive this task's first run; a user switching chart types clears
       // it in `chartTypeMenu` where the stale row indexes actually die.
-      guard await chart.prepareSelected(selectedRecommendation) else {
+      if !(await chart.prepareSelected(selectedRecommendation)) {
         resultMode = .table
-        return
       }
     }
   }

@@ -118,6 +118,29 @@ public enum ResultViewerLogic {
     return .evaluated
   }
 
+  /// The visible mode may temporarily fall back without rewriting the user's
+  /// persisted choice. This keeps the picker and rendered content consistent
+  /// after chart preparation fails while leaving Chart available as a retry.
+  static func effectivePresentationMode(
+    preference: ResultPresentationPreference?,
+    hasChart: Bool,
+    preparationFailed: Bool
+  ) -> ResultPresentationPreference.Mode {
+    guard hasChart, !preparationFailed else { return .table }
+    return preference?.mode ?? .chart
+  }
+
+  /// A Chart/Table toggle changes only the mode. Chart specification changes
+  /// are reserved for the chart-type picker.
+  static func presentationPreference(
+    mode: ResultPresentationPreference.Mode,
+    preserving specificationID: AutoChartRecommendationID?
+  ) -> ResultPresentationPreference {
+    ResultPresentationPreference(
+      mode: mode,
+      specificationID: specificationID)
+  }
+
   /// Pinch arming uses hysteresis so tiny reversals around the activation
   /// threshold do not flicker the visual or haptic feedback.
   public static func pinchIsArmed(
