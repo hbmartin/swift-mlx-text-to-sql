@@ -5,6 +5,11 @@ import SwiftUI
 
 // MARK: - Presentation
 
+enum ResultChartLayout {
+  static let previewPlotHeight: CGFloat = 156
+  static let explorerPlotHeight: CGFloat = 360
+}
+
 extension View {
   /// Full-screen on iPhone; a sheet on the macOS host-test target, which has
   /// no full-screen cover.

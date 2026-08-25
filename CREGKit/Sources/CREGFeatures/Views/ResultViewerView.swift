@@ -317,14 +317,15 @@ struct ResultViewerView: View {
               AutoChartView(
                 preparedChart: preparedChart,
                 selection: chartSelectionBinding,
-                presentation: .explorer(plotHeight: 360),
+                presentation: .explorer(
+                  plotHeight: ResultChartLayout.explorerPlotHeight),
                 formatters: CREGChartAdapter.formatters
               )
               .padding()
             } else {
               ProgressView("Preparing chart")
                 .frame(maxWidth: .infinity)
-                .frame(height: 360)
+                .frame(height: ResultChartLayout.explorerPlotHeight)
                 .padding()
             }
             if let reason = selectedRecommendation.rationale.first {

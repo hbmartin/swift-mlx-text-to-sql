@@ -103,11 +103,10 @@ import Testing
 
   @Test func policyVersionBumpClearsTheExpiredPinWithoutPinningTheDefault() throws {
     let currentVersion = AutoTableCharts.recommendationPolicyVersion
-    try #require(currentVersion > 0)
-    let previousVersion = currentVersion - 1
+    try #require(currentVersion == 10)
     let storedID = chartTestRecommendationID(
       "policy|line|date|value",
-      policyVersion: previousVersion)
+      policyVersion: 9)
     let resolvedID = chartTestRecommendationID("policy|bar|fund|value")
     let preference = ResultPresentationPreference(
       mode: .chart,
