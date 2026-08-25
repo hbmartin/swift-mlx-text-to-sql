@@ -11,42 +11,45 @@ enum ResultChartLayout {
 }
 
 struct ResultChartPreparationView: View {
+  struct SelectionConfiguration {
+    let value: AutoChartSelection<Int>
+    let columns: [AutoChartColumn]
+    let clear: () -> Void
+  }
+
   let recommendation: AutoChartRecommendation
-  let plotHeight: CGFloat
-  let showsTitle: Bool
-  let selection: AutoChartSelection<Int>?
-  let selectionColumns: [AutoChartColumn]
-  let clearSelection: () -> Void
+  let presentation: AutoChartPresentation
+  let selection: SelectionConfiguration?
+  let textResolver: AutoChartTextResolver
 
   init(
     recommendation: AutoChartRecommendation,
-    plotHeight: CGFloat,
-    showsTitle: Bool,
-    selection: AutoChartSelection<Int>? = nil,
-    selectionColumns: [AutoChartColumn] = [],
-    clearSelection: @escaping () -> Void = {}
+    presentation: AutoChartPresentation,
+    selection: SelectionConfiguration? = nil,
+    textResolver: AutoChartTextResolver = .default
   ) {
     self.recommendation = recommendation
-    self.plotHeight = plotHeight
-    self.showsTitle = showsTitle
+    self.presentation = presentation
     self.selection = selection
-    self.selectionColumns = selectionColumns
-    self.clearSelection = clearSelection
+    self.textResolver = textResolver
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      if showsTitle, !recommendation.specification.title.isEmpty {
+      if presentation.chrome.contains(.title),
+        !recommendation.specification.title.isEmpty
+      {
         Text(recommendation.specification.title)
           .font(.headline)
       }
       ProgressView("Preparing chart")
         .frame(maxWidth: .infinity)
-        .frame(height: plotHeight)
-      if let selection {
-        let summary = selection.presentation(
-          columns: selectionColumns,
-          formatters: CREGChartAdapter.formatters)
+        .frame(height: presentation.plotHeight)
+      if presentation.chrome.contains(.selectionSummary), let selection {
+        let summary = selection.value.presentation(
+          columns: selection.columns,
+          formatters: CREGChartAdapter.formatters,
+          textResolver: textResolver)
         HStack(alignment: .firstTextBaseline) {
           VStack(alignment: .leading, spacing: 2) {
             Text(summary.label)
@@ -56,20 +59,28 @@ struct ResultChartPreparationView: View {
               .foregroundStyle(.secondary)
           }
           Spacer()
-          Button("Clear", action: clearSelection)
+          Button(
+            textResolver(.init(
+              category: .interface,
+              code: .clearSelection,
+              defaultText: "Clear")),
+            action: selection.clear)
             .buttonStyle(.borderless)
+            .accessibilityIdentifier("auto-chart-clear-selection")
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(summary.accessibilityDescription)
       }
-      ForEach(Array(recommendation.diagnostics.enumerated()), id: \.offset) {
-        _, diagnostic in
-        Label(
-          diagnostic.messageValue.defaultText,
-          systemImage: "exclamationmark.triangle.fill"
-        )
-        .font(.caption)
-        .foregroundStyle(.orange)
+      if presentation.chrome.contains(.diagnostics) {
+        ForEach(Array(recommendation.diagnostics.enumerated()), id: \.offset) {
+          _, diagnostic in
+          Label(
+            textResolver(diagnostic.messageValue),
+            systemImage: "exclamationmark.triangle.fill"
+          )
+          .font(.caption)
+          .foregroundStyle(.orange)
+        }
       }
     }
   }

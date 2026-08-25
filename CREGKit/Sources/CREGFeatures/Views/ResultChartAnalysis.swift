@@ -52,7 +52,7 @@ struct CREGChartAnalysisClient: Sendable {
         identity: dataIdentity,
         revision: CREGChartAdapter.dataKeyRevision(
           resultFingerprint: resultFingerprint, sql: sql),
-        context: input.context,
+        contextKey: ChartAnalysisSnapshotContextKey(question: question),
         retainedCost: Self.estimatedSnapshotCost(
           result: result, analysis: analysis))
     }
@@ -72,8 +72,7 @@ struct CREGChartAnalysisClient: Sendable {
       identity: dataIdentity,
       revision: CREGChartAdapter.dataKeyRevision(
         resultFingerprint: resultFingerprint, sql: sql),
-      context: CREGChartAdapter.analysisContext(
-        question: question, sql: sql))
+      contextKey: ChartAnalysisSnapshotContextKey(question: question))
   }
 
   func trimToMinimum() async {
@@ -134,6 +133,13 @@ struct CREGChartAnalysisClient: Sendable {
   }
 }
 
+/// The inexpensive source identity for `AutoChartContext`. The snapshot
+/// revision already covers SQL, leaving the question as the only additional
+/// input to CREG's deterministic goal and title derivation.
+struct ChartAnalysisSnapshotContextKey: Hashable, Sendable {
+  var question: String?
+}
+
 /// LRU snapshots of finished analyses keyed by chart-data identity. A
 /// revision mismatch (same message, different result bytes or SQL) misses
 /// rather than serving a stale analysis.
@@ -155,7 +161,7 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
 
   private struct Entry {
     var revision: String
-    var context: AutoChartContext
+    var contextKey: ChartAnalysisSnapshotContextKey
     var analysis: AutoChartAnalysis<Int>
     var retainedCost: Int
   }
@@ -182,14 +188,22 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
   func analysis(
     identity: String,
     revision: String,
-    context: AutoChartContext
+    contextKey: ChartAnalysisSnapshotContextKey
   ) -> AutoChartAnalysis<Int>? {
     lock.lock()
     defer { lock.unlock() }
-    guard let entry = entries[identity],
-      entry.revision == revision,
-      entry.context == context
-    else {
+    guard let entry = entries[identity], entry.revision == revision else {
+      misses += 1
+      return nil
+    }
+    guard entry.contextKey == contextKey else {
+      // The revision is current but its question-derived analysis context is
+      // not. This entry can never warm-start the canonical request for this
+      // message, so release its budget immediately instead of waiting for the
+      // replacement analysis to finish successfully.
+      entries.removeValue(forKey: identity)
+      recency.removeAll { $0 == identity }
+      retainedCost -= entry.retainedCost
       misses += 1
       return nil
     }
@@ -203,14 +217,14 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     _ analysis: AutoChartAnalysis<Int>,
     identity: String,
     revision: String,
-    context: AutoChartContext,
+    contextKey: ChartAnalysisSnapshotContextKey,
     retainedCost: @autoclosure () -> Int
   ) {
     guard capacity > 0 else { return }
     lock.lock()
     if let existing = entries[identity],
       existing.revision == revision,
-      existing.context == context
+      existing.contextKey == contextKey
     {
       // The inline preview and the full-screen viewer analyze the same
       // message; an identical snapshot only needs its recency refreshed,
@@ -233,7 +247,7 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     }
     entries[identity] = Entry(
       revision: revision,
-      context: context,
+      contextKey: contextKey,
       analysis: analysis,
       retainedCost: cost)
     self.retainedCost += cost

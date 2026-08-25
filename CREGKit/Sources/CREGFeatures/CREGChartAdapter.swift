@@ -94,6 +94,11 @@ enum CREGChartAdapter {
     return PortfolioValueFormatting.displayString(for: sqlValue, column: column.name)
   }
 
+  /// One resolver shared by loading and prepared chart chrome. Keeping the
+  /// indirection explicit prevents package-authored copy from taking a
+  /// different localization path while preparation is in flight.
+  static let textResolver = AutoChartTextResolver.default
+
   static func dataKeyRevision(
     resultFingerprint: String,
     sql: String

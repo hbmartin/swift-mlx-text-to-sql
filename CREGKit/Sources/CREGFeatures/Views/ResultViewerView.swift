@@ -318,22 +318,28 @@ struct ResultViewerView: View {
                 selection: chartSelectionBinding,
                 presentation: .explorer(
                   plotHeight: ResultChartLayout.explorerPlotHeight),
-                formatters: CREGChartAdapter.formatters
+                formatters: CREGChartAdapter.formatters,
+                textResolver: CREGChartAdapter.textResolver
               )
               .padding()
             } else {
               ResultChartPreparationView(
                 recommendation: selectedRecommendation,
-                plotHeight: ResultChartLayout.explorerPlotHeight,
-                showsTitle: true,
-                selection: chartSelection,
-                selectionColumns: chart.analysis?.columnProfiles.map(\.column)
-                  ?? [],
-                clearSelection: clearChartSelection)
+                presentation: .explorer(
+                  plotHeight: ResultChartLayout.explorerPlotHeight),
+                selection: chartSelection.map { selection in
+                  ResultChartPreparationView.SelectionConfiguration(
+                    value: selection,
+                    columns: chart.analysis?.columnProfiles.map(\.column) ?? [],
+                    clear: clearChartSelection)
+                },
+                textResolver: CREGChartAdapter.textResolver)
                 .padding()
             }
             if let reason = selectedRecommendation.rationale.first {
-              Label(reason.defaultText, systemImage: "lightbulb")
+              Label(
+                CREGChartAdapter.textResolver(reason),
+                systemImage: "lightbulb")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
