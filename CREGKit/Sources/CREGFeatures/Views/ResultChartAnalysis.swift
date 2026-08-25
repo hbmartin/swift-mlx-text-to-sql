@@ -295,11 +295,16 @@ struct ResultChartPreparationTaskKey: Equatable {
 @MainActor
 @Observable
 final class ResultChartLoader {
-  typealias PrepareChart = @Sendable (
-    AutoChartAnalysis<Int>, AutoChartRecommendationID
-  ) async throws -> AutoChartPreparedChart<Int>
+  typealias AnalyzeChart =
+    @Sendable (
+      Request
+    ) async throws -> AutoChartAnalysis<Int>
+  typealias PrepareChart =
+    @Sendable (
+      AutoChartAnalysis<Int>, AutoChartRecommendationID
+    ) async throws -> AutoChartPreparedChart<Int>
 
-  struct Request {
+  struct Request: Sendable {
     var result: QueryResult
     var sql: String
     var question: String?
@@ -325,6 +330,7 @@ final class ResultChartLoader {
   var preparationFailed: Bool {
     failedPreparationRecommendationID != nil
   }
+  private let analyzeChart: AnalyzeChart
   private let prepareChart: PrepareChart
   private var loadedKey: String?
   /// The recommendation the loader most recently resolved or was asked to
@@ -337,24 +343,32 @@ final class ResultChartLoader {
   /// Explicit retries re-key SwiftUI's preparation task even when the analysis
   /// and recommendation are unchanged.
   private var preparationAttempt = 0
-  /// Identity of the analysis this loader currently owns. The analyze and
-  /// prepare tasks are keyed independently by the views, so a prepare can
-  /// still be suspended on the previous analysis when `analyze` clears state
-  /// for a new request; SwiftUI has not re-evaluated the body yet, so that
-  /// prepare is not cancelled. Its result is discarded rather than written
-  /// as a chart for data the loader no longer holds.
+  /// Identity of the analysis this loader currently owns. It prevents both a
+  /// superseded analysis and a preparation suspended on its predecessor from
+  /// committing after a newer request has taken ownership of the loader.
   private var analysisGeneration = 0
 
   init(
     client: CREGChartAnalysisClient,
     warmStart request: Request?,
     preferredSpecificationID: AutoChartRecommendationID? = nil,
+    analyzeChart: AnalyzeChart? = nil,
     prepareChart: PrepareChart? = nil
   ) {
     self.client = client
-    self.prepareChart = prepareChart ?? { analysis, recommendationID in
-      try await analysis.prepare(recommendationID)
-    }
+    self.analyzeChart =
+      analyzeChart ?? { request in
+        try await client.analyze(
+          result: request.result,
+          sql: request.sql,
+          question: request.question,
+          resultFingerprint: request.resultFingerprint,
+          dataIdentity: request.dataIdentity)
+      }
+    self.prepareChart =
+      prepareChart ?? { analysis, recommendationID in
+        try await analysis.prepare(recommendationID)
+      }
     guard
       let request,
       let dataIdentity = request.dataIdentity,
@@ -385,25 +399,27 @@ final class ResultChartLoader {
       preparedChart = nil
       loadedKey = nil
       analysisGeneration += 1
+      let requestGeneration = analysisGeneration
       do {
-        loaded = try await client.analyze(
-          result: request.result,
-          sql: request.sql,
-          question: request.question,
-          resultFingerprint: request.resultFingerprint,
-          dataIdentity: request.dataIdentity)
+        loaded = try await analyzeChart(request)
       } catch is CancellationError {
         return nil
       } catch {
+        guard requestGeneration == analysisGeneration else { return nil }
         analysis = nil
         loadedKey = nil
         return nil
       }
+      guard requestGeneration == analysisGeneration else { return nil }
       analysis = loaded
       loadedKey = request.key
     }
     return applyResolution(
       of: loaded, preferred: preferredSpecificationID)
+  }
+
+  func hasLoadedAnalysis(for request: Request) -> Bool {
+    loadedKey == request.key
   }
 
   /// Prepares the selected recommendation's chart, reusing the analysis's

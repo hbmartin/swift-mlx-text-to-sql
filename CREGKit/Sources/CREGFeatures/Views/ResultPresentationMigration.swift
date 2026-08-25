@@ -17,15 +17,18 @@ enum ResultPresentationPreferenceReconciliation: Equatable {
   case messageMissing
 }
 
-/// Exact-mark row IDs index one result revision. A matching chart
-/// specification alone cannot make a selection safe for replacement data.
-enum ResultChartSelectionPolicy {
-  static func isStale<RowID>(
-    _ selection: AutoChartSelection<RowID>?,
-    selectionResultFingerprint: String?,
-    currentResultFingerprint: String
-  ) -> Bool where RowID: Hashable & Sendable {
-    selection != nil && selectionResultFingerprint != currentResultFingerprint
+/// Exact-mark row IDs index one result revision. Keeping selection and
+/// provenance in one value prevents either half from outliving the other.
+struct ResultChartSelectionState {
+  var selection: AutoChartSelection<Int>
+  var resultFingerprint: String
+
+  func selection(for currentResultFingerprint: String) -> AutoChartSelection<Int>? {
+    resultFingerprint == currentResultFingerprint ? selection : nil
+  }
+
+  func isStale(comparedTo currentResultFingerprint: String) -> Bool {
+    resultFingerprint != currentResultFingerprint
   }
 }
 
@@ -49,22 +52,13 @@ enum ResultPresentationAnalysisUpdate: Equatable {
     }
   }
 
-  func invalidatesChartSelection<RowID>(
-    _ selection: AutoChartSelection<RowID>?,
-    selectionResultFingerprint: String?,
-    analyzedResultFingerprint: String
-  ) -> Bool where RowID: Hashable & Sendable {
-    if ResultChartSelectionPolicy.isStale(
-      selection,
-      selectionResultFingerprint: selectionResultFingerprint,
-      currentResultFingerprint: analyzedResultFingerprint)
-    {
-      return true
-    }
-    guard let selection else { return false }
+  func invalidatesChartSelection(
+    _ selectionSpecificationID: AutoChartSpecificationID?
+  ) -> Bool {
+    guard let selectionSpecificationID else { return false }
     switch self {
     case .resolved(let specificationID, _):
-      return selection.specificationID != specificationID.specificationID
+      return selectionSpecificationID != specificationID.specificationID
     case .unavailable:
       return true
     }
