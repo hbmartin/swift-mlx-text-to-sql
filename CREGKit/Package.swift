@@ -13,6 +13,9 @@ let package = Package(
     .library(name: "CREGApplication", targets: ["CREGApplication"]),
   ],
   dependencies: [
+    // This revision carries recommendation policy v10. CREG intentionally
+    // preserves the user's table/chart mode while clearing v9 chart-type pins;
+    // the exact version tripwire and version-agnostic migration are both tested.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
       revision: "a9dc0c9d2b96cff18e6c82bd865064f4a66a2417"),

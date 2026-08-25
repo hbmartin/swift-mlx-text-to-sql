@@ -230,16 +230,15 @@ struct ResultViewerView: View {
     let selectionState = $chartSelectionState
     let currentResultFingerprint = resultFingerprint
     let chart = chart
-    let chartRequest = chartRequest
-    let clearSelection = clearChartSelection
+    let chartRequestKey = chartRequest.key
     return Binding(
       get: {
         selectionState.wrappedValue?.selection(
           for: currentResultFingerprint)
       },
       set: { selection in
-        guard let selection, chart.hasLoadedAnalysis(for: chartRequest) else {
-          clearSelection()
+        guard let selection, chart.hasLoadedAnalysis(for: chartRequestKey) else {
+          selectionState.wrappedValue = nil
           return
         }
         selectionState.wrappedValue = ResultChartSelectionState(

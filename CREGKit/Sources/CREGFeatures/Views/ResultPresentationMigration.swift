@@ -20,8 +20,8 @@ enum ResultPresentationPreferenceReconciliation: Equatable {
 /// Exact-mark row IDs index one result revision. Keeping selection and
 /// provenance in one value prevents either half from outliving the other.
 struct ResultChartSelectionState {
-  private var selection: AutoChartSelection<Int>
-  private var resultFingerprint: String
+  private let selection: AutoChartSelection<Int>
+  private let resultFingerprint: String
 
   init(
     selection: AutoChartSelection<Int>,
