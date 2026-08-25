@@ -37,8 +37,16 @@ enum ResultPresentationAnalysisUpdate: Equatable {
     }
   }
 
-  var invalidatesChartSelection: Bool {
-    if case .unavailable = self { true } else { false }
+  func invalidatesChartSelection<RowID>(
+    _ selection: AutoChartSelection<RowID>?
+  ) -> Bool where RowID: Hashable & Sendable {
+    switch self {
+    case .resolved(let specificationID, _):
+      guard let selection else { return false }
+      return selection.specificationID != specificationID.specificationID
+    case .unavailable:
+      return true
+    }
   }
 }
 

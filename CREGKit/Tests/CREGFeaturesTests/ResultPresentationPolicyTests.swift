@@ -155,10 +155,36 @@ import Testing
 @Suite struct ResultViewerAnalysisTests {
   @Test func unavailableAnalysisInvalidatesExactMarkSelection() {
     let update = ResultPresentationAnalysisUpdate.unavailable
+    let selection = AutoChartSelection<Int>(
+      sourceRowIDs: [0],
+      family: .bar,
+      specificationID: AutoChartSpecificationID(rawValue: "bar|fund|value"),
+      markID: "core")
 
     #expect(update.resolvedSpecificationID == nil)
     #expect(update.preferenceReconciliation == .unchanged)
-    #expect(update.invalidatesChartSelection)
+    #expect(update.invalidatesChartSelection(selection))
+  }
+
+  @Test func resolvedAnalysisInvalidatesOnlyAMismatchedExactMarkSelection() {
+    let resolvedID = chartTestRecommendationID("bar|fund|value")
+    let update = ResultPresentationAnalysisUpdate.resolved(
+      specificationID: resolvedID,
+      preference: .unchanged)
+    let matchingSelection = AutoChartSelection<Int>(
+      sourceRowIDs: [0],
+      family: .bar,
+      specificationID: resolvedID.specificationID,
+      markID: "core")
+    let staleSelection = AutoChartSelection<Int>(
+      sourceRowIDs: [0],
+      family: .line,
+      specificationID: AutoChartSpecificationID(rawValue: "line|date|value"),
+      markID: "2026-08-24")
+
+    #expect(!update.invalidatesChartSelection(nil as AutoChartSelection<Int>?))
+    #expect(!update.invalidatesChartSelection(matchingSelection))
+    #expect(update.invalidatesChartSelection(staleSelection))
   }
 
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {

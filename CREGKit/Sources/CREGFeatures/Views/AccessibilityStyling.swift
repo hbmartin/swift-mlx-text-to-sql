@@ -5,7 +5,7 @@ import SwiftUI
 /// sizes. Owning the spacer here keeps the stacked form full-width without
 /// leaving an inert flexible gap between its children.
 struct CREGAccessibilityActionLayout<Leading: View, Actions: View>: View {
-  private let horizontalAlignment: VerticalAlignment
+  private let hStackAlignment: VerticalAlignment
   private let horizontalSpacing: CGFloat
   private let accessibilitySpacing: CGFloat
   private let spacerMinLength: CGFloat
@@ -14,14 +14,14 @@ struct CREGAccessibilityActionLayout<Leading: View, Actions: View>: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   init(
-    horizontalAlignment: VerticalAlignment = .center,
+    hStackAlignment: VerticalAlignment = .center,
     horizontalSpacing: CGFloat,
     accessibilitySpacing: CGFloat,
     spacerMinLength: CGFloat = 0,
     @ViewBuilder leading: () -> Leading,
     @ViewBuilder actions: () -> Actions
   ) {
-    self.horizontalAlignment = horizontalAlignment
+    self.hStackAlignment = hStackAlignment
     self.horizontalSpacing = horizontalSpacing
     self.accessibilitySpacing = accessibilitySpacing
     self.spacerMinLength = spacerMinLength
@@ -29,21 +29,19 @@ struct CREGAccessibilityActionLayout<Leading: View, Actions: View>: View {
     self.actions = actions()
   }
 
-  @ViewBuilder
   var body: some View {
-    if dynamicTypeSize.isAccessibilitySize {
-      VStack(alignment: .leading, spacing: accessibilitySpacing) {
-        leading
-        actions
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-    } else {
-      HStack(alignment: horizontalAlignment, spacing: horizontalSpacing) {
-        leading
+    let layout =
+      dynamicTypeSize.isAccessibilitySize
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: accessibilitySpacing))
+      : AnyLayout(HStackLayout(alignment: hStackAlignment, spacing: horizontalSpacing))
+    layout {
+      leading
+      if !dynamicTypeSize.isAccessibilitySize {
         Spacer(minLength: spacerMinLength)
-        actions
       }
+      actions
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
@@ -69,6 +67,15 @@ extension View {
   /// the complete shaped region. Keeping label and control geometry together
   /// avoids visually large but only partially tappable outer frames.
   func cregTextButtonLabelTarget() -> some View {
+    self
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+  }
+
+  /// Gives a system-styled text control a minimum layout target without
+  /// making the style draw its border around an already 44-point-tall label.
+  /// Apply after `buttonStyle` so only the interactive target expands.
+  func cregStyledTextButtonTarget() -> some View {
     self
       .frame(minHeight: 44)
       .contentShape(Rectangle())

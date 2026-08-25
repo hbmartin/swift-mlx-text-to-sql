@@ -165,7 +165,7 @@ struct ConversationRow: View {
   var body: some View {
     Button(action: select) {
       CREGAccessibilityActionLayout(
-        horizontalAlignment: .top,
+        hStackAlignment: .top,
         horizontalSpacing: 10,
         accessibilitySpacing: 8,
         spacerMinLength: 4
