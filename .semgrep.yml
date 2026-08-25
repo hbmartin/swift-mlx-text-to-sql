@@ -29,8 +29,18 @@ rules:
     message: Use a structured Hashable identity instead of delimiter-joining uncontrolled strings.
     severity: ERROR
     languages: [swift]
-    patterns:
-      - pattern: 'self.$IDENTITY = $PARTS.joined(separator: $SEPARATOR)'
-      - metavariable-regex:
-          metavariable: $IDENTITY
-          regex: (?i).*(key|identity).*
+    pattern-either:
+      - patterns:
+          - pattern: 'self.$IDENTITY = $PARTS.joined(separator: $SEPARATOR)'
+          - metavariable-regex:
+              metavariable: $IDENTITY
+              regex: (?i).*(key|identity).*
+      - patterns:
+          - pattern-inside: |
+              var $IDENTITY: $TYPE {
+                ...
+              }
+          - pattern: '$PARTS.joined(separator: $SEPARATOR)'
+          - metavariable-regex:
+              metavariable: $IDENTITY
+              regex: (?i).*(key|identity).*

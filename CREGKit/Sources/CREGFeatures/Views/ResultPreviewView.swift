@@ -115,8 +115,8 @@ struct ResultPreviewView: View {
 
         Button(action: open) {
           VStack(alignment: .leading, spacing: 6) {
-            if mode == .chart, selected != nil {
-              chartArea
+            if mode == .chart, let selected {
+              chartArea(recommendation: selected)
             } else {
               tablePreview
             }
@@ -174,7 +174,9 @@ struct ResultPreviewView: View {
   }
 
   @ViewBuilder
-  private var chartArea: some View {
+  private func chartArea(
+    recommendation: AutoChartRecommendation
+  ) -> some View {
     if let preparedChart = chart.preparedChart {
       AutoChartView(
         preparedChart: preparedChart,
@@ -182,9 +184,10 @@ struct ResultPreviewView: View {
           plotHeight: ResultChartLayout.previewPlotHeight),
         formatters: CREGChartAdapter.formatters)
     } else {
-      ProgressView("Preparing chart")
-        .frame(maxWidth: .infinity)
-        .frame(height: ResultChartLayout.previewPlotHeight)
+      ResultChartPreparationView(
+        recommendation: recommendation,
+        plotHeight: ResultChartLayout.previewPlotHeight,
+        showsTitle: false)
     }
   }
 
