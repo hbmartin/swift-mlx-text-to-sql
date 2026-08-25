@@ -26,8 +26,7 @@ struct ResultViewerView: View {
   @State var selectedCell: ResultCellSelection?
   @State var presentationPreference: ResultPresentationPreference
   @State var selectedSpecificationID: AutoChartRecommendationID?
-  @State var chartSelection: AutoChartSelection<Int>?
-  @State var chartSelectionResultFingerprint: String?
+  @State var chartSelectionState: ResultChartSelectionState?
   @State var copyFeedbackMessage: String?
   @State var copyFeedbackTrigger = 0
   @Environment(\.dismiss) var dismiss
@@ -141,9 +140,12 @@ struct ResultViewerView: View {
     self._presentationPreference = State(
       initialValue: preference ?? ResultPresentationPreference(mode: .chart))
     self._selectedSpecificationID = State(initialValue: preference?.specificationID)
-    self._chartSelection = State(initialValue: initialChartSelection)
-    self._chartSelectionResultFingerprint = State(
-      initialValue: initialChartSelection == nil ? nil : resultFingerprint)
+    self._chartSelectionState = State(
+      initialValue: initialChartSelection.map {
+        ResultChartSelectionState(
+          selection: $0,
+          resultFingerprint: resultFingerprint)
+      })
     let request = ResultChartLoader.Request(
       result: result,
       sql: sql,
@@ -211,7 +213,21 @@ struct ResultViewerView: View {
   }
 
   var filteredResult: QueryResult {
-    guard let indexes = chartSelection?.sourceRowIDs else {
+    Self.filteredResult(
+      result,
+      selectionState: chartSelectionState,
+      currentResultFingerprint: resultFingerprint)
+  }
+
+  static func filteredResult(
+    _ result: QueryResult,
+    selectionState: ResultChartSelectionState?,
+    currentResultFingerprint: String
+  ) -> QueryResult {
+    guard
+      let indexes = selectionState?.selection(
+        for: currentResultFingerprint)?.sourceRowIDs
+    else {
       return result
     }
     return QueryResult(
@@ -223,22 +239,39 @@ struct ResultViewerView: View {
       elapsedMicroseconds: result.elapsedMicroseconds)
   }
 
+  /// A retained SwiftUI state value can belong to the preceding result
+  /// revision. Synchronous reads must reject it before the replacement
+  /// analysis task gets its first opportunity to clear the stored state.
+  var chartSelection: AutoChartSelection<Int>? {
+    chartSelectionState?.selection(for: resultFingerprint)
+  }
+
   var chartSelectionBinding: Binding<AutoChartSelection<Int>?> {
-    Binding(
-      get: { chartSelection },
+    let selectionState = $chartSelectionState
+    let currentResultFingerprint = resultFingerprint
+    let acceptsSelection = chart.hasLoadedAnalysis(for: chartRequest)
+    return Binding(
+      get: {
+        selectionState.wrappedValue?.selection(
+          for: currentResultFingerprint)
+      },
       set: { selection in
         guard let selection else {
-          clearChartSelection()
+          selectionState.wrappedValue = nil
           return
         }
-        chartSelection = selection
-        chartSelectionResultFingerprint = resultFingerprint
+        guard acceptsSelection else {
+          selectionState.wrappedValue = nil
+          return
+        }
+        selectionState.wrappedValue = ResultChartSelectionState(
+          selection: selection,
+          resultFingerprint: currentResultFingerprint)
       })
   }
 
   func clearChartSelection() {
-    chartSelection = nil
-    chartSelectionResultFingerprint = nil
+    chartSelectionState = nil
   }
 
   func selectedResultCell(
@@ -372,11 +405,7 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .task(id: chartRequest.key) {
-      if ResultChartSelectionPolicy.isStale(
-        chartSelection,
-        selectionResultFingerprint: chartSelectionResultFingerprint,
-        currentResultFingerprint: resultFingerprint)
-      {
+      if chartSelectionState?.isStale(comparedTo: resultFingerprint) == true {
         clearChartSelection()
       }
 
@@ -389,11 +418,7 @@ struct ResultViewerView: View {
         )
       else { return }
 
-      if update.invalidatesChartSelection(
-        chartSelection,
-        selectionResultFingerprint: chartSelectionResultFingerprint,
-        analyzedResultFingerprint: resultFingerprint)
-      {
+      if update.invalidatesChartSelection(chartSelection?.specificationID) {
         clearChartSelection()
       }
       selectedSpecificationID = update.resolvedSpecificationID

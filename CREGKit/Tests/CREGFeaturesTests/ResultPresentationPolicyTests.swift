@@ -171,33 +171,35 @@ import Testing
 
 @MainActor
 @Suite struct ResultViewerAnalysisTests {
-  @Test func replacementResultInvalidatesSelectionBeforeAnalysisFinishes() {
+  @Test func replacementResultTreatsRetainedSelectionAsInactiveSynchronously() {
     let selection = AutoChartSelection<Int>(
       sourceRowIDs: [0],
       family: .bar,
       specificationID: AutoChartSpecificationID(rawValue: "bar|fund|value"),
       markID: "core")
+    let retainedState = ResultChartSelectionState(
+      selection: selection,
+      resultFingerprint: "replaced-result")
+    let replacementResult = QueryResult(
+      columns: ["fund", "value"],
+      rows: [
+        [.text("Replacement A"), .real(100)],
+        [.text("Replacement B"), .real(200)],
+      ])
 
     #expect(
-      !ResultChartSelectionPolicy.isStale(
-        nil as AutoChartSelection<Int>?,
-        selectionResultFingerprint: nil,
-        currentResultFingerprint: "current-result"))
+      retainedState.selection(for: "replaced-result") == selection)
+    #expect(retainedState.selection(for: "current-result") == nil)
+    #expect(retainedState.isStale(comparedTo: "current-result"))
     #expect(
-      !ResultChartSelectionPolicy.isStale(
-        selection,
-        selectionResultFingerprint: "current-result",
-        currentResultFingerprint: "current-result"))
-    #expect(
-      ResultChartSelectionPolicy.isStale(
-        selection,
-        selectionResultFingerprint: "replaced-result",
-        currentResultFingerprint: "current-result"))
+      ResultViewerView.filteredResult(
+        replacementResult,
+        selectionState: retainedState,
+        currentResultFingerprint: "current-result") == replacementResult)
   }
 
   @Test func unavailableAnalysisInvalidatesExactMarkSelection() {
     let update = ResultPresentationAnalysisUpdate.unavailable
-    let resultFingerprint = "current-result"
     let selection = AutoChartSelection<Int>(
       sourceRowIDs: [0],
       family: .bar,
@@ -206,21 +208,12 @@ import Testing
 
     #expect(update.resolvedSpecificationID == nil)
     #expect(update.preferenceReconciliation == .unchanged)
-    #expect(
-      update.invalidatesChartSelection(
-        selection,
-        selectionResultFingerprint: resultFingerprint,
-        analyzedResultFingerprint: resultFingerprint))
-    #expect(
-      !update.invalidatesChartSelection(
-        nil as AutoChartSelection<Int>?,
-        selectionResultFingerprint: nil,
-        analyzedResultFingerprint: resultFingerprint))
+    #expect(update.invalidatesChartSelection(selection.specificationID))
+    #expect(!update.invalidatesChartSelection(nil))
   }
 
-  @Test func resolvedAnalysisInvalidatesMismatchedChartOrResultSelections() {
+  @Test func resolvedAnalysisInvalidatesOnlyAMismatchedChartSelection() {
     let resolvedID = chartTestRecommendationID("bar|fund|value")
-    let resultFingerprint = "current-result"
     let update = ResultPresentationAnalysisUpdate.resolved(
       specificationID: resolvedID,
       preference: .unchanged)
@@ -235,26 +228,9 @@ import Testing
       specificationID: AutoChartSpecificationID(rawValue: "line|date|value"),
       markID: "2026-08-24")
 
-    #expect(
-      !update.invalidatesChartSelection(
-        nil as AutoChartSelection<Int>?,
-        selectionResultFingerprint: nil,
-        analyzedResultFingerprint: resultFingerprint))
-    #expect(
-      !update.invalidatesChartSelection(
-        matchingSelection,
-        selectionResultFingerprint: resultFingerprint,
-        analyzedResultFingerprint: resultFingerprint))
-    #expect(
-      update.invalidatesChartSelection(
-        matchingSelection,
-        selectionResultFingerprint: "replaced-result",
-        analyzedResultFingerprint: resultFingerprint))
-    #expect(
-      update.invalidatesChartSelection(
-        staleSelection,
-        selectionResultFingerprint: resultFingerprint,
-        analyzedResultFingerprint: resultFingerprint))
+    #expect(!update.invalidatesChartSelection(nil))
+    #expect(!update.invalidatesChartSelection(matchingSelection.specificationID))
+    #expect(update.invalidatesChartSelection(staleSelection.specificationID))
   }
 
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
@@ -373,6 +349,65 @@ import Testing
 
 @MainActor
 @Suite struct ResultChartLoaderSupersessionTests {
+  @Test func supersededAnalysisCannotReplaceANewerResult() async throws {
+    let gate = SupersededChartAnalysisGate()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      analyzeChart: { request in
+        try await gate.analyze(request)
+      })
+    let originalRequest = chartTestRequest(
+      resultFingerprint: "superseded-analysis-original")
+    let replacementRequest = chartTestRequest(
+      result: PreviewFixtures.leaseListingResult,
+      sql: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql,
+      question: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.question,
+      resultFingerprint: "superseded-analysis-replacement")
+
+    let superseded = Task {
+      await loader.analyze(
+        originalRequest,
+        preferredSpecificationID: nil)
+    }
+    await gate.waitUntilFirstAnalysisStarts()
+
+    let replacement = await loader.analyze(
+      replacementRequest,
+      preferredSpecificationID: nil)
+    guard case .resolved(let replacementRecommendation, _)? = replacement else {
+      Issue.record("The replacement fixture should resolve a chart.")
+      await gate.releaseFirstAnalysis()
+      _ = await superseded.value
+      return
+    }
+
+    await gate.releaseFirstAnalysis()
+    let supersededResolution = await superseded.value
+    #expect(supersededResolution == nil)
+    let retainedAnalysis = try #require(loader.analysis)
+    switch retainedAnalysis.resolve(nil) {
+    case .exact(let recommendation), .defaulted(let recommendation, _):
+      #expect(recommendation.id == replacementRecommendation.id)
+    case .unavailable:
+      Issue.record("The replacement analysis must remain installed.")
+    }
+  }
+
+  @Test func cancelledAnalysisCannotProduceAnUpdate() async {
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      analyzeChart: { _ in throw CancellationError() })
+
+    let resolution = await loader.analyze(
+      chartTestRequest(resultFingerprint: "cancelled-analysis"),
+      preferredSpecificationID: nil)
+
+    #expect(resolution == nil)
+    #expect(loader.analysis == nil)
+  }
+
   @Test func reusedAnalysisPreservesItsMatchingPreparedChart() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
@@ -642,6 +677,47 @@ private actor SupersededChartPreparationGate {
   }
 
   func releaseFirstPreparation() {
+    releaseContinuation?.resume()
+    releaseContinuation = nil
+  }
+}
+
+private actor SupersededChartAnalysisGate {
+  private let client = CREGChartAnalysisClient.testValue
+  private var analysisCount = 0
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func analyze(
+    _ request: ResultChartLoader.Request
+  ) async throws -> AutoChartAnalysis<Int> {
+    analysisCount += 1
+    if analysisCount == 1 {
+      let waiters = startWaiters
+      startWaiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
+      await withCheckedContinuation { continuation in
+        releaseContinuation = continuation
+      }
+    }
+    return try await client.analyze(
+      result: request.result,
+      sql: request.sql,
+      question: request.question,
+      resultFingerprint: request.resultFingerprint,
+      dataIdentity: request.dataIdentity)
+  }
+
+  func waitUntilFirstAnalysisStarts() async {
+    guard analysisCount == 0 else { return }
+    await withCheckedContinuation { continuation in
+      startWaiters.append(continuation)
+    }
+  }
+
+  func releaseFirstAnalysis() {
     releaseContinuation?.resume()
     releaseContinuation = nil
   }
