@@ -20,8 +20,16 @@ enum ResultPresentationPreferenceReconciliation: Equatable {
 /// Exact-mark row IDs index one result revision. Keeping selection and
 /// provenance in one value prevents either half from outliving the other.
 struct ResultChartSelectionState {
-  var selection: AutoChartSelection<Int>
-  var resultFingerprint: String
+  private var selection: AutoChartSelection<Int>
+  private var resultFingerprint: String
+
+  init(
+    selection: AutoChartSelection<Int>,
+    resultFingerprint: String
+  ) {
+    self.selection = selection
+    self.resultFingerprint = resultFingerprint
+  }
 
   func selection(for currentResultFingerprint: String) -> AutoChartSelection<Int>? {
     resultFingerprint == currentResultFingerprint ? selection : nil
@@ -29,6 +37,14 @@ struct ResultChartSelectionState {
 
   func isStale(comparedTo currentResultFingerprint: String) -> Bool {
     resultFingerprint != currentResultFingerprint
+  }
+
+  func isInvalidated(
+    by update: ResultPresentationAnalysisUpdate,
+    currentResultFingerprint: String
+  ) -> Bool {
+    guard !isStale(comparedTo: currentResultFingerprint) else { return true }
+    return update.invalidatesChartSelection(selection.specificationID)
   }
 }
 
