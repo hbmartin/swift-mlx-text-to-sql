@@ -59,9 +59,16 @@ enum CREGChartAdapter {
         revision: dataKeyRevision(resultFingerprint: fingerprint, sql: sql)))
     return CREGChartAnalysisInput(
       dataset: dataset,
-      context: AutoChartContext(
-        goal: goal(question: question, sql: sql),
-        title: question))
+      context: analysisContext(question: question, sql: sql))
+  }
+
+  static func analysisContext(
+    question: String?,
+    sql: String
+  ) -> AutoChartContext {
+    AutoChartContext(
+      goal: goal(question: question, sql: sql),
+      title: question)
   }
 
   static let formatters = AutoChartFormatters(

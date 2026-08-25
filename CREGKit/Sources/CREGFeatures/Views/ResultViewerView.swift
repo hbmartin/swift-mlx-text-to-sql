@@ -322,9 +322,14 @@ struct ResultViewerView: View {
               )
               .padding()
             } else {
-              ProgressView("Preparing chart")
-                .frame(maxWidth: .infinity)
-                .frame(height: ResultChartLayout.explorerPlotHeight)
+              ResultChartPreparationView(
+                recommendation: selectedRecommendation,
+                plotHeight: ResultChartLayout.explorerPlotHeight,
+                showsTitle: true,
+                selection: chartSelection,
+                selectionColumns: chart.analysis?.columnProfiles.map(\.column)
+                  ?? [],
+                clearSelection: clearChartSelection)
                 .padding()
             }
             if let reason = selectedRecommendation.rationale.first {

@@ -219,15 +219,24 @@ import Testing
       question: StarterQueryID.portfolioValueByFundV1.question)
     let snapshots = ChartAnalysisSnapshotStore(
       capacity: 3, maximumRetainedCost: 100)
+    let context = AutoChartContext()
 
     snapshots.store(
-      analysis, identity: "first", revision: "r1", retainedCost: 60)
+      analysis, identity: "first", revision: "r1", context: context,
+      retainedCost: 60)
     snapshots.store(
-      analysis, identity: "second", revision: "r1", retainedCost: 60)
+      analysis, identity: "second", revision: "r1", context: context,
+      retainedCost: 60)
 
-    #expect(snapshots.analysis(identity: "first", revision: "r1") == nil)
-    #expect(snapshots.analysis(identity: "second", revision: "stale") == nil)
-    #expect(snapshots.analysis(identity: "second", revision: "r1") != nil)
+    #expect(
+      snapshots.analysis(
+        identity: "first", revision: "r1", context: context) == nil)
+    #expect(
+      snapshots.analysis(
+        identity: "second", revision: "stale", context: context) == nil)
+    #expect(
+      snapshots.analysis(
+        identity: "second", revision: "r1", context: context) != nil)
     #expect(snapshots.statistics.entries == 1)
     #expect(snapshots.statistics.retainedCost == 60)
     #expect(snapshots.statistics.evictions == 1)
@@ -235,7 +244,8 @@ import Testing
     // A same-identity, same-revision store is a recency refresh, never a
     // replacement: the retained cost must not change.
     snapshots.store(
-      analysis, identity: "second", revision: "r1", retainedCost: 999)
+      analysis, identity: "second", revision: "r1", context: context,
+      retainedCost: 999)
     #expect(snapshots.statistics.entries == 1)
     #expect(snapshots.statistics.retainedCost == 60)
 
@@ -243,10 +253,13 @@ import Testing
     // results are where re-analysis hurts most — evicting everything else
     // and remaining as the sole resident.
     snapshots.store(
-      analysis, identity: "oversized", revision: "r1", retainedCost: 101)
+      analysis, identity: "oversized", revision: "r1", context: context,
+      retainedCost: 101)
     #expect(snapshots.statistics.entries == 1)
     #expect(snapshots.statistics.retainedCost == 101)
-    #expect(snapshots.analysis(identity: "oversized", revision: "r1") != nil)
+    #expect(
+      snapshots.analysis(
+        identity: "oversized", revision: "r1", context: context) != nil)
     #expect(snapshots.statistics.evictions == 2)
 
     // Memory-pressure trims clear everything but are not LRU evictions.
@@ -270,9 +283,75 @@ import Testing
       client.cachedAnalysis(
         resultFingerprint: "test-result",
         sql: sql,
+        question: StarterQueryID.portfolioValueByFundV1.question,
         dataIdentity: "shared-test-identity") == nil)
     #expect(client.snapshotStatistics.entries == 0)
     #expect(client.snapshotStatistics.retainedCost == 0)
+  }
+
+  @MainActor
+  @Test func warmStartRequiresMatchingAnalysisContext() async throws {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached))
+    let result = PreviewFixtures.fundValueResult
+    let sql = StarterQueryID.portfolioValueByFundV1.sql
+    let originalQuestion = "Show the trend over time"
+    let replacementQuestion = "Show the distribution"
+    let resultFingerprint = "context-sensitive-result"
+    let dataIdentity = "context-sensitive-message"
+
+    let original = try await client.analyze(
+      result: result,
+      sql: sql,
+      question: originalQuestion,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: dataIdentity)
+    #expect(
+      original.primaryChart?.recommendation.specification.title
+        == originalQuestion)
+    #expect(
+      client.cachedAnalysis(
+        resultFingerprint: resultFingerprint,
+        sql: sql,
+        question: originalQuestion,
+        dataIdentity: dataIdentity) != nil)
+    #expect(
+      client.cachedAnalysis(
+        resultFingerprint: resultFingerprint,
+        sql: sql,
+        question: replacementQuestion,
+        dataIdentity: dataIdentity) == nil)
+
+    let replacementRequest = ResultChartLoader.Request(
+      result: result,
+      sql: sql,
+      question: replacementQuestion,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: dataIdentity)
+    let loader = ResultChartLoader(
+      client: client,
+      warmStart: replacementRequest)
+    #expect(loader.analysis == nil)
+
+    _ = await loader.analyze(
+      replacementRequest,
+      preferredSpecificationID: nil)
+
+    #expect(
+      loader.analysis?.primaryChart?.recommendation.specification.title
+        == replacementQuestion)
+    #expect(
+      client.cachedAnalysis(
+        resultFingerprint: resultFingerprint,
+        sql: sql,
+        question: originalQuestion,
+        dataIdentity: dataIdentity) == nil)
+    #expect(
+      client.cachedAnalysis(
+        resultFingerprint: resultFingerprint,
+        sql: sql,
+        question: replacementQuestion,
+        dataIdentity: dataIdentity) != nil)
   }
 
   @Test func analyzersAreIsolatedAndTestsNeedNoGlobalSerialization() async throws {

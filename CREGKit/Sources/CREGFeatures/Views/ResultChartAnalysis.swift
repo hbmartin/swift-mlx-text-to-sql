@@ -52,6 +52,7 @@ struct CREGChartAnalysisClient: Sendable {
         identity: dataIdentity,
         revision: CREGChartAdapter.dataKeyRevision(
           resultFingerprint: resultFingerprint, sql: sql),
+        context: input.context,
         retainedCost: Self.estimatedSnapshotCost(
           result: result, analysis: analysis))
     }
@@ -64,12 +65,15 @@ struct CREGChartAnalysisClient: Sendable {
   func cachedAnalysis(
     resultFingerprint: String,
     sql: String,
+    question: String?,
     dataIdentity: String
   ) -> AutoChartAnalysis<Int>? {
     snapshots.analysis(
       identity: dataIdentity,
       revision: CREGChartAdapter.dataKeyRevision(
-        resultFingerprint: resultFingerprint, sql: sql))
+        resultFingerprint: resultFingerprint, sql: sql),
+      context: CREGChartAdapter.analysisContext(
+        question: question, sql: sql))
   }
 
   func trimToMinimum() async {
@@ -151,6 +155,7 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
 
   private struct Entry {
     var revision: String
+    var context: AutoChartContext
     var analysis: AutoChartAnalysis<Int>
     var retainedCost: Int
   }
@@ -175,11 +180,16 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
   }
 
   func analysis(
-    identity: String, revision: String
+    identity: String,
+    revision: String,
+    context: AutoChartContext
   ) -> AutoChartAnalysis<Int>? {
     lock.lock()
     defer { lock.unlock() }
-    guard let entry = entries[identity], entry.revision == revision else {
+    guard let entry = entries[identity],
+      entry.revision == revision,
+      entry.context == context
+    else {
       misses += 1
       return nil
     }
@@ -193,11 +203,15 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     _ analysis: AutoChartAnalysis<Int>,
     identity: String,
     revision: String,
+    context: AutoChartContext,
     retainedCost: @autoclosure () -> Int
   ) {
     guard capacity > 0 else { return }
     lock.lock()
-    if let existing = entries[identity], existing.revision == revision {
+    if let existing = entries[identity],
+      existing.revision == revision,
+      existing.context == context
+    {
       // The inline preview and the full-screen viewer analyze the same
       // message; an identical snapshot only needs its recency refreshed,
       // never a cost re-estimate.
@@ -219,6 +233,7 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
     }
     entries[identity] = Entry(
       revision: revision,
+      context: context,
       analysis: analysis,
       retainedCost: cost)
     self.retainedCost += cost
@@ -325,20 +340,6 @@ final class ResultChartLoader {
         sql: sql,
         question: question)
     }
-
-    init(
-      result: QueryResult,
-      sql: String,
-      question: String?,
-      resultFingerprint: String,
-      dataIdentity: String?
-    ) {
-      self.result = result
-      self.sql = sql
-      self.question = question
-      self.resultFingerprint = resultFingerprint
-      self.dataIdentity = dataIdentity
-    }
   }
 
   enum Resolution {
@@ -403,6 +404,7 @@ final class ResultChartLoader {
       let cached = client.cachedAnalysis(
         resultFingerprint: request.resultFingerprint,
         sql: request.sql,
+        question: request.question,
         dataIdentity: dataIdentity)
     else { return }
     loadedAnalysis = LoadedAnalysis(key: request.key, value: cached)

@@ -10,6 +10,71 @@ enum ResultChartLayout {
   static let explorerPlotHeight: CGFloat = 360
 }
 
+struct ResultChartPreparationView: View {
+  let recommendation: AutoChartRecommendation
+  let plotHeight: CGFloat
+  let showsTitle: Bool
+  let selection: AutoChartSelection<Int>?
+  let selectionColumns: [AutoChartColumn]
+  let clearSelection: () -> Void
+
+  init(
+    recommendation: AutoChartRecommendation,
+    plotHeight: CGFloat,
+    showsTitle: Bool,
+    selection: AutoChartSelection<Int>? = nil,
+    selectionColumns: [AutoChartColumn] = [],
+    clearSelection: @escaping () -> Void = {}
+  ) {
+    self.recommendation = recommendation
+    self.plotHeight = plotHeight
+    self.showsTitle = showsTitle
+    self.selection = selection
+    self.selectionColumns = selectionColumns
+    self.clearSelection = clearSelection
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      if showsTitle, !recommendation.specification.title.isEmpty {
+        Text(recommendation.specification.title)
+          .font(.headline)
+      }
+      ProgressView("Preparing chart")
+        .frame(maxWidth: .infinity)
+        .frame(height: plotHeight)
+      if let selection {
+        let summary = selection.presentation(
+          columns: selectionColumns,
+          formatters: CREGChartAdapter.formatters)
+        HStack(alignment: .firstTextBaseline) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(summary.label)
+              .font(.subheadline.weight(.semibold))
+            Text(summary.valueDescription)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          Spacer()
+          Button("Clear", action: clearSelection)
+            .buttonStyle(.borderless)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(summary.accessibilityDescription)
+      }
+      ForEach(Array(recommendation.diagnostics.enumerated()), id: \.offset) {
+        _, diagnostic in
+        Label(
+          diagnostic.messageValue.defaultText,
+          systemImage: "exclamationmark.triangle.fill"
+        )
+        .font(.caption)
+        .foregroundStyle(.orange)
+      }
+    }
+  }
+}
+
 extension View {
   /// Full-screen on iPhone; a sheet on the macOS host-test target, which has
   /// no full-screen cover.
