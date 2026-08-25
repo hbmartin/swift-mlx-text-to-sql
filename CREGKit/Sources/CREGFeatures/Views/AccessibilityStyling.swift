@@ -30,13 +30,14 @@ struct CREGAccessibilityActionLayout<Leading: View, Actions: View>: View {
   }
 
   var body: some View {
+    let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
     let layout =
-      dynamicTypeSize.isAccessibilitySize
+      isAccessibilitySize
       ? AnyLayout(VStackLayout(alignment: .leading, spacing: accessibilitySpacing))
       : AnyLayout(HStackLayout(alignment: hStackAlignment, spacing: horizontalSpacing))
     layout {
       leading
-      if !dynamicTypeSize.isAccessibilitySize {
+      if !isAccessibilitySize {
         Spacer(minLength: spacerMinLength)
       }
       actions
@@ -67,15 +68,6 @@ extension View {
   /// the complete shaped region. Keeping label and control geometry together
   /// avoids visually large but only partially tappable outer frames.
   func cregTextButtonLabelTarget() -> some View {
-    self
-      .frame(minHeight: 44)
-      .contentShape(Rectangle())
-  }
-
-  /// Gives a system-styled text control a minimum layout target without
-  /// making the style draw its border around an already 44-point-tall label.
-  /// Apply after `buttonStyle` so only the interactive target expands.
-  func cregStyledTextButtonTarget() -> some View {
     self
       .frame(minHeight: 44)
       .contentShape(Rectangle())

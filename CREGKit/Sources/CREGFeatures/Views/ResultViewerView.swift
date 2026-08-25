@@ -27,6 +27,7 @@ struct ResultViewerView: View {
   @State var presentationPreference: ResultPresentationPreference
   @State var selectedSpecificationID: AutoChartRecommendationID?
   @State var chartSelection: AutoChartSelection<Int>?
+  @State var chartSelectionResultFingerprint: String?
   @State var copyFeedbackMessage: String?
   @State var copyFeedbackTrigger = 0
   @Environment(\.dismiss) var dismiss
@@ -141,6 +142,8 @@ struct ResultViewerView: View {
       initialValue: preference ?? ResultPresentationPreference(mode: .chart))
     self._selectedSpecificationID = State(initialValue: preference?.specificationID)
     self._chartSelection = State(initialValue: initialChartSelection)
+    self._chartSelectionResultFingerprint = State(
+      initialValue: initialChartSelection == nil ? nil : resultFingerprint)
     let request = ResultChartLoader.Request(
       result: result,
       sql: sql,
@@ -220,6 +223,24 @@ struct ResultViewerView: View {
       elapsedMicroseconds: result.elapsedMicroseconds)
   }
 
+  var chartSelectionBinding: Binding<AutoChartSelection<Int>?> {
+    Binding(
+      get: { chartSelection },
+      set: { selection in
+        guard let selection else {
+          clearChartSelection()
+          return
+        }
+        chartSelection = selection
+        chartSelectionResultFingerprint = resultFingerprint
+      })
+  }
+
+  func clearChartSelection() {
+    chartSelection = nil
+    chartSelectionResultFingerprint = nil
+  }
+
   func selectedResultCell(
     in displayRows: [[SQLValue]]
   ) -> SelectedResultCell? {
@@ -284,7 +305,7 @@ struct ResultViewerView: View {
             if let preparedChart = chart.preparedChart {
               AutoChartView(
                 preparedChart: preparedChart,
-                selection: $chartSelection,
+                selection: chartSelectionBinding,
                 presentation: .explorer(plotHeight: 360),
                 formatters: CREGChartAdapter.formatters
               )
@@ -351,6 +372,14 @@ struct ResultViewerView: View {
       selectedCell = nil
     }
     .task(id: chartRequest.key) {
+      if ResultChartSelectionPolicy.isStale(
+        chartSelection,
+        selectionResultFingerprint: chartSelectionResultFingerprint,
+        currentResultFingerprint: resultFingerprint)
+      {
+        clearChartSelection()
+      }
+
       guard
         let update = await analyzeResultPresentation(
           chart,
@@ -360,8 +389,12 @@ struct ResultViewerView: View {
         )
       else { return }
 
-      if update.invalidatesChartSelection(chartSelection) {
-        chartSelection = nil
+      if update.invalidatesChartSelection(
+        chartSelection,
+        selectionResultFingerprint: chartSelectionResultFingerprint,
+        analyzedResultFingerprint: resultFingerprint)
+      {
+        clearChartSelection()
       }
       selectedSpecificationID = update.resolvedSpecificationID
       if case .retained(let authoritativePreference) = update.preferenceReconciliation {
@@ -373,9 +406,8 @@ struct ResultViewerView: View {
       id: chart.preparationTaskKey(
         recommendationID: selectedRecommendation?.id)
     ) {
-      // Analysis reconciliation and chart-type changes own selection
-      // invalidation. Preparation preserves a matching initial selection from
-      // deep links and the preview harness.
+      // Analysis reconciliation and chart-type changes own exact-mark
+      // selection policy; preparing the chosen chart does not mutate it.
       await chart.prepareSelected(selectedRecommendation)
     }
   }

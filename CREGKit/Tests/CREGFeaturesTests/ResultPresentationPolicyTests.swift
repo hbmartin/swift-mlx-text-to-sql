@@ -123,6 +123,24 @@ import Testing
 
 @MainActor
 @Suite struct ResultPreviewAnalysisTests {
+  @Test func leaseListingPreviewUsesAResolvableSelectionSpecification() async throws {
+    let loader = ResultChartLoader(
+      client: CREGChartAnalysisClient.testValue,
+      warmStart: nil)
+    let request = chartTestRequest(
+      result: PreviewFixtures.leaseListingResult,
+      sql: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql,
+      question: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.question,
+      resultFingerprint: "lease-listing-preview")
+
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+
+    let recommendation = try #require(loader.analysis?.primaryChart?.recommendation)
+    #expect(
+      PreviewFixtures.filteredLeaseChartSelection.specificationID
+        == recommendation.specification.id)
+  }
+
   @Test func automaticPreferenceAnalyzesAChartOnAColdLoader() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
@@ -153,8 +171,33 @@ import Testing
 
 @MainActor
 @Suite struct ResultViewerAnalysisTests {
+  @Test func replacementResultInvalidatesSelectionBeforeAnalysisFinishes() {
+    let selection = AutoChartSelection<Int>(
+      sourceRowIDs: [0],
+      family: .bar,
+      specificationID: AutoChartSpecificationID(rawValue: "bar|fund|value"),
+      markID: "core")
+
+    #expect(
+      !ResultChartSelectionPolicy.isStale(
+        nil as AutoChartSelection<Int>?,
+        selectionResultFingerprint: nil,
+        currentResultFingerprint: "current-result"))
+    #expect(
+      !ResultChartSelectionPolicy.isStale(
+        selection,
+        selectionResultFingerprint: "current-result",
+        currentResultFingerprint: "current-result"))
+    #expect(
+      ResultChartSelectionPolicy.isStale(
+        selection,
+        selectionResultFingerprint: "replaced-result",
+        currentResultFingerprint: "current-result"))
+  }
+
   @Test func unavailableAnalysisInvalidatesExactMarkSelection() {
     let update = ResultPresentationAnalysisUpdate.unavailable
+    let resultFingerprint = "current-result"
     let selection = AutoChartSelection<Int>(
       sourceRowIDs: [0],
       family: .bar,
@@ -163,11 +206,21 @@ import Testing
 
     #expect(update.resolvedSpecificationID == nil)
     #expect(update.preferenceReconciliation == .unchanged)
-    #expect(update.invalidatesChartSelection(selection))
+    #expect(
+      update.invalidatesChartSelection(
+        selection,
+        selectionResultFingerprint: resultFingerprint,
+        analyzedResultFingerprint: resultFingerprint))
+    #expect(
+      !update.invalidatesChartSelection(
+        nil as AutoChartSelection<Int>?,
+        selectionResultFingerprint: nil,
+        analyzedResultFingerprint: resultFingerprint))
   }
 
-  @Test func resolvedAnalysisInvalidatesOnlyAMismatchedExactMarkSelection() {
+  @Test func resolvedAnalysisInvalidatesMismatchedChartOrResultSelections() {
     let resolvedID = chartTestRecommendationID("bar|fund|value")
+    let resultFingerprint = "current-result"
     let update = ResultPresentationAnalysisUpdate.resolved(
       specificationID: resolvedID,
       preference: .unchanged)
@@ -182,9 +235,26 @@ import Testing
       specificationID: AutoChartSpecificationID(rawValue: "line|date|value"),
       markID: "2026-08-24")
 
-    #expect(!update.invalidatesChartSelection(nil as AutoChartSelection<Int>?))
-    #expect(!update.invalidatesChartSelection(matchingSelection))
-    #expect(update.invalidatesChartSelection(staleSelection))
+    #expect(
+      !update.invalidatesChartSelection(
+        nil as AutoChartSelection<Int>?,
+        selectionResultFingerprint: nil,
+        analyzedResultFingerprint: resultFingerprint))
+    #expect(
+      !update.invalidatesChartSelection(
+        matchingSelection,
+        selectionResultFingerprint: resultFingerprint,
+        analyzedResultFingerprint: resultFingerprint))
+    #expect(
+      update.invalidatesChartSelection(
+        matchingSelection,
+        selectionResultFingerprint: "replaced-result",
+        analyzedResultFingerprint: resultFingerprint))
+    #expect(
+      update.invalidatesChartSelection(
+        staleSelection,
+        selectionResultFingerprint: resultFingerprint,
+        analyzedResultFingerprint: resultFingerprint))
   }
 
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {

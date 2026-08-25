@@ -65,17 +65,7 @@ import SwiftUI
           question: StarterQueryID.portfolioValueByFundV1.question)
 
       case .resultChartRecovery:
-        VStack(spacing: 0) {
-          ResultChartRecoveryControls(
-            spacing: 12,
-            keepTable: {},
-            retryChart: {}
-          )
-          .padding(.horizontal)
-          .accessibilityIdentifier("result-chart-recovery")
-          Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ResultChartRecoveryAccessibilityHarness()
 
       case .processingQueue:
         ChatView(
@@ -124,6 +114,28 @@ import SwiftUI
       return ChatView(
         store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
         chrome: chrome)
+    }
+  }
+
+  @MainActor
+  private struct ResultChartRecoveryAccessibilityHarness: View {
+    @State private var actionFeedback = "No recovery action"
+
+    var body: some View {
+      VStack(spacing: 8) {
+        ResultChartRecoveryControls(
+          spacing: 12,
+          keepTable: { actionFeedback = "Keep Table selected" },
+          retryChart: { actionFeedback = "Retry Chart selected" }
+        )
+        .padding(.horizontal)
+        .accessibilityIdentifier("result-chart-recovery")
+        Text(actionFeedback)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+        Spacer(minLength: 0)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
 

@@ -66,6 +66,20 @@ enum PreviewFixtures {
       elapsedMicroseconds: 12_400)
   }()
 
+  /// Exact-mark selection used by the filtered-table preview. The column IDs
+  /// match the stable IDs produced by `CREGChartAdapter` for
+  /// `leaseListingResult`; a policy test keeps this fixture aligned with the
+  /// analyzer's resolved recommendation.
+  static let filteredLeaseChartSelection = AutoChartSelection<Int>(
+    sourceRowIDs: [0, 4, 8],
+    family: .range,
+    specificationID: AutoChartSpecification.range(
+      label: "c1-tenant",
+      start: "c4-expiration-date",
+      end: "c4-expiration-date"
+    ).id,
+    markID: "selected-expiration")
+
   static let truncatedResult: QueryResult = {
     var rows: [[SQLValue]] = []
     for index in 0..<500 {
