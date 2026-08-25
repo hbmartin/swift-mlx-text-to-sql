@@ -178,12 +178,13 @@ struct ResultPreviewView: View {
     if let preparedChart = chart.preparedChart {
       AutoChartView(
         preparedChart: preparedChart,
-        presentation: .preview(plotHeight: 156),
+        presentation: .preview(
+          plotHeight: ResultChartLayout.previewPlotHeight),
         formatters: CREGChartAdapter.formatters)
     } else {
       ProgressView("Preparing chart")
         .frame(maxWidth: .infinity)
-        .frame(height: 156)
+        .frame(height: ResultChartLayout.previewPlotHeight)
     }
   }
 

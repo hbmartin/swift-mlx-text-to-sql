@@ -230,16 +230,15 @@ struct ResultViewerView: View {
     let selectionState = $chartSelectionState
     let currentResultFingerprint = resultFingerprint
     let chart = chart
-    let chartRequest = chartRequest
-    let clearSelection = clearChartSelection
+    let chartRequestKey = chartRequest.key
     return Binding(
       get: {
         selectionState.wrappedValue?.selection(
           for: currentResultFingerprint)
       },
       set: { selection in
-        guard let selection, chart.hasLoadedAnalysis(for: chartRequest) else {
-          clearSelection()
+        guard let selection, chart.hasLoadedAnalysis(for: chartRequestKey) else {
+          selectionState.wrappedValue = nil
           return
         }
         selectionState.wrappedValue = ResultChartSelectionState(
@@ -317,14 +316,15 @@ struct ResultViewerView: View {
               AutoChartView(
                 preparedChart: preparedChart,
                 selection: chartSelectionBinding,
-                presentation: .explorer(plotHeight: 360),
+                presentation: .explorer(
+                  plotHeight: ResultChartLayout.explorerPlotHeight),
                 formatters: CREGChartAdapter.formatters
               )
               .padding()
             } else {
               ProgressView("Preparing chart")
                 .frame(maxWidth: .infinity)
-                .frame(height: 360)
+                .frame(height: ResultChartLayout.explorerPlotHeight)
                 .padding()
             }
             if let reason = selectedRecommendation.rationale.first {

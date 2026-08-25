@@ -305,12 +305,26 @@ final class ResultChartLoader {
     ) async throws -> AutoChartPreparedChart<Int>
 
   struct Request: Sendable {
-    var result: QueryResult
-    var sql: String
-    var question: String?
-    var resultFingerprint: String
-    var dataIdentity: String?
-    let key: String
+    struct Key: Hashable, Sendable {
+      let resultFingerprint: String
+      let dataIdentity: String?
+      let sql: String
+      let question: String?
+    }
+
+    let result: QueryResult
+    let sql: String
+    let question: String?
+    let resultFingerprint: String
+    let dataIdentity: String?
+
+    var key: Key {
+      Key(
+        resultFingerprint: resultFingerprint,
+        dataIdentity: dataIdentity,
+        sql: sql,
+        question: question)
+    }
 
     init(
       result: QueryResult,
@@ -324,9 +338,6 @@ final class ResultChartLoader {
       self.question = question
       self.resultFingerprint = resultFingerprint
       self.dataIdentity = dataIdentity
-      self.key =
-        [resultFingerprint, dataIdentity ?? "", sql, question ?? ""]
-        .joined(separator: "|")
     }
   }
 
@@ -335,7 +346,15 @@ final class ResultChartLoader {
     case unavailable
   }
 
-  private(set) var analysis: AutoChartAnalysis<Int>?
+  private struct LoadedAnalysis {
+    let key: Request.Key
+    let value: AutoChartAnalysis<Int>
+  }
+
+  private var loadedAnalysis: LoadedAnalysis?
+  var analysis: AutoChartAnalysis<Int>? {
+    loadedAnalysis?.value
+  }
   private(set) var preparedChart: AutoChartPreparedChart<Int>?
   private var failedPreparationRecommendationID: AutoChartRecommendationID?
   var preparationFailed: Bool {
@@ -343,7 +362,6 @@ final class ResultChartLoader {
   }
   private let analyzeChart: AnalyzeChart
   private let prepareChart: PrepareChart
-  private var loadedKey: String?
   /// The recommendation the loader most recently resolved or was asked to
   /// prepare. A resolution change supersedes preparation still suspended for
   /// the previous recommendation, even when the analysis itself is reused.
@@ -387,8 +405,7 @@ final class ResultChartLoader {
         sql: request.sql,
         dataIdentity: dataIdentity)
     else { return }
-    analysis = cached
-    loadedKey = request.key
+    loadedAnalysis = LoadedAnalysis(key: request.key, value: cached)
     applyResolution(of: cached, preferred: preferredSpecificationID)
   }
 
@@ -400,34 +417,29 @@ final class ResultChartLoader {
     preferredSpecificationID: AutoChartRecommendationID?
   ) async -> Resolution? {
     let loaded: AutoChartAnalysis<Int>
-    if let analysis, loadedKey == request.key {
-      loaded = analysis
+    if let loadedAnalysis, loadedAnalysis.key == request.key {
+      loaded = loadedAnalysis.value
     } else {
       failedPreparationRecommendationID = nil
       resolvedRecommendationID = nil
-      analysis = nil
+      loadedAnalysis = nil
       preparedChart = nil
-      loadedKey = nil
       analysisGeneration += 1
       let requestGeneration = analysisGeneration
       do {
         loaded = try await analyzeChart(request)
-      } catch is CancellationError {
-        return nil
       } catch {
-        guard requestGeneration == analysisGeneration else { return nil }
         return nil
       }
       guard requestGeneration == analysisGeneration else { return nil }
-      analysis = loaded
-      loadedKey = request.key
+      loadedAnalysis = LoadedAnalysis(key: request.key, value: loaded)
     }
     return applyResolution(
       of: loaded, preferred: preferredSpecificationID)
   }
 
-  func hasLoadedAnalysis(for request: Request) -> Bool {
-    analysis != nil && loadedKey == request.key
+  func hasLoadedAnalysis(for key: Request.Key) -> Bool {
+    loadedAnalysis?.key == key
   }
 
   /// Prepares the selected recommendation's chart, reusing the analysis's

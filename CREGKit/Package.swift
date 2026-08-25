@@ -13,9 +13,12 @@ let package = Package(
     .library(name: "CREGApplication", targets: ["CREGApplication"]),
   ],
   dependencies: [
+    // This revision carries recommendation policy v10. CREG intentionally
+    // preserves the user's table/chart mode while clearing v9 chart-type pins;
+    // the exact version tripwire and version-agnostic migration are both tested.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "ea37cfd4e0d19974a0f15ed4df3a5139200bdc06"),
+      revision: "a9dc0c9d2b96cff18e6c82bd865064f4a66a2417"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),

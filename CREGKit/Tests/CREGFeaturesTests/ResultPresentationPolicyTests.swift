@@ -104,10 +104,9 @@ import Testing
   @Test func policyVersionBumpClearsTheExpiredPinWithoutPinningTheDefault() throws {
     let currentVersion = AutoTableCharts.recommendationPolicyVersion
     try #require(currentVersion > 0)
-    let previousVersion = currentVersion - 1
     let storedID = chartTestRecommendationID(
       "policy|line|date|value",
-      policyVersion: previousVersion)
+      policyVersion: currentVersion - 1)
     let resolvedID = chartTestRecommendationID("policy|bar|fund|value")
     let preference = ResultPresentationPreference(
       mode: .chart,
@@ -250,6 +249,32 @@ import Testing
     #expect(
       state.isInvalidated(
         by: update,
+        currentResultFingerprint: "current-result"))
+  }
+
+  @Test func analysisUpdatePreservesOnlyCurrentMatchingSelection() {
+    let matchingID = chartTestRecommendationID("bar|fund|value")
+    let state = ResultChartSelectionState(
+      selection: AutoChartSelection<Int>(
+        sourceRowIDs: [0],
+        family: .bar,
+        specificationID: matchingID.specificationID,
+        markID: "core"),
+      resultFingerprint: "current-result")
+    let matchingUpdate = ResultPresentationAnalysisUpdate.resolved(
+      specificationID: matchingID,
+      preference: .unchanged)
+    let mismatchedUpdate = ResultPresentationAnalysisUpdate.resolved(
+      specificationID: chartTestRecommendationID("line|date|value"),
+      preference: .unchanged)
+
+    #expect(
+      !state.isInvalidated(
+        by: matchingUpdate,
+        currentResultFingerprint: "current-result"))
+    #expect(
+      state.isInvalidated(
+        by: mismatchedUpdate,
         currentResultFingerprint: "current-result"))
   }
 
@@ -435,10 +460,34 @@ import Testing
     let otherRequest = chartTestRequest(
       resultFingerprint: "selection-gate-other")
 
-    #expect(!loader.hasLoadedAnalysis(for: loadedRequest))
+    #expect(!loader.hasLoadedAnalysis(for: loadedRequest.key))
     _ = await loader.analyze(loadedRequest, preferredSpecificationID: nil)
-    #expect(loader.hasLoadedAnalysis(for: loadedRequest))
-    #expect(!loader.hasLoadedAnalysis(for: otherRequest))
+    #expect(loader.hasLoadedAnalysis(for: loadedRequest.key))
+    #expect(!loader.hasLoadedAnalysis(for: otherRequest.key))
+  }
+
+  @Test func requestKeysKeepStructuredComponentsDistinct() {
+    let delimiterInSQL = chartTestRequest(
+      sql: "c|d",
+      question: "e",
+      resultFingerprint: "a",
+      dataIdentity: "b")
+    let delimiterInIdentity = chartTestRequest(
+      sql: "d",
+      question: "e",
+      resultFingerprint: "a",
+      dataIdentity: "b|c")
+    let missingQuestion = chartTestRequest(
+      sql: "SELECT 1",
+      question: nil,
+      resultFingerprint: "nil-question")
+    let emptyQuestion = chartTestRequest(
+      sql: "SELECT 1",
+      question: "",
+      resultFingerprint: "nil-question")
+
+    #expect(delimiterInSQL.key != delimiterInIdentity.key)
+    #expect(missingQuestion.key != emptyQuestion.key)
   }
 
   @Test func reusedAnalysisPreservesItsMatchingPreparedChart() async throws {
@@ -586,6 +635,15 @@ import Testing
     await suspended.value
     #expect(!loader.preparationFailed)
   }
+
+  @Test func firstCallGateRemembersReleaseBeforePause() async {
+    let gate = FirstCallGate()
+
+    await gate.releaseFirstCall()
+
+    #expect(await gate.pauseIfFirstCall())
+    #expect(!(await gate.pauseIfFirstCall()))
+  }
 }
 
 @MainActor
@@ -729,6 +787,7 @@ private actor FirstCallGate {
   private var callCount = 0
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
   private var releaseContinuation: CheckedContinuation<Void, Never>?
+  private var releaseRequested = false
 
   func pauseIfFirstCall() async -> Bool {
     callCount += 1
@@ -737,6 +796,10 @@ private actor FirstCallGate {
     startWaiters.removeAll()
     for waiter in waiters {
       waiter.resume()
+    }
+    if releaseRequested {
+      releaseRequested = false
+      return true
     }
     await withCheckedContinuation { continuation in
       releaseContinuation = continuation
@@ -752,7 +815,11 @@ private actor FirstCallGate {
   }
 
   func releaseFirstCall() {
-    releaseContinuation?.resume()
-    releaseContinuation = nil
+    if let releaseContinuation {
+      self.releaseContinuation = nil
+      releaseContinuation.resume()
+    } else if callCount == 0 {
+      releaseRequested = true
+    }
   }
 }

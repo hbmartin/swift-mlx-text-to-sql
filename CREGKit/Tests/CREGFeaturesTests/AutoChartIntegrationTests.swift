@@ -104,10 +104,7 @@ import Testing
       ("rentable_sqft", .integer(12500), .integer(12500)),
       ("maturity_date", .text("2027-03-15"), .date(CREGChartAdapter.parseISODate("2027-03-15")!)),
     ]
-    let contexts: [AutoChartFormattingContext] = [
-      .axisTick, .markAccessibility, .selectionSummary, .kpi, .detail,
-    ]
-    for context in contexts {
+    for context in AutoChartFormattingContext.allCases {
       for (name, sqlValue, chartValue) in cases {
         let column = AutoChartColumn(id: "value", name: name)
         #expect(
@@ -116,6 +113,27 @@ import Testing
             == PortfolioValueFormatting.displayString(for: sqlValue, column: name))
       }
     }
+  }
+
+  @Test func chartLayoutKeepsExplicitHeightsAcrossDependencyDefaultChange() {
+    #expect(AutoChartPresentation().plotHeight == 280)
+    #expect(AutoChartPresentation.explorer().plotHeight == 280)
+    #expect(ResultChartLayout.previewPlotHeight == 156)
+    #expect(ResultChartLayout.explorerPlotHeight == 360)
+    #expect(
+      AutoChartPresentation.preview(
+        plotHeight: ResultChartLayout.previewPlotHeight
+      ).plotHeight == 156)
+    #expect(
+      AutoChartPresentation.explorer(
+        plotHeight: ResultChartLayout.explorerPlotHeight
+      ).plotHeight == 360)
+  }
+
+  @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
+    // A bump invalidates persisted chart-type pins. Keep this exact assertion
+    // separate from the version-agnostic migration behavior test.
+    #expect(AutoTableCharts.recommendationPolicyVersion == 10)
   }
 }
 

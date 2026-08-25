@@ -116,5 +116,11 @@ jobs:
             | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
                 semgrep-tests/database-input-canonicalization.py
 
+      - name: Test structured identity rule
+        run: |
+          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
+            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
+                semgrep-tests/structured-identity.swift
+
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD

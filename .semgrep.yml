@@ -25,3 +25,12 @@ rules:
           $PATHS, $INPUTS = canonicalize_database_inputs(...)
           ...
           database_set_identity($INPUTS)
+  - id: creg-identity-requires-structured-components
+    message: Use a structured Hashable identity instead of delimiter-joining uncontrolled strings.
+    severity: ERROR
+    languages: [swift]
+    patterns:
+      - pattern: 'self.$IDENTITY = $PARTS.joined(separator: $SEPARATOR)'
+      - metavariable-regex:
+          metavariable: $IDENTITY
+          regex: (?i).*(key|identity).*
