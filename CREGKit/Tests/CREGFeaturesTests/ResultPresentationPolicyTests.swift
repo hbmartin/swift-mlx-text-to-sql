@@ -45,10 +45,11 @@ import Testing
       preparationFailed: false)
 
     #expect(
-      intent == .persist(
-        ResultPresentationPreference(
-          mode: .table,
-          specificationID: nil)))
+      intent
+        == .persist(
+          ResultPresentationPreference(
+            mode: .table,
+            specificationID: nil)))
   }
 
   @Test func selectingChartFromFailedTablePersistsAndRetries() {
@@ -59,7 +60,8 @@ import Testing
         .chart,
         requestedMode: .table,
         preserving: specificationID,
-        preparationFailed: true) == .retryChart(
+        preparationFailed: true)
+        == .retryChart(
           ResultPresentationPreference(
             mode: .chart,
             specificationID: specificationID)))
@@ -192,7 +194,7 @@ import Testing
     #expect(retainedState.selection(for: "current-result") == nil)
     #expect(retainedState.isStale(comparedTo: "current-result"))
     #expect(
-      ResultViewerView.filteredResult(
+      ResultViewerLogic.filteredResult(
         replacementResult,
         selectionState: retainedState,
         currentResultFingerprint: "current-result") == replacementResult)
@@ -231,6 +233,24 @@ import Testing
     #expect(!update.invalidatesChartSelection(nil))
     #expect(!update.invalidatesChartSelection(matchingSelection.specificationID))
     #expect(update.invalidatesChartSelection(staleSelection.specificationID))
+  }
+
+  @Test func analysisUpdateInvalidatesRetainedSelectionFromAReplacedResult() {
+    let state = ResultChartSelectionState(
+      selection: AutoChartSelection<Int>(
+        sourceRowIDs: [0],
+        family: .bar,
+        specificationID: AutoChartSpecificationID(rawValue: "bar|fund|value"),
+        markID: "core"),
+      resultFingerprint: "replaced-result")
+    let update = ResultPresentationAnalysisUpdate.resolved(
+      specificationID: chartTestRecommendationID("bar|fund|value"),
+      preference: .unchanged)
+
+    #expect(
+      state.isInvalidated(
+        by: update,
+        currentResultFingerprint: "current-result"))
   }
 
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
@@ -406,6 +426,19 @@ import Testing
 
     #expect(resolution == nil)
     #expect(loader.analysis == nil)
+  }
+
+  @Test func selectionGateAcceptsOnlyTheCurrentlyLoadedRequest() async {
+    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loadedRequest = chartTestRequest(
+      resultFingerprint: "selection-gate-loaded")
+    let otherRequest = chartTestRequest(
+      resultFingerprint: "selection-gate-other")
+
+    #expect(!loader.hasLoadedAnalysis(for: loadedRequest))
+    _ = await loader.analyze(loadedRequest, preferredSpecificationID: nil)
+    #expect(loader.hasLoadedAnalysis(for: loadedRequest))
+    #expect(!loader.hasLoadedAnalysis(for: otherRequest))
   }
 
   @Test func reusedAnalysisPreservesItsMatchingPreparedChart() async throws {
@@ -646,62 +679,35 @@ import Testing
 }
 
 private actor SupersededChartPreparationGate {
-  private var preparationCount = 0
-  private var startWaiters: [CheckedContinuation<Void, Never>] = []
-  private var releaseContinuation: CheckedContinuation<Void, Never>?
+  private let firstCallGate = FirstCallGate()
 
   func prepare(
     _ analysis: AutoChartAnalysis<Int>,
     recommendationID: AutoChartRecommendationID
   ) async throws -> AutoChartPreparedChart<Int> {
-    preparationCount += 1
-    guard preparationCount == 1 else {
+    guard await firstCallGate.pauseIfFirstCall() else {
       return try await analysis.prepare(recommendationID)
-    }
-    let waiters = startWaiters
-    startWaiters.removeAll()
-    for waiter in waiters {
-      waiter.resume()
-    }
-    await withCheckedContinuation { continuation in
-      releaseContinuation = continuation
     }
     throw PreferenceSaveTestError.failed
   }
 
   func waitUntilFirstPreparationStarts() async {
-    guard preparationCount == 0 else { return }
-    await withCheckedContinuation { continuation in
-      startWaiters.append(continuation)
-    }
+    await firstCallGate.waitUntilFirstCallStarts()
   }
 
-  func releaseFirstPreparation() {
-    releaseContinuation?.resume()
-    releaseContinuation = nil
+  func releaseFirstPreparation() async {
+    await firstCallGate.releaseFirstCall()
   }
 }
 
 private actor SupersededChartAnalysisGate {
   private let client = CREGChartAnalysisClient.testValue
-  private var analysisCount = 0
-  private var startWaiters: [CheckedContinuation<Void, Never>] = []
-  private var releaseContinuation: CheckedContinuation<Void, Never>?
+  private let firstCallGate = FirstCallGate()
 
   func analyze(
     _ request: ResultChartLoader.Request
   ) async throws -> AutoChartAnalysis<Int> {
-    analysisCount += 1
-    if analysisCount == 1 {
-      let waiters = startWaiters
-      startWaiters.removeAll()
-      for waiter in waiters {
-        waiter.resume()
-      }
-      await withCheckedContinuation { continuation in
-        releaseContinuation = continuation
-      }
-    }
+    _ = await firstCallGate.pauseIfFirstCall()
     return try await client.analyze(
       result: request.result,
       sql: request.sql,
@@ -711,13 +717,41 @@ private actor SupersededChartAnalysisGate {
   }
 
   func waitUntilFirstAnalysisStarts() async {
-    guard analysisCount == 0 else { return }
+    await firstCallGate.waitUntilFirstCallStarts()
+  }
+
+  func releaseFirstAnalysis() async {
+    await firstCallGate.releaseFirstCall()
+  }
+}
+
+private actor FirstCallGate {
+  private var callCount = 0
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func pauseIfFirstCall() async -> Bool {
+    callCount += 1
+    guard callCount == 1 else { return false }
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
+    await withCheckedContinuation { continuation in
+      releaseContinuation = continuation
+    }
+    return true
+  }
+
+  func waitUntilFirstCallStarts() async {
+    guard callCount == 0 else { return }
     await withCheckedContinuation { continuation in
       startWaiters.append(continuation)
     }
   }
 
-  func releaseFirstAnalysis() {
+  func releaseFirstCall() {
     releaseContinuation?.resume()
     releaseContinuation = nil
   }

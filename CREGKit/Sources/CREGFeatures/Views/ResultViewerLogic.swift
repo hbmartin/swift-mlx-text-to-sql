@@ -74,6 +74,26 @@ public enum ResultViewerLogic {
       .map(\.element)
   }
 
+  static func filteredResult(
+    _ result: QueryResult,
+    selectionState: ResultChartSelectionState?,
+    currentResultFingerprint: String
+  ) -> QueryResult {
+    guard
+      let indexes = selectionState?.selection(
+        for: currentResultFingerprint)?.sourceRowIDs
+    else {
+      return result
+    }
+    return QueryResult(
+      columns: result.columns,
+      rows: result.rows.enumerated().compactMap { index, row in
+        indexes.contains(index) ? row : nil
+      },
+      isTruncated: result.isTruncated,
+      elapsedMicroseconds: result.elapsedMicroseconds)
+  }
+
   public static func truncationLabel(for result: QueryResult) -> String? {
     guard result.isTruncated else { return nil }
     return "First \(result.rowCount)+ rows"

@@ -213,30 +213,10 @@ struct ResultViewerView: View {
   }
 
   var filteredResult: QueryResult {
-    Self.filteredResult(
+    ResultViewerLogic.filteredResult(
       result,
       selectionState: chartSelectionState,
       currentResultFingerprint: resultFingerprint)
-  }
-
-  static func filteredResult(
-    _ result: QueryResult,
-    selectionState: ResultChartSelectionState?,
-    currentResultFingerprint: String
-  ) -> QueryResult {
-    guard
-      let indexes = selectionState?.selection(
-        for: currentResultFingerprint)?.sourceRowIDs
-    else {
-      return result
-    }
-    return QueryResult(
-      columns: result.columns,
-      rows: result.rows.enumerated().compactMap { index, row in
-        indexes.contains(index) ? row : nil
-      },
-      isTruncated: result.isTruncated,
-      elapsedMicroseconds: result.elapsedMicroseconds)
   }
 
   /// A retained SwiftUI state value can belong to the preceding result
@@ -249,19 +229,17 @@ struct ResultViewerView: View {
   var chartSelectionBinding: Binding<AutoChartSelection<Int>?> {
     let selectionState = $chartSelectionState
     let currentResultFingerprint = resultFingerprint
-    let acceptsSelection = chart.hasLoadedAnalysis(for: chartRequest)
+    let chart = chart
+    let chartRequest = chartRequest
+    let clearSelection = clearChartSelection
     return Binding(
       get: {
         selectionState.wrappedValue?.selection(
           for: currentResultFingerprint)
       },
       set: { selection in
-        guard let selection else {
-          selectionState.wrappedValue = nil
-          return
-        }
-        guard acceptsSelection else {
-          selectionState.wrappedValue = nil
+        guard let selection, chart.hasLoadedAnalysis(for: chartRequest) else {
+          clearSelection()
           return
         }
         selectionState.wrappedValue = ResultChartSelectionState(
@@ -387,7 +365,8 @@ struct ResultViewerView: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
           if chartRecommendations.count > 1,
-            presentationPreference.mode == .chart || chart.preparationFailed {
+            presentationPreference.mode == .chart || chart.preparationFailed
+          {
             chartTypeMenu
           }
           textSizeMenu
@@ -418,7 +397,10 @@ struct ResultViewerView: View {
         )
       else { return }
 
-      if update.invalidatesChartSelection(chartSelection?.specificationID) {
+      if chartSelectionState?.isInvalidated(
+        by: update,
+        currentResultFingerprint: resultFingerprint
+      ) == true {
         clearChartSelection()
       }
       selectedSpecificationID = update.resolvedSpecificationID

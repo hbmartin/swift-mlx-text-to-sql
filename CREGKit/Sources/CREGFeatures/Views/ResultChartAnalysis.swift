@@ -310,10 +310,22 @@ final class ResultChartLoader {
     var question: String?
     var resultFingerprint: String
     var dataIdentity: String?
+    let key: String
 
-    /// Stable identity for the analyze task and the warm-start check.
-    var key: String {
-      [resultFingerprint, dataIdentity ?? "", sql, question ?? ""]
+    init(
+      result: QueryResult,
+      sql: String,
+      question: String?,
+      resultFingerprint: String,
+      dataIdentity: String?
+    ) {
+      self.result = result
+      self.sql = sql
+      self.question = question
+      self.resultFingerprint = resultFingerprint
+      self.dataIdentity = dataIdentity
+      self.key =
+        [resultFingerprint, dataIdentity ?? "", sql, question ?? ""]
         .joined(separator: "|")
     }
   }
@@ -323,7 +335,6 @@ final class ResultChartLoader {
     case unavailable
   }
 
-  private let client: CREGChartAnalysisClient
   private(set) var analysis: AutoChartAnalysis<Int>?
   private(set) var preparedChart: AutoChartPreparedChart<Int>?
   private var failedPreparationRecommendationID: AutoChartRecommendationID?
@@ -355,7 +366,6 @@ final class ResultChartLoader {
     analyzeChart: AnalyzeChart? = nil,
     prepareChart: PrepareChart? = nil
   ) {
-    self.client = client
     self.analyzeChart =
       analyzeChart ?? { request in
         try await client.analyze(
@@ -406,8 +416,6 @@ final class ResultChartLoader {
         return nil
       } catch {
         guard requestGeneration == analysisGeneration else { return nil }
-        analysis = nil
-        loadedKey = nil
         return nil
       }
       guard requestGeneration == analysisGeneration else { return nil }
@@ -419,7 +427,7 @@ final class ResultChartLoader {
   }
 
   func hasLoadedAnalysis(for request: Request) -> Bool {
-    loadedKey == request.key
+    analysis != nil && loadedKey == request.key
   }
 
   /// Prepares the selected recommendation's chart, reusing the analysis's
