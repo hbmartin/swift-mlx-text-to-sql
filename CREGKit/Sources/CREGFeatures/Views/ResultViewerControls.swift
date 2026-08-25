@@ -40,13 +40,13 @@ extension ResultViewerView {
 
   var clearChartSelectionButton: some View {
     Button {
-      chartSelection = nil
+      clearChartSelection()
     } label: {
       Label("Clear chart filter", systemImage: "xmark.circle.fill")
         .font(.caption.weight(.medium))
+        .cregTextButtonLabelTarget()
     }
     .buttonStyle(.bordered)
-    .cregStyledTextButtonTarget()
     .accessibilityIdentifier("clear-chart-selection")
   }
 
@@ -108,9 +108,9 @@ extension ResultViewerView {
         searchText = ""
       } label: {
         Text("Clear Search")
+          .cregTextButtonLabelTarget()
       }
       .buttonStyle(.borderedProminent)
-      .cregStyledTextButtonTarget()
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CREGBrand.chatSurface.opacity(0.96))
@@ -156,7 +156,7 @@ extension ResultViewerView {
             guard id != selectedSpecificationID else { return }
             let isRecoveringFromFailure = chart.preparationFailed
             selectedSpecificationID = id
-            chartSelection = nil
+            clearChartSelection()
             let updated = ResultViewerLogic.chartTypeSelectionPreference(
               specificationID: id)
             presentationPreference = updated

@@ -17,6 +17,18 @@ enum ResultPresentationPreferenceReconciliation: Equatable {
   case messageMissing
 }
 
+/// Exact-mark row IDs index one result revision. A matching chart
+/// specification alone cannot make a selection safe for replacement data.
+enum ResultChartSelectionPolicy {
+  static func isStale<RowID>(
+    _ selection: AutoChartSelection<RowID>?,
+    selectionResultFingerprint: String?,
+    currentResultFingerprint: String
+  ) -> Bool where RowID: Hashable & Sendable {
+    selection != nil && selectionResultFingerprint != currentResultFingerprint
+  }
+}
+
 enum ResultPresentationAnalysisUpdate: Equatable {
   case resolved(
     specificationID: AutoChartRecommendationID,
@@ -38,11 +50,20 @@ enum ResultPresentationAnalysisUpdate: Equatable {
   }
 
   func invalidatesChartSelection<RowID>(
-    _ selection: AutoChartSelection<RowID>?
+    _ selection: AutoChartSelection<RowID>?,
+    selectionResultFingerprint: String?,
+    analyzedResultFingerprint: String
   ) -> Bool where RowID: Hashable & Sendable {
+    if ResultChartSelectionPolicy.isStale(
+      selection,
+      selectionResultFingerprint: selectionResultFingerprint,
+      currentResultFingerprint: analyzedResultFingerprint)
+    {
+      return true
+    }
+    guard let selection else { return false }
     switch self {
     case .resolved(let specificationID, _):
-      guard let selection else { return false }
       return selection.specificationID != specificationID.specificationID
     case .unavailable:
       return true

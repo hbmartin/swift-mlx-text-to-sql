@@ -76,14 +76,7 @@ import SwiftUI
     sql: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.sql,
     question: StarterQueryID.leaseExpirationsNextTwelveMonthsV1.question,
     preference: ResultPresentationPreference(mode: .table),
-    initialChartSelection: AutoChartSelection(
-      sourceRowIDs: [0, 4, 8],
-      dimensions: [],
-      measure: nil,
-      family: .range,
-      specificationID: AutoChartSpecification.range(
-        label: "lease", start: "start", end: "end").id,
-      markID: "selected-expiration"))
+    initialChartSelection: PreviewFixtures.filteredLeaseChartSelection)
     .frame(width: 402, height: 874)
 }
 

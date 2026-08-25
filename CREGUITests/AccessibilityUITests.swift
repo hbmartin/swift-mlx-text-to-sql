@@ -77,6 +77,16 @@ final class AccessibilityUITests: XCTestCase {
       assertAccessibleControl("Keep Table", in: app)
       assertAccessibleControl("Retry Chart", in: app)
 
+      XCTAssertTrue(app.staticTexts["No recovery action"].waitForExistence(timeout: 5))
+      app.descendants(matching: .any)["Keep Table"]
+        .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        .tap()
+      XCTAssertTrue(app.staticTexts["Keep Table selected"].waitForExistence(timeout: 5))
+      app.descendants(matching: .any)["Retry Chart"]
+        .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95))
+        .tap()
+      XCTAssertTrue(app.staticTexts["Retry Chart selected"].waitForExistence(timeout: 5))
+
       if size == "ax5" {
         let status = app.staticTexts["Chart unavailable"]
         XCTAssertTrue(status.waitForExistence(timeout: 5))

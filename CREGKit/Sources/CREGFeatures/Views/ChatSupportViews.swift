@@ -226,11 +226,12 @@ struct InterruptedTurnBanner: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
-    let bannerLayout =
-      dynamicTypeSize.isAccessibilitySize
-      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
-      : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
-    bannerLayout {
+    CREGAccessibilityActionLayout(
+      hStackAlignment: .firstTextBaseline,
+      horizontalSpacing: 10,
+      accessibilitySpacing: 6,
+      spacerMinLength: 4
+    ) {
       VStack(alignment: .leading, spacing: 3) {
         Text("Interrupted before it finished")
           .font(.footnote.weight(.semibold))
@@ -239,9 +240,7 @@ struct InterruptedTurnBanner: View {
           .foregroundStyle(.secondary)
           .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
       }
-      if !dynamicTypeSize.isAccessibilitySize {
-        Spacer(minLength: 4)
-      }
+    } actions: {
       HStack(spacing: 4) {
         Button(action: askAgain) {
           Text("Ask Again")
@@ -271,11 +270,12 @@ struct CorrectionContextBanner: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
-    let bannerLayout =
-      dynamicTypeSize.isAccessibilitySize
-      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
-      : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
-    bannerLayout {
+    CREGAccessibilityActionLayout(
+      hStackAlignment: .firstTextBaseline,
+      horizontalSpacing: 10,
+      accessibilitySpacing: 6,
+      spacerMinLength: 4
+    ) {
       Image(systemName: "arrow.uturn.backward.circle")
         .foregroundStyle(.orange)
       VStack(alignment: .leading, spacing: 2) {
@@ -286,9 +286,7 @@ struct CorrectionContextBanner: View {
           .foregroundStyle(.secondary)
           .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
       }
-      if !dynamicTypeSize.isAccessibilitySize {
-        Spacer(minLength: 4)
-      }
+    } actions: {
       Button(action: dismiss) {
         Image(systemName: "xmark")
           .foregroundStyle(.secondary)
