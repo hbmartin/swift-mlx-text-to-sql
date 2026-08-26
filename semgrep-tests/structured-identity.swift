@@ -104,6 +104,30 @@ struct SwitchIdentityWithDisplayWork {
   }
 }
 
+struct SwitchIdentityWithDisplayCall {
+  enum Mode {
+    case enabled
+    case disabled
+  }
+
+  let parts: [String]
+  let mode: Mode
+  let structuredIdentity: String
+
+  var resultIdentity: String {
+    switch mode {
+    case .enabled:
+      // ok: creg-identity-requires-structured-components
+      render(parts.joined(separator: " | "))
+      structuredIdentity
+    case .disabled:
+      structuredIdentity
+    }
+  }
+
+  private func render(_ value: String) {}
+}
+
 struct SwitchLocallyStagedDelimitedIdentity {
   enum Mode {
     case disabled
@@ -121,6 +145,88 @@ struct SwitchLocallyStagedDelimitedIdentity {
       let encoded = parts.joined(separator: "|")
       // ruleid: creg-identity-requires-structured-components
       encoded
+    }
+  }
+}
+
+struct SwitchDefaultDelimitedIdentity {
+  enum Mode {
+    case enabled
+    case disabled
+  }
+
+  let parts: [String]
+  let mode: Mode
+
+  var exportIdentity: String {
+    switch mode {
+    case .enabled:
+      // ruleid: creg-identity-requires-structured-components
+      parts.joined(separator: "|")
+    default:
+      "disabled"
+    }
+  }
+}
+
+struct SwitchDelimitedDefaultIdentity {
+  enum Mode {
+    case enabled
+    case disabled
+  }
+
+  let parts: [String]
+  let mode: Mode
+
+  var exportCacheKey: String {
+    switch mode {
+    case .enabled:
+      "enabled"
+    default:
+      // ruleid: creg-identity-requires-structured-components
+      parts.joined(separator: "|")
+    }
+  }
+}
+
+struct SwitchSingleCombinedCaseDelimitedIdentity {
+  enum Mode {
+    case enabled
+    case pending
+  }
+
+  let parts: [String]
+  let mode: Mode
+
+  var tenantCacheKey: String {
+    switch mode {
+    case .enabled, .pending:
+      // ruleid: creg-identity-requires-structured-components
+      parts.joined(separator: "|")
+    }
+  }
+}
+
+struct SwitchThreeCaseDelimitedIdentity {
+  enum Mode {
+    case disabled
+    case enabled
+    case pending
+  }
+
+  let parts: [String]
+  let mode: Mode
+
+  var preparationTaskKey: String {
+    switch mode {
+    case .disabled:
+      "disabled"
+    case .enabled:
+      let encoded = parts.joined(separator: "|")
+      // ruleid: creg-identity-requires-structured-components
+      encoded
+    case .pending:
+      "pending"
     }
   }
 }

@@ -158,6 +158,20 @@ private enum ResultChartPreparationPreviewFixtures {
     .frame(width: 402)
 }
 
+#Preview("Result Chart Preparation — Compact Title") {
+  ResultChartPreparationView(
+    recommendation: ResultChartPreparationPreviewFixtures.recommendation,
+    presentation: AutoChartPresentation(
+      plotHeight: ResultChartLayout.previewPlotHeight,
+      chrome: [.title, .diagnostics],
+      interactions: [],
+      typography: .compact),
+    formatters: CREGChartAdapter.formatters,
+    textResolver: CREGChartAdapter.textResolver)
+    .padding()
+    .frame(width: 370)
+}
+
 #Preview("Result Chart Recovery Controls — Standard") {
   ResultChartRecoveryControls(spacing: 12, keepTable: {}, retryChart: {})
     .padding()

@@ -43,10 +43,15 @@ struct ResultChartPreparationView: View {
         !recommendation.specification.title.isEmpty
       {
         Text(recommendation.specification.title)
-          .font(.headline)
+          .font(
+            presentation.typography == .compact
+              ? .subheadline.weight(.semibold) : .headline)
+          .lineLimit(presentation.typography == .compact ? 2 : nil)
       }
       ProgressView("Preparing chart")
-        .frame(maxWidth: .infinity)
+        .frame(
+          maxWidth: .infinity,
+          maxHeight: presentation.plotHeight == nil ? .infinity : nil)
         .frame(height: presentation.plotHeight)
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
@@ -93,7 +98,7 @@ struct ResultChartPreparationView: View {
         : recommendation.specification.title
     )
     .accessibilityIdentifier(
-      "auto-chart-\(recommendation.specification.family.rawValue)")
+      "auto-chart-preparing-\(recommendation.specification.family.rawValue)")
   }
 }
 
