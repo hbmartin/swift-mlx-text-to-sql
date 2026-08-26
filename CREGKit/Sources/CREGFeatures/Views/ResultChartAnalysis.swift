@@ -197,13 +197,9 @@ final class ChartAnalysisSnapshotStore: @unchecked Sendable {
       return nil
     }
     guard entry.contextKey == contextKey else {
-      // The revision is current but its question-derived analysis context is
-      // not. This entry can never warm-start the canonical request for this
-      // message, so release its budget immediately instead of waiting for the
-      // replacement analysis to finish successfully.
-      entries.removeValue(forKey: identity)
-      recency.removeAll { $0 == identity }
-      retainedCost -= entry.retainedCost
+      // A superseded SwiftUI surface can still probe its old question while a
+      // newer surface owns the current snapshot. Reads must remain
+      // non-destructive so that obsolete probes cannot evict the replacement.
       misses += 1
       return nil
     }

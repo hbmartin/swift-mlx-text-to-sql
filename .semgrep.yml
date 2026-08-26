@@ -37,7 +37,7 @@ rules:
           - pattern: 'self.$IDENTITY = $VALUE'
           - metavariable-regex:
               metavariable: $IDENTITY
-              regex: (?i)^(request|cache|data|database|model|result|snapshot|evaluation|conversation|chartdata)?(key|identity)$
+              regex: &structured-identity-name (?i)^(?!(?:display|label|text)(?:key|identity)$).*(?:key|identity)$
       - patterns:
           - pattern: |
               var $IDENTITY: $TYPE {
@@ -47,7 +47,7 @@ rules:
           - focus-metavariable: $VALUE
           - metavariable-regex:
               metavariable: $IDENTITY
-              regex: (?i)^(request|cache|data|database|model|result|snapshot|evaluation|conversation|chartdata)?(key|identity)$
+              regex: *structured-identity-name
       - patterns:
           - pattern: |
               var $IDENTITY: $TYPE {
@@ -60,7 +60,29 @@ rules:
                 return $RETURNED
                 ...
               }
+          - pattern-not: |
+              var $IDENTITY: $TYPE {
+                switch $SUBJECT {
+                case $CASE:
+                  ...
+                }
+              }
           - focus-metavariable: $VALUE
           - metavariable-regex:
               metavariable: $IDENTITY
-              regex: (?i)^(request|cache|data|database|model|result|snapshot|evaluation|conversation|chartdata)?(key|identity)$
+              regex: *structured-identity-name
+      # Semgrep 1.170 does not propagate taint from a switch-expression branch
+      # to the whole implicit-return switch. Match the forbidden join directly
+      # when the switch is the computed identity's complete expression body.
+      - patterns:
+          - pattern-inside: |
+              var $IDENTITY: $TYPE {
+                switch $SUBJECT {
+                case $CASE:
+                  ...
+                }
+              }
+          - pattern: '$PARTS.joined(separator: $SEPARATOR)'
+          - metavariable-regex:
+              metavariable: $IDENTITY
+              regex: *structured-identity-name
