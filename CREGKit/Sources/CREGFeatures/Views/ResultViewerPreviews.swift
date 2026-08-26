@@ -133,7 +133,8 @@ private enum ResultChartPreparationPreviewFixtures {
     recommendation: ResultChartPreparationPreviewFixtures.recommendation,
     presentation: .preview(
       plotHeight: ResultChartLayout.previewPlotHeight),
-    formatters: CREGChartAdapter.formatters)
+    formatters: CREGChartAdapter.formatters,
+    textResolver: CREGChartAdapter.textResolver)
     .padding()
     .frame(width: 370)
 }
@@ -151,22 +152,10 @@ private enum ResultChartPreparationPreviewFixtures {
         columns: ResultChartPreparationPreviewFixtures.columns,
         clear: { selection = nil })
     },
-    formatters: CREGChartAdapter.formatters)
+    formatters: CREGChartAdapter.formatters,
+    textResolver: CREGChartAdapter.textResolver)
     .padding()
     .frame(width: 402)
-}
-
-#Preview("Result Chart Preparation — Compact Title") {
-  ResultChartPreparationView(
-    recommendation: ResultChartPreparationPreviewFixtures.recommendation,
-    presentation: AutoChartPresentation(
-      plotHeight: ResultChartLayout.previewPlotHeight,
-      chrome: [.title, .diagnostics],
-      interactions: [],
-      typography: .compact),
-    formatters: CREGChartAdapter.formatters)
-    .padding()
-    .frame(width: 370)
 }
 
 #Preview("Result Chart Recovery Controls — Standard") {

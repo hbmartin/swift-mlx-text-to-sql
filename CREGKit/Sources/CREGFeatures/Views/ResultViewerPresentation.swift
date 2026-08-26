@@ -19,7 +19,6 @@ struct ResultChartPreparationView: View {
 
   let recommendation: AutoChartRecommendation
   let presentation: AutoChartPresentation
-  let plotHeight: CGFloat
   let selection: SelectionConfiguration?
   let formatters: AutoChartFormatters
   let textResolver: AutoChartTextResolver
@@ -28,16 +27,11 @@ struct ResultChartPreparationView: View {
     recommendation: AutoChartRecommendation,
     presentation: AutoChartPresentation,
     selection: SelectionConfiguration? = nil,
-    formatters: AutoChartFormatters = .init(),
-    textResolver: AutoChartTextResolver = .default
+    formatters: AutoChartFormatters,
+    textResolver: AutoChartTextResolver
   ) {
-    guard let plotHeight = presentation.plotHeight else {
-      preconditionFailure(
-        "ResultChartPreparationView requires a reserved plot height")
-    }
     self.recommendation = recommendation
     self.presentation = presentation
-    self.plotHeight = plotHeight
     self.selection = selection
     self.formatters = formatters
     self.textResolver = textResolver
@@ -49,14 +43,11 @@ struct ResultChartPreparationView: View {
         !recommendation.specification.title.isEmpty
       {
         Text(recommendation.specification.title)
-          .font(
-            presentation.typography == .compact
-              ? .subheadline.weight(.semibold) : .headline)
-          .lineLimit(presentation.typography == .compact ? 2 : nil)
+          .font(.headline)
       }
       ProgressView("Preparing chart")
         .frame(maxWidth: .infinity)
-        .frame(height: plotHeight)
+        .frame(height: presentation.plotHeight)
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,
@@ -95,6 +86,14 @@ struct ResultChartPreparationView: View {
         }
       }
     }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(
+      recommendation.specification.title.isEmpty
+        ? recommendation.specification.family.displayName
+        : recommendation.specification.title
+    )
+    .accessibilityIdentifier(
+      "auto-chart-\(recommendation.specification.family.rawValue)")
   }
 }
 

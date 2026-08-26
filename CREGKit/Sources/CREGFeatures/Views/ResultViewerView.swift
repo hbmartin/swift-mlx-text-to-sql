@@ -327,7 +327,8 @@ struct ResultViewerView: View {
                 selection: chartSelectionBinding,
                 presentation: .explorer(
                   plotHeight: ResultChartLayout.explorerPlotHeight),
-                formatters: CREGChartAdapter.formatters
+                formatters: CREGChartAdapter.formatters,
+                textResolver: CREGChartAdapter.textResolver
               )
               .padding()
             } else {
@@ -341,11 +342,14 @@ struct ResultViewerView: View {
                     columns: analysis.columnProfiles.map(\.column),
                     clear: clearChartSelection)
                 },
-                formatters: CREGChartAdapter.formatters)
+                formatters: CREGChartAdapter.formatters,
+                textResolver: CREGChartAdapter.textResolver)
                 .padding()
             }
             if let reason = selectedRecommendation.rationale.first {
-              Label(reason.defaultText, systemImage: "lightbulb")
+              Label(
+                CREGChartAdapter.textResolver(reason),
+                systemImage: "lightbulb")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)

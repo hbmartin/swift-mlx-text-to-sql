@@ -81,6 +81,78 @@ struct SwitchDelimitedIdentity {
   }
 }
 
+struct SwitchIdentityWithDisplayWork {
+  enum Mode {
+    case enabled
+    case disabled
+  }
+
+  let parts: [String]
+  let mode: Mode
+  let structuredIdentity: String
+
+  var resultIdentity: String {
+    switch mode {
+    case .enabled:
+      // ok: creg-identity-requires-structured-components
+      let displayValue = parts.joined(separator: " | ")
+      _ = displayValue
+      structuredIdentity
+    case .disabled:
+      structuredIdentity
+    }
+  }
+}
+
+struct SwitchLocallyStagedDelimitedIdentity {
+  enum Mode {
+    case disabled
+    case enabled
+  }
+
+  let parts: [String]
+  let mode: Mode
+
+  var snapshotKey: String {
+    switch mode {
+    case .disabled:
+      "disabled"
+    case .enabled:
+      let encoded = parts.joined(separator: "|")
+      // ruleid: creg-identity-requires-structured-components
+      encoded
+    }
+  }
+}
+
+struct IfDelimitedIdentity {
+  let parts: [String]
+  let enabled: Bool
+
+  var cacheIdentity: String {
+    // ruleid: creg-identity-requires-structured-components
+    if enabled {
+      parts.joined(separator: "|")
+    } else {
+      "disabled"
+    }
+  }
+}
+
+struct DisplayOrUnrelatedSuffixNames {
+  let parts: [String]
+
+  var displayCacheKey: String {
+    // ok: creg-identity-requires-structured-components
+    parts.joined(separator: " | ")
+  }
+
+  var monkey: String {
+    // ok: creg-identity-requires-structured-components
+    parts.joined(separator: " | ")
+  }
+}
+
 struct DisplayIdentityLabel {
   let parts: [String]
 

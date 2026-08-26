@@ -130,6 +130,26 @@ import Testing
       ).plotHeight == 360)
   }
 
+  @MainActor
+  @Test func chartPreparationAcceptsContainerManagedHeight() {
+    let category = AutoChartColumnID(rawValue: "category")
+    let measure = AutoChartColumnID(rawValue: "measure")
+    let recommendation = AutoChartRecommendation(
+      specification: .bar(
+        category: category,
+        measure: measure,
+        title: "Container-managed chart"),
+      score: 1,
+      rationale: [])
+    let preparation = ResultChartPreparationView(
+      recommendation: recommendation,
+      presentation: .explorer(plotHeight: nil),
+      formatters: CREGChartAdapter.formatters,
+      textResolver: CREGChartAdapter.textResolver)
+
+    #expect(preparation.presentation.plotHeight == nil)
+  }
+
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
     // A bump invalidates persisted chart-type pins. Keep this exact assertion
     // separate from the version-agnostic migration behavior test.
