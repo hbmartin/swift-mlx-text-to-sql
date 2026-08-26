@@ -131,7 +131,7 @@ import Testing
   }
 
   @MainActor
-  @Test func chartPreparationAcceptsContainerManagedHeight() {
+  @Test func chartPreparationRendersInContainerManagedHeight() {
     let category = AutoChartColumnID(rawValue: "category")
     let measure = AutoChartColumnID(rawValue: "measure")
     let recommendation = AutoChartRecommendation(
@@ -141,13 +141,19 @@ import Testing
         title: "Container-managed chart"),
       score: 1,
       rationale: [])
-    let preparation = ResultChartPreparationView(
-      recommendation: recommendation,
-      presentation: .explorer(plotHeight: nil),
-      formatters: CREGChartAdapter.formatters,
-      textResolver: CREGChartAdapter.textResolver)
+    let renderer = ImageRenderer(
+      content: ResultChartPreparationView(
+        recommendation: recommendation,
+        presentation: .explorer(plotHeight: nil),
+        formatters: CREGChartAdapter.formatters,
+        textResolver: CREGChartAdapter.textResolver)
+        .frame(width: 320, height: 240)
+    )
+    renderer.scale = 1
 
-    #expect(preparation.presentation.plotHeight == nil)
+    let image = renderer.cgImage
+    #expect(image?.width == 320)
+    #expect(image?.height == 240)
   }
 
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {

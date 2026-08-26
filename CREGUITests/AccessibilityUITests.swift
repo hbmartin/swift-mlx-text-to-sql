@@ -121,6 +121,9 @@ final class AccessibilityUITests: XCTestCase {
       app.descendants(matching: .any)["auto-chart-bar"]
         .waitForExistence(timeout: 5),
       "portfolioValueByFundV1 is expected to use the bar family")
+    XCTAssertFalse(
+      app.descendants(matching: .any)["auto-chart-preparing-bar"].exists,
+      "The rendered-chart signal must not be satisfied by its loading placeholder")
     XCTAssertTrue(
       app.descendants(matching: .any)["result-chart-type"]
         .waitForExistence(timeout: 5))
