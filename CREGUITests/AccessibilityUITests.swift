@@ -11,6 +11,7 @@ final class AccessibilityUITests: XCTestCase {
     "settings",
     "result-preview",
     "result-explorer",
+    "result-chart-preparation",
     "result-chart-recovery",
     "transient-banners",
   ]
@@ -134,6 +135,25 @@ final class AccessibilityUITests: XCTestCase {
     XCTAssertTrue(
       app.descendants(matching: .any)["result-table-explorer"]
         .waitForExistence(timeout: 5))
+    app.terminate()
+  }
+
+  func testChartPreparationHasDistinctIdentityAndFillsManagedHeight() {
+    let app = launch(scenario: "result-chart-preparation")
+    XCTAssertFalse(app.descendants(matching: .any)["auto-chart-bar"].exists)
+
+    let plot = app.descendants(matching: .any)["auto-chart-preparing-plot"]
+    XCTAssertTrue(plot.waitForExistence(timeout: 5))
+
+    let title = app.staticTexts["Portfolio value by fund"]
+    let diagnostic =
+      app.staticTexts["Long fund names may be shortened on the category axis."]
+    XCTAssertTrue(title.waitForExistence(timeout: 5))
+    XCTAssertTrue(diagnostic.waitForExistence(timeout: 5))
+    XCTAssertGreaterThan(
+      diagnostic.frame.minY - title.frame.maxY,
+      100,
+      "A nil plot height should leave flexible plot space between the chrome")
     app.terminate()
   }
 

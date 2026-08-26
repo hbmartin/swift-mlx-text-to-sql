@@ -15,6 +15,7 @@ import SwiftUI
       case settings
       case resultPreview = "result-preview"
       case resultExplorer = "result-explorer"
+      case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
       case transientBanners = "transient-banners"
     }
@@ -67,6 +68,9 @@ import SwiftUI
       case .resultChartRecovery:
         ResultChartRecoveryAccessibilityHarness()
 
+      case .resultChartPreparation:
+        ResultChartPreparationAccessibilityHarness()
+
       case .processingQueue:
         ChatView(
           store: PreviewFixtures.chatStore(PreviewFixtures.processingChatState()),
@@ -114,6 +118,23 @@ import SwiftUI
       return ChatView(
         store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
         chrome: chrome)
+    }
+  }
+
+  @MainActor
+  private struct ResultChartPreparationAccessibilityHarness: View {
+    var body: some View {
+      VStack(spacing: 0) {
+        ResultChartPreparationView(
+          recommendation: ResultChartPreparationPreviewFixtures.recommendation,
+          presentation: .explorer(plotHeight: nil),
+          formatters: CREGChartAdapter.formatters,
+          textResolver: CREGChartAdapter.textResolver)
+          .frame(height: 240)
+          .padding()
+        Spacer(minLength: 0)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
 
