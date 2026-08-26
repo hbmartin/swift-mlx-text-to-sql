@@ -43,15 +43,10 @@ struct ResultChartPreparationView: View {
         !recommendation.specification.title.isEmpty
       {
         Text(recommendation.specification.title)
-          .font(
-            presentation.typography == .compact
-              ? .subheadline.weight(.semibold) : .headline)
-          .lineLimit(presentation.typography == .compact ? 2 : nil)
+          .font(.headline)
       }
       ProgressView("Preparing chart")
-        .frame(
-          maxWidth: .infinity,
-          maxHeight: presentation.plotHeight == nil ? .infinity : nil)
+        .frame(maxWidth: .infinity)
         .frame(height: presentation.plotHeight)
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(

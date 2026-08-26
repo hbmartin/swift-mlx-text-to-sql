@@ -2,7 +2,6 @@ import AutoTableCharts
 import CREGData
 import ComposableArchitecture
 import Foundation
-import SwiftUI
 import Testing
 
 @testable import CREGEngine
@@ -128,32 +127,6 @@ import Testing
       AutoChartPresentation.explorer(
         plotHeight: ResultChartLayout.explorerPlotHeight
       ).plotHeight == 360)
-  }
-
-  @MainActor
-  @Test func chartPreparationRendersInContainerManagedHeight() {
-    let category = AutoChartColumnID(rawValue: "category")
-    let measure = AutoChartColumnID(rawValue: "measure")
-    let recommendation = AutoChartRecommendation(
-      specification: .bar(
-        category: category,
-        measure: measure,
-        title: "Container-managed chart"),
-      score: 1,
-      rationale: [])
-    let renderer = ImageRenderer(
-      content: ResultChartPreparationView(
-        recommendation: recommendation,
-        presentation: .explorer(plotHeight: nil),
-        formatters: CREGChartAdapter.formatters,
-        textResolver: CREGChartAdapter.textResolver)
-        .frame(width: 320, height: 240)
-    )
-    renderer.scale = 1
-
-    let image = renderer.cgImage
-    #expect(image?.width == 320)
-    #expect(image?.height == 240)
   }
 
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
