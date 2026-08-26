@@ -1,3 +1,6 @@
+import CryptoKit
+import Foundation
+
 struct DelimitedIdentity {
   let requestKey: String
   let displayText: String
@@ -29,6 +32,15 @@ struct LocallyStagedDelimitedIdentity {
   }
 }
 
+struct ContextDelimitedIdentity {
+  let contextKey: String
+
+  init(parts: [String]) {
+    // ruleid: creg-identity-requires-structured-components
+    self.contextKey = parts.joined(separator: "|")
+  }
+}
+
 struct ComputedLocallyStagedIdentity {
   let parts: [String]
 
@@ -36,6 +48,36 @@ struct ComputedLocallyStagedIdentity {
     let encoded = parts.joined(separator: "|")
     // ruleid: creg-identity-requires-structured-components
     return encoded
+  }
+}
+
+struct HashedDelimitedIdentity {
+  let parts: [String]
+
+  var snapshotKey: String {
+    let encoded = parts.joined(separator: "|")
+    // ruleid: creg-identity-requires-structured-components
+    return SHA256.hash(data: Data(encoded.utf8)).description
+  }
+}
+
+struct SwitchDelimitedIdentity {
+  enum Mode {
+    case enabled
+    case disabled
+  }
+
+  let parts: [String]
+  let mode: Mode
+
+  var resultIdentity: String {
+    switch mode {
+    case .enabled:
+      // ruleid: creg-identity-requires-structured-components
+      parts.joined(separator: "|")
+    case .disabled:
+      "disabled"
+    }
   }
 }
 

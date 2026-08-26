@@ -197,6 +197,12 @@ struct ResultViewerView: View {
 
   var selectedRecommendation: AutoChartRecommendation? {
     guard let analysis = chart.analysis else { return nil }
+    return selectedRecommendation(in: analysis)
+  }
+
+  func selectedRecommendation(
+    in analysis: AutoChartAnalysis<Int>
+  ) -> AutoChartRecommendation? {
     switch analysis.resolve(selectedSpecificationID) {
     case .exact(let recommendation), .defaulted(let recommendation, _):
       return recommendation
@@ -310,7 +316,10 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-chart-recovery")
         }
 
-        if effectiveResultMode == .chart, let selectedRecommendation {
+        if effectiveResultMode == .chart,
+          let analysis = chart.analysis,
+          let selectedRecommendation = selectedRecommendation(in: analysis)
+        {
           ScrollView {
             if let preparedChart = chart.preparedChart {
               AutoChartView(
@@ -318,8 +327,7 @@ struct ResultViewerView: View {
                 selection: chartSelectionBinding,
                 presentation: .explorer(
                   plotHeight: ResultChartLayout.explorerPlotHeight),
-                formatters: CREGChartAdapter.formatters,
-                textResolver: CREGChartAdapter.textResolver
+                formatters: CREGChartAdapter.formatters
               )
               .padding()
             } else {
@@ -330,16 +338,14 @@ struct ResultViewerView: View {
                 selection: chartSelection.map { selection in
                   ResultChartPreparationView.SelectionConfiguration(
                     value: selection,
-                    columns: chart.analysis?.columnProfiles.map(\.column) ?? [],
+                    columns: analysis.columnProfiles.map(\.column),
                     clear: clearChartSelection)
                 },
-                textResolver: CREGChartAdapter.textResolver)
+                formatters: CREGChartAdapter.formatters)
                 .padding()
             }
             if let reason = selectedRecommendation.rationale.first {
-              Label(
-                CREGChartAdapter.textResolver(reason),
-                systemImage: "lightbulb")
+              Label(reason.defaultText, systemImage: "lightbulb")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)

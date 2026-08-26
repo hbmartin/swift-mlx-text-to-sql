@@ -19,18 +19,27 @@ struct ResultChartPreparationView: View {
 
   let recommendation: AutoChartRecommendation
   let presentation: AutoChartPresentation
+  let plotHeight: CGFloat
   let selection: SelectionConfiguration?
+  let formatters: AutoChartFormatters
   let textResolver: AutoChartTextResolver
 
   init(
     recommendation: AutoChartRecommendation,
     presentation: AutoChartPresentation,
     selection: SelectionConfiguration? = nil,
+    formatters: AutoChartFormatters = .init(),
     textResolver: AutoChartTextResolver = .default
   ) {
+    guard let plotHeight = presentation.plotHeight else {
+      preconditionFailure(
+        "ResultChartPreparationView requires a reserved plot height")
+    }
     self.recommendation = recommendation
     self.presentation = presentation
+    self.plotHeight = plotHeight
     self.selection = selection
+    self.formatters = formatters
     self.textResolver = textResolver
   }
 
@@ -40,15 +49,18 @@ struct ResultChartPreparationView: View {
         !recommendation.specification.title.isEmpty
       {
         Text(recommendation.specification.title)
-          .font(.headline)
+          .font(
+            presentation.typography == .compact
+              ? .subheadline.weight(.semibold) : .headline)
+          .lineLimit(presentation.typography == .compact ? 2 : nil)
       }
       ProgressView("Preparing chart")
         .frame(maxWidth: .infinity)
-        .frame(height: presentation.plotHeight)
+        .frame(height: plotHeight)
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,
-          formatters: CREGChartAdapter.formatters,
+          formatters: formatters,
           textResolver: textResolver)
         HStack(alignment: .firstTextBaseline) {
           VStack(alignment: .leading, spacing: 2) {

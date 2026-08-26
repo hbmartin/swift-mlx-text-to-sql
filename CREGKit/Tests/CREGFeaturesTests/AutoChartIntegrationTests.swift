@@ -269,7 +269,7 @@ import Testing
     #expect(snapshots.statistics.evictions == 2)
   }
 
-  @Test func contextReplacementUpdatesCostAndMismatchReleasesBudget() async throws {
+  @Test func contextReplacementUpdatesCostAndMismatchPreservesCurrentSnapshot() async throws {
     let uncached = CREGChartAnalysisClient(
       analyzer: AutoChartAnalyzer(configuration: .uncached),
       snapshots: .uncached)
@@ -293,12 +293,12 @@ import Testing
     #expect(snapshots.statistics.retainedCost == 70)
     #expect(
       snapshots.analysis(
-        identity: "message", revision: "r1", contextKey: replacement) != nil)
+        identity: "message", revision: "r1", contextKey: original) == nil)
     #expect(
       snapshots.analysis(
-        identity: "message", revision: "r1", contextKey: original) == nil)
-    #expect(snapshots.statistics.entries == 0)
-    #expect(snapshots.statistics.retainedCost == 0)
+        identity: "message", revision: "r1", contextKey: replacement) != nil)
+    #expect(snapshots.statistics.entries == 1)
+    #expect(snapshots.statistics.retainedCost == 70)
     #expect(snapshots.statistics.evictions == 0)
   }
 
@@ -380,6 +380,12 @@ import Testing
     #expect(
       loader.analysis?.primaryChart?.recommendation.specification.title
         == replacementQuestion)
+    #expect(
+      client.cachedAnalysis(
+        resultFingerprint: resultFingerprint,
+        sql: sql,
+        question: originalQuestion,
+        dataIdentity: dataIdentity) == nil)
     #expect(
       client.cachedAnalysis(
         resultFingerprint: resultFingerprint,
