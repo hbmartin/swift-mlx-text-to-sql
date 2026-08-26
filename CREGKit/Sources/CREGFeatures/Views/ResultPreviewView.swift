@@ -183,7 +183,7 @@ struct ResultPreviewView: View {
         presentation: .preview(
           plotHeight: ResultChartLayout.previewPlotHeight),
         formatters: CREGChartAdapter.formatters,
-        textResolver: CREGChartAdapter.textResolver)
+        textResolver: CREGChartAdapter.textResolver.autoChart)
     } else {
       ResultChartPreparationView(
         recommendation: recommendation,
