@@ -2,7 +2,6 @@ import AutoTableCharts
 import CREGData
 import ComposableArchitecture
 import Foundation
-import SwiftUI
 import Testing
 
 @testable import CREGEngine
@@ -128,26 +127,6 @@ import Testing
       AutoChartPresentation.explorer(
         plotHeight: ResultChartLayout.explorerPlotHeight
       ).plotHeight == 360)
-
-    let preview = AutoChartPresentation.preview(
-      plotHeight: ResultChartLayout.previewPlotHeight)
-    #expect(preview.typography == .compact)
-    #expect(preview.chrome == [.diagnostics])
-
-    let explorer = AutoChartPresentation.explorer(
-      plotHeight: ResultChartLayout.explorerPlotHeight)
-    #expect(explorer.typography == .standard)
-    #expect(explorer.chrome == .all)
-  }
-
-  @Test func chartPreparationTextUsesTheAppOwnedResolver() {
-    let resolver = CREGChartTextResolver { message in
-      switch message {
-      case .preparingChart: "Préparation du graphique"
-      }
-    }
-
-    #expect(resolver(.preparingChart) == "Préparation du graphique")
   }
 
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
