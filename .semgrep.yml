@@ -37,7 +37,7 @@ rules:
           - pattern: 'self.$IDENTITY = $VALUE'
           - metavariable-regex:
               metavariable: $IDENTITY
-              regex: &structured-identity-name (?i)^(?!(?:display|label|text)(?:key|identity)$).*(?:key|identity)$
+              regex: &structured-identity-name (?i)^(?:(?:request|cache|data|database|model|result|snapshot|evaluation|conversation|chartdata|context)?(?:key|identity))$
       - patterns:
           - pattern: |
               var $IDENTITY: $TYPE {
@@ -72,17 +72,55 @@ rules:
               metavariable: $IDENTITY
               regex: *structured-identity-name
       # Semgrep 1.170 does not propagate taint from a switch-expression branch
-      # to the whole implicit-return switch. Match the forbidden join directly
-      # when the switch is the computed identity's complete expression body.
+      # to the whole implicit-return switch. Treat each branch's final value as
+      # the sink so display-only joins elsewhere in the branch remain legal.
       - patterns:
-          - pattern-inside: |
+          - pattern-either:
+              - pattern: |
+                  var $IDENTITY: $TYPE {
+                    switch $SUBJECT {
+                    case $CASE:
+                      ...
+                      $VALUE
+                    case $OTHER_CASE:
+                      ...
+                    }
+                  }
+              - pattern: |
+                  var $IDENTITY: $TYPE {
+                    switch $SUBJECT {
+                    case $OTHER_CASE:
+                      ...
+                    case $CASE:
+                      ...
+                      $VALUE
+                    }
+                  }
+          - pattern-not-inside: |
               var $IDENTITY: $TYPE {
                 switch $SUBJECT {
                 case $CASE:
                   ...
+                  $VALUE
+                  $AFTER
+                  ...
+                case $OTHER_CASE:
+                  ...
                 }
               }
-          - pattern: '$PARTS.joined(separator: $SEPARATOR)'
+          - pattern-not-inside: |
+              var $IDENTITY: $TYPE {
+                switch $SUBJECT {
+                case $OTHER_CASE:
+                  ...
+                case $CASE:
+                  ...
+                  $VALUE
+                  $AFTER
+                  ...
+                }
+              }
+          - focus-metavariable: $VALUE
           - metavariable-regex:
               metavariable: $IDENTITY
               regex: *structured-identity-name
