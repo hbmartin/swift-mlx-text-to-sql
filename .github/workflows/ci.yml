@@ -27,12 +27,22 @@ jobs:
       - name: Select Xcode 26.3
         run: sudo xcode-select --switch /Applications/Xcode_26.3.app
 
+      - name: Cache Swift and Xcode build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            CREGKit/.build
+            ${{ runner.temp }}/creg-derived-data
+            ${{ runner.temp }}/creg-source-packages
+          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       - name: Verify checked-in Swift package resolutions
         run: |
           swift package --package-path CREGKit resolve
           xcodebuild -resolvePackageDependencies \
             -project CREG.xcodeproj \
-            -scheme CREG
+            -scheme CREG \
+            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/creg-source-packages"
           git diff --exit-code -- \
             CREGKit/Package.resolved \
             CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
@@ -42,15 +52,30 @@ jobs:
         run: swift test
 
       - name: Test focused accessibility UI contracts
+        timeout-minutes: 30
         run: |
           xcodebuild test \
             -project CREG.xcodeproj \
             -scheme CREG \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/creg-source-packages" \
+            -derivedDataPath "${RUNNER_TEMP}/creg-derived-data" \
+            -resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult" \
+            -skipPackagePluginValidation \
             -skipMacroValidation \
+            -only-testing:CREGUITests/AccessibilityUITests/testHighestRiskScreensAtAX5Landscape \
             -only-testing:CREGUITests/AccessibilityUITests/testMalformedConfigurationRendersInvalidConfigurationScreen \
             -only-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation \
-            CREG_ACCESSIBILITY_HARNESS_BUILD=1
+            CREG_ACCESSIBILITY_HARNESS_BUILD=YES
+
+      - name: Upload accessibility UI test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: accessibility-ui-test-results
+          path: ${{ runner.temp }}/creg-accessibility-ui-tests.xcresult
+          if-no-files-found: warn
+          retention-days: 14
 
   python:
     name: Python tests and corpus determinism

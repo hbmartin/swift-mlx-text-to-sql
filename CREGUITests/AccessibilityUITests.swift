@@ -91,7 +91,9 @@ final class AccessibilityUITests: XCTestCase {
 
     for scenario in ["answered-chat", "browser", "result-preview"] {
       let app = launch(scenario: scenario, dynamicType: "ax5")
-      try app.performAccessibilityAudit(for: [.dynamicType, .hitRegion, .textClipped])
+      // `.dynamicType` asks XCTest to vary an otherwise unpinned font size;
+      // this contract deliberately fixes AX5 and audits that exact layout.
+      try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
       app.terminate()
     }
   }
@@ -133,10 +135,25 @@ final class AccessibilityUITests: XCTestCase {
     XCTAssertTrue(preparation.waitForExistence(timeout: 5))
     XCTAssertFalse(app.descendants(matching: .any)["auto-chart-bar"].exists)
 
+    let explorer = app.descendants(matching: .any)["result-chart-explorer"]
+    let plot = app.descendants(matching: .any)["result-chart-preparing-plot"]
+    let rationale =
+      app.descendants(matching: .any)["result-chart-explorer-rationale"]
+    XCTAssertTrue(explorer.waitForExistence(timeout: 5))
+    XCTAssertTrue(plot.waitForExistence(timeout: 5))
+    XCTAssertEqual(
+      plot.frame.height,
+      360,
+      accuracy: 1)
+    XCTAssertTrue(rationale.waitForExistence(timeout: 5))
+
     let title = app.staticTexts["Portfolio value by fund"]
+    let rationaleText =
+      app.staticTexts["Bars compare portfolio value across funds."]
     let diagnostic =
       app.staticTexts["Long fund names may be shortened on the category axis."]
     XCTAssertTrue(title.waitForExistence(timeout: 5))
+    XCTAssertTrue(rationaleText.waitForExistence(timeout: 5))
     XCTAssertTrue(diagnostic.waitForExistence(timeout: 5))
     app.terminate()
   }

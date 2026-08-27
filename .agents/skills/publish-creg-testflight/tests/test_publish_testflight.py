@@ -179,6 +179,45 @@ class VerifyCandidateInputsTests(unittest.TestCase):
             )
 
 
+class CollectPreflightTests(unittest.TestCase):
+    def test_rejects_beta_build_settings_that_enable_the_harness_bypass(
+        self,
+    ) -> None:
+        xcode_version = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Xcode 26.3\n", stderr=""
+        )
+        build_settings = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                "CONFIGURATION = Beta\n"
+                "PRODUCT_BUNDLE_IDENTIFIER = dev.haroldmartin.CREG\n"
+                "DEVELOPMENT_TEAM = MGPHJKUJSY\n"
+                "CODE_SIGN_STYLE = Automatic\n"
+                "CREG_ACCESSIBILITY_HARNESS_BUILD = YES\n"
+            ),
+            stderr="",
+        )
+        with (
+            patch.object(publisher, "verify_source_contract"),
+            patch.object(
+                publisher,
+                "run_command",
+                side_effect=[xcode_version, build_settings],
+            ),
+            self.assertRaisesRegex(
+                publisher.ReleaseError,
+                "CREG_ACCESSIBILITY_HARNESS_BUILD must be 'NO'",
+            ),
+        ):
+            publisher.collect_preflight(
+                Path("/repo"),
+                tools={"xcodebuild": "xcodebuild", "uv": "uv"},
+                attempt=Path("/tmp/attempt"),
+                source_revision=SOURCE_REVISION,
+            )
+
+
 class RequireInspectorReportTests(unittest.TestCase):
     def test_rejects_missing_empty_and_non_string_build_numbers(self) -> None:
         invalid_pairs = (
@@ -308,6 +347,9 @@ class ReleaseCommandsTests(unittest.TestCase):
         )
         self.assertIn(
             "CREG_CANDIDATE_TRAINING_RUN=training-run", commands["archive"]
+        )
+        self.assertIn(
+            "CREG_ACCESSIBILITY_HARNESS_BUILD=NO", commands["archive"]
         )
         self.assertEqual(
             commands["inspect"][

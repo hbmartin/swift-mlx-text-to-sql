@@ -49,11 +49,6 @@ import SwiftUI
         dynamicTypeEnvironmentKey,
         scenarioManifestEnvironmentKey,
       ]
-      let hasUITestEnvironment = environment.keys.contains {
-        $0.hasPrefix(environmentKeyPrefix)
-      }
-      guard hasUITestEnvironment else { return nil }
-
       let hasUnknownConfiguration = environment.contains { key, value in
         key.hasPrefix(environmentKeyPrefix)
           && !knownKeys.contains(key)
@@ -68,15 +63,17 @@ import SwiftUI
 
       let rawScenario = environment[scenarioEnvironmentKey] ?? ""
       let rawSize = environment[dynamicTypeEnvironmentKey] ?? ""
-      guard !rawScenario.isEmpty else {
-        guard rawSize.isEmpty else { return .invalidConfiguration }
+      guard !isUnsetEnvironmentValue(rawScenario) else {
+        guard isUnsetEnvironmentValue(rawSize) else {
+          return .invalidConfiguration
+        }
         return manifestRequested ? .scenarioManifest : nil
       }
       guard let scenario = Scenario(rawValue: rawScenario)
       else { return .invalidConfiguration }
 
       let dynamicTypeSize: DynamicTypeSize?
-      if !rawSize.isEmpty {
+      if !isUnsetEnvironmentValue(rawSize) {
         guard let parsed = DynamicTypeSize.uiTestValue(rawSize) else {
           return .invalidConfiguration
         }
@@ -178,15 +175,11 @@ import SwiftUI
   @MainActor
   private struct ResultChartPreparationAccessibilityHarness: View {
     var body: some View {
-      ScrollView {
-        ResultChartPreparationView(
-          recommendation: PreviewFixtures.ChartPreparation.recommendation,
-          presentation: .explorer(
-            plotHeight: ResultChartLayout.explorerPlotHeight),
-          formatters: CREGChartAdapter.formatters,
-          textResolver: CREGChartAdapter.textResolver
-        )
-        .padding()
+      ResultChartExplorerContainer(
+        recommendation: PreviewFixtures.ChartPreparation.recommendation
+      ) {
+        ResultChartExplorerPreparationView(
+          recommendation: PreviewFixtures.ChartPreparation.recommendation)
       }
     }
   }
@@ -218,9 +211,16 @@ import SwiftUI
     let configuration: AccessibilityUITestConfiguration
 
     var body: some View {
-      AccessibilityScenarioView(scenario: configuration.scenario)
-        .cregDynamicTypeSize(configuration.dynamicTypeSize)
-        .accessibilityIdentifier("ui-test-\(configuration.scenario.rawValue)")
+      ZStack(alignment: .topLeading) {
+        AccessibilityScenarioView(scenario: configuration.scenario)
+        Color.clear
+          .frame(width: 1, height: 1)
+          .accessibilityElement()
+          .accessibilityLabel("UI test scenario")
+          .accessibilityIdentifier("ui-test-\(configuration.scenario.rawValue)")
+          .allowsHitTesting(false)
+      }
+      .cregDynamicTypeSize(configuration.dynamicTypeSize)
     }
   }
 
