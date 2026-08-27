@@ -104,7 +104,9 @@ import SwiftUI
           chrome: PreviewFixtures.chrome)
 
       case .answeredChat:
-        answeredChat
+        ChatView(
+          store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
+          chrome: PreviewFixtures.chrome)
 
       case .resultExplorer:
         // This scenario has no transcript store, matching the preview harness.
@@ -154,12 +156,6 @@ import SwiftUI
               chat: PreviewFixtures.answeredChatState())),
           now: PreviewFixtures.now)
       }
-    }
-
-    private var answeredChat: some View {
-      ChatView(
-        store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
-        chrome: PreviewFixtures.chrome)
     }
 
     private var errorChat: some View {

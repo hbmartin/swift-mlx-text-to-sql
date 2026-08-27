@@ -139,26 +139,20 @@ def require_directory(path: Path, description: str) -> None:
 def load_xcode_project(repo: Path) -> dict[str, Any]:
     project_path = repo / PROJECT_FILE
     require_file(project_path, "Xcode project file")
-    completed = subprocess.run(
-        [
-            "/usr/bin/plutil",
-            "-convert",
-            "json",
-            "-o",
-            "-",
-            str(project_path.resolve()),
-        ],
-        cwd=repo,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        check=False,
-    )
-    if completed.returncode != 0:
-        details = sanitize_text(completed.stderr.strip())
-        suffix = f": {details}" if details else ""
-        raise ReleaseError(f"Cannot parse {project_path}{suffix}")
+    try:
+        completed = run_command(
+            [
+                "/usr/bin/plutil",
+                "-convert",
+                "json",
+                "-o",
+                "-",
+                str(project_path.resolve()),
+            ],
+            cwd=repo,
+        )
+    except ReleaseError as error:
+        raise ReleaseError(f"Cannot parse {project_path}: {error}") from error
     try:
         project = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
@@ -168,9 +162,9 @@ def load_xcode_project(repo: Path) -> dict[str, Any]:
     return project
 
 
-def target_build_configurations(
+def xcode_target(
     project: dict[str, Any], target_name: str
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     objects = project.get("objects")
     if not isinstance(objects, dict):
         raise ReleaseError("Xcode project objects must be an object")
@@ -186,7 +180,18 @@ def target_build_configurations(
         raise ReleaseError(
             f"Xcode project must contain exactly one {target_name!r} native target"
         )
-    configuration_list_id = targets[0].get("buildConfigurationList")
+    return objects, targets[0]
+
+
+def target_build_configurations(
+    project: dict[str, Any], target_name: str
+) -> dict[str, dict[str, Any]]:
+    objects, target = xcode_target(project, target_name)
+    configuration_list_id = target.get("buildConfigurationList")
+    if not isinstance(configuration_list_id, str) or not configuration_list_id:
+        raise ReleaseError(
+            f"Xcode target {target_name!r} has no valid build configuration list"
+        )
     configuration_list = objects.get(configuration_list_id)
     if not isinstance(configuration_list, dict):
         raise ReleaseError(
@@ -200,6 +205,11 @@ def target_build_configurations(
 
     configurations: dict[str, dict[str, Any]] = {}
     for configuration_id in configuration_ids:
+        if not isinstance(configuration_id, str) or not configuration_id:
+            raise ReleaseError(
+                f"Xcode target {target_name!r} references an invalid "
+                "build configuration"
+            )
         configuration = objects.get(configuration_id)
         if not isinstance(configuration, dict):
             raise ReleaseError(
@@ -220,6 +230,70 @@ def target_build_configurations(
     return configurations
 
 
+def target_build_phase(
+    project: dict[str, Any], target_name: str, phase_name: str
+) -> dict[str, Any]:
+    objects, target = xcode_target(project, target_name)
+    phase_ids = target.get("buildPhases")
+    if not isinstance(phase_ids, list):
+        raise ReleaseError(f"Xcode target {target_name!r} has no valid build phases")
+
+    matches = []
+    for phase_id in phase_ids:
+        if not isinstance(phase_id, str) or not phase_id:
+            raise ReleaseError(
+                f"Xcode target {target_name!r} references an invalid build phase"
+            )
+        phase = objects.get(phase_id)
+        if not isinstance(phase, dict):
+            raise ReleaseError(
+                f"Xcode target {target_name!r} references an invalid build phase"
+            )
+        if phase.get("name") == phase_name:
+            matches.append(phase)
+    if len(matches) != 1:
+        raise ReleaseError(
+            f"Xcode target {target_name!r} must contain exactly one "
+            f"{phase_name!r} build phase"
+        )
+    return matches[0]
+
+
+def require_target_shell_script_contract(
+    project: dict[str, Any],
+    *,
+    target_name: str,
+    phase_name: str,
+    command_fragments: Sequence[str],
+    input_paths: Sequence[str] = (),
+) -> None:
+    phase = target_build_phase(project, target_name, phase_name)
+    script = phase.get("shellScript")
+    if phase.get("isa") != "PBXShellScriptBuildPhase" or not isinstance(script, str):
+        raise ReleaseError(
+            f"Xcode target {target_name!r} has a malformed {phase_name!r} build phase"
+        )
+    missing_fragments = [
+        fragment for fragment in command_fragments if fragment not in script
+    ]
+    if missing_fragments:
+        raise ReleaseError(
+            f"Xcode target {target_name!r} {phase_name!r} build phase is missing: "
+            + ", ".join(missing_fragments)
+        )
+
+    configured_inputs = phase.get("inputPaths")
+    if not isinstance(configured_inputs, list):
+        configured_inputs = []
+    missing_inputs = [path for path in input_paths if path not in configured_inputs]
+    if missing_inputs:
+        raise ReleaseError(
+            f"Xcode target {target_name!r} {phase_name!r} build phase is missing "
+            "input paths: "
+            + ", ".join(missing_inputs)
+        )
+
+
 def require_target_build_setting(
     project: dict[str, Any],
     *,
@@ -238,11 +312,13 @@ def require_target_build_setting(
     invalid = [
         f"{name}={settings.get(setting)!r}"
         for name, settings in sorted(configurations.items())
+        if name in required_configurations
         if settings.get(setting) != expected
     ]
     if invalid:
         raise ReleaseError(
-            f"Every {target_name} app configuration must set {setting}={expected}: "
+            f"Required {target_name} app configurations must set "
+            f"{setting}={expected}: "
             + ", ".join(invalid)
         )
 
@@ -531,27 +607,40 @@ def verify_source_contract(repo: Path) -> None:
     if info.get("ITSAppUsesNonExemptEncryption") is not False:
         raise ReleaseError("ITSAppUsesNonExemptEncryption must be false for CREG")
 
-    project_text = (repo / PROJECT_FILE).read_text()
-    required_fragments = (
-        "Stamp Distribution Build Number",
-        "date -u +%Y%m%d%H%M%S",
-        "CREG_BUILD_CHANNEL = beta;",
-        'CREG_CANDIDATE_TRAINING_RUN = "latest-local-v3";',
-        "model-runtime-contract.json",
-        "materialize_bundled_model.sh",
-    )
-    missing = [fragment for fragment in required_fragments if fragment not in project_text]
-    if missing:
-        raise ReleaseError(
-            "Xcode project is missing required Beta release settings: "
-            + ", ".join(missing)
-        )
+    project = load_xcode_project(repo)
     require_target_build_setting(
-        load_xcode_project(repo),
+        project,
         target_name=TARGET,
         setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
         expected="NO",
         required_configurations=("Debug", "Beta", "Release"),
+    )
+    require_target_build_setting(
+        project,
+        target_name=TARGET,
+        setting="CREG_BUILD_CHANNEL",
+        expected=BUILD_CHANNEL,
+        required_configurations=(CONFIGURATION,),
+    )
+    require_target_build_setting(
+        project,
+        target_name=TARGET,
+        setting="CREG_CANDIDATE_TRAINING_RUN",
+        expected="latest-local-v3",
+        required_configurations=(CONFIGURATION,),
+    )
+    require_target_shell_script_contract(
+        project,
+        target_name=TARGET,
+        phase_name="Stamp Distribution Build Number",
+        command_fragments=("date -u +%Y%m%d%H%M%S",),
+    )
+    require_target_shell_script_contract(
+        project,
+        target_name=TARGET,
+        phase_name="Materialize Bundled SQL Model",
+        command_fragments=("tools/materialize_bundled_model.sh",),
+        input_paths=("$(SRCROOT)/model-runtime-contract.json",),
     )
 
 

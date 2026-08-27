@@ -17,6 +17,7 @@ ACCESSIBILITY_CACHE_ACTION = (
 ACCESSIBILITY_UPLOAD_ACTION = (
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 )
+ACCESSIBILITY_WORKFLOW_NAME = "CI"
 
 
 def checkout_credential_failures(path: Path, workflow: object) -> list[str]:
@@ -110,7 +111,9 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
         run = ui_test.get("run")
         required_command_fragments = (
             "xcodebuild test",
-            "name=iPhone 17 Pro,OS=26.5",
+            "-project CREG.xcodeproj",
+            "-scheme CREG",
+            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
             '-clonedSourcePackagesDirPath "${RUNNER_TEMP}/creg-source-packages"',
             '-derivedDataPath "${RUNNER_TEMP}/creg-derived-data"',
             '-resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult"',
@@ -147,7 +150,11 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
     if upload is not None:
         if upload.get("uses") != ACCESSIBILITY_UPLOAD_ACTION:
             failures.append(f"{prefix} upload action is not pinned to the reviewed SHA")
-        if upload.get("if") != "${{ always() }}":
+        condition = upload.get("if")
+        normalized_condition = (
+            "".join(condition.split()) if isinstance(condition, str) else None
+        )
+        if normalized_condition not in {"always()", "${{always()}}"}:
             failures.append(f"{prefix} result upload must run even after test failure")
         inputs = upload.get("with")
         if not isinstance(inputs, dict) or inputs.get("path") != (
@@ -160,6 +167,7 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
 
 def main() -> None:
     failures: list[str] = []
+    accessibility_workflows: list[tuple[Path, object]] = []
     workflow_paths = sorted((*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")))
     for path in workflow_paths:
         source = path.read_text()
@@ -171,8 +179,18 @@ def main() -> None:
                 )
         workflow = yaml.safe_load(source)
         failures.extend(checkout_credential_failures(path, workflow))
-        if path.name == "ci.yml":
-            failures.extend(accessibility_ui_contract_failures(path, workflow))
+        if isinstance(workflow, dict) and workflow.get("name") == (
+            ACCESSIBILITY_WORKFLOW_NAME
+        ):
+            accessibility_workflows.append((path, workflow))
+    if len(accessibility_workflows) != 1:
+        failures.append(
+            f"{WORKFLOWS.relative_to(ROOT)}: accessibility UI contract requires "
+            f"exactly one workflow named {ACCESSIBILITY_WORKFLOW_NAME!r}"
+        )
+    else:
+        path, workflow = accessibility_workflows[0]
+        failures.extend(accessibility_ui_contract_failures(path, workflow))
     if failures:
         raise SystemExit("\n".join(failures))
 
