@@ -49,7 +49,8 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest' \
             -skipMacroValidation \
             -only-testing:CREGUITests/AccessibilityUITests/testMalformedConfigurationRendersInvalidConfigurationScreen \
-            -only-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation
+            -only-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation \
+            CREG_ACCESSIBILITY_HARNESS_BUILD=1
 
   python:
     name: Python tests and corpus determinism

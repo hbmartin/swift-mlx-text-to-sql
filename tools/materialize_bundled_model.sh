@@ -1,6 +1,15 @@
 #!/bin/zsh
 set -euo pipefail
 
+if [[ "${CREG_ACCESSIBILITY_HARNESS_BUILD:-}" == "1" ]]; then
+  if [[ "$CONFIGURATION" != "Debug" || "$PLATFORM_NAME" != "iphonesimulator" ]]; then
+    echo "error: CREG_ACCESSIBILITY_HARNESS_BUILD is restricted to Debug iOS Simulator builds."
+    exit 1
+  fi
+  echo "warning: Debug UI-test harness build omits SQL model materialization."
+  exit 0
+fi
+
 UV_BIN="$(command -v uv || true)"
 if [[ -z "$UV_BIN" && -x "$HOME/.local/bin/uv" ]]; then
   UV_BIN="$HOME/.local/bin/uv"
