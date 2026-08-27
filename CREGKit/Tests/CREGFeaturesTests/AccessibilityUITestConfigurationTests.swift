@@ -16,6 +16,7 @@ import Testing
         "settings",
         "result-preview",
         "result-explorer",
+        "result-chart-preparation",
         "result-chart-recovery",
         "transient-banners",
       ]
@@ -51,6 +52,39 @@ import Testing
       ])
 
       #expect(request == .scenarioManifest)
+    }
+
+    @Test func noUITestEnvironmentRequestsTheLiveRoot() {
+      #expect(
+        AccessibilityUITestConfiguration.request(environment: [:]) == nil)
+    }
+
+    @Test func malformedExplicitConfigurationNeverRequestsTheLiveRoot() {
+      let invalidScenario = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "unknown"
+      ])
+      let invalidDynamicType = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "settings",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "enormous",
+      ])
+
+      #expect(invalidScenario == .invalidConfiguration)
+      #expect(invalidDynamicType == .invalidConfiguration)
+    }
+
+    @Test func malformedExplicitConfigurationFallsBackToRequestedManifest() {
+      let invalidScenario = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "unknown",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "1",
+      ])
+      let invalidDynamicType = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "settings",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "enormous",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "1",
+      ])
+
+      #expect(invalidScenario == .scenarioManifest)
+      #expect(invalidDynamicType == .scenarioManifest)
     }
   }
 #endif

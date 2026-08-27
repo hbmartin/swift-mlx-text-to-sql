@@ -29,6 +29,8 @@ public struct RootView: View {
           AccessibilityUITestRootView(configuration: configuration)
         case .scenarioManifest:
           AccessibilityUITestScenarioManifestView()
+        case .invalidConfiguration:
+          AccessibilityUITestInvalidConfigurationView()
         }
       } else {
         liveRoot
