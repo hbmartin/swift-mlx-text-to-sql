@@ -127,6 +127,16 @@ import Testing
       AutoChartPresentation.explorer(
         plotHeight: ResultChartLayout.explorerPlotHeight
       ).plotHeight == 360)
+
+    let preview = AutoChartPresentation.preview(
+      plotHeight: ResultChartLayout.previewPlotHeight)
+    #expect(preview.typography == .compact)
+    #expect(preview.chrome == [.diagnostics])
+
+    let explorer = AutoChartPresentation.explorer(
+      plotHeight: ResultChartLayout.explorerPlotHeight)
+    #expect(explorer.typography == .standard)
+    #expect(explorer.chrome == .all)
   }
 
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {

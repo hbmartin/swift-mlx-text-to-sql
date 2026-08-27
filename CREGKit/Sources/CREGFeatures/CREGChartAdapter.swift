@@ -94,8 +94,8 @@ enum CREGChartAdapter {
     return PortfolioValueFormatting.displayString(for: sqlValue, column: column.name)
   }
 
-  /// One resolver shared by preparation, prepared chart chrome, and the
-  /// surrounding recommendation rationale.
+  /// AutoTableCharts-authored copy shared by preparation diagnostics and
+  /// selection, prepared chart chrome, and recommendation rationale.
   static let textResolver = AutoChartTextResolver.default
 
   static func dataKeyRevision(

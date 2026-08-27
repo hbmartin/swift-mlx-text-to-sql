@@ -5,7 +5,7 @@ import Foundation
 import SwiftUI
 
 #if DEBUG
-private enum ResultChartPreparationPreviewFixtures {
+enum ResultChartPreparationPreviewFixtures {
   static let columns = [
     AutoChartColumn(id: "c0-fund", name: "fund"),
     AutoChartColumn(id: "c1-current-market-value", name: "current_market_value"),
@@ -157,6 +157,16 @@ private enum ResultChartPreparationPreviewFixtures {
     textResolver: CREGChartAdapter.textResolver)
     .padding()
     .frame(width: 402)
+}
+
+#Preview("Result Chart Preparation — Container-Managed Height") {
+  ResultChartPreparationView(
+    recommendation: ResultChartPreparationPreviewFixtures.recommendation,
+    presentation: .explorer(plotHeight: nil),
+    formatters: CREGChartAdapter.formatters,
+    textResolver: CREGChartAdapter.textResolver)
+    .frame(width: 320, height: 240)
+    .padding()
 }
 
 #Preview("Result Chart Recovery Controls — Standard") {

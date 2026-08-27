@@ -15,6 +15,7 @@ import SwiftUI
       case settings
       case resultPreview = "result-preview"
       case resultExplorer = "result-explorer"
+      case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
       case transientBanners = "transient-banners"
     }
@@ -22,6 +23,7 @@ import SwiftUI
     enum Request: Equatable, Sendable {
       case scenario(AccessibilityUITestConfiguration)
       case scenarioManifest
+      case invalidConfiguration
     }
 
     static let scenarioEnvironmentKey = "CREG_UI_TEST_SCENARIO"
@@ -41,19 +43,29 @@ import SwiftUI
     }
 
     static func request(environment: [String: String]) -> Request? {
+      let manifestRequested =
+        environment[scenarioManifestEnvironmentKey] == "1"
+      let hasUITestConfiguration =
+        environment[scenarioEnvironmentKey] != nil
+        || environment[dynamicTypeEnvironmentKey] != nil
+        || environment[scenarioManifestEnvironmentKey] != nil
+
       guard
         let rawScenario = environment[scenarioEnvironmentKey],
         let scenario = Scenario(rawValue: rawScenario)
       else {
-        return environment[scenarioManifestEnvironmentKey] == "1"
-          ? .scenarioManifest : nil
+        if manifestRequested { return .scenarioManifest }
+        return hasUITestConfiguration ? .invalidConfiguration : nil
       }
 
       let dynamicTypeSize: DynamicTypeSize?
       if let rawSize = environment[dynamicTypeEnvironmentKey],
         !rawSize.isEmpty
       {
-        guard let parsed = DynamicTypeSize.uiTestValue(rawSize) else { return nil }
+        guard let parsed = DynamicTypeSize.uiTestValue(rawSize) else {
+          return manifestRequested
+            ? .scenarioManifest : .invalidConfiguration
+        }
         dynamicTypeSize = parsed
       } else {
         dynamicTypeSize = nil
@@ -91,6 +103,9 @@ import SwiftUI
 
       case .resultChartRecovery:
         ResultChartRecoveryAccessibilityHarness()
+
+      case .resultChartPreparation:
+        ResultChartPreparationAccessibilityHarness()
 
       case .processingQueue:
         ChatView(
@@ -143,6 +158,24 @@ import SwiftUI
   }
 
   @MainActor
+  private struct ResultChartPreparationAccessibilityHarness: View {
+    var body: some View {
+      VStack(spacing: 0) {
+        ResultChartPreparationView(
+          recommendation: ResultChartPreparationPreviewFixtures.recommendation,
+          presentation: .explorer(plotHeight: nil),
+          formatters: CREGChartAdapter.formatters,
+          textResolver: CREGChartAdapter.textResolver
+        )
+        .frame(height: 240)
+        .padding()
+        Spacer(minLength: 0)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+  }
+
+  @MainActor
   private struct ResultChartRecoveryAccessibilityHarness: View {
     @State private var actionFeedback = "No recovery action"
 
@@ -180,6 +213,14 @@ import SwiftUI
     var body: some View {
       Text(AccessibilityUITestConfiguration.scenarioManifest)
         .accessibilityIdentifier("ui-test-scenario-manifest")
+    }
+  }
+
+  @MainActor
+  struct AccessibilityUITestInvalidConfigurationView: View {
+    var body: some View {
+      Text("Invalid accessibility UI test configuration")
+        .accessibilityIdentifier("ui-test-invalid-configuration")
     }
   }
 

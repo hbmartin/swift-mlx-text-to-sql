@@ -46,8 +46,11 @@ struct ResultChartPreparationView: View {
           .font(.headline)
       }
       ProgressView("Preparing chart")
-        .frame(maxWidth: .infinity)
+        .frame(
+          maxWidth: .infinity,
+          maxHeight: presentation.plotHeight == nil ? .infinity : nil)
         .frame(height: presentation.plotHeight)
+        .accessibilityIdentifier("auto-chart-preparing-plot")
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,
