@@ -21,14 +21,14 @@ struct ResultChartPreparationView: View {
   let presentation: AutoChartPresentation
   let selection: SelectionConfiguration?
   let formatters: AutoChartFormatters
-  let textResolver: AutoChartTextResolver
+  let textResolver: CREGChartTextResolver
 
   init(
     recommendation: AutoChartRecommendation,
     presentation: AutoChartPresentation,
     selection: SelectionConfiguration? = nil,
     formatters: AutoChartFormatters,
-    textResolver: AutoChartTextResolver
+    textResolver: CREGChartTextResolver
   ) {
     self.recommendation = recommendation
     self.presentation = presentation
@@ -43,16 +43,22 @@ struct ResultChartPreparationView: View {
         !recommendation.specification.title.isEmpty
       {
         Text(recommendation.specification.title)
-          .font(.headline)
+          .font(
+            presentation.typography == .compact
+              ? .subheadline.weight(.semibold) : .headline)
+          .lineLimit(presentation.typography == .compact ? 2 : nil)
       }
-      ProgressView("Preparing chart")
-        .frame(maxWidth: .infinity)
+      ProgressView(textResolver(.preparingChart))
+        .frame(
+          maxWidth: .infinity,
+          maxHeight: presentation.plotHeight == nil ? .infinity : nil)
         .frame(height: presentation.plotHeight)
+        .accessibilityIdentifier("auto-chart-preparing-plot")
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,
           formatters: formatters,
-          textResolver: textResolver)
+          textResolver: textResolver.autoChart)
         HStack(alignment: .firstTextBaseline) {
           VStack(alignment: .leading, spacing: 2) {
             Text(summary.label)

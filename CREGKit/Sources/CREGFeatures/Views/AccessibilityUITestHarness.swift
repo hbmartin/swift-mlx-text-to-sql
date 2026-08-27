@@ -15,8 +15,20 @@ import SwiftUI
       case settings
       case resultPreview = "result-preview"
       case resultExplorer = "result-explorer"
+      case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
       case transientBanners = "transient-banners"
+    }
+
+    static let scenarioManifestEnvironmentKey =
+      "CREG_UI_TEST_SCENARIO_MANIFEST"
+
+    static var scenarioManifestRequested: Bool {
+      ProcessInfo.processInfo.environment[scenarioManifestEnvironmentKey] == "1"
+    }
+
+    static var scenarioManifest: String {
+      Scenario.allCases.map(\.rawValue).joined(separator: "|")
     }
 
     var scenario: Scenario
@@ -66,6 +78,9 @@ import SwiftUI
 
       case .resultChartRecovery:
         ResultChartRecoveryAccessibilityHarness()
+
+      case .resultChartPreparation:
+        ResultChartPreparationAccessibilityHarness()
 
       case .processingQueue:
         ChatView(
@@ -118,6 +133,23 @@ import SwiftUI
   }
 
   @MainActor
+  private struct ResultChartPreparationAccessibilityHarness: View {
+    var body: some View {
+      VStack(spacing: 0) {
+        ResultChartPreparationView(
+          recommendation: ResultChartPreparationPreviewFixtures.recommendation,
+          presentation: .explorer(plotHeight: nil),
+          formatters: CREGChartAdapter.formatters,
+          textResolver: CREGChartAdapter.textResolver)
+          .frame(height: 240)
+          .padding()
+        Spacer(minLength: 0)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+  }
+
+  @MainActor
   private struct ResultChartRecoveryAccessibilityHarness: View {
     @State private var actionFeedback = "No recovery action"
 
@@ -147,6 +179,14 @@ import SwiftUI
       AccessibilityScenarioView(scenario: configuration.scenario)
         .cregDynamicTypeSize(configuration.dynamicTypeSize)
         .accessibilityIdentifier("ui-test-\(configuration.scenario.rawValue)")
+    }
+  }
+
+  @MainActor
+  struct AccessibilityUITestScenarioManifestView: View {
+    var body: some View {
+      Text(AccessibilityUITestConfiguration.scenarioManifest)
+        .accessibilityIdentifier("ui-test-scenario-manifest")
     }
   }
 
