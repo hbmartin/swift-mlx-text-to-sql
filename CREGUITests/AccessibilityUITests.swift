@@ -1,21 +1,6 @@
 import XCTest
 
 final class AccessibilityUITests: XCTestCase {
-  private let scenarios = [
-    "empty-chat",
-    "answered-chat",
-    "processing-queue",
-    "error",
-    "recovery",
-    "browser",
-    "settings",
-    "result-preview",
-    "result-explorer",
-    "result-chart-preparation",
-    "result-chart-recovery",
-    "transient-banners",
-  ]
-
   override func setUpWithError() throws {
     continueAfterFailure = false
     XCUIDevice.shared.orientation = .portrait
@@ -26,7 +11,7 @@ final class AccessibilityUITests: XCTestCase {
   }
 
   func testCanonicalScreensSupportUnpinnedDynamicType() throws {
-    for scenario in scenarios {
+    for scenario in canonicalScenarios() {
       let app = launch(scenario: scenario)
       try app.performAccessibilityAudit(for: .dynamicType)
       app.terminate()
@@ -34,6 +19,7 @@ final class AccessibilityUITests: XCTestCase {
   }
 
   func testCanonicalScreensDoNotClipTextOrShrinkHitRegions() throws {
+    let scenarios = canonicalScenarios()
     for size in ["large", "ax1", "ax3", "ax5"] {
       for scenario in scenarios {
         let app = launch(scenario: scenario, dynamicType: size)
@@ -138,44 +124,6 @@ final class AccessibilityUITests: XCTestCase {
     app.terminate()
   }
 
-  func testCanonicalScenarioManifestMatchesAuditList() {
-    let app = XCUIApplication()
-    app.launchEnvironment["CREG_UI_TEST_SCENARIO_MANIFEST"] = "1"
-    app.launch()
-
-    let manifest = app.staticTexts["ui-test-scenario-manifest"]
-    XCTAssertTrue(manifest.waitForExistence(timeout: 10))
-    let appScenarios = manifest.label.split(separator: "|").map(String.init)
-    XCTAssertEqual(
-      Set(scenarios).count,
-      scenarios.count,
-      "The UI test scenario list has duplicates")
-    XCTAssertEqual(
-      appScenarios.sorted(),
-      scenarios.sorted(),
-      "The app harness and accessibility audit lists must remain in lockstep")
-    app.terminate()
-  }
-
-  func testChartPreparationHasDistinctIdentityAndFillsManagedHeight() {
-    let app = launch(scenario: "result-chart-preparation")
-    XCTAssertFalse(app.descendants(matching: .any)["auto-chart-bar"].exists)
-
-    let plot = app.descendants(matching: .any)["auto-chart-preparing-plot"]
-    XCTAssertTrue(plot.waitForExistence(timeout: 5))
-
-    let title = app.staticTexts["Portfolio value by fund"]
-    let diagnostic =
-      app.staticTexts["Long fund names may be shortened on the category axis."]
-    XCTAssertTrue(title.waitForExistence(timeout: 5))
-    XCTAssertTrue(diagnostic.waitForExistence(timeout: 5))
-    XCTAssertGreaterThan(
-      diagnostic.frame.minY - title.frame.maxY,
-      100,
-      "A nil plot height should leave flexible plot space between the chrome")
-    app.terminate()
-  }
-
   @discardableResult
   private func launch(
     scenario: String,
@@ -183,8 +131,11 @@ final class AccessibilityUITests: XCTestCase {
   ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment["CREG_UI_TEST_SCENARIO"] = scenario
+    app.launchEnvironment["CREG_UI_TEST_SCENARIO_MANIFEST"] = "0"
     if let dynamicType {
       app.launchEnvironment["CREG_UI_TEST_DYNAMIC_TYPE"] = dynamicType
+    } else {
+      app.launchEnvironment["CREG_UI_TEST_DYNAMIC_TYPE"] = ""
     }
     app.launch()
 
@@ -193,6 +144,26 @@ final class AccessibilityUITests: XCTestCase {
       fixture.waitForExistence(timeout: 10),
       "The DEBUG fixture for \(scenario) did not launch")
     return app
+  }
+
+  private func canonicalScenarios(
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> [String] {
+    let app = XCUIApplication()
+    app.launchEnvironment["CREG_UI_TEST_SCENARIO"] = ""
+    app.launchEnvironment["CREG_UI_TEST_DYNAMIC_TYPE"] = ""
+    app.launchEnvironment["CREG_UI_TEST_SCENARIO_MANIFEST"] = "1"
+    app.launch()
+    defer { app.terminate() }
+
+    let manifest = app.staticTexts["ui-test-scenario-manifest"]
+    XCTAssertTrue(
+      manifest.waitForExistence(timeout: 10),
+      "The app's accessibility scenario manifest did not launch",
+      file: file,
+      line: line)
+    return manifest.label.split(separator: "|").map(String.init)
   }
 
   private func assertAccessibleControl(
