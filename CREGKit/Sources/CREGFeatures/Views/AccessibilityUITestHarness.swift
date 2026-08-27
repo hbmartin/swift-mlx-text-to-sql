@@ -30,6 +30,7 @@ import SwiftUI
     static let dynamicTypeEnvironmentKey = "CREG_UI_TEST_DYNAMIC_TYPE"
     static let scenarioManifestEnvironmentKey =
       "CREG_UI_TEST_SCENARIO_MANIFEST"
+    private static let environmentKeyPrefix = "CREG_UI_TEST_"
 
     static var scenarioManifest: String {
       Scenario.allCases.map(\.rawValue).joined(separator: "|")
@@ -43,28 +44,41 @@ import SwiftUI
     }
 
     static func request(environment: [String: String]) -> Request? {
-      let manifestRequested =
-        environment[scenarioManifestEnvironmentKey] == "1"
-      let hasUITestConfiguration =
-        environment[scenarioEnvironmentKey] != nil
-        || environment[dynamicTypeEnvironmentKey] != nil
-        || environment[scenarioManifestEnvironmentKey] != nil
-
-      guard
-        let rawScenario = environment[scenarioEnvironmentKey],
-        let scenario = Scenario(rawValue: rawScenario)
-      else {
-        if manifestRequested { return .scenarioManifest }
-        return hasUITestConfiguration ? .invalidConfiguration : nil
+      let knownKeys: Set<String> = [
+        scenarioEnvironmentKey,
+        dynamicTypeEnvironmentKey,
+        scenarioManifestEnvironmentKey,
+      ]
+      let hasUITestEnvironment = environment.keys.contains {
+        $0.hasPrefix(environmentKeyPrefix)
       }
+      guard hasUITestEnvironment else { return nil }
+
+      let hasUnknownConfiguration = environment.contains { key, value in
+        key.hasPrefix(environmentKeyPrefix)
+          && !knownKeys.contains(key)
+          && !isUnsetEnvironmentValue(value)
+      }
+      guard !hasUnknownConfiguration else { return .invalidConfiguration }
+
+      let rawManifest = environment[scenarioManifestEnvironmentKey] ?? ""
+      guard rawManifest.isEmpty || rawManifest == "0" || rawManifest == "1"
+      else { return .invalidConfiguration }
+      let manifestRequested = rawManifest == "1"
+
+      let rawScenario = environment[scenarioEnvironmentKey] ?? ""
+      let rawSize = environment[dynamicTypeEnvironmentKey] ?? ""
+      guard !rawScenario.isEmpty else {
+        guard rawSize.isEmpty else { return .invalidConfiguration }
+        return manifestRequested ? .scenarioManifest : nil
+      }
+      guard let scenario = Scenario(rawValue: rawScenario)
+      else { return .invalidConfiguration }
 
       let dynamicTypeSize: DynamicTypeSize?
-      if let rawSize = environment[dynamicTypeEnvironmentKey],
-        !rawSize.isEmpty
-      {
+      if !rawSize.isEmpty {
         guard let parsed = DynamicTypeSize.uiTestValue(rawSize) else {
-          return manifestRequested
-            ? .scenarioManifest : .invalidConfiguration
+          return .invalidConfiguration
         }
         dynamicTypeSize = parsed
       } else {
@@ -74,6 +88,10 @@ import SwiftUI
         Self(
           scenario: scenario,
           dynamicTypeSize: dynamicTypeSize))
+    }
+
+    private static func isUnsetEnvironmentValue(_ value: String) -> Bool {
+      value.isEmpty || value == "0"
     }
   }
 
@@ -160,18 +178,16 @@ import SwiftUI
   @MainActor
   private struct ResultChartPreparationAccessibilityHarness: View {
     var body: some View {
-      VStack(spacing: 0) {
+      ScrollView {
         ResultChartPreparationView(
-          recommendation: ResultChartPreparationPreviewFixtures.recommendation,
-          presentation: .explorer(plotHeight: nil),
+          recommendation: PreviewFixtures.ChartPreparation.recommendation,
+          presentation: .explorer(
+            plotHeight: ResultChartLayout.explorerPlotHeight),
           formatters: CREGChartAdapter.formatters,
           textResolver: CREGChartAdapter.textResolver
         )
-        .frame(height: 240)
         .padding()
-        Spacer(minLength: 0)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
 

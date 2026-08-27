@@ -46,11 +46,8 @@ struct ResultChartPreparationView: View {
           .font(.headline)
       }
       ProgressView("Preparing chart")
-        .frame(
-          maxWidth: .infinity,
-          maxHeight: presentation.plotHeight == nil ? .infinity : nil)
+        .frame(maxWidth: .infinity)
         .frame(height: presentation.plotHeight)
-        .accessibilityIdentifier("auto-chart-preparing-plot")
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,
@@ -72,7 +69,7 @@ struct ResultChartPreparationView: View {
               defaultText: "Clear")),
             action: selection.clear)
             .buttonStyle(.borderless)
-            .accessibilityIdentifier("auto-chart-clear-selection")
+            .accessibilityIdentifier("result-chart-preparing-clear-selection")
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(summary.accessibilityDescription)
@@ -96,7 +93,7 @@ struct ResultChartPreparationView: View {
         : recommendation.specification.title
     )
     .accessibilityIdentifier(
-      "auto-chart-preparing-\(recommendation.specification.family.rawValue)")
+      "result-chart-preparing-\(recommendation.specification.family.rawValue)")
   }
 }
 

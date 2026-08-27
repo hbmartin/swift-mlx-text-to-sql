@@ -41,6 +41,16 @@ jobs:
         working-directory: CREGKit
         run: swift test
 
+      - name: Test focused accessibility UI contracts
+        run: |
+          xcodebuild test \
+            -project CREG.xcodeproj \
+            -scheme CREG \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest' \
+            -skipMacroValidation \
+            -only-testing:CREGUITests/AccessibilityUITests/testMalformedConfigurationRendersInvalidConfigurationScreen \
+            -only-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation
+
   python:
     name: Python tests and corpus determinism
     runs-on: macos-26
