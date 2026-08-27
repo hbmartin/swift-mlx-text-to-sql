@@ -88,6 +88,7 @@ def run_command(
     cwd: Path,
     log_path: Path | None = None,
     allow_failure: bool = False,
+    preserve_stdout: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         list(command),
@@ -98,24 +99,26 @@ def run_command(
         errors="replace",
         check=False,
     )
-    stdout = sanitize_text(completed.stdout)
+    sanitized_stdout = sanitize_text(completed.stdout)
     stderr = sanitize_text(completed.stderr)
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(
             f"$ {command_text(command)}\n\n"
-            f"--- stdout ---\n{stdout}\n"
+            f"--- stdout ---\n{sanitized_stdout}\n"
             f"--- stderr ---\n{stderr}\n"
             f"--- exit code ---\n{completed.returncode}\n"
         )
     sanitized = subprocess.CompletedProcess(
         args=completed.args,
         returncode=completed.returncode,
-        stdout=stdout,
+        stdout=completed.stdout if preserve_stdout else sanitized_stdout,
         stderr=stderr,
     )
     if completed.returncode != 0 and not allow_failure:
-        details = "\n".join(part for part in (stdout.strip(), stderr.strip()) if part)
+        details = "\n".join(
+            part for part in (sanitized_stdout.strip(), stderr.strip()) if part
+        )
         if details:
             print(details, file=sys.stderr)
         location = f" See {log_path}." if log_path is not None else ""
@@ -139,20 +142,23 @@ def require_directory(path: Path, description: str) -> None:
 def load_xcode_project(repo: Path) -> dict[str, Any]:
     project_path = repo / PROJECT_FILE
     require_file(project_path, "Xcode project file")
-    try:
-        completed = run_command(
-            [
-                "/usr/bin/plutil",
-                "-convert",
-                "json",
-                "-o",
-                "-",
-                str(project_path.resolve()),
-            ],
-            cwd=repo,
-        )
-    except ReleaseError as error:
-        raise ReleaseError(f"Cannot parse {project_path}: {error}") from error
+    completed = run_command(
+        [
+            "/usr/bin/plutil",
+            "-convert",
+            "json",
+            "-o",
+            "-",
+            str(project_path.resolve()),
+        ],
+        cwd=repo,
+        allow_failure=True,
+        preserve_stdout=True,
+    )
+    if completed.returncode != 0:
+        details = completed.stderr.strip()
+        suffix = f": {details}" if details else ""
+        raise ReleaseError(f"Cannot parse {project_path}{suffix}")
     try:
         project = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
@@ -283,8 +289,13 @@ def require_target_shell_script_contract(
         )
 
     configured_inputs = phase.get("inputPaths")
-    if not isinstance(configured_inputs, list):
-        configured_inputs = []
+    if not isinstance(configured_inputs, list) or not all(
+        isinstance(path, str) for path in configured_inputs
+    ):
+        raise ReleaseError(
+            f"Xcode target {target_name!r} has malformed input paths in its "
+            f"{phase_name!r} build phase"
+        )
     missing_inputs = [path for path in input_paths if path not in configured_inputs]
     if missing_inputs:
         raise ReleaseError(
@@ -301,6 +312,7 @@ def require_target_build_setting(
     setting: str,
     expected: str,
     required_configurations: Sequence[str],
+    validate_all_configurations: bool = False,
 ) -> None:
     configurations = target_build_configurations(project, target_name)
     missing = sorted(set(required_configurations) - configurations.keys())
@@ -309,10 +321,15 @@ def require_target_build_setting(
             f"Xcode target {target_name!r} is missing configurations: "
             + ", ".join(missing)
         )
+    configurations_to_validate = (
+        configurations.keys()
+        if validate_all_configurations
+        else required_configurations
+    )
     invalid = [
         f"{name}={settings.get(setting)!r}"
         for name, settings in sorted(configurations.items())
-        if name in required_configurations
+        if name in configurations_to_validate
         if settings.get(setting) != expected
     ]
     if invalid:
@@ -614,6 +631,7 @@ def verify_source_contract(repo: Path) -> None:
         setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
         expected="NO",
         required_configurations=("Debug", "Beta", "Release"),
+        validate_all_configurations=True,
     )
     require_target_build_setting(
         project,

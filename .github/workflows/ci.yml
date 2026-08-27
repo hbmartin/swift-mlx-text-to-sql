@@ -98,6 +98,12 @@ jobs:
         working-directory: fine-tuning
         run: uv run --frozen pytest -q
 
+      - name: Run TestFlight publisher tests
+        run: >-
+          python3 -m unittest discover
+          -s .agents/skills/publish-creg-testflight/tests
+          -p 'test_*.py'
+
       - name: Verify generated schema resources
         working-directory: fine-tuning
         run: |

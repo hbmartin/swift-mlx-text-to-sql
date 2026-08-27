@@ -32,17 +32,11 @@ def run_materializer(environment: dict[str, str]) -> subprocess.CompletedProcess
 
 
 def accessibility_workflow() -> tuple[Path, dict[str, object]]:
-    matches = []
-    workflows = check_ci_contracts.ROOT / ".github" / "workflows"
-    for path in (*workflows.glob("*.yml"), *workflows.glob("*.yaml")):
-        workflow = yaml.safe_load(path.read_text())
-        if (
-            isinstance(workflow, dict)
-            and workflow.get("name") == check_ci_contracts.ACCESSIBILITY_WORKFLOW_NAME
-        ):
-            matches.append((path, workflow))
+    matches = check_ci_contracts.accessibility_workflows()
     assert len(matches) == 1
-    return matches[0]
+    path, workflow = matches[0]
+    assert isinstance(workflow, dict)
+    return path, workflow
 
 
 def xcode_target_configurations(
@@ -168,10 +162,16 @@ def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
     ("reviewed", "replacement"),
     [
         ("-project CREG.xcodeproj", "-project Decoy.xcodeproj"),
+        ("-project CREG.xcodeproj", "-project CREG.xcodeproj.backup"),
         ("-scheme CREG", "-scheme Decoy"),
+        ("-scheme CREG", "-scheme CREGPreview"),
         (
             "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
             "platform=macOS,name=iPhone 17 Pro,OS=26.5",
+        ),
+        (
+            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5beta",
         ),
     ],
 )
@@ -191,6 +191,21 @@ def test_accessibility_ui_contract_pins_project_scheme_and_destination(
 
     assert len(failures) == 1
     assert reviewed in failures[0]
+
+
+def test_ci_runs_testflight_publisher_contract_tests():
+    _, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["python"]["steps"]
+    publisher_test_steps = [
+        step
+        for step in steps
+        if step.get("name") == "Run TestFlight publisher tests"
+    ]
+
+    assert len(publisher_test_steps) == 1
+    run = publisher_test_steps[0].get("run", "")
+    assert "python3 -m unittest discover" in run
+    assert ".agents/skills/publish-creg-testflight/tests" in run
 
 
 @pytest.mark.parametrize("condition", ["always()", "${{ always() }}"])

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import shlex
+from collections.abc import Sequence
 from pathlib import Path
 
 import yaml
@@ -18,6 +20,31 @@ ACCESSIBILITY_UPLOAD_ACTION = (
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 )
 ACCESSIBILITY_WORKFLOW_NAME = "CI"
+LoadedWorkflow = tuple[Path, str, object]
+
+
+def load_workflows(directory: Path | None = None) -> list[LoadedWorkflow]:
+    workflow_directory = WORKFLOWS if directory is None else directory
+    paths = sorted(
+        (*workflow_directory.glob("*.yml"), *workflow_directory.glob("*.yaml"))
+    )
+    workflows = []
+    for path in paths:
+        source = path.read_text()
+        workflows.append((path, source, yaml.safe_load(source)))
+    return workflows
+
+
+def accessibility_workflows(
+    workflows: Sequence[LoadedWorkflow] | None = None,
+) -> list[tuple[Path, object]]:
+    loaded = load_workflows() if workflows is None else workflows
+    return [
+        (path, workflow)
+        for path, _, workflow in loaded
+        if isinstance(workflow, dict)
+        and workflow.get("name") == ACCESSIBILITY_WORKFLOW_NAME
+    ]
 
 
 def checkout_credential_failures(path: Path, workflow: object) -> list[str]:
@@ -110,10 +137,6 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
             failures.append(f"{prefix} UI test timeout must be 30 minutes")
         run = ui_test.get("run")
         required_command_fragments = (
-            "xcodebuild test",
-            "-project CREG.xcodeproj",
-            "-scheme CREG",
-            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
             '-clonedSourcePackagesDirPath "${RUNNER_TEMP}/creg-source-packages"',
             '-derivedDataPath "${RUNNER_TEMP}/creg-derived-data"',
             '-resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult"',
@@ -135,6 +158,33 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
         if not isinstance(run, str):
             failures.append(f"{prefix} UI test step must contain a shell command")
         else:
+            try:
+                command_tokens = shlex.split(run, comments=True)
+            except ValueError as error:
+                failures.append(f"{prefix} UI test shell command is malformed: {error}")
+                command_tokens = []
+            required_command_pairs = (
+                ("xcodebuild", "test"),
+                ("-project", "CREG.xcodeproj"),
+                ("-scheme", "CREG"),
+                (
+                    "-destination",
+                    "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+                ),
+            )
+            missing_pairs = [
+                " ".join(pair)
+                for pair in required_command_pairs
+                if not any(
+                    tuple(command_tokens[index : index + len(pair)]) == pair
+                    for index in range(len(command_tokens) - len(pair) + 1)
+                )
+            ]
+            if missing_pairs:
+                failures.append(
+                    f"{prefix} UI test step is missing exact command arguments: "
+                    + ", ".join(missing_pairs)
+                )
             missing_fragments = [
                 fragment
                 for fragment in required_command_fragments
@@ -167,29 +217,23 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
 
 def main() -> None:
     failures: list[str] = []
-    accessibility_workflows: list[tuple[Path, object]] = []
-    workflow_paths = sorted((*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")))
-    for path in workflow_paths:
-        source = path.read_text()
+    workflows = load_workflows()
+    for path, source, workflow in workflows:
         lines = source.splitlines()
         for number, line in enumerate(lines, start=1):
             if "uses:" in line and not PINNED_ACTION.match(line):
                 failures.append(
                     f"{path.relative_to(ROOT)}:{number}: action is not SHA-pinned"
                 )
-        workflow = yaml.safe_load(source)
         failures.extend(checkout_credential_failures(path, workflow))
-        if isinstance(workflow, dict) and workflow.get("name") == (
-            ACCESSIBILITY_WORKFLOW_NAME
-        ):
-            accessibility_workflows.append((path, workflow))
-    if len(accessibility_workflows) != 1:
+    matches = accessibility_workflows(workflows)
+    if len(matches) != 1:
         failures.append(
             f"{WORKFLOWS.relative_to(ROOT)}: accessibility UI contract requires "
             f"exactly one workflow named {ACCESSIBILITY_WORKFLOW_NAME!r}"
         )
     else:
-        path, workflow = accessibility_workflows[0]
+        path, workflow = matches[0]
         failures.extend(accessibility_ui_contract_failures(path, workflow))
     if failures:
         raise SystemExit("\n".join(failures))
