@@ -4,6 +4,7 @@ import ComposableArchitecture
 import Foundation
 import SwiftUI
 
+#if DEBUG
 #Preview("Settings — App Icon Picker") {
   SettingsView(store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
 }
@@ -12,3 +13,4 @@ import SwiftUI
   SettingsView(store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
     .preferredColorScheme(.dark)
 }
+#endif

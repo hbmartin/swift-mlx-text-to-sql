@@ -4,6 +4,7 @@ import ComposableArchitecture
 import Foundation
 import SwiftUI
 
+#if DEBUG
 // MARK: - Named design previews
 
 #Preview("Chat — Empty — Light") {
@@ -171,3 +172,4 @@ import SwiftUI
     now: PreviewFixtures.now)
     .preferredColorScheme(.dark)
 }
+#endif

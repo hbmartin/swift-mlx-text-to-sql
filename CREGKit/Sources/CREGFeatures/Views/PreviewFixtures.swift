@@ -4,9 +4,10 @@ import ComposableArchitecture
 import Foundation
 import SwiftUI
 
-/// Deterministic, side-effect-free fixtures for the named design previews.
-/// Fixed identifiers and dates, an inert reducer, and stub dependencies —
-/// no pipeline, history store, network, or clock access.
+/// Deterministic, side-effect-free fixtures shared by named design previews,
+/// DEBUG accessibility harnesses, and chart integration tests. Fixed
+/// identifiers and dates, an inert reducer, and stub dependencies — no
+/// pipeline, history store, network, or clock access.
 enum PreviewFixtures {
   /// 2026-07-01 12:00:00 UTC — aligned with the Portfolio As-of Date.
   static let now = Date(timeIntervalSince1970: 1_782_907_200)
