@@ -136,6 +136,117 @@ def require_directory(path: Path, description: str) -> None:
         raise ReleaseError(f"Missing {description}: {path}")
 
 
+def load_xcode_project(repo: Path) -> dict[str, Any]:
+    project_path = repo / PROJECT_FILE
+    require_file(project_path, "Xcode project file")
+    completed = subprocess.run(
+        [
+            "/usr/bin/plutil",
+            "-convert",
+            "json",
+            "-o",
+            "-",
+            str(project_path.resolve()),
+        ],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        check=False,
+    )
+    if completed.returncode != 0:
+        details = sanitize_text(completed.stderr.strip())
+        suffix = f": {details}" if details else ""
+        raise ReleaseError(f"Cannot parse {project_path}{suffix}")
+    try:
+        project = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise ReleaseError(f"Cannot parse {project_path}: {error}") from error
+    if not isinstance(project, dict):
+        raise ReleaseError(f"Cannot parse {project_path}: root must be an object")
+    return project
+
+
+def target_build_configurations(
+    project: dict[str, Any], target_name: str
+) -> dict[str, dict[str, Any]]:
+    objects = project.get("objects")
+    if not isinstance(objects, dict):
+        raise ReleaseError("Xcode project objects must be an object")
+
+    targets = [
+        value
+        for value in objects.values()
+        if isinstance(value, dict)
+        and value.get("isa") == "PBXNativeTarget"
+        and value.get("name") == target_name
+    ]
+    if len(targets) != 1:
+        raise ReleaseError(
+            f"Xcode project must contain exactly one {target_name!r} native target"
+        )
+    configuration_list_id = targets[0].get("buildConfigurationList")
+    configuration_list = objects.get(configuration_list_id)
+    if not isinstance(configuration_list, dict):
+        raise ReleaseError(
+            f"Xcode target {target_name!r} has no valid build configuration list"
+        )
+    configuration_ids = configuration_list.get("buildConfigurations")
+    if not isinstance(configuration_ids, list) or not configuration_ids:
+        raise ReleaseError(
+            f"Xcode target {target_name!r} has no build configurations"
+        )
+
+    configurations: dict[str, dict[str, Any]] = {}
+    for configuration_id in configuration_ids:
+        configuration = objects.get(configuration_id)
+        if not isinstance(configuration, dict):
+            raise ReleaseError(
+                f"Xcode target {target_name!r} references an invalid "
+                "build configuration"
+            )
+        name = configuration.get("name")
+        settings = configuration.get("buildSettings")
+        if not isinstance(name, str) or not name or not isinstance(settings, dict):
+            raise ReleaseError(
+                f"Xcode target {target_name!r} has a malformed build configuration"
+            )
+        if name in configurations:
+            raise ReleaseError(
+                f"Xcode target {target_name!r} has duplicate {name!r} configurations"
+            )
+        configurations[name] = settings
+    return configurations
+
+
+def require_target_build_setting(
+    project: dict[str, Any],
+    *,
+    target_name: str,
+    setting: str,
+    expected: str,
+    required_configurations: Sequence[str],
+) -> None:
+    configurations = target_build_configurations(project, target_name)
+    missing = sorted(set(required_configurations) - configurations.keys())
+    if missing:
+        raise ReleaseError(
+            f"Xcode target {target_name!r} is missing configurations: "
+            + ", ".join(missing)
+        )
+    invalid = [
+        f"{name}={settings.get(setting)!r}"
+        for name, settings in sorted(configurations.items())
+        if settings.get(setting) != expected
+    ]
+    if invalid:
+        raise ReleaseError(
+            f"Every {target_name} app configuration must set {setting}={expected}: "
+            + ", ".join(invalid)
+        )
+
+
 def discover_tool(name: str) -> str:
     result = shutil.which(name)
     if result is None and name == "uv":
@@ -435,12 +546,13 @@ def verify_source_contract(repo: Path) -> None:
             "Xcode project is missing required Beta release settings: "
             + ", ".join(missing)
         )
-    harness_default = "CREG_ACCESSIBILITY_HARNESS_BUILD = NO;"
-    if project_text.count(harness_default) != 3:
-        raise ReleaseError(
-            "Every CREG app configuration must disable the accessibility "
-            "harness build by default"
-        )
+    require_target_build_setting(
+        load_xcode_project(repo),
+        target_name=TARGET,
+        setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
+        expected="NO",
+        required_configurations=("Debug", "Beta", "Release"),
+    )
 
 
 def collect_preflight(

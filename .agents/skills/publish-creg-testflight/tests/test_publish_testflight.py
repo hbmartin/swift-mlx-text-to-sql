@@ -26,6 +26,37 @@ def load_publisher() -> ModuleType:
 publisher = load_publisher()
 
 
+def xcode_project(
+    harness_settings: dict[str, str],
+    *,
+    decoy_settings: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    objects: dict[str, Any] = {
+        "target": {
+            "isa": "PBXNativeTarget",
+            "name": publisher.TARGET,
+            "buildConfigurationList": "target-configurations",
+        },
+        "target-configurations": {
+            "isa": "XCConfigurationList",
+            "buildConfigurations": list(harness_settings),
+        },
+    }
+    for name, value in harness_settings.items():
+        objects[name] = {
+            "isa": "XCBuildConfiguration",
+            "name": name,
+            "buildSettings": {"CREG_ACCESSIBILITY_HARNESS_BUILD": value},
+        }
+    for index, value in enumerate(decoy_settings):
+        objects[f"decoy-{index}"] = {
+            "isa": "XCBuildConfiguration",
+            "name": f"Decoy {index}",
+            "buildSettings": {"CREG_ACCESSIBILITY_HARNESS_BUILD": value},
+        }
+    return {"objects": objects}
+
+
 def inspector_report(
     archive_build: object = MISSING,
     ipa_build: object = MISSING,
@@ -176,6 +207,51 @@ class VerifyCandidateInputsTests(unittest.TestCase):
                 "latest-local-v3",
                 uv="uv",
                 log_path=Path("/tmp/candidate.log"),
+            )
+
+
+class TargetBuildSettingTests(unittest.TestCase):
+    def test_accepts_the_setting_on_every_target_configuration(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+
+        publisher.require_target_build_setting(
+            project,
+            target_name=publisher.TARGET,
+            setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
+            expected="NO",
+            required_configurations=("Debug", "Beta", "Release"),
+        )
+
+    def test_decoy_occurrences_cannot_hide_a_wrong_target_configuration(self) -> None:
+        project = xcode_project(
+            {"Debug": "YES", "Beta": "NO", "Release": "NO"},
+            decoy_settings=("NO", "NO", "NO"),
+        )
+
+        with self.assertRaisesRegex(
+            publisher.ReleaseError,
+            r"Debug='YES'",
+        ):
+            publisher.require_target_build_setting(
+                project,
+                target_name=publisher.TARGET,
+                setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
+                expected="NO",
+                required_configurations=("Debug", "Beta", "Release"),
+            )
+
+    def test_rejects_a_missing_required_configuration(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO"})
+
+        with self.assertRaisesRegex(
+            publisher.ReleaseError, "missing configurations: Release"
+        ):
+            publisher.require_target_build_setting(
+                project,
+                target_name=publisher.TARGET,
+                setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
+                expected="NO",
+                required_configurations=("Debug", "Beta", "Release"),
             )
 
 
