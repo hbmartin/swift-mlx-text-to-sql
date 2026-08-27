@@ -13,7 +13,6 @@ import SwiftUI
       case recovery
       case browser
       case settings
-      case resultPreview = "result-preview"
       case resultExplorer = "result-explorer"
       case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
@@ -52,7 +51,7 @@ import SwiftUI
       let hasUnknownConfiguration = environment.contains { key, value in
         key.hasPrefix(environmentKeyPrefix)
           && !knownKeys.contains(key)
-          && !isUnsetEnvironmentValue(value)
+          && !isDisabledEnvironmentValue(value)
       }
       guard !hasUnknownConfiguration else { return .invalidConfiguration }
 
@@ -63,8 +62,8 @@ import SwiftUI
 
       let rawScenario = environment[scenarioEnvironmentKey] ?? ""
       let rawSize = environment[dynamicTypeEnvironmentKey] ?? ""
-      guard !isUnsetEnvironmentValue(rawScenario) else {
-        guard isUnsetEnvironmentValue(rawSize) else {
+      guard !rawScenario.isEmpty else {
+        guard rawSize.isEmpty else {
           return .invalidConfiguration
         }
         return manifestRequested ? .scenarioManifest : nil
@@ -73,7 +72,7 @@ import SwiftUI
       else { return .invalidConfiguration }
 
       let dynamicTypeSize: DynamicTypeSize?
-      if !isUnsetEnvironmentValue(rawSize) {
+      if !rawSize.isEmpty {
         guard let parsed = DynamicTypeSize.uiTestValue(rawSize) else {
           return .invalidConfiguration
         }
@@ -87,7 +86,7 @@ import SwiftUI
           dynamicTypeSize: dynamicTypeSize))
     }
 
-    private static func isUnsetEnvironmentValue(_ value: String) -> Bool {
+    private static func isDisabledEnvironmentValue(_ value: String) -> Bool {
       value.isEmpty || value == "0"
     }
   }
@@ -104,7 +103,7 @@ import SwiftUI
           store: PreviewFixtures.chatStore(PreviewFixtures.chatState()),
           chrome: PreviewFixtures.chrome)
 
-      case .answeredChat, .resultPreview:
+      case .answeredChat:
         answeredChat
 
       case .resultExplorer:

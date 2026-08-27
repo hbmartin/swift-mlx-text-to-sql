@@ -31,6 +31,29 @@ def run_materializer(environment: dict[str, str]) -> subprocess.CompletedProcess
     )
 
 
+def xcode_target_configurations(
+    project_path: Path, target_name: str
+) -> dict[str, dict[str, object]]:
+    completed = subprocess.run(
+        ["/usr/bin/plutil", "-convert", "json", "-o", "-", str(project_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    project = json.loads(completed.stdout)
+    objects = project["objects"]
+    target = next(
+        value
+        for value in objects.values()
+        if value.get("isa") == "PBXNativeTarget" and value.get("name") == target_name
+    )
+    configuration_list = objects[target["buildConfigurationList"]]
+    return {
+        objects[identifier]["name"]: objects[identifier]["buildSettings"]
+        for identifier in configuration_list["buildConfigurations"]
+    }
+
+
 def test_checkout_credentials_are_read_from_the_checkout_with_mapping():
     assert (
         failures(
@@ -82,32 +105,30 @@ def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
 
 
 def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
-    workflow = (check_ci_contracts.ROOT / ".github/workflows/ci.yml").read_text()
+    path = check_ci_contracts.ROOT / ".github/workflows/ci.yml"
+    workflow = yaml.safe_load(path.read_text())
 
-    assert "name=iPhone 17 Pro,OS=26.5" in workflow
-    assert "timeout-minutes: 30" in workflow
-    assert (
-        "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" in workflow
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
+    path = check_ci_contracts.ROOT / ".github/workflows/ci.yml"
+    workflow = yaml.safe_load(path.read_text())
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
     )
-    assert '${{ runner.temp }}/creg-derived-data' in workflow
-    assert '${{ runner.temp }}/creg-source-packages' in workflow
-    assert '-skipPackagePluginValidation' in workflow
-    assert (
-        "-only-testing:CREGUITests/AccessibilityUITests/"
-        "testHighestRiskScreensAtAX5Landscape" in workflow
-    )
-    assert "CREG_ACCESSIBILITY_HARNESS_BUILD=YES" in workflow
-    assert (
-        '-resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult"'
-        in workflow
-    )
-    assert (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-        in workflow
-    )
-    assert (
-        "path: ${{ runner.temp }}/creg-accessibility-ui-tests.xcresult" in workflow
-    )
+    fragment = "CREG_ACCESSIBILITY_HARNESS_BUILD=YES"
+    ui_test["run"] = ui_test["run"].replace(fragment, "")
+    steps.append({"name": "Unrelated documentation", "run": f"echo {fragment}"})
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "UI test step is missing command fragments" in failures[0]
+    assert fragment in failures[0]
 
 
 @pytest.mark.parametrize("enabled_value", ["1", "YES", "true", "ON"])
@@ -231,14 +252,20 @@ def test_accessibility_harness_bypass_rejects_non_debug_simulator_scope(
 
 
 def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only():
-    project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
+    project_path = check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj"
+    project = project_path.read_text()
     materializer = (
         check_ci_contracts.ROOT / "tools/materialize_bundled_model.sh"
     ).read_text()
     assert "Materialize Bundled SQL Model" in project
     assert "tools/materialize_bundled_model.sh" in project
     assert "model-runtime-contract.json" in project
-    assert project.count("CREG_ACCESSIBILITY_HARNESS_BUILD = NO;") == 3
+    configurations = xcode_target_configurations(project_path, "CREG")
+    assert set(configurations) == {"Debug", "Beta", "Release"}
+    assert all(
+        settings.get("CREG_ACCESSIBILITY_HARNESS_BUILD") == "NO"
+        for settings in configurations.values()
+    )
     assert project.count('CREG_CANDIDATE_TRAINING_RUN = "latest-local-v3";') == 2
     assert "CREG_DEBUG_TRAINING_RUN" not in project
     assert "CREG_EXPERIMENTAL_TRAINING_RUN" not in project

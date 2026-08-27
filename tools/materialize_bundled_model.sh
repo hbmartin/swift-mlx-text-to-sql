@@ -7,7 +7,7 @@ HARNESS_BUILD_NORMALIZED="$(
 )"
 case "$HARNESS_BUILD_NORMALIZED" in
   1 | yes | true | on) HARNESS_BUILD=true ;;
-  "" | 0 | no | false | off) HARNESS_BUILD=false ;;
+  0 | no | false | off) HARNESS_BUILD=false ;;
   *)
     echo "error: CREG_ACCESSIBILITY_HARNESS_BUILD must be a Boolean; found '$HARNESS_BUILD_VALUE'."
     exit 1

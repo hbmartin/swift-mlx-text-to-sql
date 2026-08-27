@@ -14,7 +14,6 @@ import Testing
         "recovery",
         "browser",
         "settings",
-        "result-preview",
         "result-explorer",
         "result-chart-preparation",
         "result-chart-recovery",
@@ -59,37 +58,33 @@ import Testing
         AccessibilityUITestConfiguration.request(environment: [:]) == nil)
     }
 
-    @Test func zeroValuesAreUnsetForEveryKnownKey() {
-      let liveRoot = AccessibilityUITestConfiguration.request(environment: [
-        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "0",
-        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "0",
-        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
-      ])
-      let manifest = AccessibilityUITestConfiguration.request(environment: [
-        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "0",
-        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "0",
-        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "1",
-      ])
-      let scenario = AccessibilityUITestConfiguration.request(environment: [
-        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "settings",
-        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "0",
-        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
-      ])
+    @Test func zeroDisablesOnlyBooleanEnvironmentValues() {
       let empty = AccessibilityUITestConfiguration.request(environment: [
         AccessibilityUITestConfiguration.scenarioEnvironmentKey: "",
         AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "",
         AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
       ])
+      let unknownDisabled = AccessibilityUITestConfiguration.request(environment: [
+        "CREG_UI_TEST_FUTURE_OPTION": "0"
+      ])
 
-      #expect(liveRoot == nil)
-      #expect(manifest == .scenarioManifest)
-      #expect(
-        scenario
-          == .scenario(
-            AccessibilityUITestConfiguration(
-              scenario: .settings,
-              dynamicTypeSize: nil)))
       #expect(empty == nil)
+      #expect(unknownDisabled == nil)
+    }
+
+    @Test func zeroFailsClosedForTypedStringEnvironmentValues() {
+      let invalidScenario = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "0",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
+      ])
+      let invalidDynamicType = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "settings",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "0",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
+      ])
+
+      #expect(invalidScenario == .invalidConfiguration)
+      #expect(invalidDynamicType == .invalidConfiguration)
     }
 
     @Test func malformedExplicitConfigurationNeverRequestsTheLiveRoot() {
@@ -128,12 +123,12 @@ import Testing
       #expect(invalid == .invalidConfiguration)
     }
 
-    @Test func unsetUnknownUITestNamespaceConfigurationRequestsTheLiveRoot() {
-      let unset = AccessibilityUITestConfiguration.request(environment: [
+    @Test func disabledUnknownUITestNamespaceConfigurationRequestsTheLiveRoot() {
+      let disabled = AccessibilityUITestConfiguration.request(environment: [
         "CREG_UI_TEST_FUTURE_OPTION": "0"
       ])
 
-      #expect(unset == nil)
+      #expect(disabled == nil)
     }
   }
 #endif

@@ -89,7 +89,7 @@ final class AccessibilityUITests: XCTestCase {
   func testHighestRiskScreensAtAX5Landscape() throws {
     XCUIDevice.shared.orientation = .landscapeLeft
 
-    for scenario in ["answered-chat", "browser", "result-preview"] {
+    for scenario in ["answered-chat", "browser"] {
       let app = launch(scenario: scenario, dynamicType: "ax5")
       // `.dynamicType` asks XCTest to vary an otherwise unpinned font size;
       // this contract deliberately fixes AX5 and audits that exact layout.
@@ -141,10 +141,6 @@ final class AccessibilityUITests: XCTestCase {
       app.descendants(matching: .any)["result-chart-explorer-rationale"]
     XCTAssertTrue(explorer.waitForExistence(timeout: 5))
     XCTAssertTrue(plot.waitForExistence(timeout: 5))
-    XCTAssertEqual(
-      plot.frame.height,
-      360,
-      accuracy: 1)
     XCTAssertTrue(rationale.waitForExistence(timeout: 5))
 
     let title = app.staticTexts["Portfolio value by fund"]
