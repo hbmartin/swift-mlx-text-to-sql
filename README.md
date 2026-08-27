@@ -206,9 +206,16 @@ uv run --frozen python tools/fetch_model.py --production
 
 ## Build behavior
 
-The Xcode build phase runs the model materializer through the frozen `uv`
-environment and writes the exact bundled manifest into the app.
+The Xcode build phase normally runs the model materializer through the frozen
+`uv` environment and writes the exact bundled manifest into the app.
 
+- `CREG_ACCESSIBILITY_HARNESS_BUILD` is declared `NO` in every app
+  configuration. CI may override it with a conventional true value only for a
+  Debug iOS Simulator build that launches the inert accessibility harness. The
+  bypass still stamps the current source revision and dirty state, removes any
+  stale `SQLModel`, manifest, or receipt from incremental build products, and
+  rejects unknown Boolean values and every device, Beta, or Release build. The
+  resulting app is a UI-test fixture, not a model-bearing development build.
 - Debug and Beta share `CREG_CANDIDATE_TRAINING_RUN`, which defaults to
   `latest-local-v3`. They select the
   newest locally eligible reliability-v3 run, verifies finite training,

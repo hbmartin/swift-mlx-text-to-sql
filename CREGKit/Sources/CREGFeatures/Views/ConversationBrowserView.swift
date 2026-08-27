@@ -24,6 +24,7 @@ struct ConversationBrowserView: View {
       } label: {
         Label("New Chat", systemImage: "square.and.pencil")
           .font(.body.weight(.medium))
+          .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 12)
           .padding(.vertical, 10)
@@ -45,6 +46,7 @@ struct ConversationBrowserView: View {
       } label: {
         Label("Settings", systemImage: "gearshape")
           .font(.body)
+          .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 12)
           .padding(.vertical, 10)

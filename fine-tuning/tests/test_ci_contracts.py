@@ -1,3 +1,7 @@
+import json
+import os
+import plistlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,6 +14,20 @@ def failures(source: str) -> list[str]:
     path = check_ci_contracts.ROOT / ".github" / "workflows" / "fixture.yml"
     return check_ci_contracts.checkout_credential_failures(
         Path(path), yaml.safe_load(source)
+    )
+
+
+def run_materializer(environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/zsh",
+            str(check_ci_contracts.ROOT / "tools/materialize_bundled_model.sh"),
+        ],
+        cwd=check_ci_contracts.ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -67,6 +85,18 @@ def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
     workflow = (check_ci_contracts.ROOT / ".github/workflows/ci.yml").read_text()
 
     assert "name=iPhone 17 Pro,OS=26.5" in workflow
+    assert "timeout-minutes: 30" in workflow
+    assert (
+        "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" in workflow
+    )
+    assert '${{ runner.temp }}/creg-derived-data' in workflow
+    assert '${{ runner.temp }}/creg-source-packages' in workflow
+    assert '-skipPackagePluginValidation' in workflow
+    assert (
+        "-only-testing:CREGUITests/AccessibilityUITests/"
+        "testHighestRiskScreensAtAX5Landscape" in workflow
+    )
+    assert "CREG_ACCESSIBILITY_HARNESS_BUILD=YES" in workflow
     assert (
         '-resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult"'
         in workflow
@@ -80,6 +110,126 @@ def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
     )
 
 
+@pytest.mark.parametrize("enabled_value", ["1", "YES", "true", "ON"])
+def test_accessibility_harness_bypass_clears_artifacts_and_stamps_provenance(
+    tmp_path, enabled_value
+):
+    target_build_dir = tmp_path / "Debug-iphonesimulator"
+    resource_dir = target_build_dir / "CREG.app"
+    model_dir = resource_dir / "SQLModel"
+    model_dir.mkdir(parents=True)
+    (model_dir / "stale.safetensors").write_text("stale")
+    (resource_dir / "model-manifest.json").write_text("stale")
+    (resource_dir / "production-model-receipt.json").write_text("stale")
+    info_path = resource_dir / "Info.plist"
+    with info_path.open("wb") as stream:
+        plistlib.dump({"CFBundleIdentifier": "dev.haroldmartin.CREG"}, stream)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CREG_ACCESSIBILITY_HARNESS_BUILD": enabled_value,
+            "CONFIGURATION": "Debug",
+            "PLATFORM_NAME": "iphonesimulator",
+            "SRCROOT": str(check_ci_contracts.ROOT),
+            "TARGET_BUILD_DIR": str(target_build_dir),
+            "UNLOCALIZED_RESOURCES_FOLDER_PATH": "CREG.app",
+            "INFOPLIST_PATH": "CREG.app/Info.plist",
+        }
+    )
+
+    completed = run_materializer(environment)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "stale model artifacts were cleared" in completed.stdout
+    assert not model_dir.exists()
+    assert not (resource_dir / "model-manifest.json").exists()
+    assert not (resource_dir / "production-model-receipt.json").exists()
+    with info_path.open("rb") as stream:
+        info = plistlib.load(stream)
+    contract = json.loads(
+        (check_ci_contracts.ROOT / "model-runtime-contract.json").read_text()
+    )
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=check_ci_contracts.ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
+            cwd=check_ci_contracts.ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    assert info["CREGModelRuntimeContractVersion"] == contract["current_version"]
+    assert info["CREGSourceRevision"] == revision
+    assert info["CREGSourceDirty"] is dirty
+
+
+def test_accessibility_harness_bypass_rejects_unknown_boolean_value():
+    environment = os.environ.copy()
+    environment["CREG_ACCESSIBILITY_HARNESS_BUILD"] = "sometimes"
+
+    completed = run_materializer(environment)
+
+    assert completed.returncode == 1
+    assert "must be a Boolean" in completed.stdout
+    assert "unbound variable" not in completed.stderr
+
+
+@pytest.mark.parametrize("disabled_value", ["", "0", "NO", "false", "OFF"])
+def test_accessibility_harness_false_values_do_not_enable_the_bypass(
+    disabled_value,
+):
+    environment = os.environ.copy()
+    environment["CREG_ACCESSIBILITY_HARNESS_BUILD"] = disabled_value
+
+    completed = run_materializer(environment)
+
+    assert completed.returncode == 1
+    assert "requires the Xcode build environment" in completed.stdout
+    assert "UI-test harness build omits" not in completed.stdout
+
+
+@pytest.mark.parametrize(
+    ("configuration", "platform"),
+    [
+        ("", ""),
+        ("Beta", "iphoneos"),
+        ("Release", "iphoneos"),
+        ("Debug", "iphoneos"),
+    ],
+)
+def test_accessibility_harness_bypass_rejects_non_debug_simulator_scope(
+    configuration, platform
+):
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CREG_ACCESSIBILITY_HARNESS_BUILD": "YES",
+            "CONFIGURATION": configuration,
+            "PLATFORM_NAME": platform,
+        }
+    )
+
+    completed = run_materializer(environment)
+
+    assert completed.returncode == 1
+    assert "restricted to Debug iOS Simulator builds" in completed.stdout
+    assert "unbound variable" not in completed.stderr
+
+
 def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only():
     project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
     materializer = (
@@ -88,6 +238,7 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
     assert "Materialize Bundled SQL Model" in project
     assert "tools/materialize_bundled_model.sh" in project
     assert "model-runtime-contract.json" in project
+    assert project.count("CREG_ACCESSIBILITY_HARNESS_BUILD = NO;") == 3
     assert project.count('CREG_CANDIDATE_TRAINING_RUN = "latest-local-v3";') == 2
     assert "CREG_DEBUG_TRAINING_RUN" not in project
     assert "CREG_EXPERIMENTAL_TRAINING_RUN" not in project
@@ -96,7 +247,13 @@ def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only()
     assert '--destination "$MODEL_DIR"' in materializer
     assert "--local-files-only" not in materializer
     assert "--allow-historical-policy" in materializer
-    assert '"$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Beta"' in materializer
+    assert (
+        '"$CONFIGURATION_VALUE" == "Debug" || "$CONFIGURATION_VALUE" == "Beta"'
+        in materializer
+    )
+    assert "1 | yes | true | on" in materializer
+    assert 'CREG_ACCESSIBILITY_HARNESS_BUILD must be a Boolean' in materializer
+    assert '/bin/rm -rf -- "$MODEL_DIR"' in materializer
     assert "tools/materialize_debug_model.py" in materializer
     assert "--latest-local-v3" in materializer
     assert "CREG_CANDIDATE_TRAINING_RUN is forbidden in Release builds" in materializer

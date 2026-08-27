@@ -435,6 +435,12 @@ def verify_source_contract(repo: Path) -> None:
             "Xcode project is missing required Beta release settings: "
             + ", ".join(missing)
         )
+    harness_default = "CREG_ACCESSIBILITY_HARNESS_BUILD = NO;"
+    if project_text.count(harness_default) != 3:
+        raise ReleaseError(
+            "Every CREG app configuration must disable the accessibility "
+            "harness build by default"
+        )
 
 
 def collect_preflight(
@@ -469,6 +475,7 @@ def collect_preflight(
     require_setting(settings, "PRODUCT_BUNDLE_IDENTIFIER", BUNDLE_IDENTIFIER)
     require_setting(settings, "DEVELOPMENT_TEAM", DEVELOPMENT_TEAM)
     require_setting(settings, "CODE_SIGN_STYLE", "Automatic")
+    require_setting(settings, "CREG_ACCESSIBILITY_HARNESS_BUILD", "NO")
     require_setting(settings, "CREG_BUILD_CHANNEL", BUILD_CHANNEL)
     candidate_selector = settings.get("CREG_CANDIDATE_TRAINING_RUN", "").strip()
     marketing_version = require_setting(settings, "MARKETING_VERSION")
@@ -557,6 +564,7 @@ def release_commands(
         "-derivedDataPath",
         str(derived_data),
         "-allowProvisioningUpdates",
+        "CREG_ACCESSIBILITY_HARNESS_BUILD=NO",
     ]
     inspect_command = [
         tools["uv"],
