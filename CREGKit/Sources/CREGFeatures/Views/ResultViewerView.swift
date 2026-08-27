@@ -328,7 +328,7 @@ struct ResultViewerView: View {
                 presentation: .explorer(
                   plotHeight: ResultChartLayout.explorerPlotHeight),
                 formatters: CREGChartAdapter.formatters,
-                textResolver: CREGChartAdapter.textResolver.autoChart
+                textResolver: CREGChartAdapter.textResolver
               )
               .padding()
             } else {

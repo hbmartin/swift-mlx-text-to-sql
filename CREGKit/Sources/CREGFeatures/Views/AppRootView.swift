@@ -23,10 +23,13 @@ public struct RootView: View {
   @ViewBuilder
   public var body: some View {
     #if DEBUG
-      if AccessibilityUITestConfiguration.scenarioManifestRequested {
-        AccessibilityUITestScenarioManifestView()
-      } else if let configuration = AccessibilityUITestConfiguration.current {
-        AccessibilityUITestRootView(configuration: configuration)
+      if let request = AccessibilityUITestConfiguration.currentRequest {
+        switch request {
+        case .scenario(let configuration):
+          AccessibilityUITestRootView(configuration: configuration)
+        case .scenarioManifest:
+          AccessibilityUITestScenarioManifestView()
+        }
       } else {
         liveRoot
       }

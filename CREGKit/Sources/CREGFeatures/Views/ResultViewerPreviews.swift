@@ -5,7 +5,7 @@ import Foundation
 import SwiftUI
 
 #if DEBUG
-enum ResultChartPreparationPreviewFixtures {
+private enum ResultChartPreparationPreviewFixtures {
   static let columns = [
     AutoChartColumn(id: "c0-fund", name: "fund"),
     AutoChartColumn(id: "c1-current-market-value", name: "current_market_value"),
@@ -25,15 +25,6 @@ enum ResultChartPreparationPreviewFixtures {
         severity: .warning,
         message: "Long fund names may be shortened on the category axis.")
     ])
-
-  static let compactTitleRecommendation = AutoChartRecommendation(
-    specification: .bar(
-      category: columns[0].id,
-      measure: columns[1].id,
-      title: "Portfolio current market value by investment fund and strategy"),
-    score: recommendation.score,
-    rationale: recommendation.rationale,
-    diagnostics: recommendation.diagnostics)
 
   static let selection = AutoChartSelection<Int>(
     sourceRowIDs: [0],
@@ -166,30 +157,6 @@ enum ResultChartPreparationPreviewFixtures {
     textResolver: CREGChartAdapter.textResolver)
     .padding()
     .frame(width: 402)
-}
-
-#Preview("Result Chart Preparation — Compact Title — Narrow") {
-  ResultChartPreparationView(
-    recommendation: ResultChartPreparationPreviewFixtures.compactTitleRecommendation,
-    presentation: AutoChartPresentation(
-      plotHeight: ResultChartLayout.previewPlotHeight,
-      chrome: [.title, .diagnostics],
-      interactions: [],
-      typography: .compact),
-    formatters: CREGChartAdapter.formatters,
-    textResolver: CREGChartAdapter.textResolver)
-    .padding()
-    .frame(width: 320)
-}
-
-#Preview("Result Chart Preparation — Container-Managed Height") {
-  ResultChartPreparationView(
-    recommendation: ResultChartPreparationPreviewFixtures.recommendation,
-    presentation: .explorer(plotHeight: nil),
-    formatters: CREGChartAdapter.formatters,
-    textResolver: CREGChartAdapter.textResolver)
-    .frame(width: 320, height: 240)
-    .padding()
 }
 
 #Preview("Result Chart Recovery Controls — Standard") {

@@ -7,41 +7,6 @@ struct CREGChartAnalysisInput: Sendable {
   var context: AutoChartContext
 }
 
-enum CREGChartMessage: Sendable {
-  case preparingChart
-
-  var defaultText: String {
-    switch self {
-    case .preparingChart: "Preparing chart"
-    }
-  }
-}
-
-/// Resolves package-authored chart copy and CREG's host-owned loading copy
-/// through one dependency that callers can override together.
-struct CREGChartTextResolver: Sendable {
-  let autoChart: AutoChartTextResolver
-  private let resolveValue: @Sendable (CREGChartMessage) -> String?
-
-  init(
-    autoChart: AutoChartTextResolver = .default,
-    resolve: @escaping @Sendable (CREGChartMessage) -> String? = { _ in nil }
-  ) {
-    self.autoChart = autoChart
-    self.resolveValue = resolve
-  }
-
-  func callAsFunction(_ message: AutoChartMessage) -> String {
-    autoChart(message)
-  }
-
-  func callAsFunction(_ message: CREGChartMessage) -> String {
-    resolveValue(message) ?? message.defaultText
-  }
-
-  static let `default` = Self()
-}
-
 enum CREGChartAdapter {
   /// The one chart-data identity for a transcript message, shared by the
   /// inline preview and the full-screen viewer so analyzer caching keys off
@@ -131,7 +96,7 @@ enum CREGChartAdapter {
 
   /// One resolver shared by preparation, prepared chart chrome, and the
   /// surrounding recommendation rationale.
-  static let textResolver = CREGChartTextResolver.default
+  static let textResolver = AutoChartTextResolver.default
 
   static func dataKeyRevision(
     resultFingerprint: String,

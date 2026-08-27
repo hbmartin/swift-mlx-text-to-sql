@@ -15,17 +15,19 @@ import SwiftUI
       case settings
       case resultPreview = "result-preview"
       case resultExplorer = "result-explorer"
-      case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
       case transientBanners = "transient-banners"
     }
 
+    enum Request: Equatable, Sendable {
+      case scenario(AccessibilityUITestConfiguration)
+      case scenarioManifest
+    }
+
+    static let scenarioEnvironmentKey = "CREG_UI_TEST_SCENARIO"
+    static let dynamicTypeEnvironmentKey = "CREG_UI_TEST_DYNAMIC_TYPE"
     static let scenarioManifestEnvironmentKey =
       "CREG_UI_TEST_SCENARIO_MANIFEST"
-
-    static var scenarioManifestRequested: Bool {
-      ProcessInfo.processInfo.environment[scenarioManifestEnvironmentKey] == "1"
-    }
 
     static var scenarioManifest: String {
       Scenario.allCases.map(\.rawValue).joined(separator: "|")
@@ -34,21 +36,32 @@ import SwiftUI
     var scenario: Scenario
     var dynamicTypeSize: DynamicTypeSize?
 
-    static var current: Self? {
-      let environment = ProcessInfo.processInfo.environment
+    static var currentRequest: Request? {
+      request(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func request(environment: [String: String]) -> Request? {
       guard
-        let rawScenario = environment["CREG_UI_TEST_SCENARIO"],
+        let rawScenario = environment[scenarioEnvironmentKey],
         let scenario = Scenario(rawValue: rawScenario)
-      else { return nil }
+      else {
+        return environment[scenarioManifestEnvironmentKey] == "1"
+          ? .scenarioManifest : nil
+      }
 
       let dynamicTypeSize: DynamicTypeSize?
-      if let rawSize = environment["CREG_UI_TEST_DYNAMIC_TYPE"] {
+      if let rawSize = environment[dynamicTypeEnvironmentKey],
+        !rawSize.isEmpty
+      {
         guard let parsed = DynamicTypeSize.uiTestValue(rawSize) else { return nil }
         dynamicTypeSize = parsed
       } else {
         dynamicTypeSize = nil
       }
-      return Self(scenario: scenario, dynamicTypeSize: dynamicTypeSize)
+      return .scenario(
+        Self(
+          scenario: scenario,
+          dynamicTypeSize: dynamicTypeSize))
     }
   }
 
@@ -78,9 +91,6 @@ import SwiftUI
 
       case .resultChartRecovery:
         ResultChartRecoveryAccessibilityHarness()
-
-      case .resultChartPreparation:
-        ResultChartPreparationAccessibilityHarness()
 
       case .processingQueue:
         ChatView(
@@ -129,23 +139,6 @@ import SwiftUI
       return ChatView(
         store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
         chrome: chrome)
-    }
-  }
-
-  @MainActor
-  private struct ResultChartPreparationAccessibilityHarness: View {
-    var body: some View {
-      VStack(spacing: 0) {
-        ResultChartPreparationView(
-          recommendation: ResultChartPreparationPreviewFixtures.recommendation,
-          presentation: .explorer(plotHeight: nil),
-          formatters: CREGChartAdapter.formatters,
-          textResolver: CREGChartAdapter.textResolver)
-          .frame(height: 240)
-          .padding()
-        Spacer(minLength: 0)
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
 
