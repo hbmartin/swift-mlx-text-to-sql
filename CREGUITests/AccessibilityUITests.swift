@@ -141,6 +141,10 @@ final class AccessibilityUITests: XCTestCase {
       app.descendants(matching: .any)["result-chart-explorer-rationale"]
     XCTAssertTrue(explorer.waitForExistence(timeout: 5))
     XCTAssertTrue(plot.waitForExistence(timeout: 5))
+    XCTAssertEqual(
+      plot.frame.height,
+      360,
+      accuracy: 1)
     XCTAssertTrue(rationale.waitForExistence(timeout: 5))
 
     let title = app.staticTexts["Portfolio value by fund"]

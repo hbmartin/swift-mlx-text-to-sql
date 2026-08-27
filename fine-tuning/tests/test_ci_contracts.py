@@ -31,6 +31,20 @@ def run_materializer(environment: dict[str, str]) -> subprocess.CompletedProcess
     )
 
 
+def accessibility_workflow() -> tuple[Path, dict[str, object]]:
+    matches = []
+    workflows = check_ci_contracts.ROOT / ".github" / "workflows"
+    for path in (*workflows.glob("*.yml"), *workflows.glob("*.yaml")):
+        workflow = yaml.safe_load(path.read_text())
+        if (
+            isinstance(workflow, dict)
+            and workflow.get("name") == check_ci_contracts.ACCESSIBILITY_WORKFLOW_NAME
+        ):
+            matches.append((path, workflow))
+    assert len(matches) == 1
+    return matches[0]
+
+
 def xcode_target_configurations(
     project_path: Path, target_name: str
 ) -> dict[str, dict[str, object]]:
@@ -89,7 +103,7 @@ jobs:
 
 
 def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
-    (tmp_path / "ci.yml").write_text("jobs: {}\n")
+    (tmp_path / "ci.yml").write_text("name: CI\njobs: {}\n")
     (tmp_path / "security.yaml").write_text(
         "jobs:\n"
         "  test:\n"
@@ -104,16 +118,35 @@ def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
         check_ci_contracts.main()
 
 
+def test_accessibility_workflow_discovery_accepts_yaml_extension(
+    monkeypatch, tmp_path
+):
+    source_path, _ = accessibility_workflow()
+    (tmp_path / "renamed.yaml").write_text(source_path.read_text())
+    monkeypatch.setattr(check_ci_contracts, "WORKFLOWS", tmp_path)
+    monkeypatch.setattr(check_ci_contracts, "ROOT", tmp_path)
+
+    check_ci_contracts.main()
+
+
+def test_accessibility_workflow_discovery_rejects_missing_workflow(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(check_ci_contracts, "WORKFLOWS", tmp_path)
+    monkeypatch.setattr(check_ci_contracts, "ROOT", tmp_path)
+
+    with pytest.raises(SystemExit, match="exactly one workflow named 'CI'"):
+        check_ci_contracts.main()
+
+
 def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
-    path = check_ci_contracts.ROOT / ".github/workflows/ci.yml"
-    workflow = yaml.safe_load(path.read_text())
+    path, workflow = accessibility_workflow()
 
     assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
 
 
 def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
-    path = check_ci_contracts.ROOT / ".github/workflows/ci.yml"
-    workflow = yaml.safe_load(path.read_text())
+    path, workflow = accessibility_workflow()
     steps = workflow["jobs"]["swift"]["steps"]
     ui_test = next(
         step
@@ -129,6 +162,49 @@ def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
     assert len(failures) == 1
     assert "UI test step is missing command fragments" in failures[0]
     assert fragment in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("reviewed", "replacement"),
+    [
+        ("-project CREG.xcodeproj", "-project Decoy.xcodeproj"),
+        ("-scheme CREG", "-scheme Decoy"),
+        (
+            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+            "platform=macOS,name=iPhone 17 Pro,OS=26.5",
+        ),
+    ],
+)
+def test_accessibility_ui_contract_pins_project_scheme_and_destination(
+    reviewed, replacement
+):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(reviewed, replacement)
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert reviewed in failures[0]
+
+
+@pytest.mark.parametrize("condition", ["always()", "${{ always() }}"])
+def test_accessibility_ui_contract_accepts_equivalent_always_conditions(condition):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    upload = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload accessibility UI test results"
+    )
+    upload["if"] = condition
+
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
 
 
 @pytest.mark.parametrize("enabled_value", ["1", "YES", "true", "ON"])

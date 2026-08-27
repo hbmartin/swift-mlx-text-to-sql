@@ -58,18 +58,29 @@ import Testing
         AccessibilityUITestConfiguration.request(environment: [:]) == nil)
     }
 
+    @Test func explicitScenarioAllowsAnUnsetDynamicType() {
+      let request = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "settings",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
+      ])
+
+      #expect(
+        request
+          == .scenario(
+            AccessibilityUITestConfiguration(
+              scenario: .settings,
+              dynamicTypeSize: nil)))
+    }
+
     @Test func zeroDisablesOnlyBooleanEnvironmentValues() {
       let empty = AccessibilityUITestConfiguration.request(environment: [
         AccessibilityUITestConfiguration.scenarioEnvironmentKey: "",
         AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "",
         AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
       ])
-      let unknownDisabled = AccessibilityUITestConfiguration.request(environment: [
-        "CREG_UI_TEST_FUTURE_OPTION": "0"
-      ])
 
       #expect(empty == nil)
-      #expect(unknownDisabled == nil)
     }
 
     @Test func zeroFailsClosedForTypedStringEnvironmentValues() {

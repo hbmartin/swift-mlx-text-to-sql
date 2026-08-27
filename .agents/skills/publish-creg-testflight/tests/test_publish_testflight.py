@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -211,6 +212,16 @@ class VerifyCandidateInputsTests(unittest.TestCase):
 
 
 class TargetBuildSettingTests(unittest.TestCase):
+    def test_real_project_passes_the_production_source_contract(self) -> None:
+        publisher.verify_source_contract(SCRIPT.parents[4])
+
+    def test_missing_project_raises_a_release_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(
+                publisher.ReleaseError, "Missing Xcode project file"
+            ):
+                publisher.load_xcode_project(Path(directory))
+
     def test_accepts_the_setting_on_every_target_configuration(self) -> None:
         project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
 
@@ -220,6 +231,22 @@ class TargetBuildSettingTests(unittest.TestCase):
             setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
             expected="NO",
             required_configurations=("Debug", "Beta", "Release"),
+        )
+
+    def test_only_validates_the_requested_configuration(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+        project["objects"]["Debug"]["buildSettings"]["CREG_BUILD_CHANNEL"] = "debug"
+        project["objects"]["Beta"]["buildSettings"]["CREG_BUILD_CHANNEL"] = "beta"
+        project["objects"]["Release"]["buildSettings"]["CREG_BUILD_CHANNEL"] = (
+            "release"
+        )
+
+        publisher.require_target_build_setting(
+            project,
+            target_name=publisher.TARGET,
+            setting="CREG_BUILD_CHANNEL",
+            expected="beta",
+            required_configurations=("Beta",),
         )
 
     def test_decoy_occurrences_cannot_hide_a_wrong_target_configuration(self) -> None:
@@ -240,6 +267,30 @@ class TargetBuildSettingTests(unittest.TestCase):
                 required_configurations=("Debug", "Beta", "Release"),
             )
 
+    def test_decoy_setting_cannot_hide_a_wrong_beta_candidate(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+        project["objects"]["Beta"]["buildSettings"][
+            "CREG_CANDIDATE_TRAINING_RUN"
+        ] = "wrong-candidate"
+        project["objects"]["decoy-candidate"] = {
+            "isa": "XCBuildConfiguration",
+            "name": "Decoy",
+            "buildSettings": {
+                "CREG_CANDIDATE_TRAINING_RUN": "latest-local-v3"
+            },
+        }
+
+        with self.assertRaisesRegex(
+            publisher.ReleaseError, r"Beta='wrong-candidate'"
+        ):
+            publisher.require_target_build_setting(
+                project,
+                target_name=publisher.TARGET,
+                setting="CREG_CANDIDATE_TRAINING_RUN",
+                expected="latest-local-v3",
+                required_configurations=("Beta",),
+            )
+
     def test_rejects_a_missing_required_configuration(self) -> None:
         project = xcode_project({"Debug": "NO", "Beta": "NO"})
 
@@ -252,6 +303,51 @@ class TargetBuildSettingTests(unittest.TestCase):
                 setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
                 expected="NO",
                 required_configurations=("Debug", "Beta", "Release"),
+            )
+
+    def test_malformed_configuration_references_raise_release_errors(self) -> None:
+        for location in ("configuration-list", "configuration"):
+            project = xcode_project(
+                {"Debug": "NO", "Beta": "NO", "Release": "NO"}
+            )
+            if location == "configuration-list":
+                project["objects"]["target"]["buildConfigurationList"] = []
+            else:
+                project["objects"]["target-configurations"][
+                    "buildConfigurations"
+                ] = [[]]
+
+            with (
+                self.subTest(location=location),
+                self.assertRaises(publisher.ReleaseError),
+            ):
+                publisher.target_build_configurations(project, publisher.TARGET)
+
+    def test_decoy_build_phase_cannot_satisfy_the_target_contract(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+        project["objects"]["target"]["buildPhases"] = ["target-phase"]
+        project["objects"]["target-phase"] = {
+            "isa": "PBXShellScriptBuildPhase",
+            "name": "Materialize Bundled SQL Model",
+            "shellScript": "echo wrong-script",
+            "inputPaths": [],
+        }
+        project["objects"]["decoy-phase"] = {
+            "isa": "PBXShellScriptBuildPhase",
+            "name": "Materialize Bundled SQL Model",
+            "shellScript": "tools/materialize_bundled_model.sh",
+            "inputPaths": ["$(SRCROOT)/model-runtime-contract.json"],
+        }
+
+        with self.assertRaisesRegex(
+            publisher.ReleaseError, "materialize_bundled_model.sh"
+        ):
+            publisher.require_target_shell_script_contract(
+                project,
+                target_name=publisher.TARGET,
+                phase_name="Materialize Bundled SQL Model",
+                command_fragments=("tools/materialize_bundled_model.sh",),
+                input_paths=("$(SRCROOT)/model-runtime-contract.json",),
             )
 
 

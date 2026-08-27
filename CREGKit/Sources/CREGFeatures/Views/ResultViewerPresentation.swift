@@ -45,10 +45,15 @@ struct ResultChartPreparationView: View {
         Text(recommendation.specification.title)
           .font(.headline)
       }
-      ProgressView("Preparing chart")
-        .frame(maxWidth: .infinity)
-        .frame(height: presentation.plotHeight)
-        .accessibilityIdentifier("result-chart-preparing-plot")
+      ZStack {
+        Color.clear
+          .accessibilityElement()
+          .accessibilityLabel("Chart preparation plot")
+          .accessibilityIdentifier("result-chart-preparing-plot")
+        ProgressView("Preparing chart")
+      }
+      .frame(maxWidth: .infinity)
+      .frame(height: presentation.plotHeight)
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,
