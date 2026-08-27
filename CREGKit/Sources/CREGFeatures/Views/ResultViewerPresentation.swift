@@ -45,9 +45,15 @@ struct ResultChartPreparationView: View {
         Text(recommendation.specification.title)
           .font(.headline)
       }
-      ProgressView("Preparing chart")
-        .frame(maxWidth: .infinity)
-        .frame(height: presentation.plotHeight)
+      ZStack {
+        Color.clear
+          .accessibilityElement()
+          .accessibilityLabel("Chart preparation plot")
+          .accessibilityIdentifier("result-chart-preparing-plot")
+        ProgressView("Preparing chart")
+      }
+      .frame(maxWidth: .infinity)
+      .frame(height: presentation.plotHeight)
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,
@@ -94,6 +100,60 @@ struct ResultChartPreparationView: View {
     )
     .accessibilityIdentifier(
       "result-chart-preparing-\(recommendation.specification.family.rawValue)")
+  }
+}
+
+struct ResultChartExplorerPreparationView: View {
+  let recommendation: AutoChartRecommendation
+  let selection: ResultChartPreparationView.SelectionConfiguration?
+
+  init(
+    recommendation: AutoChartRecommendation,
+    selection: ResultChartPreparationView.SelectionConfiguration? = nil
+  ) {
+    self.recommendation = recommendation
+    self.selection = selection
+  }
+
+  var body: some View {
+    ResultChartPreparationView(
+      recommendation: recommendation,
+      presentation: .explorer(
+        plotHeight: ResultChartLayout.explorerPlotHeight),
+      selection: selection,
+      formatters: CREGChartAdapter.formatters,
+      textResolver: CREGChartAdapter.textResolver)
+  }
+}
+
+struct ResultChartExplorerContainer<Content: View>: View {
+  let recommendation: AutoChartRecommendation
+  let content: Content
+
+  init(
+    recommendation: AutoChartRecommendation,
+    @ViewBuilder content: () -> Content
+  ) {
+    self.recommendation = recommendation
+    self.content = content()
+  }
+
+  var body: some View {
+    ScrollView {
+      content
+        .padding()
+      if let reason = recommendation.rationale.first {
+        Label(
+          CREGChartAdapter.textResolver(reason),
+          systemImage: "lightbulb")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .padding(.horizontal)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("result-chart-explorer-rationale")
+      }
+    }
+    .accessibilityIdentifier("result-chart-explorer")
   }
 }
 

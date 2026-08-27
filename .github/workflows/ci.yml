@@ -46,11 +46,21 @@ jobs:
           xcodebuild test \
             -project CREG.xcodeproj \
             -scheme CREG \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+            -resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult" \
             -skipMacroValidation \
             -only-testing:CREGUITests/AccessibilityUITests/testMalformedConfigurationRendersInvalidConfigurationScreen \
             -only-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation \
             CREG_ACCESSIBILITY_HARNESS_BUILD=1
+
+      - name: Upload accessibility UI test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: accessibility-ui-test-results
+          path: ${{ runner.temp }}/creg-accessibility-ui-tests.xcresult
+          if-no-files-found: warn
+          retention-days: 14
 
   python:
     name: Python tests and corpus determinism

@@ -59,14 +59,37 @@ import Testing
         AccessibilityUITestConfiguration.request(environment: [:]) == nil)
     }
 
-    @Test func explicitOffAndEmptyValuesRequestTheLiveRoot() {
-      let request = AccessibilityUITestConfiguration.request(environment: [
+    @Test func zeroValuesAreUnsetForEveryKnownKey() {
+      let liveRoot = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "0",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "0",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
+      ])
+      let manifest = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "0",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "0",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "1",
+      ])
+      let scenario = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "settings",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "0",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
+      ])
+      let empty = AccessibilityUITestConfiguration.request(environment: [
         AccessibilityUITestConfiguration.scenarioEnvironmentKey: "",
         AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "",
         AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
       ])
 
-      #expect(request == nil)
+      #expect(liveRoot == nil)
+      #expect(manifest == .scenarioManifest)
+      #expect(
+        scenario
+          == .scenario(
+            AccessibilityUITestConfiguration(
+              scenario: .settings,
+              dynamicTypeSize: nil)))
+      #expect(empty == nil)
     }
 
     @Test func malformedExplicitConfigurationNeverRequestsTheLiveRoot() {
@@ -97,15 +120,19 @@ import Testing
       #expect(invalidDynamicType == .invalidConfiguration)
     }
 
-    @Test func unknownUITestNamespaceConfigurationNeverRequestsTheLiveRoot() {
+    @Test func nonemptyUnknownUITestNamespaceConfigurationFailsClosed() {
       let invalid = AccessibilityUITestConfiguration.request(environment: [
         "CREG_UI_TEST_FUTURE_OPTION": "enabled"
       ])
+
+      #expect(invalid == .invalidConfiguration)
+    }
+
+    @Test func unsetUnknownUITestNamespaceConfigurationRequestsTheLiveRoot() {
       let unset = AccessibilityUITestConfiguration.request(environment: [
         "CREG_UI_TEST_FUTURE_OPTION": "0"
       ])
 
-      #expect(invalid == .invalidConfiguration)
       #expect(unset == nil)
     }
   }

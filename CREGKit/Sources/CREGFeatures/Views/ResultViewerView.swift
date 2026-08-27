@@ -320,7 +320,9 @@ struct ResultViewerView: View {
           let analysis = chart.analysis,
           let selectedRecommendation = selectedRecommendation(in: analysis)
         {
-          ScrollView {
+          ResultChartExplorerContainer(
+            recommendation: selectedRecommendation
+          ) {
             if let preparedChart = chart.preparedChart {
               AutoChartView(
                 preparedChart: preparedChart,
@@ -328,35 +330,18 @@ struct ResultViewerView: View {
                 presentation: .explorer(
                   plotHeight: ResultChartLayout.explorerPlotHeight),
                 formatters: CREGChartAdapter.formatters,
-                textResolver: CREGChartAdapter.textResolver
-              )
-              .padding()
+                textResolver: CREGChartAdapter.textResolver)
             } else {
-              ResultChartPreparationView(
+              ResultChartExplorerPreparationView(
                 recommendation: selectedRecommendation,
-                presentation: .explorer(
-                  plotHeight: ResultChartLayout.explorerPlotHeight),
                 selection: chartSelection.map { selection in
                   ResultChartPreparationView.SelectionConfiguration(
                     value: selection,
                     columns: analysis.columnProfiles.map(\.column),
                     clear: clearChartSelection)
-                },
-                formatters: CREGChartAdapter.formatters,
-                textResolver: CREGChartAdapter.textResolver)
-                .padding()
-            }
-            if let reason = selectedRecommendation.rationale.first {
-              Label(
-                CREGChartAdapter.textResolver(reason),
-                systemImage: "lightbulb")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                })
             }
           }
-          .accessibilityIdentifier("result-chart-explorer")
         } else {
           let tableResult = filteredResult
           let displayRows = ResultViewerLogic.displayRows(

@@ -63,6 +63,23 @@ def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
         check_ci_contracts.main()
 
 
+def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
+    workflow = (check_ci_contracts.ROOT / ".github/workflows/ci.yml").read_text()
+
+    assert "name=iPhone 17 Pro,OS=26.5" in workflow
+    assert (
+        '-resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult"'
+        in workflow
+    )
+    assert (
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        in workflow
+    )
+    assert (
+        "path: ${{ runner.temp }}/creg-accessibility-ui-tests.xcresult" in workflow
+    )
+
+
 def test_xcode_debug_candidate_is_explicit_and_release_remains_production_only():
     project = (check_ci_contracts.ROOT / "CREG.xcodeproj/project.pbxproj").read_text()
     materializer = (

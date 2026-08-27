@@ -106,19 +106,18 @@ import SwiftUI
 #Preview("Result Chart Preparation — Explorer — Selected") {
   @Previewable @State var selection: AutoChartSelection<Int>? =
     PreviewFixtures.ChartPreparation.selection
-  ResultChartPreparationView(
-    recommendation: PreviewFixtures.ChartPreparation.recommendation,
-    presentation: .explorer(
-      plotHeight: ResultChartLayout.explorerPlotHeight),
-    selection: selection.map { value in
-      ResultChartPreparationView.SelectionConfiguration(
-        value: value,
-        columns: PreviewFixtures.ChartPreparation.columns,
-        clear: { selection = nil })
-    },
-    formatters: CREGChartAdapter.formatters,
-    textResolver: CREGChartAdapter.textResolver)
-    .padding()
+  ResultChartExplorerContainer(
+    recommendation: PreviewFixtures.ChartPreparation.recommendation
+  ) {
+    ResultChartExplorerPreparationView(
+      recommendation: PreviewFixtures.ChartPreparation.recommendation,
+      selection: selection.map { value in
+        ResultChartPreparationView.SelectionConfiguration(
+          value: value,
+          columns: PreviewFixtures.ChartPreparation.columns,
+          clear: { selection = nil })
+      })
+  }
     .frame(width: 402)
 }
 
