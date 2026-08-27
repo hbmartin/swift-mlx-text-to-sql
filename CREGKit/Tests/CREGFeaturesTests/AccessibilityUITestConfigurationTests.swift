@@ -59,6 +59,16 @@ import Testing
         AccessibilityUITestConfiguration.request(environment: [:]) == nil)
     }
 
+    @Test func explicitOffAndEmptyValuesRequestTheLiveRoot() {
+      let request = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: "",
+        AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "0",
+      ])
+
+      #expect(request == nil)
+    }
+
     @Test func malformedExplicitConfigurationNeverRequestsTheLiveRoot() {
       let invalidScenario = AccessibilityUITestConfiguration.request(environment: [
         AccessibilityUITestConfiguration.scenarioEnvironmentKey: "unknown"
@@ -72,7 +82,7 @@ import Testing
       #expect(invalidDynamicType == .invalidConfiguration)
     }
 
-    @Test func malformedExplicitConfigurationFallsBackToRequestedManifest() {
+    @Test func malformedExplicitConfigurationOutranksRequestedManifest() {
       let invalidScenario = AccessibilityUITestConfiguration.request(environment: [
         AccessibilityUITestConfiguration.scenarioEnvironmentKey: "unknown",
         AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "1",
@@ -83,8 +93,20 @@ import Testing
         AccessibilityUITestConfiguration.scenarioManifestEnvironmentKey: "1",
       ])
 
-      #expect(invalidScenario == .scenarioManifest)
-      #expect(invalidDynamicType == .scenarioManifest)
+      #expect(invalidScenario == .invalidConfiguration)
+      #expect(invalidDynamicType == .invalidConfiguration)
+    }
+
+    @Test func unknownUITestNamespaceConfigurationNeverRequestsTheLiveRoot() {
+      let invalid = AccessibilityUITestConfiguration.request(environment: [
+        "CREG_UI_TEST_FUTURE_OPTION": "enabled"
+      ])
+      let unset = AccessibilityUITestConfiguration.request(environment: [
+        "CREG_UI_TEST_FUTURE_OPTION": "0"
+      ])
+
+      #expect(invalid == .invalidConfiguration)
+      #expect(unset == nil)
     }
   }
 #endif

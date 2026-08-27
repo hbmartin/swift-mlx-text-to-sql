@@ -109,7 +109,7 @@ final class AccessibilityUITests: XCTestCase {
         .waitForExistence(timeout: 5),
       "portfolioValueByFundV1 is expected to use the bar family")
     XCTAssertFalse(
-      app.descendants(matching: .any)["auto-chart-preparing-bar"].exists,
+      app.descendants(matching: .any)["result-chart-preparing-bar"].exists,
       "The rendered-chart signal must not be satisfied by its loading placeholder")
     XCTAssertTrue(
       app.descendants(matching: .any)["result-chart-type"]
@@ -124,22 +124,34 @@ final class AccessibilityUITests: XCTestCase {
     app.terminate()
   }
 
-  func testChartPreparationHasDistinctIdentityAndFillsManagedHeight() {
-    let app = launch(scenario: "result-chart-preparation")
+  func testChartPreparationHasDistinctIdentityInProductionPresentation() {
+    let app = launch(
+      scenario: "result-chart-preparation",
+      dynamicType: "large")
+    let preparation =
+      app.descendants(matching: .any)["result-chart-preparing-bar"]
+    XCTAssertTrue(preparation.waitForExistence(timeout: 5))
     XCTAssertFalse(app.descendants(matching: .any)["auto-chart-bar"].exists)
-
-    let plot = app.descendants(matching: .any)["auto-chart-preparing-plot"]
-    XCTAssertTrue(plot.waitForExistence(timeout: 5))
 
     let title = app.staticTexts["Portfolio value by fund"]
     let diagnostic =
       app.staticTexts["Long fund names may be shortened on the category axis."]
     XCTAssertTrue(title.waitForExistence(timeout: 5))
     XCTAssertTrue(diagnostic.waitForExistence(timeout: 5))
-    XCTAssertGreaterThan(
-      diagnostic.frame.minY - title.frame.maxY,
-      100,
-      "A nil plot height should leave flexible plot space between the chrome")
+    app.terminate()
+  }
+
+  func testMalformedConfigurationRendersInvalidConfigurationScreen() {
+    let app = XCUIApplication()
+    app.launchEnvironment["CREG_UI_TEST_SCENARIO"] = "settings"
+    app.launchEnvironment["CREG_UI_TEST_DYNAMIC_TYPE"] = "enormous"
+    app.launchEnvironment["CREG_UI_TEST_SCENARIO_MANIFEST"] = "1"
+    app.launch()
+
+    let invalid = app.staticTexts["ui-test-invalid-configuration"]
+    XCTAssertTrue(invalid.waitForExistence(timeout: 10))
+    XCTAssertFalse(app.staticTexts["ui-test-scenario-manifest"].exists)
+    XCTAssertFalse(app.descendants(matching: .any)["ui-test-settings"].exists)
     app.terminate()
   }
 

@@ -132,11 +132,13 @@ import Testing
       plotHeight: ResultChartLayout.previewPlotHeight)
     #expect(preview.typography == .compact)
     #expect(preview.chrome == [.diagnostics])
+    #expect(preview.interactions == [])
 
     let explorer = AutoChartPresentation.explorer(
       plotHeight: ResultChartLayout.explorerPlotHeight)
     #expect(explorer.typography == .standard)
     #expect(explorer.chrome == .all)
+    #expect(explorer.interactions == .all)
   }
 
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
