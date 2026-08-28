@@ -243,6 +243,26 @@ class TargetBuildSettingTests(unittest.TestCase):
             ):
                 publisher.load_xcode_project(repo)
 
+    def test_project_loader_requests_raw_machine_readable_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            project_path = repo / publisher.PROJECT_FILE
+            project_path.parent.mkdir(parents=True)
+            project_path.write_text("project")
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps({"objects": {}}),
+                stderr="",
+            )
+
+            with patch.object(
+                publisher, "run_command", return_value=completed
+            ) as run_command:
+                publisher.load_xcode_project(repo)
+
+            self.assertTrue(run_command.call_args.kwargs["preserve_stdout"])
+
     def test_machine_readable_stdout_is_not_sanitized_before_parsing(self) -> None:
         raw_stdout = json.dumps(
             {"objects": {"phase": {"shellScript": "export API_KEY=secret"}}}
@@ -399,6 +419,24 @@ class TargetBuildSettingTests(unittest.TestCase):
         with self.assertRaisesRegex(
             publisher.ReleaseError, "materialize_bundled_model.sh"
         ):
+            publisher.require_target_shell_script_contract(
+                project,
+                target_name=publisher.TARGET,
+                phase_name="Materialize Bundled SQL Model",
+                command_fragments=("tools/materialize_bundled_model.sh",),
+                input_paths=("$(SRCROOT)/model-runtime-contract.json",),
+            )
+
+    def test_missing_build_phase_input_paths_raise_a_missing_error(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+        project["objects"]["target"]["buildPhases"] = ["target-phase"]
+        project["objects"]["target-phase"] = {
+            "isa": "PBXShellScriptBuildPhase",
+            "name": "Materialize Bundled SQL Model",
+            "shellScript": "tools/materialize_bundled_model.sh",
+        }
+
+        with self.assertRaisesRegex(publisher.ReleaseError, "missing input paths"):
             publisher.require_target_shell_script_contract(
                 project,
                 target_name=publisher.TARGET,

@@ -20,19 +20,47 @@ ACCESSIBILITY_UPLOAD_ACTION = (
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 )
 ACCESSIBILITY_WORKFLOW_NAME = "CI"
+TESTFLIGHT_PUBLISHER_TEST_COMMAND = (
+    "uv",
+    "run",
+    "--no-project",
+    "--managed-python",
+    "--python",
+    "3.13",
+    "python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    ".agents/skills/publish-creg-testflight/tests",
+    "-p",
+    "test_*.py",
+)
 LoadedWorkflow = tuple[Path, str, object]
 
 
-def load_workflows(directory: Path | None = None) -> list[LoadedWorkflow]:
-    workflow_directory = WORKFLOWS if directory is None else directory
+def load_workflows() -> list[LoadedWorkflow]:
     paths = sorted(
-        (*workflow_directory.glob("*.yml"), *workflow_directory.glob("*.yaml"))
+        (*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml"))
     )
     workflows = []
     for path in paths:
         source = path.read_text()
         workflows.append((path, source, yaml.safe_load(source)))
     return workflows
+
+
+def single_shell_command_tokens(source: str) -> list[str]:
+    normalized = re.sub(r"\\\r?\n", "", source).strip()
+    if "\n" in normalized or "\r" in normalized:
+        raise ValueError("must contain exactly one shell command")
+
+    lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    if any(token and set(token) <= set(";&|") for token in tokens):
+        raise ValueError("must not contain shell control operators")
+    return tokens
 
 
 def accessibility_workflows(
@@ -159,32 +187,35 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
             failures.append(f"{prefix} UI test step must contain a shell command")
         else:
             try:
-                command_tokens = shlex.split(run, comments=True)
+                command_tokens = single_shell_command_tokens(run)
             except ValueError as error:
                 failures.append(f"{prefix} UI test shell command is malformed: {error}")
-                command_tokens = []
-            required_command_pairs = (
-                ("xcodebuild", "test"),
-                ("-project", "CREG.xcodeproj"),
-                ("-scheme", "CREG"),
-                (
-                    "-destination",
-                    "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
-                ),
-            )
-            missing_pairs = [
-                " ".join(pair)
-                for pair in required_command_pairs
-                if not any(
-                    tuple(command_tokens[index : index + len(pair)]) == pair
-                    for index in range(len(command_tokens) - len(pair) + 1)
+            else:
+                if command_tokens[:2] != ["xcodebuild", "test"]:
+                    failures.append(
+                        f"{prefix} UI test step must run xcodebuild test directly"
+                    )
+                required_command_pairs = (
+                    ("-project", "CREG.xcodeproj"),
+                    ("-scheme", "CREG"),
+                    (
+                        "-destination",
+                        "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+                    ),
                 )
-            ]
-            if missing_pairs:
-                failures.append(
-                    f"{prefix} UI test step is missing exact command arguments: "
-                    + ", ".join(missing_pairs)
-                )
+                missing_pairs = [
+                    " ".join(pair)
+                    for pair in required_command_pairs
+                    if not any(
+                        tuple(command_tokens[index : index + len(pair)]) == pair
+                        for index in range(len(command_tokens) - len(pair) + 1)
+                    )
+                ]
+                if missing_pairs:
+                    failures.append(
+                        f"{prefix} UI test step is missing exact command arguments: "
+                        + ", ".join(missing_pairs)
+                    )
             missing_fragments = [
                 fragment
                 for fragment in required_command_fragments
@@ -215,6 +246,45 @@ def accessibility_ui_contract_failures(path: Path, workflow: object) -> list[str
     return failures
 
 
+def testflight_publisher_contract_failures(
+    path: Path, workflow: object
+) -> list[str]:
+    prefix = f"{path.relative_to(ROOT)}: TestFlight publisher test contract"
+    if not isinstance(workflow, dict):
+        return [f"{prefix} requires a workflow mapping"]
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        return [f"{prefix} requires jobs"]
+    python_job = jobs.get("python")
+    if not isinstance(python_job, dict):
+        return [f"{prefix} requires the python job"]
+    steps = python_job.get("steps")
+    if not isinstance(steps, list):
+        return [f"{prefix} requires python job steps"]
+
+    matches = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("name") == "Run TestFlight publisher tests"
+    ]
+    if len(matches) != 1:
+        return [
+            f"{prefix} requires exactly one 'Run TestFlight publisher tests' step"
+        ]
+
+    run = matches[0].get("run")
+    if not isinstance(run, str):
+        return [f"{prefix} step must contain a shell command"]
+    try:
+        command_tokens = single_shell_command_tokens(run)
+    except ValueError as error:
+        return [f"{prefix} shell command is malformed: {error}"]
+    if tuple(command_tokens) != TESTFLIGHT_PUBLISHER_TEST_COMMAND:
+        return [f"{prefix} must use the reviewed uv-managed Python 3.13 command"]
+    return []
+
+
 def main() -> None:
     failures: list[str] = []
     workflows = load_workflows()
@@ -235,6 +305,7 @@ def main() -> None:
     else:
         path, workflow = matches[0]
         failures.extend(accessibility_ui_contract_failures(path, workflow))
+        failures.extend(testflight_publisher_contract_failures(path, workflow))
     if failures:
         raise SystemExit("\n".join(failures))
 
