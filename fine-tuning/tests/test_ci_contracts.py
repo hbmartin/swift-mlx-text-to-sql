@@ -39,6 +39,20 @@ def accessibility_workflow() -> tuple[Path, dict[str, object]]:
     return path, workflow
 
 
+REVIEWED_RUN_CONTRACTS = (
+    (
+        check_ci_contracts.accessibility_ui_contract_failures,
+        "swift",
+        "Test focused accessibility UI contracts",
+    ),
+    (
+        check_ci_contracts.testflight_publisher_contract_failures,
+        "python",
+        "Run TestFlight publisher tests",
+    ),
+)
+
+
 def xcode_target_configurations(
     project_path: Path, target_name: str
 ) -> dict[str, dict[str, object]]:
@@ -129,6 +143,97 @@ def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
     path, workflow = accessibility_workflow()
 
     assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("continue-on-error", True),
+        ("env", {"PATH": "/tmp/decoy"}),
+        ("if", False),
+        ("shell", "/bin/echo {0}"),
+        ("working-directory", "decoy"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("validator", "job_name", "step_name"), REVIEWED_RUN_CONTRACTS
+)
+def test_reviewed_run_contracts_reject_step_execution_overrides(
+    field, value, validator, job_name, step_name
+):
+    path, workflow = accessibility_workflow()
+    step = next(
+        candidate
+        for candidate in workflow["jobs"][job_name]["steps"]
+        if candidate.get("name") == step_name
+    )
+    step[field] = value
+
+    failures = validator(path, workflow)
+
+    assert len(failures) == 1
+    assert field in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("continue-on-error", True),
+        ("defaults", {"run": {"shell": "/bin/echo {0}"}}),
+        ("env", {"PATH": "/tmp/decoy"}),
+        ("if", False),
+        ("needs", "skipped-job"),
+        ("strategy", {"matrix": {"include": []}}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("validator", "job_name", "step_name"), REVIEWED_RUN_CONTRACTS
+)
+def test_reviewed_run_contracts_reject_job_execution_overrides(
+    field, value, validator, job_name, step_name
+):
+    path, workflow = accessibility_workflow()
+    workflow["jobs"][job_name][field] = value
+
+    failures = validator(path, workflow)
+
+    assert len(failures) == 1
+    assert field in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("defaults", {"run": {"working-directory": "decoy"}}),
+        ("env", {"PATH": "/tmp/decoy"}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("validator", "job_name", "step_name"), REVIEWED_RUN_CONTRACTS
+)
+def test_reviewed_run_contracts_reject_workflow_execution_overrides(
+    field, value, validator, job_name, step_name
+):
+    path, workflow = accessibility_workflow()
+    workflow[field] = value
+
+    failures = validator(path, workflow)
+
+    assert len(failures) == 1
+    assert field in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("validator", "job_name", "step_name"), REVIEWED_RUN_CONTRACTS
+)
+def test_reviewed_run_contracts_pin_the_runner(validator, job_name, step_name):
+    path, workflow = accessibility_workflow()
+    workflow["jobs"][job_name]["runs-on"] = "ubuntu-latest"
+
+    failures = validator(path, workflow)
+
+    assert len(failures) == 1
+    assert "must run on macos-26" in failures[0]
 
 
 def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
@@ -439,16 +544,16 @@ def test_accessibility_ui_contract_reports_a_missing_final_flag_value():
 
 
 @pytest.mark.parametrize("operator", [";", "&", "|"])
-def test_single_shell_command_tokens_accepts_quoted_control_operator(operator):
-    assert check_ci_contracts.single_shell_command_tokens(
-        f"echo '{operator}'"
-    ) == ["echo", operator]
+def test_shell_parser_accepts_quoted_control_operator(operator):
+    command = check_ci_contracts._parse_single_shell_command(f"echo '{operator}'")
+
+    assert command.tokens == ("echo", operator)
 
 
 @pytest.mark.parametrize("operator", [";", "&", "|"])
-def test_single_shell_command_tokens_rejects_unquoted_control_operator(operator):
+def test_shell_parser_rejects_unquoted_control_operator(operator):
     with pytest.raises(ValueError, match="shell control operators"):
-        check_ci_contracts.single_shell_command_tokens(
+        check_ci_contracts._parse_single_shell_command(
             f"echo reviewed {operator} echo decoy"
         )
 
@@ -463,22 +568,38 @@ def test_single_shell_command_tokens_rejects_unquoted_control_operator(operator)
         ("echo (printf decoy)", "shell control operators"),
     ],
 )
-def test_single_shell_command_tokens_rejects_active_shell_syntax(
-    source, diagnostic
-):
+def test_shell_parser_rejects_active_shell_syntax(source, diagnostic):
     with pytest.raises(ValueError, match=diagnostic):
-        check_ci_contracts.single_shell_command_tokens(source)
+        check_ci_contracts._parse_single_shell_command(source)
 
 
-def test_single_shell_command_tokens_accepts_quoted_newline_and_syntax():
-    assert check_ci_contracts.single_shell_command_tokens(
+@pytest.mark.parametrize("continuations", ["\\\n", "\\\n\\\n"])
+def test_shell_parser_rejects_a_continued_double_quoted_substitution(continuations):
+    source = f'printf "%s" "${continuations}(printf decoy)"'
+
+    with pytest.raises(ValueError, match="shell command substitutions"):
+        check_ci_contracts._parse_single_shell_command(source)
+
+
+def test_shell_parser_accepts_an_escaped_continued_dollar():
+    command = check_ci_contracts._parse_single_shell_command(
+        'printf "%s" "\\$\\\n(quoted data)"'
+    )
+
+    assert command.tokens == ("printf", "%s", "\\$(quoted data)")
+
+
+def test_shell_parser_accepts_quoted_newline_and_syntax():
+    command = check_ci_contracts._parse_single_shell_command(
         "printf '%s' 'first\n$(second); > output'"
-    ) == ["printf", "%s", "first\n$(second); > output"]
+    )
+
+    assert command.tokens == ("printf", "%s", "first\n$(second); > output")
 
 
-def test_single_shell_command_tokens_reports_unterminated_multiline_quote():
+def test_shell_parser_reports_unterminated_multiline_quote():
     with pytest.raises(ValueError, match="No closing quotation"):
-        check_ci_contracts.single_shell_command_tokens("printf 'first\nsecond")
+        check_ci_contracts._parse_single_shell_command("printf 'first\nsecond")
 
 
 def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():

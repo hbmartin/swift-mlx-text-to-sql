@@ -29,7 +29,16 @@ rules:
     message: Validate executable shell contracts structurally, not with raw substring membership.
     severity: ERROR
     languages: [python]
-    patterns:
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $MAPPING.get("run")
+          - pattern: $MAPPING.get("run", $DEFAULT)
+          - pattern: $MAPPING.get("shellScript")
+          - pattern: $MAPPING.get("shellScript", $DEFAULT)
+          - pattern: $MAPPING["run"]
+          - pattern: $MAPPING["shellScript"]
+    pattern-sinks:
       - pattern-either:
           - pattern: $FRAGMENT in $SCRIPT
           - pattern: $FRAGMENT not in $SCRIPT
@@ -37,12 +46,6 @@ rules:
           - pattern: $SCRIPT.index($FRAGMENT)
           - pattern: $SCRIPT.startswith($FRAGMENT)
           - pattern: $SCRIPT.endswith($FRAGMENT)
-      - metavariable-regex:
-          metavariable: $SCRIPT
-          regex: (?i)^(?:command|run|script|source|[a-z_][a-z0-9_]*_(?:command|run|script|source))$
-      - metavariable-regex:
-          metavariable: $FRAGMENT
-          regex: (?i).*(?:expected|fragment|required).*
   - id: creg-identity-requires-structured-components
     message: Use a structured Hashable identity instead of delimiter-joining uncontrolled strings.
     severity: ERROR
