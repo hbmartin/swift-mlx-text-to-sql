@@ -39,10 +39,36 @@ def raw_inline(needle: str, step: dict[str, str]) -> bool:
     return needle in step.get("run", "")
 
 
+def raw_parameter_membership(expected_fragment: str, script: str) -> bool:
+    # ruleid: creg-shell-contracts-require-structured-validation
+    return expected_fragment in script
+
+
+def validate_in_helper(expected_fragment: str, step: dict[str, str]) -> bool:
+    return raw_parameter_membership(expected_fragment, step.get("run", ""))
+
+
+def reviewed_parsed_tokens(flag: str, step: dict[str, str]) -> bool:
+    parsed = _parse_single_shell_command(step.get("run", ""))
+    # ok: creg-shell-contracts-require-structured-validation
+    return flag in parsed.tokens
+
+
+def reviewed_path_membership(source: Path, destination: Path) -> bool:
+    # ok: creg-shell-contracts-require-structured-validation
+    return source in destination.parents
+
+
 def reviewed_shell_contract(expected: str, phase: dict[str, str]) -> bool:
     script = phase.get("shellScript")
     # ok: creg-shell-contracts-require-structured-validation
     return script == expected
+
+
+def reviewed_command_set(step: dict[str, str], reviewed: set[str]) -> bool:
+    script = step.get("run", "")
+    # ok: creg-shell-contracts-require-structured-validation
+    return script in reviewed
 
 
 def documentation_contains_fragment(fragment: str, documentation: str) -> bool:

@@ -503,7 +503,10 @@ class TargetBuildSettingTests(unittest.TestCase):
             publisher.MATERIALIZE_MODEL_SHELL_SCRIPT
         )
 
-        with self.assertRaisesRegex(publisher.ReleaseError, "inputPaths"):
+        with self.assertRaisesRegex(
+            publisher.ReleaseError,
+            r"inputPaths \(missing: .*model-manifest\.json",
+        ):
             publisher.require_target_shell_script_contract(
                 project,
                 target_name=publisher.TARGET,
@@ -548,7 +551,28 @@ class TargetBuildSettingTests(unittest.TestCase):
             ],
         )
 
-        with self.assertRaisesRegex(publisher.ReleaseError, "inputPaths"):
+        with self.assertRaisesRegex(
+            publisher.ReleaseError, r"inputPaths \(unexpected: .*decoy"
+        ):
+            publisher.require_target_shell_script_contract(
+                project,
+                target_name=publisher.TARGET,
+                phase_name="Materialize Bundled SQL Model",
+                expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+                expected_input_paths=publisher.MATERIALIZE_MODEL_INPUT_PATHS,
+            )
+
+    def test_reordered_build_phase_input_paths_name_the_order_drift(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+        project["objects"]["target"]["buildPhases"] = ["target-phase"]
+        project["objects"]["target-phase"] = shell_script_phase(
+            publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+            input_paths=list(reversed(publisher.MATERIALIZE_MODEL_INPUT_PATHS)),
+        )
+
+        with self.assertRaisesRegex(
+            publisher.ReleaseError, r"inputPaths \(order differs\)"
+        ):
             publisher.require_target_shell_script_contract(
                 project,
                 target_name=publisher.TARGET,

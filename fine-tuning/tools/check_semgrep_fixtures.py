@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 
 ANNOTATION = re.compile(r"(?:#|//)\s*(ruleid|ok):\s*([a-z0-9-]+)\s*$")
 Finding = tuple[Path, str, int]
+FIXTURE_SUFFIXES = {".py", ".swift"}
 
 
 def annotated_findings(path: Path) -> tuple[set[Finding], set[Finding]]:
@@ -24,10 +26,25 @@ def annotated_findings(path: Path) -> tuple[set[Finding], set[Finding]]:
     return required, forbidden
 
 
+def fixture_paths(arguments: Sequence[str]) -> tuple[Path, ...]:
+    fixtures: set[Path] = set()
+    for argument in arguments:
+        path = Path(argument)
+        if path.is_dir():
+            fixtures.update(
+                candidate
+                for candidate in path.rglob("*")
+                if candidate.is_file() and candidate.suffix in FIXTURE_SUFFIXES
+            )
+        else:
+            fixtures.add(path)
+    return tuple(sorted(fixtures))
+
+
 def main() -> None:
-    fixtures = tuple(Path(argument) for argument in sys.argv[1:])
+    fixtures = fixture_paths(sys.argv[1:])
     if not fixtures:
-        raise SystemExit("usage: check_semgrep_fixtures.py FIXTURE [FIXTURE ...]")
+        raise SystemExit("usage: check_semgrep_fixtures.py FIXTURE_OR_DIRECTORY [...]")
     required: set[Finding] = set()
     forbidden: set[Finding] = set()
     for fixture in fixtures:
@@ -38,7 +55,6 @@ def main() -> None:
     actual = {
         (Path(result["path"]), result["check_id"], result["start"]["line"])
         for result in payload.get("results", [])
-        if Path(result["path"]) in fixtures
     }
     errors = payload.get("errors", [])
     if errors or actual != required or actual & forbidden:

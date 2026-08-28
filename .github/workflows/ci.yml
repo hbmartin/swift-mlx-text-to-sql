@@ -51,16 +51,30 @@ jobs:
         working-directory: CREGKit
         run: swift test
 
+  accessibility:
+    name: Accessibility UI contracts
+    runs-on: macos-26
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 26.3
+        run: sudo xcode-select --switch /Applications/Xcode_26.3.app
+
       - name: Test focused accessibility UI contracts
         timeout-minutes: 30
+        shell: /usr/bin/env -i HOME=/Users/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
+        working-directory: ${{ github.workspace }}
         run: |
-          xcodebuild test \
+          /usr/bin/xcodebuild test \
             -project CREG.xcodeproj \
             -scheme CREG \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
-            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/creg-source-packages" \
-            -derivedDataPath "${RUNNER_TEMP}/creg-derived-data" \
-            -resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult" \
+            -clonedSourcePackagesDirPath "${{ runner.temp }}/creg-source-packages" \
+            -derivedDataPath "${{ runner.temp }}/creg-derived-data" \
+            -resultBundlePath "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -only-testing:CREGUITests/AccessibilityUITests/testHighestRiskScreensAtAX5Landscape \
@@ -98,12 +112,6 @@ jobs:
         working-directory: fine-tuning
         run: uv run --frozen pytest -q
 
-      - name: Run TestFlight publisher tests
-        run: >-
-          uv run --no-project --managed-python --python 3.13 python -m unittest discover
-          -s .agents/skills/publish-creg-testflight/tests
-          -p 'test_*.py'
-
       - name: Verify generated schema resources
         working-directory: fine-tuning
         run: |
@@ -121,6 +129,39 @@ jobs:
           cmp synth/out/valid.jsonl "${RUNNER_TEMP}/corpus/valid.jsonl"
           cmp synth/out/gate_stats.json "${RUNNER_TEMP}/corpus/gate_stats.json"
 
+  testflight-publisher:
+    name: TestFlight publisher contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        id: setup-uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        env:
+          BASH_ENV: ""
+          ENV: ""
+          LD_PRELOAD: ""
+          NODE_OPTIONS: ""
+          PATH: /usr/bin:/bin:/usr/sbin:/sbin
+        with:
+          version: "0.12.7"
+          checksum: "788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
+          enable-cache: false
+
+      - name: Run TestFlight publisher tests
+        shell: /usr/bin/env -i HOME=/home/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
+        working-directory: ${{ github.workspace }}
+        run: >-
+          TMPDIR="${{ runner.temp }}" UV_NO_CONFIG=1
+          "${{ steps.setup-uv.outputs.uv-path }}"
+          run --no-project --managed-python --python 3.13 python -m unittest discover
+          -s .agents/skills/publish-creg-testflight/tests
+          -p 'test_*.py'
+
   security:
     name: Security regression guards
     runs-on: ubuntu-latest
@@ -132,13 +173,26 @@ jobs:
           fetch-depth: 2
 
       - name: Install uv
+        id: setup-security-uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        env:
+          BASH_ENV: ""
+          ENV: ""
+          LD_PRELOAD: ""
+          NODE_OPTIONS: ""
+          PATH: /usr/bin:/bin:/usr/sbin:/sbin
         with:
-          enable-cache: true
+          version: "0.12.7"
+          checksum: "788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
+          enable-cache: false
 
       - name: Verify workflow action pins
-        working-directory: fine-tuning
-        run: uv run --frozen python -m tools.check_ci_contracts
+        shell: /usr/bin/env -i HOME=/home/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
+        working-directory: ${{ github.workspace }}/fine-tuning
+        run: >-
+          TMPDIR="${{ runner.temp }}" UV_NO_CONFIG=1
+          "${{ steps.setup-security-uv.outputs.uv-path }}"
+          run --frozen python -m tools.check_ci_contracts
 
       - name: Prevent unsafe diagnostic and evaluation identity patterns
         run: >-
@@ -150,12 +204,14 @@ jobs:
 
       - name: Test Semgrep rules
         run: |
-          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
+          uvx --from semgrep==1.170.0 semgrep scan --metrics off --json \
+              --config .semgrep.yml semgrep-tests/*.py \
             | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
-                semgrep-tests/typed-diagnostic-classification.swift \
-                semgrep-tests/database-input-canonicalization.py \
-                semgrep-tests/shell-contract-validation.py \
-                semgrep-tests/structured-identity.swift
+                semgrep-tests/*.py
+          uvx --from semgrep==1.170.0 semgrep scan --metrics off --json \
+              --config .semgrep.yml semgrep-tests/*.swift \
+            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
+                semgrep-tests/*.swift
 
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD
