@@ -73,26 +73,34 @@ enum CREGChartAdapter {
 
   static let formatters = AutoChartFormatters(
     locale: Locale(identifier: "en_US"),
-    timeZone: .gmt
-  ) { column, value, _, _, _ in
-    guard let column else { return nil }
-    let sqlValue: SQLValue
-    switch value {
-    case .null: sqlValue = .null
-    case .boolean(let value): sqlValue = .integer(value ? 1 : 0)
-    case .integer(let value): sqlValue = .integer(value)
-    case .double(let value): sqlValue = .real(value)
-    case .decimal(let value): sqlValue = .real(NSDecimalNumber(decimal: value).doubleValue)
-    case .text(let value): sqlValue = .text(value)
-    case .date(let value):
-      let components = gregorianGMTCalendar.dateComponents([.year, .month, .day], from: value)
-      guard let year = components.year, let month = components.month, let day = components.day
-      else { return nil }
-      sqlValue = .text(String(format: "%04d-%02d-%02d", year, month, day))
-    case .binary(let value): sqlValue = .blob(value)
-    }
-    return PortfolioValueFormatting.displayString(for: sqlValue, column: column.name)
-  }
+    timeZone: .gmt,
+    request: { request, _, _ in
+      switch request.purpose {
+      case .aggregatedMeasure(.count), .aggregatedMeasure(.countDistinct),
+        .normalizedFraction:
+        // Let AutoTableCharts format dimensionless chart-generated values.
+        return nil
+      case .value, .aggregatedMeasure:
+        break
+      }
+      guard let column = request.column else { return nil }
+      let sqlValue: SQLValue
+      switch request.value {
+      case .null: sqlValue = .null
+      case .boolean(let value): sqlValue = .integer(value ? 1 : 0)
+      case .integer(let value): sqlValue = .integer(value)
+      case .double(let value): sqlValue = .real(value)
+      case .decimal(let value): sqlValue = .real(NSDecimalNumber(decimal: value).doubleValue)
+      case .text(let value): sqlValue = .text(value)
+      case .date(let value):
+        let components = gregorianGMTCalendar.dateComponents([.year, .month, .day], from: value)
+        guard let year = components.year, let month = components.month, let day = components.day
+        else { return nil }
+        sqlValue = .text(String(format: "%04d-%02d-%02d", year, month, day))
+      case .binary(let value): sqlValue = .blob(value)
+      }
+      return PortfolioValueFormatting.displayString(for: sqlValue, column: column.name)
+    })
 
   /// AutoTableCharts-authored copy shared by preparation diagnostics and
   /// selection, prepared chart chrome, and recommendation rationale.
