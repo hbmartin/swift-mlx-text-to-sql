@@ -34,6 +34,36 @@ INSPECTOR = Path("fine-tuning/tools/inspect_release_bundle.py")
 SCHEME_FILE = Path("CREG.xcodeproj/xcshareddata/xcschemes/CREG.xcscheme")
 INFO_PLIST = Path("CREG/Info.plist")
 PROJECT_FILE = Path("CREG.xcodeproj/project.pbxproj")
+MATERIALIZE_MODEL_SHELL_SCRIPT = (
+    '/bin/zsh "$SRCROOT/tools/materialize_bundled_model.sh"\n'
+)
+STAMP_DISTRIBUTION_BUILD_NUMBER_SHELL_SCRIPT = (
+    "set -euo pipefail\n"
+    "\n"
+    "# App Store Connect rejects a repeated CFBundleVersion, so every archive gets\n"
+    "# a fresh monotonic UTC stamp. Debug keeps CURRENT_PROJECT_VERSION so\n"
+    "# incremental builds do not churn the bundle on every compile.\n"
+    'if [[ "$CONFIGURATION" == "Debug" ]]; then\n'
+    "  exit 0\n"
+    "fi\n"
+    "\n"
+    'PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"\n'
+    'if [[ ! -f "$PLIST" ]]; then\n'
+    '  echo "error: processed Info.plist is missing at $PLIST"\n'
+    "  exit 1\n"
+    "fi\n"
+    "\n"
+    'BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)"\n'
+    '/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"\n'
+    'echo "note: stamped CFBundleVersion $BUILD_NUMBER"\n'
+)
+REVIEWED_SHELL_PHASE_ATTRIBUTES = (
+    ("shellPath", "/bin/zsh"),
+    ("alwaysOutOfDate", "1"),
+    ("buildActionMask", "2147483647"),
+    ("runOnlyForDeploymentPostprocessing", "0"),
+    ("showEnvVarsInLog", "0"),
+)
 SECRET_KEY_PATTERN = re.compile(
     r"(?i)(password|passwd|token|secret|authorization|api[_-]?key|private[_-]?key)"
 )
@@ -270,7 +300,7 @@ def require_target_shell_script_contract(
     *,
     target_name: str,
     phase_name: str,
-    command_fragments: Sequence[str],
+    expected_script: str,
     input_paths: Sequence[str] = (),
 ) -> None:
     phase = target_build_phase(project, target_name, phase_name)
@@ -279,13 +309,18 @@ def require_target_shell_script_contract(
         raise ReleaseError(
             f"Xcode target {target_name!r} has a malformed {phase_name!r} build phase"
         )
-    missing_fragments = [
-        fragment for fragment in command_fragments if fragment not in script
+    drifted_fields = [
+        name
+        for name, expected in REVIEWED_SHELL_PHASE_ATTRIBUTES
+        if phase.get(name) != expected
     ]
-    if missing_fragments:
+    if script != expected_script:
+        drifted_fields.append("shellScript")
+    if drifted_fields:
         raise ReleaseError(
-            f"Xcode target {target_name!r} {phase_name!r} build phase is missing: "
-            + ", ".join(missing_fragments)
+            f"Xcode target {target_name!r} {phase_name!r} build phase does not "
+            "match the reviewed executable contract: "
+            + ", ".join(drifted_fields)
         )
 
     configured_inputs = phase.get("inputPaths", [])
@@ -650,13 +685,13 @@ def verify_source_contract(repo: Path) -> None:
         project,
         target_name=TARGET,
         phase_name="Stamp Distribution Build Number",
-        command_fragments=("date -u +%Y%m%d%H%M%S",),
+        expected_script=STAMP_DISTRIBUTION_BUILD_NUMBER_SHELL_SCRIPT,
     )
     require_target_shell_script_contract(
         project,
         target_name=TARGET,
         phase_name="Materialize Bundled SQL Model",
-        command_fragments=("tools/materialize_bundled_model.sh",),
+        expected_script=MATERIALIZE_MODEL_SHELL_SCRIPT,
         input_paths=("$(SRCROOT)/model-runtime-contract.json",),
     )
 

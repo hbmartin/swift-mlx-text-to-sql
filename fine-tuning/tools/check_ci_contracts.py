@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -20,6 +21,36 @@ ACCESSIBILITY_UPLOAD_ACTION = (
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 )
 ACCESSIBILITY_WORKFLOW_NAME = "CI"
+ACCESSIBILITY_UI_TEST_COMMAND = (
+    "xcodebuild",
+    "test",
+    "-project",
+    "CREG.xcodeproj",
+    "-scheme",
+    "CREG",
+    "-destination",
+    "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+    "-clonedSourcePackagesDirPath",
+    "${RUNNER_TEMP}/creg-source-packages",
+    "-derivedDataPath",
+    "${RUNNER_TEMP}/creg-derived-data",
+    "-resultBundlePath",
+    "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult",
+    "-skipPackagePluginValidation",
+    "-skipMacroValidation",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testHighestRiskScreensAtAX5Landscape",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testMalformedConfigurationRendersInvalidConfigurationScreen",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testChartPreparationHasDistinctIdentityInProductionPresentation",
+    "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
+)
+ACCESSIBILITY_UI_DOUBLE_QUOTED_VALUES = (
+    "${RUNNER_TEMP}/creg-source-packages",
+    "${RUNNER_TEMP}/creg-derived-data",
+    "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult",
+)
 TESTFLIGHT_PUBLISHER_TEST_COMMAND = (
     "uv",
     "run",
@@ -39,6 +70,13 @@ TESTFLIGHT_PUBLISHER_TEST_COMMAND = (
 LoadedWorkflow = tuple[Path, str, object]
 
 
+@dataclass(frozen=True)
+class ParsedShellCommand:
+    tokens: tuple[str, ...]
+    single_quoted_values: tuple[str, ...]
+    double_quoted_values: tuple[str, ...]
+
+
 def load_workflows(directory: Path | None = None) -> list[LoadedWorkflow]:
     workflow_directory = WORKFLOWS if directory is None else directory
     paths = sorted(
@@ -54,63 +92,80 @@ def load_workflows(directory: Path | None = None) -> list[LoadedWorkflow]:
 def display_path(path: Path, root: Path | None = None) -> str:
     effective_root = ROOT if root is None else root
     try:
-        return str(path.relative_to(effective_root))
+        relative = path.relative_to(effective_root)
     except ValueError:
         return str(path)
+    return str(path) if relative == Path(".") else str(relative)
 
 
-def single_shell_command_tokens(source: str) -> list[str]:
-    """Tokenize one command while preserving quoted shell punctuation as data."""
+def _parse_single_shell_command(source: str) -> ParsedShellCommand:
+    """Parse the deliberately restricted shell grammar allowed in CI."""
     normalized_parts: list[str] = []
+    single_quoted_values: list[str] = []
+    double_quoted_values: list[str] = []
+    quoted_parts: list[str] | None = None
     quote: str | None = None
     in_comment = False
     at_word_start = True
     index = 0
+    source = source.strip(" \t\r\n")
     while index < len(source):
         character = source[index]
         following = source[index + 1] if index + 1 < len(source) else None
-        if (
-            character == "\\"
-            and following == "\r"
-            and source[index + 2 : index + 3] == "\n"
-        ):
-            continuation_length = 3
-        elif character == "\\" and following == "\n":
+        if character == "\\" and following == "\n":
             continuation_length = 2
         else:
             continuation_length = 0
 
         if in_comment:
-            if continuation_length:
-                index += continuation_length
-                continue
             if character in "\r\n":
-                normalized_parts.append(character)
-                in_comment = False
-                at_word_start = True
+                # Shell comments always end at the physical newline. A
+                # backslash inside the comment does not continue it.
+                raise ValueError("must contain exactly one shell command")
             index += 1
             continue
 
         if quote == "'":
             normalized_parts.append(character)
             if character == "'":
+                assert quoted_parts is not None
+                single_quoted_values.append("".join(quoted_parts))
+                quoted_parts = None
                 quote = None
+            else:
+                assert quoted_parts is not None
+                quoted_parts.append(character)
+            index += 1
+            continue
+
+        if quote == '"':
+            if continuation_length:
+                index += continuation_length
+                continue
+            if character == "\\" and following is not None:
+                normalized_parts.extend((character, following))
+                assert quoted_parts is not None
+                quoted_parts.extend((character, following))
+                index += 2
+                continue
+            if character == "`" or (
+                character == "$" and following == "("
+            ):
+                raise ValueError("must not contain shell command substitutions")
+            normalized_parts.append(character)
+            if character == '"':
+                assert quoted_parts is not None
+                double_quoted_values.append("".join(quoted_parts))
+                quoted_parts = None
+                quote = None
+            else:
+                assert quoted_parts is not None
+                quoted_parts.append(character)
             index += 1
             continue
 
         if continuation_length:
             index += continuation_length
-            continue
-
-        if quote == '"':
-            normalized_parts.append(character)
-            if character == "\\" and following is not None:
-                normalized_parts.append(following)
-                index += 2
-                continue
-            if character == '"':
-                quote = None
-            index += 1
             continue
 
         if character == "\\" and following is not None:
@@ -121,6 +176,7 @@ def single_shell_command_tokens(source: str) -> list[str]:
         if character in "'\"":
             normalized_parts.append(character)
             quote = character
+            quoted_parts = []
             at_word_start = False
             index += 1
             continue
@@ -128,16 +184,30 @@ def single_shell_command_tokens(source: str) -> list[str]:
             in_comment = True
             index += 1
             continue
-        if character in ";&|":
+        if character in "\r\n":
+            raise ValueError("must contain exactly one shell command")
+        if character == "`" or (character == "$" and following == "("):
+            raise ValueError("must not contain shell command substitutions")
+        if character in "<>":
+            raise ValueError("must not contain shell redirections")
+        if character in ";&|()":
             raise ValueError("must not contain shell control operators")
         normalized_parts.append(character)
-        at_word_start = character.isspace()
+        at_word_start = character in " \t\r\n"
         index += 1
 
-    normalized = "".join(normalized_parts).strip()
-    if "\n" in normalized or "\r" in normalized:
-        raise ValueError("must contain exactly one shell command")
-    return shlex.split(normalized, comments=False, posix=True)
+    normalized = "".join(normalized_parts).strip(" \t\r\n")
+    tokens = tuple(shlex.split(normalized, comments=False, posix=True))
+    return ParsedShellCommand(
+        tokens=tokens,
+        single_quoted_values=tuple(single_quoted_values),
+        double_quoted_values=tuple(double_quoted_values),
+    )
+
+
+def single_shell_command_tokens(source: str) -> list[str]:
+    """Tokenize exactly one restricted shell command."""
+    return list(_parse_single_shell_command(source).tokens)
 
 
 def workflow_job_steps(
@@ -165,55 +235,15 @@ def named_step(
     *,
     name: str,
     prefix: str,
-    failures: list[str],
-) -> dict[object, object] | None:
+) -> tuple[dict[object, object] | None, list[str]]:
     matches = [
         step
         for step in steps
         if isinstance(step, dict) and step.get("name") == name
     ]
     if len(matches) != 1:
-        failures.append(f"{prefix} requires exactly one {name!r} step")
-        return None
-    return matches[0]
-
-
-def required_argument_issues(
-    command_tokens: Sequence[str],
-    *,
-    flag_value_pairs: Sequence[tuple[str, str]],
-    standalone_tokens: Sequence[str],
-) -> list[str]:
-    issues: list[str] = []
-    for flag, expected_value in flag_value_pairs:
-        indexes = [
-            index for index, token in enumerate(command_tokens) if token == flag
-        ]
-        if not indexes:
-            issues.append(f"missing {flag} {expected_value}")
-            continue
-        if len(indexes) != 1:
-            issues.append(f"{flag} must appear exactly once (found {len(indexes)})")
-            continue
-        value_index = indexes[0] + 1
-        actual_value = (
-            command_tokens[value_index]
-            if value_index < len(command_tokens)
-            else None
-        )
-        if actual_value != expected_value:
-            issues.append(
-                f"expected {flag} {expected_value}, found {flag} {actual_value!r}"
-            )
-    for required_token in standalone_tokens:
-        count = command_tokens.count(required_token)
-        if count == 0:
-            issues.append(f"missing {required_token}")
-        elif count != 1:
-            issues.append(
-                f"{required_token} must appear exactly once (found {count})"
-            )
-    return issues
+        return None, [f"{prefix} requires exactly one {name!r} step"]
+    return matches[0], []
 
 
 def exact_command_mismatch(
@@ -294,12 +324,12 @@ def accessibility_ui_contract_failures(
     if steps is None:
         return failures
 
-    cache = named_step(
+    cache, step_failures = named_step(
         steps,
         name="Cache Swift and Xcode build artifacts",
         prefix=prefix,
-        failures=failures,
     )
+    failures.extend(step_failures)
     if cache is not None:
         if cache.get("uses") != ACCESSIBILITY_CACHE_ACTION:
             failures.append(f"{prefix} cache action is not pinned to the reviewed SHA")
@@ -324,72 +354,54 @@ def accessibility_ui_contract_failures(
                 f"{prefix} cache step is missing paths: " + ", ".join(missing_paths)
             )
 
-    ui_test = named_step(
+    ui_test, step_failures = named_step(
         steps,
         name="Test focused accessibility UI contracts",
         prefix=prefix,
-        failures=failures,
     )
+    failures.extend(step_failures)
     if ui_test is not None:
         if ui_test.get("timeout-minutes") != 30:
             failures.append(f"{prefix} UI test timeout must be 30 minutes")
         run = ui_test.get("run")
-        required_command_pairs = (
-            ("-project", "CREG.xcodeproj"),
-            ("-scheme", "CREG"),
-            (
-                "-destination",
-                "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
-            ),
-            (
-                "-clonedSourcePackagesDirPath",
-                "${RUNNER_TEMP}/creg-source-packages",
-            ),
-            ("-derivedDataPath", "${RUNNER_TEMP}/creg-derived-data"),
-            (
-                "-resultBundlePath",
-                "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult",
-            ),
-        )
-        required_command_tokens = (
-            "-skipPackagePluginValidation",
-            "-only-testing:CREGUITests/AccessibilityUITests/"
-            "testHighestRiskScreensAtAX5Landscape",
-            "-only-testing:CREGUITests/AccessibilityUITests/"
-            "testMalformedConfigurationRendersInvalidConfigurationScreen",
-            "-only-testing:CREGUITests/AccessibilityUITests/"
-            "testChartPreparationHasDistinctIdentityInProductionPresentation",
-            "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
-        )
         if not isinstance(run, str):
             failures.append(f"{prefix} UI test step must contain a shell command")
         else:
             try:
-                command_tokens = single_shell_command_tokens(run)
+                command = _parse_single_shell_command(run)
             except ValueError as error:
                 failures.append(f"{prefix} UI test shell command is malformed: {error}")
             else:
-                if command_tokens[:2] != ["xcodebuild", "test"]:
+                if command.tokens[:2] != ("xcodebuild", "test"):
                     failures.append(
                         f"{prefix} UI test step must run xcodebuild test directly"
                     )
-                argument_issues = required_argument_issues(
-                    command_tokens,
-                    flag_value_pairs=required_command_pairs,
-                    standalone_tokens=required_command_tokens,
-                )
-                if argument_issues:
-                    failures.append(
-                        f"{prefix} UI test command argument errors: "
-                        + "; ".join(argument_issues)
+                else:
+                    mismatch = exact_command_mismatch(
+                        command.tokens, ACCESSIBILITY_UI_TEST_COMMAND
                     )
+                    if mismatch is not None:
+                        failures.append(
+                            f"{prefix} UI test command argument errors: {mismatch}"
+                        )
+                    else:
+                        unquoted_values = [
+                            value
+                            for value in ACCESSIBILITY_UI_DOUBLE_QUOTED_VALUES
+                            if command.double_quoted_values.count(value) != 1
+                        ]
+                        if unquoted_values:
+                            failures.append(
+                                f"{prefix} UI test runner paths must be "
+                                "double-quoted: " + ", ".join(unquoted_values)
+                            )
 
-    upload = named_step(
+    upload, step_failures = named_step(
         steps,
         name="Upload accessibility UI test results",
         prefix=prefix,
-        failures=failures,
     )
+    failures.extend(step_failures)
     if upload is not None:
         if upload.get("uses") != ACCESSIBILITY_UPLOAD_ACTION:
             failures.append(f"{prefix} upload action is not pinned to the reviewed SHA")
@@ -417,12 +429,12 @@ def testflight_publisher_contract_failures(
     )
     if steps is None:
         return failures
-    publisher_test = named_step(
+    publisher_test, step_failures = named_step(
         steps,
         name="Run TestFlight publisher tests",
         prefix=prefix,
-        failures=failures,
     )
+    failures.extend(step_failures)
     if publisher_test is None:
         return failures
 
@@ -430,17 +442,19 @@ def testflight_publisher_contract_failures(
     if not isinstance(run, str):
         return [f"{prefix} step must contain a shell command"]
     try:
-        command_tokens = single_shell_command_tokens(run)
+        command = _parse_single_shell_command(run)
     except ValueError as error:
         return [f"{prefix} shell command is malformed: {error}"]
     mismatch = exact_command_mismatch(
-        command_tokens, TESTFLIGHT_PUBLISHER_TEST_COMMAND
+        command.tokens, TESTFLIGHT_PUBLISHER_TEST_COMMAND
     )
     if mismatch is not None:
         return [
             f"{prefix} must use the reviewed uv-managed Python 3.13 command: "
             f"{mismatch}"
         ]
+    if command.single_quoted_values.count("test_*.py") != 1:
+        return [f"{prefix} test discovery pattern must be single-quoted"]
     return []
 
 

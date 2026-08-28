@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "publish_testflight.py"
+REPO_ROOT = SCRIPT.parents[4]
 MISSING = object()
 SOURCE_REVISION = "a" * 40
 
@@ -56,6 +57,23 @@ def xcode_project(
             "buildSettings": {"CREG_ACCESSIBILITY_HARNESS_BUILD": value},
         }
     return {"objects": objects}
+
+
+def shell_script_phase(
+    script: str,
+    *,
+    name: str = "Materialize Bundled SQL Model",
+    input_paths: object = MISSING,
+) -> dict[str, Any]:
+    phase: dict[str, Any] = {
+        "isa": "PBXShellScriptBuildPhase",
+        "name": name,
+        "shellScript": script,
+        **dict(publisher.REVIEWED_SHELL_PHASE_ATTRIBUTES),
+    }
+    if input_paths is not MISSING:
+        phase["inputPaths"] = input_paths
+    return phase
 
 
 def inspector_report(
@@ -403,45 +421,94 @@ class TargetBuildSettingTests(unittest.TestCase):
     def test_decoy_build_phase_cannot_satisfy_the_target_contract(self) -> None:
         project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
         project["objects"]["target"]["buildPhases"] = ["target-phase"]
-        project["objects"]["target-phase"] = {
-            "isa": "PBXShellScriptBuildPhase",
-            "name": "Materialize Bundled SQL Model",
-            "shellScript": "echo wrong-script",
-            "inputPaths": [],
-        }
-        project["objects"]["decoy-phase"] = {
-            "isa": "PBXShellScriptBuildPhase",
-            "name": "Materialize Bundled SQL Model",
-            "shellScript": "tools/materialize_bundled_model.sh",
-            "inputPaths": ["$(SRCROOT)/model-runtime-contract.json"],
-        }
+        project["objects"]["target-phase"] = shell_script_phase(
+            "echo wrong-script", input_paths=[]
+        )
+        project["objects"]["decoy-phase"] = shell_script_phase(
+            publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+            input_paths=["$(SRCROOT)/model-runtime-contract.json"],
+        )
 
         with self.assertRaisesRegex(
-            publisher.ReleaseError, "materialize_bundled_model.sh"
+            publisher.ReleaseError, "reviewed executable contract"
         ):
             publisher.require_target_shell_script_contract(
                 project,
                 target_name=publisher.TARGET,
                 phase_name="Materialize Bundled SQL Model",
-                command_fragments=("tools/materialize_bundled_model.sh",),
+                expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
                 input_paths=("$(SRCROOT)/model-runtime-contract.json",),
             )
+
+    def test_inert_fragments_cannot_satisfy_the_shell_script_contract(self) -> None:
+        reviewed = publisher.MATERIALIZE_MODEL_SHELL_SCRIPT
+        decoys = (
+            f"# {reviewed}",
+            f"REVIEWED_COMMAND={reviewed!r}\n",
+            f"if false; then\n  {reviewed}fi\n",
+        )
+        for decoy in decoys:
+            project = xcode_project(
+                {"Debug": "NO", "Beta": "NO", "Release": "NO"}
+            )
+            project["objects"]["target"]["buildPhases"] = ["target-phase"]
+            project["objects"]["target-phase"] = shell_script_phase(
+                decoy,
+                input_paths=["$(SRCROOT)/model-runtime-contract.json"],
+            )
+
+            with (
+                self.subTest(decoy=decoy),
+                self.assertRaisesRegex(
+                    publisher.ReleaseError, "reviewed executable contract"
+                ),
+            ):
+                publisher.require_target_shell_script_contract(
+                    project,
+                    target_name=publisher.TARGET,
+                    phase_name="Materialize Bundled SQL Model",
+                    expected_script=reviewed,
+                    input_paths=("$(SRCROOT)/model-runtime-contract.json",),
+                )
+
+    def test_shell_phase_execution_attributes_are_pinned(self) -> None:
+        for attribute, _ in publisher.REVIEWED_SHELL_PHASE_ATTRIBUTES:
+            project = xcode_project(
+                {"Debug": "NO", "Beta": "NO", "Release": "NO"}
+            )
+            project["objects"]["target"]["buildPhases"] = ["target-phase"]
+            phase = shell_script_phase(
+                publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+                input_paths=["$(SRCROOT)/model-runtime-contract.json"],
+            )
+            phase[attribute] = "drifted"
+            project["objects"]["target-phase"] = phase
+
+            with (
+                self.subTest(attribute=attribute),
+                self.assertRaisesRegex(publisher.ReleaseError, attribute),
+            ):
+                publisher.require_target_shell_script_contract(
+                    project,
+                    target_name=publisher.TARGET,
+                    phase_name="Materialize Bundled SQL Model",
+                    expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+                    input_paths=("$(SRCROOT)/model-runtime-contract.json",),
+                )
 
     def test_missing_build_phase_input_paths_raise_a_missing_error(self) -> None:
         project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
         project["objects"]["target"]["buildPhases"] = ["target-phase"]
-        project["objects"]["target-phase"] = {
-            "isa": "PBXShellScriptBuildPhase",
-            "name": "Materialize Bundled SQL Model",
-            "shellScript": "tools/materialize_bundled_model.sh",
-        }
+        project["objects"]["target-phase"] = shell_script_phase(
+            publisher.MATERIALIZE_MODEL_SHELL_SCRIPT
+        )
 
         with self.assertRaisesRegex(publisher.ReleaseError, "missing input paths"):
             publisher.require_target_shell_script_contract(
                 project,
                 target_name=publisher.TARGET,
                 phase_name="Materialize Bundled SQL Model",
-                command_fragments=("tools/materialize_bundled_model.sh",),
+                expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
                 input_paths=("$(SRCROOT)/model-runtime-contract.json",),
             )
 
@@ -451,12 +518,10 @@ class TargetBuildSettingTests(unittest.TestCase):
                 {"Debug": "NO", "Beta": "NO", "Release": "NO"}
             )
             project["objects"]["target"]["buildPhases"] = ["target-phase"]
-            project["objects"]["target-phase"] = {
-                "isa": "PBXShellScriptBuildPhase",
-                "name": "Materialize Bundled SQL Model",
-                "shellScript": "tools/materialize_bundled_model.sh",
-                "inputPaths": configured_inputs,
-            }
+            project["objects"]["target-phase"] = shell_script_phase(
+                publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+                input_paths=configured_inputs,
+            )
 
             with (
                 self.subTest(configured_inputs=configured_inputs),
@@ -468,9 +533,26 @@ class TargetBuildSettingTests(unittest.TestCase):
                     project,
                     target_name=publisher.TARGET,
                     phase_name="Materialize Bundled SQL Model",
-                    command_fragments=("tools/materialize_bundled_model.sh",),
+                    expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
                     input_paths=("$(SRCROOT)/model-runtime-contract.json",),
                 )
+
+    def test_repository_shell_phases_match_the_reviewed_contracts(self) -> None:
+        project = publisher.load_xcode_project(REPO_ROOT)
+
+        publisher.require_target_shell_script_contract(
+            project,
+            target_name=publisher.TARGET,
+            phase_name="Stamp Distribution Build Number",
+            expected_script=publisher.STAMP_DISTRIBUTION_BUILD_NUMBER_SHELL_SCRIPT,
+        )
+        publisher.require_target_shell_script_contract(
+            project,
+            target_name=publisher.TARGET,
+            phase_name="Materialize Bundled SQL Model",
+            expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+            input_paths=("$(SRCROOT)/model-runtime-contract.json",),
+        )
 
 
 class CollectPreflightTests(unittest.TestCase):

@@ -116,8 +116,13 @@ def test_accessibility_workflow_discovery_accepts_yaml_extension(tmp_path):
 
 
 def test_accessibility_workflow_discovery_rejects_missing_workflow(tmp_path):
-    with pytest.raises(SystemExit, match="exactly one workflow named 'CI'"):
+    with pytest.raises(SystemExit) as error:
         check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
+
+    diagnostic = str(error.value)
+    assert "exactly one workflow named 'CI'" in diagnostic
+    assert str(tmp_path) in diagnostic
+    assert not diagnostic.startswith(".:")
 
 
 def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
@@ -135,7 +140,10 @@ def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
         if step.get("name") == "Test focused accessibility UI contracts"
     )
     fragment = "CREG_ACCESSIBILITY_HARNESS_BUILD=YES"
-    ui_test["run"] = ui_test["run"].replace(fragment, "")
+    final_continuation = " " + "\\" + "\n  " + fragment + "\n"
+    ui_test["run"] = ui_test["run"].replace(
+        final_continuation, "\n"
+    )
     steps.append({"name": "Unrelated documentation", "run": f"echo {fragment}"})
 
     failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
@@ -146,24 +154,34 @@ def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
 
 
 @pytest.mark.parametrize(
-    ("reviewed", "replacement"),
+    ("reviewed", "replacement", "expected"),
     [
-        ("-project CREG.xcodeproj", "-project Decoy.xcodeproj"),
-        ("-project CREG.xcodeproj", "-project CREG.xcodeproj.backup"),
-        ("-scheme CREG", "-scheme Decoy"),
-        ("-scheme CREG", "-scheme CREGPreview"),
+        (
+            "-project CREG.xcodeproj",
+            "-project Decoy.xcodeproj",
+            "CREG.xcodeproj",
+        ),
+        (
+            "-project CREG.xcodeproj",
+            "-project CREG.xcodeproj.backup",
+            "CREG.xcodeproj",
+        ),
+        ("-scheme CREG", "-scheme Decoy", "CREG"),
+        ("-scheme CREG", "-scheme CREGPreview", "CREG"),
         (
             "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
             "platform=macOS,name=iPhone 17 Pro,OS=26.5",
+            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
         ),
         (
             "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
             "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5beta",
+            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
         ),
     ],
 )
 def test_accessibility_ui_contract_pins_project_scheme_and_destination(
-    reviewed, replacement
+    reviewed, replacement, expected
 ):
     path, workflow = accessibility_workflow()
     steps = workflow["jobs"]["swift"]["steps"]
@@ -177,7 +195,7 @@ def test_accessibility_ui_contract_pins_project_scheme_and_destination(
     failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
     assert len(failures) == 1
-    assert reviewed in failures[0]
+    assert f"must be {expected!r}" in failures[0]
 
 
 def test_accessibility_ui_contract_accepts_a_wrapped_flag_value_pair():
@@ -193,6 +211,24 @@ def test_accessibility_ui_contract_accepts_a_wrapped_flag_value_pair():
     )
 
     assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+def test_accessibility_ui_contract_rejects_a_crlf_wrapped_flag_value_pair():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        "-project CREG.xcodeproj", "-project \\\r\n            CREG.xcodeproj"
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "must contain exactly one shell command" in failures[0]
 
 
 def test_accessibility_ui_contract_accepts_a_wrapped_former_fragment_pair():
@@ -249,8 +285,7 @@ def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
 
     assert len(failures) == 1
     assert "UI test command argument errors" in failures[0]
-    assert "missing -clonedSourcePackagesDirPath" in failures[0]
-    assert "missing CREG_ACCESSIBILITY_HARNESS_BUILD=YES" in failures[0]
+    assert "-clonedSourcePackagesDirPath" in failures[0]
 
 
 @pytest.mark.parametrize(
@@ -282,7 +317,7 @@ def test_accessibility_ui_contract_rejects_duplicate_pinned_arguments(
     failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
     assert len(failures) == 1
-    assert f"{flag} must appear exactly once (found 2)" in failures[0]
+    assert f"found {flag!r}" in failures[0]
 
 
 def test_accessibility_ui_contract_requires_a_direct_xcodebuild_invocation():
@@ -303,6 +338,106 @@ def test_accessibility_ui_contract_requires_a_direct_xcodebuild_invocation():
     assert "must run xcodebuild test directly" in failures[0]
 
 
+@pytest.mark.parametrize(
+    ("suffix", "diagnostic"),
+    [
+        (" $(printf inert)", "shell command substitutions"),
+        (" `printf inert`", "shell command substitutions"),
+        (" > build.log", "shell redirections"),
+        ("\N{NO-BREAK SPACE}# ; printf second-command", "shell control operators"),
+        (
+            " CREG_ACCESSIBILITY_HARNESS_BUILD=NO",
+            "UI test command argument errors",
+        ),
+        (
+            " -skip-testing:CREGUITests/AccessibilityUITests/"
+            "testHighestRiskScreensAtAX5Landscape",
+            "UI test command argument errors",
+        ),
+    ],
+)
+def test_accessibility_ui_contract_rejects_unsafe_or_unreviewed_suffixes(
+    suffix, diagnostic
+):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].rstrip() + suffix
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert diagnostic in failures[0]
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_accessibility_ui_contract_rejects_a_command_after_a_continued_comment(
+    line_ending,
+):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = (
+        ui_test["run"].rstrip()
+        + f" # \\{line_ending}printf second-command"
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "must contain exactly one shell command" in failures[0]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "${RUNNER_TEMP}/creg-source-packages",
+        "${RUNNER_TEMP}/creg-derived-data",
+        "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult",
+    ],
+)
+def test_accessibility_ui_contract_requires_quoted_runner_paths(value):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(f'"{value}"', value)
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "runner paths must be double-quoted" in failures[0]
+    assert value in failures[0]
+
+
+def test_accessibility_ui_contract_reports_a_missing_final_flag_value():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = "xcodebuild test -project"
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "missing token 4" in failures[0]
+    assert "CREG.xcodeproj" in failures[0]
+
+
 @pytest.mark.parametrize("operator", [";", "&", "|"])
 def test_single_shell_command_tokens_accepts_quoted_control_operator(operator):
     assert check_ci_contracts.single_shell_command_tokens(
@@ -316,6 +451,34 @@ def test_single_shell_command_tokens_rejects_unquoted_control_operator(operator)
         check_ci_contracts.single_shell_command_tokens(
             f"echo reviewed {operator} echo decoy"
         )
+
+
+@pytest.mark.parametrize(
+    ("source", "diagnostic"),
+    [
+        ("echo $(printf decoy)", "shell command substitutions"),
+        ("echo `printf decoy`", "shell command substitutions"),
+        ("echo < input", "shell redirections"),
+        ("echo 2> output", "shell redirections"),
+        ("echo (printf decoy)", "shell control operators"),
+    ],
+)
+def test_single_shell_command_tokens_rejects_active_shell_syntax(
+    source, diagnostic
+):
+    with pytest.raises(ValueError, match=diagnostic):
+        check_ci_contracts.single_shell_command_tokens(source)
+
+
+def test_single_shell_command_tokens_accepts_quoted_newline_and_syntax():
+    assert check_ci_contracts.single_shell_command_tokens(
+        "printf '%s' 'first\n$(second); > output'"
+    ) == ["printf", "%s", "first\n$(second); > output"]
+
+
+def test_single_shell_command_tokens_reports_unterminated_multiline_quote():
+    with pytest.raises(ValueError, match="No closing quotation"):
+        check_ci_contracts.single_shell_command_tokens("printf 'first\nsecond")
 
 
 def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():
@@ -362,7 +525,6 @@ def test_accessibility_ui_contract_reports_only_the_shell_parse_failure():
     assert len(failures) == 1
     assert "shell command is malformed" in failures[0]
     assert "No closing quotation" in failures[0]
-    assert "missing exact command arguments" not in failures[0]
 
 
 def test_ci_runs_testflight_publisher_contract_tests_with_python_3_13():
@@ -371,6 +533,46 @@ def test_ci_runs_testflight_publisher_contract_tests_with_python_3_13():
     assert check_ci_contracts.testflight_publisher_contract_failures(
         path, workflow
     ) == []
+
+
+def test_testflight_publisher_contract_requires_a_quoted_discovery_pattern():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["python"]["steps"]
+    publisher_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Run TestFlight publisher tests"
+    )
+    publisher_test["run"] = publisher_test["run"].replace(
+        "'test_*.py'", "test_*.py"
+    )
+
+    failures = check_ci_contracts.testflight_publisher_contract_failures(
+        path, workflow
+    )
+
+    assert len(failures) == 1
+    assert "test discovery pattern must be single-quoted" in failures[0]
+
+
+def test_testflight_publisher_contract_rejects_a_continued_comment_command():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["python"]["steps"]
+    publisher_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Run TestFlight publisher tests"
+    )
+    publisher_test["run"] = (
+        publisher_test["run"].rstrip() + " # \\\nprintf second-command"
+    )
+
+    failures = check_ci_contracts.testflight_publisher_contract_failures(
+        path, workflow
+    )
+
+    assert len(failures) == 1
+    assert "must contain exactly one shell command" in failures[0]
 
 
 @pytest.mark.parametrize(
