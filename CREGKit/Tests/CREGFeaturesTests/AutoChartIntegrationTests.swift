@@ -114,6 +114,31 @@ import Testing
     }
   }
 
+  @Test func formattersRespectChartGeneratedValueSemantics() {
+    let currencyColumn = AutoChartColumn(
+      id: "value",
+      name: "current_market_value")
+
+    #expect(
+      CREGChartAdapter.formatters.format(
+        column: currencyColumn,
+        aggregation: .sum,
+        value: .integer(2),
+        context: .detail) == "$2")
+    #expect(
+      CREGChartAdapter.formatters.format(
+        column: currencyColumn,
+        aggregation: .count,
+        value: .integer(2),
+        context: .detail) == "2")
+    #expect(
+      CREGChartAdapter.formatters.formatNormalizedFraction(
+        0.25,
+        column: currencyColumn,
+        aggregation: .sum,
+        context: .axisTick) == "25%")
+  }
+
   @Test func chartLayoutKeepsExplicitHeightsAcrossDependencyDefaultChange() {
     #expect(AutoChartPresentation().plotHeight == 280)
     #expect(AutoChartPresentation.explorer().plotHeight == 280)
