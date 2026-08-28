@@ -288,18 +288,14 @@ def require_target_shell_script_contract(
             + ", ".join(missing_fragments)
         )
 
-    if "inputPaths" not in phase:
-        configured_inputs: list[str] = []
-    else:
-        input_paths_value = phase["inputPaths"]
-        if not isinstance(input_paths_value, list) or not all(
-            isinstance(path, str) for path in input_paths_value
-        ):
-            raise ReleaseError(
-                f"Xcode target {target_name!r} has malformed input paths in its "
-                f"{phase_name!r} build phase"
-            )
-        configured_inputs = input_paths_value
+    configured_inputs = phase.get("inputPaths", [])
+    if not isinstance(configured_inputs, list) or not all(
+        isinstance(path, str) for path in configured_inputs
+    ):
+        raise ReleaseError(
+            f"Xcode target {target_name!r} has malformed input paths in its "
+            f"{phase_name!r} build phase"
+        )
     missing_inputs = [path for path in input_paths if path not in configured_inputs]
     if missing_inputs:
         raise ReleaseError(
