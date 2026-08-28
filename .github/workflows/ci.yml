@@ -145,6 +145,8 @@ jobs:
           uvx --from semgrep==1.170.0 semgrep scan --error
           --config .semgrep.yml --include 'CREGKit/Sources/**/*.swift'
           --include 'fine-tuning/eval/**/*.py'
+          --include 'fine-tuning/tools/**/*.py'
+          --include '.agents/skills/publish-creg-testflight/scripts/**/*.py'
 
       - name: Test diagnostic classification rule
         run: |
@@ -157,6 +159,12 @@ jobs:
           uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
             | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
                 semgrep-tests/database-input-canonicalization.py
+
+      - name: Test shell contract validation rule
+        run: |
+          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
+            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
+                semgrep-tests/shell-contract-validation.py
 
       - name: Test structured identity rule
         run: |

@@ -25,6 +25,24 @@ rules:
           $PATHS, $INPUTS = canonicalize_database_inputs(...)
           ...
           database_set_identity($INPUTS)
+  - id: creg-shell-contracts-require-structured-validation
+    message: Validate executable shell contracts structurally, not with raw substring membership.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $FRAGMENT in $SCRIPT
+          - pattern: $FRAGMENT not in $SCRIPT
+          - pattern: $SCRIPT.find($FRAGMENT)
+          - pattern: $SCRIPT.index($FRAGMENT)
+          - pattern: $SCRIPT.startswith($FRAGMENT)
+          - pattern: $SCRIPT.endswith($FRAGMENT)
+      - metavariable-regex:
+          metavariable: $SCRIPT
+          regex: (?i)^(?:command|run|script|source|[a-z_][a-z0-9_]*_(?:command|run|script|source))$
+      - metavariable-regex:
+          metavariable: $FRAGMENT
+          regex: (?i).*(?:expected|fragment|required).*
   - id: creg-identity-requires-structured-components
     message: Use a structured Hashable identity instead of delimiter-joining uncontrolled strings.
     severity: ERROR
