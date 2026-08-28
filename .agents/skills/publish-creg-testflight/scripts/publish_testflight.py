@@ -37,6 +37,16 @@ PROJECT_FILE = Path("CREG.xcodeproj/project.pbxproj")
 MATERIALIZE_MODEL_SHELL_SCRIPT = (
     '/bin/zsh "$SRCROOT/tools/materialize_bundled_model.sh"\n'
 )
+MATERIALIZE_MODEL_INPUT_PATHS = (
+    "$(SRCROOT)/model-manifest.json",
+    "$(SRCROOT)/model-runtime-contract.json",
+    "$(SRCROOT)/tools/materialize_bundled_model.sh",
+    "$(SRCROOT)/fine-tuning/uv.lock",
+    "$(SRCROOT)/fine-tuning/tools/fetch_model.py",
+    "$(SRCROOT)/fine-tuning/tools/materialize_debug_model.py",
+    "$(SRCROOT)/fine-tuning/tools/stamp_bundle_manifest.py",
+    "$(SRCROOT)/fine-tuning/eval/file_integrity.py",
+)
 STAMP_DISTRIBUTION_BUILD_NUMBER_SHELL_SCRIPT = (
     "set -euo pipefail\n"
     "\n"
@@ -301,7 +311,7 @@ def require_target_shell_script_contract(
     target_name: str,
     phase_name: str,
     expected_script: str,
-    input_paths: Sequence[str] = (),
+    expected_input_paths: Sequence[str] = (),
 ) -> None:
     phase = target_build_phase(project, target_name, phase_name)
     script = phase.get("shellScript")
@@ -309,20 +319,6 @@ def require_target_shell_script_contract(
         raise ReleaseError(
             f"Xcode target {target_name!r} has a malformed {phase_name!r} build phase"
         )
-    drifted_fields = [
-        name
-        for name, expected in REVIEWED_SHELL_PHASE_ATTRIBUTES
-        if phase.get(name) != expected
-    ]
-    if script != expected_script:
-        drifted_fields.append("shellScript")
-    if drifted_fields:
-        raise ReleaseError(
-            f"Xcode target {target_name!r} {phase_name!r} build phase does not "
-            "match the reviewed executable contract: "
-            + ", ".join(drifted_fields)
-        )
-
     configured_inputs = phase.get("inputPaths", [])
     if not isinstance(configured_inputs, list) or not all(
         isinstance(path, str) for path in configured_inputs
@@ -331,12 +327,20 @@ def require_target_shell_script_contract(
             f"Xcode target {target_name!r} has malformed input paths in its "
             f"{phase_name!r} build phase"
         )
-    missing_inputs = [path for path in input_paths if path not in configured_inputs]
-    if missing_inputs:
+    drifted_fields = [
+        name
+        for name, expected in REVIEWED_SHELL_PHASE_ATTRIBUTES
+        if phase.get(name) != expected
+    ]
+    if script != expected_script:
+        drifted_fields.append("shellScript")
+    if configured_inputs != list(expected_input_paths):
+        drifted_fields.append("inputPaths")
+    if drifted_fields:
         raise ReleaseError(
-            f"Xcode target {target_name!r} {phase_name!r} build phase is missing "
-            "input paths: "
-            + ", ".join(missing_inputs)
+            f"Xcode target {target_name!r} {phase_name!r} build phase does not "
+            "match the reviewed build-phase contract: "
+            + ", ".join(drifted_fields)
         )
 
 
@@ -692,7 +696,7 @@ def verify_source_contract(repo: Path) -> None:
         target_name=TARGET,
         phase_name="Materialize Bundled SQL Model",
         expected_script=MATERIALIZE_MODEL_SHELL_SCRIPT,
-        input_paths=("$(SRCROOT)/model-runtime-contract.json",),
+        expected_input_paths=MATERIALIZE_MODEL_INPUT_PATHS,
     )
 
 

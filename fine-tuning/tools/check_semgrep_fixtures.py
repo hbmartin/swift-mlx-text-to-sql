@@ -9,28 +9,36 @@ from pathlib import Path
 
 
 ANNOTATION = re.compile(r"(?:#|//)\s*(ruleid|ok):\s*([a-z0-9-]+)\s*$")
+Finding = tuple[Path, str, int]
 
 
-def annotated_findings(path: Path) -> tuple[set[tuple[str, int]], set[tuple[str, int]]]:
-    required: set[tuple[str, int]] = set()
-    forbidden: set[tuple[str, int]] = set()
+def annotated_findings(path: Path) -> tuple[set[Finding], set[Finding]]:
+    required: set[Finding] = set()
+    forbidden: set[Finding] = set()
     for line_number, line in enumerate(path.read_text().splitlines(), start=1):
         match = ANNOTATION.search(line)
         if match is None:
             continue
-        finding = (match.group(2), line_number + 1)
+        finding = (path, match.group(2), line_number + 1)
         (required if match.group(1) == "ruleid" else forbidden).add(finding)
     return required, forbidden
 
 
 def main() -> None:
-    fixture = Path(sys.argv[1])
-    required, forbidden = annotated_findings(fixture)
+    fixtures = tuple(Path(argument) for argument in sys.argv[1:])
+    if not fixtures:
+        raise SystemExit("usage: check_semgrep_fixtures.py FIXTURE [FIXTURE ...]")
+    required: set[Finding] = set()
+    forbidden: set[Finding] = set()
+    for fixture in fixtures:
+        fixture_required, fixture_forbidden = annotated_findings(fixture)
+        required.update(fixture_required)
+        forbidden.update(fixture_forbidden)
     payload = json.load(sys.stdin)
     actual = {
-        (result["check_id"], result["start"]["line"])
+        (Path(result["path"]), result["check_id"], result["start"]["line"])
         for result in payload.get("results", [])
-        if Path(result["path"]) == fixture
+        if Path(result["path"]) in fixtures
     }
     errors = payload.get("errors", [])
     if errors or actual != required or actual & forbidden:

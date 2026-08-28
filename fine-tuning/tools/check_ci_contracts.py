@@ -46,10 +46,10 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testChartPreparationHasDistinctIdentityInProductionPresentation",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
-ACCESSIBILITY_UI_DOUBLE_QUOTED_VALUES = (
-    "${RUNNER_TEMP}/creg-source-packages",
-    "${RUNNER_TEMP}/creg-derived-data",
-    "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult",
+ACCESSIBILITY_UI_DOUBLE_QUOTED_FLAGS = (
+    "-clonedSourcePackagesDirPath",
+    "-derivedDataPath",
+    "-resultBundlePath",
 )
 TESTFLIGHT_PUBLISHER_TEST_COMMAND = (
     "uv",
@@ -148,18 +148,32 @@ def _parse_single_shell_command(source: str) -> ParsedShellCommand:
                 quoted_parts.extend((character, following))
                 index += 2
                 continue
-            if character == "`" or (
-                character == "$" and following == "("
+            assert quoted_parts is not None
+            escaped_dollar = False
+            if character == "(" and quoted_parts[-1:] == ["$"]:
+                preceding_backslashes = 0
+                for part in reversed(quoted_parts[:-1]):
+                    if part != "\\":
+                        break
+                    preceding_backslashes += 1
+                escaped_dollar = preceding_backslashes % 2 == 1
+            continued_substitution = (
+                character == "("
+                and not escaped_dollar
+                and quoted_parts[-1:] == ["$"]
+            )
+            if (
+                character == "`"
+                or (character == "$" and following == "(")
+                or continued_substitution
             ):
                 raise ValueError("must not contain shell command substitutions")
             normalized_parts.append(character)
             if character == '"':
-                assert quoted_parts is not None
                 double_quoted_values.append("".join(quoted_parts))
                 quoted_parts = None
                 quote = None
             else:
-                assert quoted_parts is not None
                 quoted_parts.append(character)
             index += 1
             continue
@@ -205,29 +219,82 @@ def _parse_single_shell_command(source: str) -> ParsedShellCommand:
     )
 
 
-def single_shell_command_tokens(source: str) -> list[str]:
-    """Tokenize exactly one restricted shell command."""
-    return list(_parse_single_shell_command(source).tokens)
-
-
 def workflow_job_steps(
     workflow: object,
     *,
     job_name: str,
     prefix: str,
-) -> tuple[list[object] | None, list[str]]:
+) -> tuple[dict[object, object] | None, list[object] | None, list[str]]:
     if not isinstance(workflow, dict):
-        return None, [f"{prefix} requires a workflow mapping"]
+        return None, None, [f"{prefix} requires a workflow mapping"]
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
-        return None, [f"{prefix} requires jobs"]
+        return None, None, [f"{prefix} requires jobs"]
     job = jobs.get(job_name)
     if not isinstance(job, dict):
-        return None, [f"{prefix} requires the {job_name} job"]
+        return None, None, [f"{prefix} requires the {job_name} job"]
     steps = job.get("steps")
     if not isinstance(steps, list):
-        return None, [f"{prefix} requires {job_name} job steps"]
-    return steps, []
+        return None, None, [f"{prefix} requires {job_name} job steps"]
+    return job, steps, []
+
+
+def reviewed_run_context_failures(
+    workflow: object,
+    job: dict[object, object],
+    step: dict[object, object],
+    *,
+    job_name: str,
+    step_name: str,
+    prefix: str,
+) -> list[str]:
+    """Reject metadata that can skip or reinterpret a reviewed run step."""
+    assert isinstance(workflow, dict)
+    failures: list[str] = []
+    workflow_fields = [
+        field for field in ("defaults", "env") if field in workflow
+    ]
+    if workflow_fields:
+        failures.append(
+            f"{prefix} workflow must not override reviewed run context: "
+            + ", ".join(workflow_fields)
+        )
+    job_fields = [
+        field
+        for field in (
+            "continue-on-error",
+            "defaults",
+            "env",
+            "if",
+            "needs",
+            "strategy",
+        )
+        if field in job
+    ]
+    if job_fields:
+        failures.append(
+            f"{prefix} {job_name} job must not override reviewed run context: "
+            + ", ".join(job_fields)
+        )
+    if job.get("runs-on") != "macos-26":
+        failures.append(f"{prefix} {job_name} job must run on macos-26")
+    step_fields = [
+        field
+        for field in (
+            "continue-on-error",
+            "env",
+            "if",
+            "shell",
+            "working-directory",
+        )
+        if field in step
+    ]
+    if step_fields:
+        failures.append(
+            f"{prefix} {step_name!r} step must not override reviewed run context: "
+            + ", ".join(step_fields)
+        )
+    return failures
 
 
 def named_step(
@@ -318,10 +385,10 @@ def accessibility_ui_contract_failures(
     path: Path, workflow: object, *, root: Path | None = None
 ) -> list[str]:
     prefix = f"{display_path(path, root)}: accessibility UI contract"
-    steps, failures = workflow_job_steps(
+    job, steps, failures = workflow_job_steps(
         workflow, job_name="swift", prefix=prefix
     )
-    if steps is None:
+    if job is None or steps is None:
         return failures
 
     cache, step_failures = named_step(
@@ -361,6 +428,16 @@ def accessibility_ui_contract_failures(
     )
     failures.extend(step_failures)
     if ui_test is not None:
+        failures.extend(
+            reviewed_run_context_failures(
+                workflow,
+                job,
+                ui_test,
+                job_name="swift",
+                step_name="Test focused accessibility UI contracts",
+                prefix=prefix,
+            )
+        )
         if ui_test.get("timeout-minutes") != 30:
             failures.append(f"{prefix} UI test timeout must be 30 minutes")
         run = ui_test.get("run")
@@ -385,9 +462,15 @@ def accessibility_ui_contract_failures(
                             f"{prefix} UI test command argument errors: {mismatch}"
                         )
                     else:
+                        quoted_values = (
+                            ACCESSIBILITY_UI_TEST_COMMAND[
+                                ACCESSIBILITY_UI_TEST_COMMAND.index(flag) + 1
+                            ]
+                            for flag in ACCESSIBILITY_UI_DOUBLE_QUOTED_FLAGS
+                        )
                         unquoted_values = [
                             value
-                            for value in ACCESSIBILITY_UI_DOUBLE_QUOTED_VALUES
+                            for value in quoted_values
                             if command.double_quoted_values.count(value) != 1
                         ]
                         if unquoted_values:
@@ -424,10 +507,10 @@ def testflight_publisher_contract_failures(
     path: Path, workflow: object, *, root: Path | None = None
 ) -> list[str]:
     prefix = f"{display_path(path, root)}: TestFlight publisher test contract"
-    steps, failures = workflow_job_steps(
+    job, steps, failures = workflow_job_steps(
         workflow, job_name="python", prefix=prefix
     )
-    if steps is None:
+    if job is None or steps is None:
         return failures
     publisher_test, step_failures = named_step(
         steps,
@@ -438,24 +521,38 @@ def testflight_publisher_contract_failures(
     if publisher_test is None:
         return failures
 
+    failures.extend(
+        reviewed_run_context_failures(
+            workflow,
+            job,
+            publisher_test,
+            job_name="python",
+            step_name="Run TestFlight publisher tests",
+            prefix=prefix,
+        )
+    )
+
     run = publisher_test.get("run")
     if not isinstance(run, str):
-        return [f"{prefix} step must contain a shell command"]
+        failures.append(f"{prefix} step must contain a shell command")
+        return failures
     try:
         command = _parse_single_shell_command(run)
     except ValueError as error:
-        return [f"{prefix} shell command is malformed: {error}"]
+        failures.append(f"{prefix} shell command is malformed: {error}")
+        return failures
     mismatch = exact_command_mismatch(
         command.tokens, TESTFLIGHT_PUBLISHER_TEST_COMMAND
     )
     if mismatch is not None:
-        return [
+        failures.append(
             f"{prefix} must use the reviewed uv-managed Python 3.13 command: "
             f"{mismatch}"
-        ]
+        )
+        return failures
     if command.single_quoted_values.count("test_*.py") != 1:
-        return [f"{prefix} test discovery pattern must be single-quoted"]
-    return []
+        failures.append(f"{prefix} test discovery pattern must be single-quoted")
+    return failures
 
 
 def main(

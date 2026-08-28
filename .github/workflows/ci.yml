@@ -148,28 +148,13 @@ jobs:
           --include 'fine-tuning/tools/**/*.py'
           --include '.agents/skills/publish-creg-testflight/scripts/**/*.py'
 
-      - name: Test diagnostic classification rule
+      - name: Test Semgrep rules
         run: |
           uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
             | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
-                semgrep-tests/typed-diagnostic-classification.swift
-
-      - name: Test database input canonicalization rule
-        run: |
-          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
-            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
-                semgrep-tests/database-input-canonicalization.py
-
-      - name: Test shell contract validation rule
-        run: |
-          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
-            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
-                semgrep-tests/shell-contract-validation.py
-
-      - name: Test structured identity rule
-        run: |
-          uvx --from semgrep==1.170.0 semgrep scan --json --config .semgrep.yml semgrep-tests \
-            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
+                semgrep-tests/typed-diagnostic-classification.swift \
+                semgrep-tests/database-input-canonicalization.py \
+                semgrep-tests/shell-contract-validation.py \
                 semgrep-tests/structured-identity.swift
 
       - name: Check patch whitespace
