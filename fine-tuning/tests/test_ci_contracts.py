@@ -193,19 +193,121 @@ def test_accessibility_ui_contract_pins_project_scheme_and_destination(
     assert reviewed in failures[0]
 
 
-def test_ci_runs_testflight_publisher_contract_tests():
-    _, workflow = accessibility_workflow()
+def test_accessibility_ui_contract_accepts_a_wrapped_flag_value_pair():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        "-project CREG.xcodeproj", "-project \\\n            CREG.xcodeproj"
+    )
+
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    reviewed_arguments = (
+        "xcodebuild test -project CREG.xcodeproj -scheme CREG "
+        "-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5'"
+    )
+    decoy_command = (
+        ui_test["run"]
+        .replace("CREG.xcodeproj", "Decoy.xcodeproj")
+        .replace("-scheme CREG", "-scheme Decoy")
+        .replace(
+            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+            "platform=macOS",
+        )
+    )
+    ui_test["run"] = f": {reviewed_arguments}; {decoy_command}"
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "shell command is malformed" in failures[0]
+
+
+def test_accessibility_ui_contract_reports_only_the_shell_parse_failure():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] += "'"
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "shell command is malformed" in failures[0]
+    assert "missing exact command arguments" not in failures[0]
+
+
+def test_ci_runs_testflight_publisher_contract_tests_with_python_3_13():
+    path, workflow = accessibility_workflow()
+
+    assert check_ci_contracts.testflight_publisher_contract_failures(
+        path, workflow
+    ) == []
+
+
+@pytest.mark.parametrize(
+    ("reviewed", "replacement"),
+    [
+        ("uv run --no-project --managed-python --python 3.13", "python3"),
+        ("--python 3.13", "--python 3.12"),
+        (
+            ".agents/skills/publish-creg-testflight/tests",
+            ".agents/skills/decoy/tests",
+        ),
+    ],
+)
+def test_testflight_publisher_contract_rejects_unreviewed_commands(
+    reviewed, replacement
+):
+    path, workflow = accessibility_workflow()
     steps = workflow["jobs"]["python"]["steps"]
-    publisher_test_steps = [
+    publisher_test = next(
         step
         for step in steps
         if step.get("name") == "Run TestFlight publisher tests"
+    )
+    publisher_test["run"] = publisher_test["run"].replace(reviewed, replacement)
+
+    failures = check_ci_contracts.testflight_publisher_contract_failures(
+        path, workflow
+    )
+
+    assert len(failures) == 1
+    assert "uv-managed Python 3.13" in failures[0]
+
+
+def test_testflight_publisher_contract_rejects_a_missing_step():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["python"]["steps"]
+    workflow["jobs"]["python"]["steps"] = [
+        step
+        for step in steps
+        if step.get("name") != "Run TestFlight publisher tests"
     ]
 
-    assert len(publisher_test_steps) == 1
-    run = publisher_test_steps[0].get("run", "")
-    assert "python3 -m unittest discover" in run
-    assert ".agents/skills/publish-creg-testflight/tests" in run
+    failures = check_ci_contracts.testflight_publisher_contract_failures(
+        path, workflow
+    )
+
+    assert len(failures) == 1
+    assert "requires exactly one" in failures[0]
 
 
 @pytest.mark.parametrize("condition", ["always()", "${{ always() }}"])

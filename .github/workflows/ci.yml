@@ -100,7 +100,7 @@ jobs:
 
       - name: Run TestFlight publisher tests
         run: >-
-          python3 -m unittest discover
+          uv run --no-project --managed-python --python 3.13 python -m unittest discover
           -s .agents/skills/publish-creg-testflight/tests
           -p 'test_*.py'
 

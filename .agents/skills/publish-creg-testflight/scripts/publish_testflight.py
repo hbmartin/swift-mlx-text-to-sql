@@ -288,14 +288,18 @@ def require_target_shell_script_contract(
             + ", ".join(missing_fragments)
         )
 
-    configured_inputs = phase.get("inputPaths")
-    if not isinstance(configured_inputs, list) or not all(
-        isinstance(path, str) for path in configured_inputs
-    ):
-        raise ReleaseError(
-            f"Xcode target {target_name!r} has malformed input paths in its "
-            f"{phase_name!r} build phase"
-        )
+    if "inputPaths" not in phase:
+        configured_inputs: list[str] = []
+    else:
+        input_paths_value = phase["inputPaths"]
+        if not isinstance(input_paths_value, list) or not all(
+            isinstance(path, str) for path in input_paths_value
+        ):
+            raise ReleaseError(
+                f"Xcode target {target_name!r} has malformed input paths in its "
+                f"{phase_name!r} build phase"
+            )
+        configured_inputs = input_paths_value
     missing_inputs = [path for path in input_paths if path not in configured_inputs]
     if missing_inputs:
         raise ReleaseError(
@@ -321,15 +325,14 @@ def require_target_build_setting(
             f"Xcode target {target_name!r} is missing configurations: "
             + ", ".join(missing)
         )
-    configurations_to_validate = (
-        configurations.keys()
+    selected_configurations = (
+        configurations
         if validate_all_configurations
-        else required_configurations
+        else {name: configurations[name] for name in required_configurations}
     )
     invalid = [
         f"{name}={settings.get(setting)!r}"
-        for name, settings in sorted(configurations.items())
-        if name in configurations_to_validate
+        for name, settings in sorted(selected_configurations.items())
         if settings.get(setting) != expected
     ]
     if invalid:
