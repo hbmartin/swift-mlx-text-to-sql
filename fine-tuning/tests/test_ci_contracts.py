@@ -96,7 +96,7 @@ jobs:
     assert "persists credentials" in result[0]
 
 
-def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
+def test_workflow_discovery_includes_yml_and_yaml(tmp_path):
     (tmp_path / "ci.yml").write_text("name: CI\njobs: {}\n")
     (tmp_path / "security.yaml").write_text(
         "jobs:\n"
@@ -105,32 +105,19 @@ def test_workflow_discovery_includes_yml_and_yaml(monkeypatch, tmp_path):
         "      - uses: unsafe/action@main\n"
     )
     (tmp_path / "ignored.txt").write_text("uses: unsafe/action@main\n")
-    monkeypatch.setattr(check_ci_contracts, "WORKFLOWS", tmp_path)
-    monkeypatch.setattr(check_ci_contracts, "ROOT", tmp_path)
-
     with pytest.raises(SystemExit, match=r"security\.yaml:.*action is not SHA-pinned"):
-        check_ci_contracts.main()
+        check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
 
 
-def test_accessibility_workflow_discovery_accepts_yaml_extension(
-    monkeypatch, tmp_path
-):
+def test_accessibility_workflow_discovery_accepts_yaml_extension(tmp_path):
     source_path, _ = accessibility_workflow()
     (tmp_path / "renamed.yaml").write_text(source_path.read_text())
-    monkeypatch.setattr(check_ci_contracts, "WORKFLOWS", tmp_path)
-    monkeypatch.setattr(check_ci_contracts, "ROOT", tmp_path)
-
-    check_ci_contracts.main()
+    check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
 
 
-def test_accessibility_workflow_discovery_rejects_missing_workflow(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setattr(check_ci_contracts, "WORKFLOWS", tmp_path)
-    monkeypatch.setattr(check_ci_contracts, "ROOT", tmp_path)
-
+def test_accessibility_workflow_discovery_rejects_missing_workflow(tmp_path):
     with pytest.raises(SystemExit, match="exactly one workflow named 'CI'"):
-        check_ci_contracts.main()
+        check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
 
 
 def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
@@ -154,7 +141,7 @@ def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
     failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
     assert len(failures) == 1
-    assert "UI test step is missing command fragments" in failures[0]
+    assert "UI test command argument errors" in failures[0]
     assert fragment in failures[0]
 
 
@@ -208,6 +195,129 @@ def test_accessibility_ui_contract_accepts_a_wrapped_flag_value_pair():
     assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
 
 
+def test_accessibility_ui_contract_accepts_a_wrapped_former_fragment_pair():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        '-derivedDataPath "${RUNNER_TEMP}/creg-derived-data"',
+        '-derivedDataPath \\\n            "${RUNNER_TEMP}/creg-derived-data"',
+    )
+
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+@pytest.mark.parametrize("decoy_kind", ["comment", "quoted argument"])
+def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    inert_fragments = " ".join(
+        (
+            '-clonedSourcePackagesDirPath "${RUNNER_TEMP}/creg-source-packages"',
+            '-derivedDataPath "${RUNNER_TEMP}/creg-derived-data"',
+            '-resultBundlePath "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult"',
+            "-skipPackagePluginValidation",
+            "-only-testing:CREGUITests/AccessibilityUITests/"
+            "testHighestRiskScreensAtAX5Landscape",
+            "-only-testing:CREGUITests/AccessibilityUITests/"
+            "testMalformedConfigurationRendersInvalidConfigurationScreen",
+            "-only-testing:CREGUITests/AccessibilityUITests/"
+            "testChartPreparationHasDistinctIdentityInProductionPresentation",
+            "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
+        )
+    )
+    reviewed_prefix = (
+        "xcodebuild test -project CREG.xcodeproj -scheme CREG "
+        "-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5'"
+    )
+    ui_test["run"] = (
+        f"{reviewed_prefix} # {inert_fragments}"
+        if decoy_kind == "comment"
+        else f"{reviewed_prefix} '{inert_fragments}'"
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "UI test command argument errors" in failures[0]
+    assert "missing -clonedSourcePackagesDirPath" in failures[0]
+    assert "missing CREG_ACCESSIBILITY_HARNESS_BUILD=YES" in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("reviewed", "duplicate", "flag"),
+    [
+        ("-project CREG.xcodeproj", "-project Decoy.xcodeproj", "-project"),
+        ("-scheme CREG", "-scheme Decoy", "-scheme"),
+        (
+            "-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5'",
+            "-destination 'platform=macOS'",
+            "-destination",
+        ),
+    ],
+)
+def test_accessibility_ui_contract_rejects_duplicate_pinned_arguments(
+    reviewed, duplicate, flag
+):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        reviewed, f"{reviewed} {duplicate}"
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert f"{flag} must appear exactly once (found 2)" in failures[0]
+
+
+def test_accessibility_ui_contract_requires_a_direct_xcodebuild_invocation():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        "xcodebuild test", "env xcodebuild test", 1
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "must run xcodebuild test directly" in failures[0]
+
+
+@pytest.mark.parametrize("operator", [";", "&", "|"])
+def test_single_shell_command_tokens_accepts_quoted_control_operator(operator):
+    assert check_ci_contracts.single_shell_command_tokens(
+        f"echo '{operator}'"
+    ) == ["echo", operator]
+
+
+@pytest.mark.parametrize("operator", [";", "&", "|"])
+def test_single_shell_command_tokens_rejects_unquoted_control_operator(operator):
+    with pytest.raises(ValueError, match="shell control operators"):
+        check_ci_contracts.single_shell_command_tokens(
+            f"echo reviewed {operator} echo decoy"
+        )
+
+
 def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():
     path, workflow = accessibility_workflow()
     steps = workflow["jobs"]["swift"]["steps"]
@@ -245,12 +355,13 @@ def test_accessibility_ui_contract_reports_only_the_shell_parse_failure():
         for step in steps
         if step.get("name") == "Test focused accessibility UI contracts"
     )
-    ui_test["run"] += "'"
+    ui_test["run"] = ui_test["run"].rstrip() + "'"
 
     failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
     assert len(failures) == 1
     assert "shell command is malformed" in failures[0]
+    assert "No closing quotation" in failures[0]
     assert "missing exact command arguments" not in failures[0]
 
 
@@ -263,18 +374,28 @@ def test_ci_runs_testflight_publisher_contract_tests_with_python_3_13():
 
 
 @pytest.mark.parametrize(
-    ("reviewed", "replacement"),
+    ("reviewed", "replacement", "diagnostic"),
     [
-        ("uv run --no-project --managed-python --python 3.13", "python3"),
-        ("--python 3.13", "--python 3.12"),
+        (
+            "uv run --no-project --managed-python --python 3.13",
+            "python3",
+            "token 1 must be 'uv', found 'python3'",
+        ),
+        (
+            "--python 3.13",
+            "--python 3.12",
+            "token 6 must be '3.13', found '3.12'",
+        ),
         (
             ".agents/skills/publish-creg-testflight/tests",
             ".agents/skills/decoy/tests",
+            "token 12 must be '.agents/skills/publish-creg-testflight/tests', "
+            "found '.agents/skills/decoy/tests'",
         ),
     ],
 )
 def test_testflight_publisher_contract_rejects_unreviewed_commands(
-    reviewed, replacement
+    reviewed, replacement, diagnostic
 ):
     path, workflow = accessibility_workflow()
     steps = workflow["jobs"]["python"]["steps"]
@@ -291,6 +412,7 @@ def test_testflight_publisher_contract_rejects_unreviewed_commands(
 
     assert len(failures) == 1
     assert "uv-managed Python 3.13" in failures[0]
+    assert diagnostic in failures[0]
 
 
 def test_testflight_publisher_contract_rejects_a_missing_step():
