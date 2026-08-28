@@ -47,13 +47,14 @@ struct ResultChartPreparationView: View {
       }
       ZStack {
         Color.clear
-          .accessibilityElement()
-          .accessibilityLabel("Chart preparation plot")
-          .accessibilityIdentifier("result-chart-preparing-plot")
+          .accessibilityHidden(true)
+          .allowsHitTesting(false)
         ProgressView("Preparing chart")
       }
       .frame(maxWidth: .infinity)
       .frame(height: presentation.plotHeight)
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("result-chart-preparing-plot")
       if presentation.chrome.contains(.selectionSummary), let selection {
         let summary = selection.value.presentation(
           columns: selection.columns,

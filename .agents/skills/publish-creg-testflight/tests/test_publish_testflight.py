@@ -222,6 +222,48 @@ class TargetBuildSettingTests(unittest.TestCase):
             ):
                 publisher.load_xcode_project(Path(directory))
 
+    def test_project_parse_failure_preserves_the_plutil_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            project_path = repo / publisher.PROJECT_FILE
+            project_path.parent.mkdir(parents=True)
+            project_path.write_text("malformed")
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr="Unexpected character at line 1",
+            )
+
+            with (
+                patch.object(publisher, "run_command", return_value=completed),
+                self.assertRaisesRegex(
+                    publisher.ReleaseError, "Unexpected character at line 1"
+                ),
+            ):
+                publisher.load_xcode_project(repo)
+
+    def test_machine_readable_stdout_is_not_sanitized_before_parsing(self) -> None:
+        raw_stdout = json.dumps(
+            {"objects": {"phase": {"shellScript": "export API_KEY=secret"}}}
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=raw_stdout,
+            stderr="token=secret",
+        )
+
+        with patch.object(publisher.subprocess, "run", return_value=completed):
+            result = publisher.run_command(
+                ["plutil"],
+                cwd=Path("/repo"),
+                preserve_stdout=True,
+            )
+
+        self.assertEqual(result.stdout, raw_stdout)
+        self.assertEqual(result.stderr, "token=[REDACTED]")
+
     def test_accepts_the_setting_on_every_target_configuration(self) -> None:
         project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
 
@@ -248,6 +290,21 @@ class TargetBuildSettingTests(unittest.TestCase):
             expected="beta",
             required_configurations=("Beta",),
         )
+
+    def test_all_configuration_validation_rejects_an_unlisted_bypass(self) -> None:
+        project = xcode_project(
+            {"Debug": "NO", "Beta": "NO", "Release": "NO", "Staging": "YES"}
+        )
+
+        with self.assertRaisesRegex(publisher.ReleaseError, r"Staging='YES'"):
+            publisher.require_target_build_setting(
+                project,
+                target_name=publisher.TARGET,
+                setting="CREG_ACCESSIBILITY_HARNESS_BUILD",
+                expected="NO",
+                required_configurations=("Debug", "Beta", "Release"),
+                validate_all_configurations=True,
+            )
 
     def test_decoy_occurrences_cannot_hide_a_wrong_target_configuration(self) -> None:
         project = xcode_project(
@@ -349,6 +406,33 @@ class TargetBuildSettingTests(unittest.TestCase):
                 command_fragments=("tools/materialize_bundled_model.sh",),
                 input_paths=("$(SRCROOT)/model-runtime-contract.json",),
             )
+
+    def test_malformed_build_phase_input_paths_raise_a_targeted_error(self) -> None:
+        for configured_inputs in (None, "input", [42]):
+            project = xcode_project(
+                {"Debug": "NO", "Beta": "NO", "Release": "NO"}
+            )
+            project["objects"]["target"]["buildPhases"] = ["target-phase"]
+            project["objects"]["target-phase"] = {
+                "isa": "PBXShellScriptBuildPhase",
+                "name": "Materialize Bundled SQL Model",
+                "shellScript": "tools/materialize_bundled_model.sh",
+                "inputPaths": configured_inputs,
+            }
+
+            with (
+                self.subTest(configured_inputs=configured_inputs),
+                self.assertRaisesRegex(
+                    publisher.ReleaseError, "malformed input paths"
+                ),
+            ):
+                publisher.require_target_shell_script_contract(
+                    project,
+                    target_name=publisher.TARGET,
+                    phase_name="Materialize Bundled SQL Model",
+                    command_fragments=("tools/materialize_bundled_model.sh",),
+                    input_paths=("$(SRCROOT)/model-runtime-contract.json",),
+                )
 
 
 class CollectPreflightTests(unittest.TestCase):
