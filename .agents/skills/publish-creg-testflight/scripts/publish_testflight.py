@@ -14,6 +14,7 @@ import subprocess
 import sys
 import uuid
 import xml.etree.ElementTree as ET
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -335,30 +336,39 @@ def require_target_shell_script_contract(
     if script != expected_script:
         drifted_fields.append("shellScript")
     expected_inputs = list(expected_input_paths)
+    input_path_details: list[str] = []
     if configured_inputs != expected_inputs:
-        remaining_configured = configured_inputs.copy()
-        missing_inputs = []
-        for path in expected_inputs:
-            try:
-                remaining_configured.remove(path)
-            except ValueError:
-                missing_inputs.append(path)
-        input_path_details = []
+        expected_counts = Counter(expected_inputs)
+        configured_counts = Counter(configured_inputs)
+        missing_inputs = list((expected_counts - configured_counts).elements())
+        unexpected_inputs = [
+            path
+            for path in dict.fromkeys(configured_inputs)
+            if expected_counts[path] == 0
+        ]
+        duplicated_inputs = [
+            f"{path!r} x{configured_counts[path]}"
+            for path in dict.fromkeys(configured_inputs)
+            if configured_counts[path] > max(1, expected_counts[path])
+        ]
         if missing_inputs:
-            input_path_details.append("missing: " + ", ".join(missing_inputs))
-        if remaining_configured:
-            input_path_details.append(
-                "unexpected: " + ", ".join(remaining_configured)
-            )
+            input_path_details.append(f"missing={missing_inputs!r}")
+        if unexpected_inputs:
+            input_path_details.append(f"unexpected={unexpected_inputs!r}")
+        if duplicated_inputs:
+            input_path_details.append(f"duplicates={duplicated_inputs!r}")
         if not input_path_details:
             input_path_details.append("order differs")
-        drifted_fields.append("inputPaths (" + "; ".join(input_path_details) + ")")
+        drifted_fields.append("inputPaths")
     if drifted_fields:
-        raise ReleaseError(
+        message = (
             f"Xcode target {target_name!r} {phase_name!r} build phase does not "
-            "match the reviewed build-phase contract: "
+            "match the reviewed build-phase contract; fields: "
             + ", ".join(drifted_fields)
         )
+        if input_path_details:
+            message += "; inputPaths details: " + "; ".join(input_path_details)
+        raise ReleaseError(message)
 
 
 def require_target_build_setting(

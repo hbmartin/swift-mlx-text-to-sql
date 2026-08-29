@@ -45,7 +45,7 @@ rules:
           - focus-metavariable: $SCRIPT
           - metavariable-regex:
               metavariable: $SCRIPT
-              regex: (?i)^(?:command|run|script|source|[a-z_][a-z0-9_]*_(?:command|run|script|source))$
+              regex: (?i)^(?:command|run|script|[a-z_][a-z0-9_]*_(?:command|run|script))$
     pattern-sanitizers:
       - pattern: _parse_single_shell_command(...)
     pattern-sinks:

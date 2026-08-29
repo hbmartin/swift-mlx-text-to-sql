@@ -63,6 +63,15 @@ jobs:
       - name: Select Xcode 26.3
         run: sudo xcode-select --switch /Applications/Xcode_26.3.app
 
+      - name: Cache Swift and Xcode build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            CREGKit/.build
+            ${{ runner.temp }}/creg-derived-data
+            ${{ runner.temp }}/creg-source-packages
+          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       - name: Test focused accessibility UI contracts
         timeout-minutes: 30
         shell: /usr/bin/env -i HOME=/Users/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
@@ -203,15 +212,11 @@ jobs:
           --include '.agents/skills/publish-creg-testflight/scripts/**/*.py'
 
       - name: Test Semgrep rules
-        run: |
-          uvx --from semgrep==1.170.0 semgrep scan --metrics off --json \
-              --config .semgrep.yml semgrep-tests/*.py \
-            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
-                semgrep-tests/*.py
-          uvx --from semgrep==1.170.0 semgrep scan --metrics off --json \
-              --config .semgrep.yml semgrep-tests/*.swift \
-            | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py \
-                semgrep-tests/*.swift
+        run: >-
+          uvx --from semgrep==1.170.0 semgrep scan --metrics off --json
+          --config .semgrep.yml semgrep-tests
+          | uv run --no-project python fine-tuning/tools/check_semgrep_fixtures.py
+          semgrep-tests
 
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD

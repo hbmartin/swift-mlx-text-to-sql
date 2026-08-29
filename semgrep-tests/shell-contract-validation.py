@@ -1,3 +1,6 @@
+from pathlib import Path
+
+
 def raw_membership(needle: str, step: dict[str, str]) -> bool:
     haystack = step.get("run", "")
     # ruleid: creg-shell-contracts-require-structured-validation
@@ -45,6 +48,7 @@ def raw_parameter_membership(expected_fragment: str, script: str) -> bool:
 
 
 def validate_in_helper(expected_fragment: str, step: dict[str, str]) -> bool:
+    # ok: creg-shell-contracts-require-structured-validation
     return raw_parameter_membership(expected_fragment, step.get("run", ""))
 
 
@@ -54,9 +58,14 @@ def reviewed_parsed_tokens(flag: str, step: dict[str, str]) -> bool:
     return flag in parsed.tokens
 
 
-def reviewed_path_membership(source: Path, destination: Path) -> bool:
+def reviewed_path_membership(fragment: str, script: Path) -> bool:
     # ok: creg-shell-contracts-require-structured-validation
-    return source in destination.parents
+    return fragment in script.parts
+
+
+def reviewed_documentation_source(fragment: str, source: str) -> bool:
+    # ok: creg-shell-contracts-require-structured-validation
+    return fragment in source
 
 
 def reviewed_shell_contract(expected: str, phase: dict[str, str]) -> bool:

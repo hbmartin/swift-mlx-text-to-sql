@@ -50,7 +50,19 @@ REVIEWED_RUN_CONTRACTS = (
         check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB,
         "Run TestFlight publisher tests",
     ),
+    (
+        check_ci_contracts.security_checker_contract_failures,
+        check_ci_contracts.SECURITY_CHECKER_JOB,
+        "Verify workflow action pins",
+    ),
 )
+REVIEWED_RUNNERS = {
+    check_ci_contracts.ACCESSIBILITY_UI_JOB: check_ci_contracts.ACCESSIBILITY_UI_RUNNER,
+    check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB: (
+        check_ci_contracts.TESTFLIGHT_PUBLISHER_RUNNER
+    ),
+    check_ci_contracts.SECURITY_CHECKER_JOB: check_ci_contracts.SECURITY_CHECKER_RUNNER,
+}
 
 
 def xcode_target_configurations(
@@ -145,6 +157,12 @@ def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
     assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
 
 
+def test_real_workflow_passes_every_reviewed_ci_contract():
+    path, workflow = accessibility_workflow()
+
+    assert check_ci_contracts.reviewed_ci_contract_failures(path, workflow) == []
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -178,6 +196,7 @@ def test_reviewed_run_contracts_reject_step_execution_overrides(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("container", "ubuntu:latest"),
         ("continue-on-error", True),
         ("defaults", {"run": {"shell": "/bin/echo {0}"}}),
         ("env", {"PATH": "/tmp/decoy"}),
@@ -209,13 +228,16 @@ def test_reviewed_run_contracts_reject_job_execution_overrides(
         ("env", {"PATH": "/tmp/decoy"}),
     ],
 )
+@pytest.mark.parametrize(
+    ("validator", "job_name", "step_name"), REVIEWED_RUN_CONTRACTS
+)
 def test_reviewed_run_contracts_reject_workflow_execution_overrides(
-    field, value
+    field, value, validator, job_name, step_name
 ):
     path, workflow = accessibility_workflow()
     workflow[field] = value
 
-    failures = check_ci_contracts.reviewed_workflow_context_failures(path, workflow)
+    failures = validator(path, workflow)
 
     assert len(failures) == 1
     assert field in failures[0]
@@ -275,11 +297,7 @@ def test_contract_checker_cannot_inherit_workflow_level_bypasses(field, value):
 )
 def test_reviewed_run_contracts_pin_the_runner(validator, job_name, step_name):
     path, workflow = accessibility_workflow()
-    expected_runner = (
-        check_ci_contracts.ACCESSIBILITY_UI_RUNNER
-        if job_name == check_ci_contracts.ACCESSIBILITY_UI_JOB
-        else check_ci_contracts.TESTFLIGHT_PUBLISHER_RUNNER
-    )
+    expected_runner = REVIEWED_RUNNERS[job_name]
     workflow["jobs"][job_name]["runs-on"] = "decoy-runner"
 
     failures = validator(path, workflow)
@@ -362,6 +380,64 @@ def test_testflight_bootstrap_pins_the_setup_uv_download(field, value):
 
     assert len(failures) == 1
     assert "unreviewed bootstrap" in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("version", "latest"), ("checksum", "0" * 64)],
+)
+def test_security_bootstrap_pins_the_setup_uv_download(field, value):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
+    setup_uv = next(
+        step for step in steps if step.get("id") == "setup-security-uv"
+    )
+    setup_uv["with"][field] = value
+
+    failures = check_ci_contracts.security_checker_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "unreviewed bootstrap" in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("uses", "actions/cache@" + "0" * 40),
+        ("path", "${{ runner.temp }}/decoy\n"),
+        ("key", "decoy-cache-key"),
+    ],
+)
+def test_accessibility_bootstrap_pins_the_cache_contract(field, value):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    cache = next(
+        step
+        for step in steps
+        if step.get("name") == "Cache Swift and Xcode build artifacts"
+    )
+    if field == "uses":
+        cache[field] = value
+    else:
+        cache["with"][field] = value
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "unreviewed bootstrap" in failures[0]
+
+
+def test_reviewed_bootstrap_factories_do_not_share_mutable_state():
+    first = check_ci_contracts.testflight_publisher_bootstrap_steps()
+    first[1]["env"]["PATH"] = "/tmp/decoy"
+    first[1]["with"]["version"] = "latest"
+
+    second = check_ci_contracts.testflight_publisher_bootstrap_steps()
+
+    assert second[1]["env"]["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert second[1]["with"]["version"] == "0.12.7"
+    with pytest.raises(TypeError):
+        check_ci_contracts.SETUP_UV_ENV["PATH"] = "/tmp/decoy"
 
 
 def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
@@ -654,6 +730,92 @@ def test_accessibility_ui_contract_requires_quoted_runner_paths(value):
     assert value in failures[0]
 
 
+def test_inert_comment_cannot_satisfy_the_runner_path_quote_contract():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    value = "${{ runner.temp }}/creg-derived-data"
+    ui_test["run"] = (
+        ui_test["run"].replace(f'"{value}"', f"'{value}'").rstrip()
+        + f' # "{value}"'
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "runner paths must be double-quoted" in failures[0]
+
+
+def test_accessibility_quote_contract_accepts_a_continued_quoted_value():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    value = "${{ runner.temp }}/creg-derived-data"
+    ui_test["run"] = ui_test["run"].replace(
+        f'"{value}"', '"${{ runner.temp }}\\\n/creg-derived-data"'
+    )
+
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+def test_accessibility_quote_contract_accepts_adjacent_double_quoted_fragments():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        '"${{ runner.temp }}/creg-derived-data"',
+        '"${{ runner.temp }}""/creg-derived-data"',
+    )
+
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+def test_accessibility_quote_contract_ignores_a_second_comment_mention():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    value = "${{ runner.temp }}/creg-derived-data"
+    ui_test["run"] = ui_test["run"].rstrip() + f' # "{value}"'
+
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
+
+
+def test_changed_quoted_runner_path_reports_the_argument_mismatch():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        '"${{ runner.temp }}/creg-derived-data"',
+        '"${{ runner.temp }}/other-derived-data"',
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "UI test command argument errors" in failures[0]
+    assert "runner paths must be double-quoted" not in failures[0]
+
+
 def test_accessibility_ui_contract_reports_a_missing_final_flag_value():
     path, workflow = accessibility_workflow()
     steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
@@ -882,6 +1044,58 @@ def test_testflight_publisher_contract_rejects_a_missing_step():
 
     assert len(failures) == 1
     assert "requires exactly one" in failures[0]
+
+
+def test_security_checker_contract_rejects_command_drift():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
+    checker = next(
+        step for step in steps if step.get("name") == "Verify workflow action pins"
+    )
+    checker["run"] = checker["run"].replace("--frozen", "--no-project")
+
+    failures = check_ci_contracts.security_checker_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "reviewed uv command" in failures[0]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "${{ runner.temp }}",
+        "${{ steps.setup-security-uv.outputs.uv-path }}",
+    ],
+)
+def test_security_checker_contract_requires_quoted_runner_values(value):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
+    checker = next(
+        step for step in steps if step.get("name") == "Verify workflow action pins"
+    )
+    checker["run"] = checker["run"].replace(f'"{value}"', f"'{value}'")
+
+    failures = check_ci_contracts.security_checker_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "runner-controlled values must be double-quoted" in failures[0]
+    assert value in failures[0]
+
+
+def test_security_contract_requires_recursive_semgrep_fixture_coverage():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
+    fixture_test = next(
+        step for step in steps if step.get("name") == "Test Semgrep rules"
+    )
+    fixture_test["run"] = fixture_test["run"].replace(
+        "semgrep-tests", "semgrep-tests/*.py"
+    )
+
+    failures = check_ci_contracts.security_checker_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "scanned and checked recursively" in failures[0]
 
 
 @pytest.mark.parametrize("condition", ["always()", "${{ always() }}"])

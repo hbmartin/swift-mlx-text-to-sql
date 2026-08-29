@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import shlex
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 import yaml
 
@@ -15,20 +16,35 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PINNED_ACTION = re.compile(r"^\s*uses:\s*[^\s]+@([0-9a-f]{40})(?:\s+#.*)?$")
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+ACCESSIBILITY_CACHE_ACTION = (
+    "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+)
 ACCESSIBILITY_UPLOAD_ACTION = (
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 )
 SETUP_UV_ACTION = "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78"
-SETUP_UV_ENV = {
-    "BASH_ENV": "",
-    "ENV": "",
-    "LD_PRELOAD": "",
-    "NODE_OPTIONS": "",
-    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-}
+SETUP_UV_ENV: Mapping[str, str] = MappingProxyType(
+    {
+        "BASH_ENV": "",
+        "ENV": "",
+        "LD_PRELOAD": "",
+        "NODE_OPTIONS": "",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    }
+)
 ACCESSIBILITY_WORKFLOW_NAME = "CI"
 ACCESSIBILITY_UI_JOB = "accessibility"
 ACCESSIBILITY_UI_RUNNER = "macos-26"
+ACCESSIBILITY_CACHE_PATHS = (
+    "CREGKit/.build\n"
+    "${{ runner.temp }}/creg-derived-data\n"
+    "${{ runner.temp }}/creg-source-packages\n"
+)
+ACCESSIBILITY_CACHE_KEY = (
+    "swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-"
+    "${{ hashFiles('CREGKit/Package.resolved', "
+    "'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}"
+)
 REVIEWED_RUN_WORKING_DIRECTORY = "${{ github.workspace }}"
 ACCESSIBILITY_UI_SHELL = (
     "/usr/bin/env -i HOME=/Users/runner "
@@ -96,37 +112,24 @@ TESTFLIGHT_PUBLISHER_TEST_COMMAND = (
     "-p",
     "test_*.py",
 )
-ACCESSIBILITY_UI_BOOTSTRAP_STEPS = (
-    {
-        "name": "Check out repository",
-        "uses": CHECKOUT_ACTION,
-        "with": {"persist-credentials": False},
-    },
-    {
-        "name": "Select Xcode 26.3",
-        "run": "sudo xcode-select --switch /Applications/Xcode_26.3.app",
-    },
+SECURITY_CHECKER_JOB = "security"
+SECURITY_CHECKER_RUNNER = "ubuntu-latest"
+SECURITY_CHECKER_UV_PATH = "${{ steps.setup-security-uv.outputs.uv-path }}"
+SECURITY_CHECKER_WORKING_DIRECTORY = "${{ github.workspace }}/fine-tuning"
+SECURITY_CHECKER_COMMAND = (
+    "TMPDIR=${{ runner.temp }}",
+    "UV_NO_CONFIG=1",
+    SECURITY_CHECKER_UV_PATH,
+    "run",
+    "--frozen",
+    "python",
+    "-m",
+    "tools.check_ci_contracts",
 )
-TESTFLIGHT_PUBLISHER_BOOTSTRAP_STEPS = (
-    {
-        "name": "Check out repository",
-        "uses": CHECKOUT_ACTION,
-        "with": {"persist-credentials": False},
-    },
-    {
-        "name": "Install uv",
-        "id": "setup-uv",
-        "uses": SETUP_UV_ACTION,
-        "env": SETUP_UV_ENV,
-        "with": {
-            "version": "0.12.7",
-            "checksum": (
-                "788f18abea7c5f55d6216e4f5613fd89"
-                "d4d59b631efeec117b2b07fe72f1da21"
-            ),
-            "enable-cache": False,
-        },
-    },
+SEMGREP_FIXTURE_TEST_RUN = (
+    "uvx --from semgrep==1.170.0 semgrep scan --metrics off --json "
+    "--config .semgrep.yml semgrep-tests | uv run --no-project python "
+    "fine-tuning/tools/check_semgrep_fixtures.py semgrep-tests"
 )
 LoadedWorkflow = tuple[Path, str, object]
 
@@ -136,6 +139,68 @@ class ParsedShellCommand:
     tokens: tuple[str, ...]
     single_quoted_values: tuple[str, ...]
     double_quoted_values: tuple[str, ...]
+    single_quoted_words: tuple[str, ...]
+    double_quoted_words: tuple[str, ...]
+
+
+def setup_uv_step(*, identifier: str) -> dict[str, object]:
+    """Return a fresh reviewed setup-uv step without mutable shared state."""
+    return {
+        "name": "Install uv",
+        "id": identifier,
+        "uses": SETUP_UV_ACTION,
+        "env": dict(SETUP_UV_ENV),
+        "with": {
+            "version": "0.12.7",
+            "checksum": (
+                "788f18abea7c5f55d6216e4f5613fd89"
+                "d4d59b631efeec117b2b07fe72f1da21"
+            ),
+            "enable-cache": False,
+        },
+    }
+
+
+def accessibility_ui_bootstrap_steps() -> tuple[dict[str, object], ...]:
+    return (
+        {
+            "name": "Check out repository",
+            "uses": CHECKOUT_ACTION,
+            "with": {"persist-credentials": False},
+        },
+        {
+            "name": "Select Xcode 26.3",
+            "run": "sudo xcode-select --switch /Applications/Xcode_26.3.app",
+        },
+        {
+            "name": "Cache Swift and Xcode build artifacts",
+            "uses": ACCESSIBILITY_CACHE_ACTION,
+            "with": {
+                "path": ACCESSIBILITY_CACHE_PATHS,
+                "key": ACCESSIBILITY_CACHE_KEY,
+            },
+        },
+    )
+
+
+def testflight_publisher_bootstrap_steps() -> tuple[dict[str, object], ...]:
+    return (
+        {
+            "name": "Check out repository",
+            "uses": CHECKOUT_ACTION,
+            "with": {"persist-credentials": False},
+        },
+        setup_uv_step(identifier="setup-uv"),
+    )
+
+
+def security_checker_bootstrap_steps() -> tuple[dict[str, object], ...]:
+    checkout = {
+        "name": "Check out repository",
+        "uses": CHECKOUT_ACTION,
+        "with": {"persist-credentials": False, "fetch-depth": 2},
+    }
+    return (checkout, setup_uv_step(identifier="setup-security-uv"))
 
 
 def load_workflows(directory: Path | None = None) -> list[LoadedWorkflow]:
@@ -164,6 +229,8 @@ def _parse_single_shell_command(source: str) -> ParsedShellCommand:
     normalized_parts: list[str] = []
     single_quoted_values: list[str] = []
     double_quoted_values: list[str] = []
+    word_quote_modes: list[frozenset[str]] = []
+    current_word_quote_modes: set[str] = set()
     quoted_parts: list[str] | None = None
     quote: str | None = None
     in_comment = False
@@ -245,6 +312,7 @@ def _parse_single_shell_command(source: str) -> ParsedShellCommand:
 
         if character == "\\" and following is not None:
             normalized_parts.extend((character, following))
+            current_word_quote_modes.add("unquoted")
             at_word_start = False
             index += 2
             continue
@@ -252,6 +320,9 @@ def _parse_single_shell_command(source: str) -> ParsedShellCommand:
             normalized_parts.append(character)
             quote = character
             quoted_parts = []
+            current_word_quote_modes.add(
+                "single" if character == "'" else "double"
+            )
             at_word_start = False
             index += 1
             continue
@@ -267,16 +338,36 @@ def _parse_single_shell_command(source: str) -> ParsedShellCommand:
             raise ValueError("must not contain shell redirections")
         if character in ";&|()":
             raise ValueError("must not contain shell control operators")
+        if character in " \t":
+            if not at_word_start:
+                word_quote_modes.append(frozenset(current_word_quote_modes))
+                current_word_quote_modes.clear()
+        else:
+            current_word_quote_modes.add("unquoted")
         normalized_parts.append(character)
         at_word_start = character in " \t\r\n"
         index += 1
 
+    if not at_word_start:
+        word_quote_modes.append(frozenset(current_word_quote_modes))
     normalized = "".join(normalized_parts).strip(" \t\r\n")
     tokens = tuple(shlex.split(normalized, comments=False, posix=True))
+    if len(tokens) != len(word_quote_modes):
+        raise ValueError("must use supported shell word quoting")
     return ParsedShellCommand(
         tokens=tokens,
         single_quoted_values=tuple(single_quoted_values),
         double_quoted_values=tuple(double_quoted_values),
+        single_quoted_words=tuple(
+            token
+            for token, modes in zip(tokens, word_quote_modes, strict=True)
+            if modes == {"single"}
+        ),
+        double_quoted_words=tuple(
+            token
+            for token, modes in zip(tokens, word_quote_modes, strict=True)
+            if modes == {"double"}
+        ),
     )
 
 
@@ -316,6 +407,7 @@ def reviewed_run_context_failures(
     job_fields = [
         field
         for field in (
+            "container",
             "continue-on-error",
             "defaults",
             "env",
@@ -398,7 +490,7 @@ def named_step(
 def reviewed_bootstrap_failures(
     steps: Sequence[object],
     reviewed_step: dict[object, object],
-    expected_steps: Sequence[dict[str, object]],
+    expected_steps: Sequence[Mapping[str, object]],
     *,
     step_name: str,
     prefix: str,
@@ -451,6 +543,19 @@ def exact_command_mismatch(
     return None
 
 
+def has_unquoted_value_after_flag(
+    command_tokens: Sequence[str], *, flag: str, value: str
+) -> bool:
+    """Recognize an expected value split into unquoted shell tokens."""
+    unquoted_tokens = tuple(shlex.split(value, comments=False, posix=True))
+    width = len(unquoted_tokens)
+    return any(
+        tuple(command_tokens[index + 1 : index + 1 + width]) == unquoted_tokens
+        for index, token in enumerate(command_tokens)
+        if token == flag
+    )
+
+
 def accessibility_workflows(
     workflows: Sequence[LoadedWorkflow] | None = None,
 ) -> list[tuple[Path, object]]:
@@ -498,7 +603,7 @@ def checkout_credential_failures(
     return failures
 
 
-def accessibility_ui_contract_failures(
+def _accessibility_ui_job_contract_failures(
     path: Path, workflow: object, *, root: Path | None = None
 ) -> list[str]:
     prefix = f"{display_path(path, root)}: accessibility UI contract"
@@ -519,7 +624,7 @@ def accessibility_ui_contract_failures(
             reviewed_bootstrap_failures(
                 steps,
                 ui_test,
-                ACCESSIBILITY_UI_BOOTSTRAP_STEPS,
+                accessibility_ui_bootstrap_steps(),
                 step_name="Test focused accessibility UI contracts",
                 prefix=prefix,
             )
@@ -552,26 +657,30 @@ def accessibility_ui_contract_failures(
                         f"{prefix} UI test step must run xcodebuild test directly"
                     )
                 else:
-                    unquoted_values = [
+                    mismatch = exact_command_mismatch(
+                        command.tokens, ACCESSIBILITY_UI_TEST_COMMAND
+                    )
+                    misquoted_values = [
                         value
                         for flag, value in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
-                        if flag in command.tokens
-                        and run.count(f'"{value}"') != 1
+                        if command.double_quoted_words.count(value) != 1
+                        and (
+                            mismatch is None
+                            or has_unquoted_value_after_flag(
+                                command.tokens, flag=flag, value=value
+                            )
+                        )
                     ]
-                    if unquoted_values:
+                    if misquoted_values:
                         failures.append(
                             f"{prefix} UI test runner paths must be "
-                            "double-quoted: " + ", ".join(unquoted_values)
+                            "double-quoted: " + ", ".join(misquoted_values)
                         )
-                    else:
-                        mismatch = exact_command_mismatch(
-                            command.tokens, ACCESSIBILITY_UI_TEST_COMMAND
+                    elif mismatch is not None:
+                        failures.append(
+                            f"{prefix} UI test command argument errors: "
+                            f"{mismatch}"
                         )
-                        if mismatch is not None:
-                            failures.append(
-                                f"{prefix} UI test command argument errors: "
-                                f"{mismatch}"
-                            )
 
     upload, step_failures = named_step(
         steps,
@@ -597,7 +706,16 @@ def accessibility_ui_contract_failures(
     return failures
 
 
-def testflight_publisher_contract_failures(
+def accessibility_ui_contract_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    return [
+        *reviewed_workflow_context_failures(path, workflow, root=root),
+        *_accessibility_ui_job_contract_failures(path, workflow, root=root),
+    ]
+
+
+def _testflight_publisher_job_contract_failures(
     path: Path, workflow: object, *, root: Path | None = None
 ) -> list[str]:
     prefix = f"{display_path(path, root)}: TestFlight publisher test contract"
@@ -619,7 +737,7 @@ def testflight_publisher_contract_failures(
         reviewed_bootstrap_failures(
             steps,
             publisher_test,
-            TESTFLIGHT_PUBLISHER_BOOTSTRAP_STEPS,
+            testflight_publisher_bootstrap_steps(),
             step_name="Run TestFlight publisher tests",
             prefix=prefix,
         )
@@ -655,11 +773,122 @@ def testflight_publisher_contract_failures(
             f"{mismatch}"
         )
         return failures
-    if command.single_quoted_values.count("test_*.py") != 1:
+    if command.single_quoted_words.count("test_*.py") != 1:
         failures.append(f"{prefix} test discovery pattern must be single-quoted")
-    if command.double_quoted_values.count(TESTFLIGHT_UV_PATH) != 1:
+    if command.double_quoted_words.count(TESTFLIGHT_UV_PATH) != 1:
         failures.append(f"{prefix} setup-uv output path must be double-quoted")
     return failures
+
+
+def testflight_publisher_contract_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    return [
+        *reviewed_workflow_context_failures(path, workflow, root=root),
+        *_testflight_publisher_job_contract_failures(path, workflow, root=root),
+    ]
+
+
+def _security_checker_job_contract_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    prefix = f"{display_path(path, root)}: security checker contract"
+    job, steps, failures = workflow_job_steps(
+        workflow, job_name=SECURITY_CHECKER_JOB, prefix=prefix
+    )
+    if job is None or steps is None:
+        return failures
+    checker, step_failures = named_step(
+        steps,
+        name="Verify workflow action pins",
+        prefix=prefix,
+    )
+    failures.extend(step_failures)
+    if checker is None:
+        return failures
+
+    failures.extend(
+        reviewed_bootstrap_failures(
+            steps,
+            checker,
+            security_checker_bootstrap_steps(),
+            step_name="Verify workflow action pins",
+            prefix=prefix,
+        )
+    )
+    failures.extend(
+        reviewed_run_context_failures(
+            job,
+            checker,
+            job_name=SECURITY_CHECKER_JOB,
+            step_name="Verify workflow action pins",
+            prefix=prefix,
+            expected_runner=SECURITY_CHECKER_RUNNER,
+            expected_shell=UBUNTU_REVIEWED_RUN_SHELL,
+            expected_working_directory=SECURITY_CHECKER_WORKING_DIRECTORY,
+        )
+    )
+    run = checker.get("run")
+    if not isinstance(run, str):
+        failures.append(f"{prefix} step must contain a shell command")
+        return failures
+    try:
+        command = _parse_single_shell_command(run)
+    except ValueError as error:
+        failures.append(f"{prefix} shell command is malformed: {error}")
+        return failures
+    mismatch = exact_command_mismatch(command.tokens, SECURITY_CHECKER_COMMAND)
+    if mismatch is not None:
+        failures.append(
+            f"{prefix} must use the reviewed uv command: {mismatch}"
+        )
+        return failures
+    unquoted_values = []
+    if command.double_quoted_values.count("${{ runner.temp }}") != 1:
+        unquoted_values.append("${{ runner.temp }}")
+    if command.double_quoted_words.count(SECURITY_CHECKER_UV_PATH) != 1:
+        unquoted_values.append(SECURITY_CHECKER_UV_PATH)
+    if unquoted_values:
+        failures.append(
+            f"{prefix} runner-controlled values must be double-quoted: "
+            + ", ".join(unquoted_values)
+        )
+    fixture_test, step_failures = named_step(
+        steps,
+        name="Test Semgrep rules",
+        prefix=prefix,
+    )
+    failures.extend(step_failures)
+    expected_fixture_test = {
+        "name": "Test Semgrep rules",
+        "run": SEMGREP_FIXTURE_TEST_RUN,
+    }
+    if fixture_test is not None and fixture_test != expected_fixture_test:
+        failures.append(
+            f"{prefix} Semgrep fixtures must be scanned and checked recursively"
+        )
+    return failures
+
+
+def security_checker_contract_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    return [
+        *reviewed_workflow_context_failures(path, workflow, root=root),
+        *_security_checker_job_contract_failures(path, workflow, root=root),
+    ]
+
+
+def reviewed_ci_contract_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    """Compose all reviewed workflow contracts without duplicate context errors."""
+    return [
+        *reviewed_workflow_context_failures(path, workflow, root=root),
+        *_accessibility_ui_job_contract_failures(path, workflow, root=root),
+        *_testflight_publisher_job_contract_failures(path, workflow, root=root),
+        *_security_checker_job_contract_failures(path, workflow, root=root),
+    ]
 
 
 def main(
@@ -694,17 +923,7 @@ def main(
     else:
         path, workflow = matches[0]
         failures.extend(
-            reviewed_workflow_context_failures(
-                path, workflow, root=effective_root
-            )
-        )
-        failures.extend(
-            accessibility_ui_contract_failures(
-                path, workflow, root=effective_root
-            )
-        )
-        failures.extend(
-            testflight_publisher_contract_failures(
+            reviewed_ci_contract_failures(
                 path, workflow, root=effective_root
             )
         )
