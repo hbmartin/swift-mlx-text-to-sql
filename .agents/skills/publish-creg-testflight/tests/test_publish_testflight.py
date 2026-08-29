@@ -505,7 +505,7 @@ class TargetBuildSettingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             publisher.ReleaseError,
-            r"inputPaths \(missing: .*model-manifest\.json",
+            r"inputPaths details: missing=.*model-manifest\.json",
         ):
             publisher.require_target_shell_script_contract(
                 project,
@@ -552,7 +552,7 @@ class TargetBuildSettingTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(
-            publisher.ReleaseError, r"inputPaths \(unexpected: .*decoy"
+            publisher.ReleaseError, r"inputPaths details: unexpected=.*decoy"
         ):
             publisher.require_target_shell_script_contract(
                 project,
@@ -561,6 +561,52 @@ class TargetBuildSettingTests(unittest.TestCase):
                 expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
                 expected_input_paths=publisher.MATERIALIZE_MODEL_INPUT_PATHS,
             )
+
+    def test_duplicate_input_path_is_diagnosed_separately(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+        project["objects"]["target"]["buildPhases"] = ["target-phase"]
+        expected = list(publisher.MATERIALIZE_MODEL_INPUT_PATHS)
+        project["objects"]["target-phase"] = shell_script_phase(
+            publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+            input_paths=[expected[0], expected[0], *expected[2:]],
+        )
+
+        with self.assertRaises(publisher.ReleaseError) as caught:
+            publisher.require_target_shell_script_contract(
+                project,
+                target_name=publisher.TARGET,
+                phase_name="Materialize Bundled SQL Model",
+                expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+                expected_input_paths=publisher.MATERIALIZE_MODEL_INPUT_PATHS,
+            )
+
+        diagnostic = str(caught.exception)
+        self.assertIn(f"missing={[expected[1]]!r}", diagnostic)
+        self.assertIn(f"{expected[0]!r} x2", diagnostic)
+        self.assertIn("duplicates=", diagnostic)
+        self.assertNotIn("unexpected=", diagnostic)
+
+    def test_input_path_details_are_separate_from_the_field_list(self) -> None:
+        project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
+        project["objects"]["target"]["buildPhases"] = ["target-phase"]
+        phase = shell_script_phase(
+            publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+            input_paths=list(publisher.MATERIALIZE_MODEL_INPUT_PATHS[1:]),
+        )
+        phase["shellPath"] = "/bin/bash"
+        project["objects"]["target-phase"] = phase
+
+        with self.assertRaises(publisher.ReleaseError) as caught:
+            publisher.require_target_shell_script_contract(
+                project,
+                target_name=publisher.TARGET,
+                phase_name="Materialize Bundled SQL Model",
+                expected_script=publisher.MATERIALIZE_MODEL_SHELL_SCRIPT,
+                expected_input_paths=publisher.MATERIALIZE_MODEL_INPUT_PATHS,
+            )
+
+        diagnostic = str(caught.exception)
+        self.assertIn("fields: shellPath, inputPaths; inputPaths details:", diagnostic)
 
     def test_reordered_build_phase_input_paths_name_the_order_drift(self) -> None:
         project = xcode_project({"Debug": "NO", "Beta": "NO", "Release": "NO"})
@@ -571,7 +617,7 @@ class TargetBuildSettingTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(
-            publisher.ReleaseError, r"inputPaths \(order differs\)"
+            publisher.ReleaseError, r"inputPaths details: order differs"
         ):
             publisher.require_target_shell_script_contract(
                 project,

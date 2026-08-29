@@ -30,6 +30,8 @@ def fixture_paths(arguments: Sequence[str]) -> tuple[Path, ...]:
     fixtures: set[Path] = set()
     for argument in arguments:
         path = Path(argument)
+        if not path.exists():
+            raise ValueError(f"fixture path does not exist: {path}")
         if path.is_dir():
             fixtures.update(
                 candidate
@@ -37,12 +39,19 @@ def fixture_paths(arguments: Sequence[str]) -> tuple[Path, ...]:
                 if candidate.is_file() and candidate.suffix in FIXTURE_SUFFIXES
             )
         else:
+            if not path.is_file():
+                raise ValueError(f"fixture path is not a file or directory: {path}")
+            if path.suffix not in FIXTURE_SUFFIXES:
+                raise ValueError(f"unsupported fixture file type: {path}")
             fixtures.add(path)
     return tuple(sorted(fixtures))
 
 
 def main() -> None:
-    fixtures = fixture_paths(sys.argv[1:])
+    try:
+        fixtures = fixture_paths(sys.argv[1:])
+    except ValueError as error:
+        raise SystemExit(f"Semgrep fixture argument error: {error}") from error
     if not fixtures:
         raise SystemExit("usage: check_semgrep_fixtures.py FIXTURE_OR_DIRECTORY [...]")
     required: set[Finding] = set()
