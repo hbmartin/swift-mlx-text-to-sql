@@ -14,6 +14,7 @@ public struct DiagnosticEvent: Sendable, Equatable {
     case model
     case inference
     case pipeline
+    case presentation
     case database
     case submission
     case history

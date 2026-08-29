@@ -105,12 +105,15 @@ enum CREGChartAdapter {
   /// App-reviewed copy shared by preparation diagnostics and selection,
   /// prepared chart chrome, and recommendation rationale. Returning nil keeps
   /// AutoTableCharts' default text for codes CREG has not explicitly adapted.
-  static let textResolver = AutoChartTextResolver { message in
+  static let textResolver = AutoChartTextResolver { message -> String? in
+    guard message.category == .diagnostic, message.arguments.isEmpty else {
+      return nil
+    }
     switch message.code {
     case .boxPlotMissingCategoryGroup:
-      "Some category values couldn’t be displayed and are grouped as Missing."
+      return "Some category values couldn’t be displayed and are grouped as “Missing value”."
     default:
-      nil
+      return nil
     }
   }
 
@@ -156,21 +159,13 @@ enum CREGChartAdapter {
         semanticType: .identifier,
         role: .identifier)
     }
-    let sourceValues = values()
-    // SQLite permits mixed storage classes in one result column. Never force
-    // a BLOB-bearing column into a category or measure semantic: charting would
-    // otherwise collapse opaque bytes into the same identity as SQL NULL.
-    if sourceValues.contains(where: {
-      if case .blob = $0 { true } else { false }
-    }) {
-      return AutoChartColumnHints(
-        measureSemantics: measureSemantics(for: aggregation))
-    }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
-    let temporalValues = style == .date ? sourceValues : []
-    if style == .date,
-      temporalValues.isEmpty || hasValidTemporalValues(temporalValues)
-    {
+    if style == .date {
+      let temporalValues = values()
+      guard temporalValues.isEmpty || hasValidTemporalValues(temporalValues) else {
+        return AutoChartColumnHints(
+          measureSemantics: measureSemantics(for: aggregation))
+      }
       let role: AutoChartAnalyticRole =
         containsWord(
           normalized,
@@ -189,11 +184,19 @@ enum CREGChartAdapter {
         role: role)
     }
     if normalized.hasPrefix("is_") || normalized.hasPrefix("has_") {
+      // SQLite permits mixed storage classes in one result column. Do not force
+      // opaque bytes into a categorical identity that charting would collapse
+      // into the same missing group as SQL NULL.
+      guard !containsBlob(values()) else {
+        return AutoChartColumnHints(
+          measureSemantics: measureSemantics(for: aggregation))
+      }
       return AutoChartColumnHints(
         semanticType: .boolean,
         role: .dimension)
     }
     if style == .percent {
+      let sourceValues = values()
       return quantitativeHints(
         values: sourceValues,
         unit: percentUnit(for: sourceValues),
@@ -201,28 +204,32 @@ enum CREGChartAdapter {
     }
     if style == .currency || style == .currencyPerSquareFoot {
       return quantitativeHints(
-        values: sourceValues,
+        values: values(),
         unit: .currency(code: "USD"),
         aggregation: aggregation)
     }
     if style == .squareFeet {
       return quantitativeHints(
-        values: sourceValues,
+        values: values(),
         unit: .area(unit: "sq ft"),
         aggregation: aggregation)
     }
     if style == .count, containsWord(normalized, ["month", "months"]) {
       return quantitativeHints(
-        values: sourceValues,
+        values: values(),
         unit: .duration(unit: "months"),
         aggregation: aggregation)
     }
     if style == .ratio {
       return quantitativeHints(
-        values: sourceValues,
+        values: values(),
         aggregation: aggregation)
     }
     if style == .plainDigits, containsWord(normalized, ["year"]) {
+      guard !containsBlob(values()) else {
+        return AutoChartColumnHints(
+          measureSemantics: measureSemantics(for: aggregation))
+      }
       return AutoChartColumnHints(
         semanticType: .ordinal,
         role: .dimension)
@@ -502,6 +509,12 @@ enum CREGChartAdapter {
     }
     return validCount == nonNull.count
       || (validCount >= 2 && Double(validCount) / Double(nonNull.count) >= 0.8)
+  }
+
+  private static func containsBlob(_ values: [SQLValue]) -> Bool {
+    values.contains { value in
+      if case .blob = value { true } else { false }
+    }
   }
 
   private static func quantitativeHints(

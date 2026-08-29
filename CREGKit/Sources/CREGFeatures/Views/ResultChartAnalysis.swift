@@ -541,7 +541,7 @@ final class ResultChartLoader {
 
   private func applyResolvedRecommendation(
     _ recommendation: AutoChartRecommendation,
-    analysis: AutoChartAnalysis<Int>,
+    analysis loadedAnalysis: AutoChartAnalysis<Int>,
     defaultReason: AutoChartRecommendationResolution.DefaultReason?
   ) -> Resolution {
     if resolvedRecommendationID != recommendation.id {
@@ -551,12 +551,12 @@ final class ResultChartLoader {
     resolvedRecommendationID = recommendation.id
     if preparedChart?.recommendation.id != recommendation.id {
       preparedChart =
-        analysis.primaryChart?.recommendation.id == recommendation.id
-        ? analysis.primaryChart : nil
+        loadedAnalysis.primaryChart?.recommendation.id == recommendation.id
+        ? loadedAnalysis.primaryChart : nil
     }
     return .resolved(
       recommendation,
-      analysis: analysis,
+      analysis: loadedAnalysis,
       defaultReason: defaultReason)
   }
 }

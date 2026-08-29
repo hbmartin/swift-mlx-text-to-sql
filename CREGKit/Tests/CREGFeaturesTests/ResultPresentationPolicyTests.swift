@@ -156,8 +156,9 @@ import Testing
       preference: nil,
       migratePreference: { _, updated in
         migrationCalled = true
-        return .retained(updated)
-      })
+        return .migrated(updated)
+      },
+      diagnostics: .noop)
 
     let analysis = try #require(loader.analysis)
     switch analysis.resolve(nil) {
@@ -194,7 +195,7 @@ import Testing
       migratePreference: { receivedPrevious, updated in
         #expect(receivedPrevious == previous)
         proposedMigration = updated
-        return .retained(updated)
+        return .migrated(updated)
       },
       diagnostics: diagnostics.client)
 
@@ -207,7 +208,7 @@ import Testing
         == [
           DiagnosticEvent(
             level: .info,
-            category: .pipeline,
+            category: .presentation,
             code: "chart_recommendation_policy_changed",
             summary: "A stored chart pin used an obsolete recommendation policy.",
             context: [
@@ -362,16 +363,111 @@ import Testing
     #expect(proposedMigration?.specificationID == primary.id)
     #expect(retainedPreference == authoritative)
     #expect(specificationID == primary.id)
+    #expect(diagnostics.events.isEmpty)
+  }
+
+  @Test func rejectedMigrationReconcilesAnAuthoritativeObsoletePin() async throws {
+    let client = CREGChartAnalysisClient.testValue
+    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let diagnostics = DiagnosticEventRecorder()
+    let request = chartTestRequest(
+      resultFingerprint: "viewer-authoritative-obsolete-policy",
+      dataIdentity: "viewer-authoritative-obsolete-policy-message")
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("missing-specification"))
+    let previousPolicy = AutoTableCharts.recommendationPolicyVersion - 1
+    let authoritative = ResultPresentationPreference(
+      mode: .table,
+      specificationID: chartTestRecommendationID(
+        "authoritative-obsolete-specification",
+        policyVersion: previousPolicy))
+    var attempts: [(
+      previous: ResultPresentationPreference,
+      updated: ResultPresentationPreference
+    )] = []
+
+    let update = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: previous,
+      migratePreference: { receivedPrevious, updated in
+        attempts.append((receivedPrevious, updated))
+        return attempts.count == 1
+          ? .retained(authoritative)
+          : .migrated(updated)
+      },
+      diagnostics: diagnostics.client)
+
+    guard
+      case .resolved(
+        let specificationID,
+        preference: .retained(let retainedPreference))? = update
+    else {
+      Issue.record("The authoritative obsolete pin should be reconciled.")
+      return
+    }
+    let primary = try #require(loader.analysis?.primaryChart?.recommendation)
+    #expect(specificationID == primary.id)
+    #expect(attempts.count == 2)
+    #expect(attempts[0].previous == previous)
+    #expect(attempts[1].previous == authoritative)
+    #expect(attempts[1].updated.mode == .table)
+    #expect(attempts[1].updated.specificationID == nil)
+    #expect(retainedPreference == attempts[1].updated)
     #expect(
       diagnostics.events
         == [
           DiagnosticEvent(
             level: .info,
-            category: .pipeline,
-            code: "chart_specification_unavailable",
-            summary:
-              "A stored chart pin was unavailable and the default chart was selected.")
+            category: .presentation,
+            code: "chart_recommendation_policy_changed",
+            summary: "A stored chart pin used an obsolete recommendation policy.",
+            context: [
+              "previous_policy": String(previousPolicy),
+              "current_policy": String(AutoTableCharts.recommendationPolicyVersion),
+            ])
         ])
+  }
+
+  @Test func repeatedAnalysisRecordsOnlyTheCommittedMigration() async throws {
+    let client = CREGChartAnalysisClient.testValue
+    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let diagnostics = DiagnosticEventRecorder()
+    let request = chartTestRequest(
+      resultFingerprint: "viewer-repeated-obsolete-policy",
+      dataIdentity: "viewer-repeated-obsolete-policy-message")
+    let previousPolicy = AutoTableCharts.recommendationPolicyVersion - 1
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID(
+        "old-policy-specification",
+        policyVersion: previousPolicy))
+    var storedPreference = previous
+    let migration: ResultPresentationMigrationHandler = { receivedPrevious, updated in
+      guard storedPreference == receivedPrevious else {
+        return .retained(storedPreference)
+      }
+      storedPreference = updated
+      return .migrated(updated)
+    }
+
+    _ = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: previous,
+      migratePreference: migration,
+      diagnostics: diagnostics.client)
+    _ = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: previous,
+      migratePreference: migration,
+      diagnostics: diagnostics.client)
+
+    #expect(diagnostics.events.count == 1)
+    #expect(diagnostics.events.first?.category == .presentation)
+    #expect(diagnostics.events.first?.code == "chart_recommendation_policy_changed")
   }
 }
 
@@ -395,7 +491,7 @@ import Testing
       messageID: message.id
     )(previous, updated)
 
-    #expect(outcome == .retained(updated))
+    #expect(outcome == .migrated(updated))
     #expect(store.messages[id: message.id]?.resultPresentation == updated)
   }
 
