@@ -43,7 +43,9 @@ ACCESSIBILITY_CACHE_PATHS = (
 ACCESSIBILITY_CACHE_KEY = (
     "swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-"
     "${{ hashFiles('CREGKit/Package.resolved', "
-    "'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}"
+    "'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', "
+    "'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', "
+    "'CREG.xcodeproj/project.pbxproj', 'CREG/**', 'CREGUITests/**') }}"
 )
 REVIEWED_RUN_WORKING_DIRECTORY = "${{ github.workspace }}"
 ACCESSIBILITY_UI_SHELL = (
@@ -413,6 +415,8 @@ def reviewed_run_context_failures(
             "env",
             "if",
             "needs",
+            "permissions",
+            "services",
             "strategy",
             "timeout-minutes",
         )
@@ -861,11 +865,14 @@ def _security_checker_job_contract_failures(
     failures.extend(step_failures)
     expected_fixture_test = {
         "name": "Test Semgrep rules",
+        "shell": "bash",
         "run": SEMGREP_FIXTURE_TEST_RUN,
     }
     if fixture_test is not None and fixture_test != expected_fixture_test:
         failures.append(
-            f"{prefix} Semgrep fixtures must be scanned and checked recursively"
+            f"{prefix} Semgrep fixture test mismatch: "
+            f"expected_fixture_test={expected_fixture_test!r}; "
+            f"actual fixture_test={fixture_test!r}"
         )
     return failures
 
