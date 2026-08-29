@@ -112,13 +112,17 @@ func analyzeResultPresentation(
   _ chart: ResultChartLoader,
   request: ResultChartLoader.Request,
   preference: ResultPresentationPreference?,
-  migratePreference: ResultPresentationMigrationHandler
+  migratePreference: ResultPresentationMigrationHandler,
+  diagnostics: DiagnosticsClient = .noop
 ) async -> ResultPresentationAnalysisUpdate? {
   switch await chart.analyze(
     request,
     preferredSpecificationID: preference?.specificationID
   ) {
-  case .resolved(let recommendation, let analysis)?:
+  case .resolved(let recommendation, let analysis, let defaultReason)?:
+    recordChartResolutionDefault(
+      defaultReason,
+      diagnostics: diagnostics)
     guard
       let previous = preference,
       let migrated = ResultViewerLogic.migratedPreference(
@@ -156,5 +160,30 @@ func analyzeResultPresentation(
     return .unavailable
   case nil:
     return nil
+  }
+}
+
+private func recordChartResolutionDefault(
+  _ reason: AutoChartRecommendationResolution.DefaultReason?,
+  diagnostics: DiagnosticsClient
+) {
+  guard let reason else { return }
+  switch reason {
+  case .noPersistedPreference:
+    return
+  case .policyVersionChanged(let previous, let current):
+    diagnostics.info(
+      category: .pipeline,
+      code: "chart_recommendation_policy_changed",
+      summary: "A stored chart pin used an obsolete recommendation policy.",
+      context: [
+        "previous_policy": String(previous),
+        "current_policy": String(current),
+      ])
+  case .specificationUnavailable:
+    diagnostics.info(
+      category: .pipeline,
+      code: "chart_specification_unavailable",
+      summary: "A stored chart pin was unavailable and the default chart was selected.")
   }
 }

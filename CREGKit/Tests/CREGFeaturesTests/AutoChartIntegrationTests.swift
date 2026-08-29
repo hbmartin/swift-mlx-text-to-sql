@@ -139,6 +139,39 @@ import Testing
         context: .axisTick) == "25%")
   }
 
+  @Test func chartDiagnosticsUseCREGReviewedCopy() {
+    let upstream = AutoChartMessage(
+      category: .diagnostic,
+      code: .boxPlotMissingCategoryGroup,
+      defaultText:
+        "Unrenderable box-plot categories are combined into one missing-value group.")
+    let unrelated = AutoChartMessage(
+      category: .diagnostic,
+      code: .validationFailed,
+      defaultText: "Upstream fallback")
+
+    #expect(
+      CREGChartAdapter.textResolver(upstream)
+        == "Some category values couldn’t be displayed and are grouped as Missing.")
+    #expect(CREGChartAdapter.textResolver(unrelated) == "Upstream fallback")
+  }
+
+  @Test func blobBearingColumnsAreNotForcedIntoCategorySemantics() throws {
+    let input = try CREGChartAdapter.analysisInput(
+      result: QueryResult(
+        columns: ["is_segment", "value"],
+        rows: [
+          [.integer(1), .real(10)],
+          [.blob(Data([0x01])), .real(20)],
+          [.null, .real(30)],
+        ]),
+      sql: "SELECT is_segment, value FROM observations",
+      question: "Show the distribution")
+
+    #expect(input.dataset.chartColumns[0].hints.semanticType == nil)
+    #expect(input.dataset.chartColumns[0].hints.role == nil)
+  }
+
   @Test func chartLayoutKeepsExplicitHeightsAcrossDependencyDefaultChange() {
     #expect(AutoChartPresentation().plotHeight == 280)
     #expect(AutoChartPresentation.explorer().plotHeight == 280)
@@ -169,7 +202,7 @@ import Testing
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
     // A bump invalidates persisted chart-type pins. Keep this exact assertion
     // separate from the version-agnostic migration behavior test.
-    #expect(AutoTableCharts.recommendationPolicyVersion == 10)
+    #expect(AutoTableCharts.recommendationPolicyVersion == 11)
   }
 }
 
@@ -205,6 +238,72 @@ import Testing
       #expect(alternative.recommendation.id == recommendations[1].id)
       #expect(alternative.recommendation.id != primary.recommendation.id)
     }
+  }
+
+  @Test func oneRenderableCategoryPlusNullKeepsHistogramPrimary() async throws {
+    let analysis = try await CREGChartAnalysisClient.testValue.analyze(
+      result: QueryResult(
+        columns: ["segment", "value"],
+        rows: [
+          [.text("Core"), .real(10)],
+          [.text("Core"), .real(12)],
+          [.null, .real(20)],
+          [.null, .real(22)],
+        ]),
+      sql: "SELECT segment, value FROM observations",
+      question: "Show the distribution of value")
+    let recommendations = chartTestRecommendations(from: analysis)
+
+    #expect(analysis.primaryChart?.recommendation.specification.family == .histogram)
+    #expect(
+      !recommendations.contains {
+        $0.specification.family == .boxPlot
+          && $0.specification.encoding.x != nil
+      })
+  }
+
+  @Test func twoRenderableCategoriesStillOfferGroupedBoxPlot() async throws {
+    let analysis = try await CREGChartAnalysisClient.testValue.analyze(
+      result: QueryResult(
+        columns: ["segment", "value"],
+        rows: [
+          [.text("Core"), .real(10)],
+          [.text("Core"), .real(12)],
+          [.text("Value-Add"), .real(20)],
+          [.text("Value-Add"), .real(22)],
+          [.null, .real(30)],
+        ]),
+      sql: "SELECT segment, value FROM observations",
+      question: "Show the distribution of value")
+    let primary = try #require(analysis.primaryChart)
+
+    #expect(primary.recommendation.specification.family == .boxPlot)
+    #expect(primary.recommendation.specification.encoding.x != nil)
+    #expect(
+      primary.diagnostics.contains {
+        $0.messageValue.code == .boxPlotMissingCategoryGroup
+      })
+  }
+
+  @Test func blobBearingHintedCategoryCannotGateAGroupedBoxPlot() async throws {
+    let analysis = try await CREGChartAnalysisClient.testValue.analyze(
+      result: QueryResult(
+        columns: ["is_segment", "value"],
+        rows: [
+          [.integer(1), .real(10)],
+          [.integer(1), .real(12)],
+          [.blob(Data([0x01])), .real(20)],
+          [.null, .real(22)],
+        ]),
+      sql: "SELECT is_segment, value FROM observations",
+      question: "Show the distribution of value")
+    let categoryID = CREGChartAdapter.columnID(index: 0, name: "is_segment")
+
+    #expect(
+      !chartTestRecommendations(from: analysis).contains {
+        $0.specification.family == .boxPlot
+          && $0.specification.encoding.x == categoryID
+      })
   }
 
   @Test func keyedAnalysisReusesScopedStateAndTrimKeepsHeldValuesUsable() async throws {

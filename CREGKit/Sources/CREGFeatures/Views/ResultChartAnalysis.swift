@@ -353,7 +353,10 @@ final class ResultChartLoader {
   }
 
   enum Resolution {
-    case resolved(AutoChartRecommendation, analysis: AutoChartAnalysis<Int>)
+    case resolved(
+      AutoChartRecommendation,
+      analysis: AutoChartAnalysis<Int>,
+      defaultReason: AutoChartRecommendationResolution.DefaultReason?)
     case unavailable
   }
 
@@ -518,24 +521,43 @@ final class ResultChartLoader {
     preferred: AutoChartRecommendationID?
   ) -> Resolution {
     switch loaded.resolve(preferred) {
-    case .exact(let recommendation), .defaulted(let recommendation, _):
-      if resolvedRecommendationID != recommendation.id {
-        preparationGeneration += 1
-        failedPreparationRecommendationID = nil
-      }
-      resolvedRecommendationID = recommendation.id
-      if preparedChart?.recommendation.id != recommendation.id {
-        preparedChart =
-          loaded.primaryChart?.recommendation.id == recommendation.id
-          ? loaded.primaryChart : nil
-      }
-      return .resolved(recommendation, analysis: loaded)
+    case .exact(let recommendation):
+      return applyResolvedRecommendation(
+        recommendation,
+        analysis: loaded,
+        defaultReason: nil)
+    case .defaulted(let recommendation, let reason):
+      return applyResolvedRecommendation(
+        recommendation,
+        analysis: loaded,
+        defaultReason: reason)
     case .unavailable:
       resolvedRecommendationID = nil
       preparedChart = nil
       failedPreparationRecommendationID = nil
       return .unavailable
     }
+  }
+
+  private func applyResolvedRecommendation(
+    _ recommendation: AutoChartRecommendation,
+    analysis: AutoChartAnalysis<Int>,
+    defaultReason: AutoChartRecommendationResolution.DefaultReason?
+  ) -> Resolution {
+    if resolvedRecommendationID != recommendation.id {
+      preparationGeneration += 1
+      failedPreparationRecommendationID = nil
+    }
+    resolvedRecommendationID = recommendation.id
+    if preparedChart?.recommendation.id != recommendation.id {
+      preparedChart =
+        analysis.primaryChart?.recommendation.id == recommendation.id
+        ? analysis.primaryChart : nil
+    }
+    return .resolved(
+      recommendation,
+      analysis: analysis,
+      defaultReason: defaultReason)
   }
 }
 

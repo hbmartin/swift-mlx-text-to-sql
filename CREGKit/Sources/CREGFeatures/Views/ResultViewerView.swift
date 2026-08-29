@@ -19,6 +19,7 @@ struct ResultViewerView: View {
   let migratePreference: ResultPresentationMigrationHandler
   let chartRequest: ResultChartLoader.Request
   @Dependency(\.chartAnalysis) private var chartAnalysis
+  @Dependency(\.diagnostics) private var diagnostics
   @Binding var textSize: ResultTableTextSize
   @State var chart: ResultChartLoader
   @State var sort: ResultViewerLogic.SortState?
@@ -399,7 +400,8 @@ struct ResultViewerView: View {
           chart,
           request: chartRequest,
           preference: presentationPreference,
-          migratePreference: migratePreference
+          migratePreference: migratePreference,
+          diagnostics: diagnostics
         )
       else { return }
 

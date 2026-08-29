@@ -19,6 +19,7 @@ struct ResultPreviewView: View {
   static let previewRowLimit = 4
   let chartRequest: ResultChartLoader.Request
   @Dependency(\.chartAnalysis) private var chartAnalysis
+  @Dependency(\.diagnostics) private var diagnostics
   @State private var chart: ResultChartLoader
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
@@ -162,7 +163,8 @@ struct ResultPreviewView: View {
           chart,
           request: chartRequest,
           preference: preference,
-          migratePreference: migratePreference)
+          migratePreference: migratePreference,
+          diagnostics: diagnostics)
       }
       .task(
         id: chart.preparationTaskKey(
