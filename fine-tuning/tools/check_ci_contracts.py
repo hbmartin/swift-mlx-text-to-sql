@@ -14,15 +14,45 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PINNED_ACTION = re.compile(r"^\s*uses:\s*[^\s]+@([0-9a-f]{40})(?:\s+#.*)?$")
-ACCESSIBILITY_CACHE_ACTION = (
-    "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
-)
+CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 ACCESSIBILITY_UPLOAD_ACTION = (
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 )
+SETUP_UV_ACTION = "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78"
+SETUP_UV_ENV = {
+    "BASH_ENV": "",
+    "ENV": "",
+    "LD_PRELOAD": "",
+    "NODE_OPTIONS": "",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+}
 ACCESSIBILITY_WORKFLOW_NAME = "CI"
+ACCESSIBILITY_UI_JOB = "accessibility"
+ACCESSIBILITY_UI_RUNNER = "macos-26"
+REVIEWED_RUN_WORKING_DIRECTORY = "${{ github.workspace }}"
+ACCESSIBILITY_UI_SHELL = (
+    "/usr/bin/env -i HOME=/Users/runner "
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin "
+    "/bin/bash --noprofile --norc -e -o pipefail {0}"
+)
+UBUNTU_REVIEWED_RUN_SHELL = (
+    "/usr/bin/env -i HOME=/home/runner "
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin "
+    "/bin/bash --noprofile --norc -e -o pipefail {0}"
+)
+ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS = (
+    (
+        "-clonedSourcePackagesDirPath",
+        "${{ runner.temp }}/creg-source-packages",
+    ),
+    ("-derivedDataPath", "${{ runner.temp }}/creg-derived-data"),
+    (
+        "-resultBundlePath",
+        "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult",
+    ),
+)
 ACCESSIBILITY_UI_TEST_COMMAND = (
-    "xcodebuild",
+    "/usr/bin/xcodebuild",
     "test",
     "-project",
     "CREG.xcodeproj",
@@ -30,12 +60,11 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "CREG",
     "-destination",
     "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
-    "-clonedSourcePackagesDirPath",
-    "${RUNNER_TEMP}/creg-source-packages",
-    "-derivedDataPath",
-    "${RUNNER_TEMP}/creg-derived-data",
-    "-resultBundlePath",
-    "${RUNNER_TEMP}/creg-accessibility-ui-tests.xcresult",
+    *(
+        token
+        for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
+        for token in argument
+    ),
     "-skipPackagePluginValidation",
     "-skipMacroValidation",
     "-only-testing:CREGUITests/AccessibilityUITests/"
@@ -46,13 +75,13 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testChartPreparationHasDistinctIdentityInProductionPresentation",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
-ACCESSIBILITY_UI_DOUBLE_QUOTED_FLAGS = (
-    "-clonedSourcePackagesDirPath",
-    "-derivedDataPath",
-    "-resultBundlePath",
-)
+TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"
+TESTFLIGHT_PUBLISHER_RUNNER = "ubuntu-latest"
+TESTFLIGHT_UV_PATH = "${{ steps.setup-uv.outputs.uv-path }}"
 TESTFLIGHT_PUBLISHER_TEST_COMMAND = (
-    "uv",
+    "TMPDIR=${{ runner.temp }}",
+    "UV_NO_CONFIG=1",
+    TESTFLIGHT_UV_PATH,
     "run",
     "--no-project",
     "--managed-python",
@@ -66,6 +95,38 @@ TESTFLIGHT_PUBLISHER_TEST_COMMAND = (
     ".agents/skills/publish-creg-testflight/tests",
     "-p",
     "test_*.py",
+)
+ACCESSIBILITY_UI_BOOTSTRAP_STEPS = (
+    {
+        "name": "Check out repository",
+        "uses": CHECKOUT_ACTION,
+        "with": {"persist-credentials": False},
+    },
+    {
+        "name": "Select Xcode 26.3",
+        "run": "sudo xcode-select --switch /Applications/Xcode_26.3.app",
+    },
+)
+TESTFLIGHT_PUBLISHER_BOOTSTRAP_STEPS = (
+    {
+        "name": "Check out repository",
+        "uses": CHECKOUT_ACTION,
+        "with": {"persist-credentials": False},
+    },
+    {
+        "name": "Install uv",
+        "id": "setup-uv",
+        "uses": SETUP_UV_ACTION,
+        "env": SETUP_UV_ENV,
+        "with": {
+            "version": "0.12.7",
+            "checksum": (
+                "788f18abea7c5f55d6216e4f5613fd89"
+                "d4d59b631efeec117b2b07fe72f1da21"
+            ),
+            "enable-cache": False,
+        },
+    },
 )
 LoadedWorkflow = tuple[Path, str, object]
 
@@ -240,25 +301,18 @@ def workflow_job_steps(
 
 
 def reviewed_run_context_failures(
-    workflow: object,
     job: dict[object, object],
     step: dict[object, object],
     *,
     job_name: str,
     step_name: str,
     prefix: str,
+    expected_runner: str,
+    expected_shell: str,
+    expected_working_directory: str,
 ) -> list[str]:
-    """Reject metadata that can skip or reinterpret a reviewed run step."""
-    assert isinstance(workflow, dict)
+    """Reject job and step metadata that can skip or reinterpret a reviewed run."""
     failures: list[str] = []
-    workflow_fields = [
-        field for field in ("defaults", "env") if field in workflow
-    ]
-    if workflow_fields:
-        failures.append(
-            f"{prefix} workflow must not override reviewed run context: "
-            + ", ".join(workflow_fields)
-        )
     job_fields = [
         field
         for field in (
@@ -268,6 +322,7 @@ def reviewed_run_context_failures(
             "if",
             "needs",
             "strategy",
+            "timeout-minutes",
         )
         if field in job
     ]
@@ -276,16 +331,16 @@ def reviewed_run_context_failures(
             f"{prefix} {job_name} job must not override reviewed run context: "
             + ", ".join(job_fields)
         )
-    if job.get("runs-on") != "macos-26":
-        failures.append(f"{prefix} {job_name} job must run on macos-26")
+    if job.get("runs-on") != expected_runner:
+        failures.append(
+            f"{prefix} {job_name} job must run on {expected_runner}"
+        )
     step_fields = [
         field
         for field in (
             "continue-on-error",
             "env",
             "if",
-            "shell",
-            "working-directory",
         )
         if field in step
     ]
@@ -294,7 +349,34 @@ def reviewed_run_context_failures(
             f"{prefix} {step_name!r} step must not override reviewed run context: "
             + ", ".join(step_fields)
         )
+    if step.get("shell") != expected_shell:
+        failures.append(
+            f"{prefix} {step_name!r} step shell must be {expected_shell!r}"
+        )
+    if step.get("working-directory") != expected_working_directory:
+        failures.append(
+            f"{prefix} {step_name!r} step working-directory must be "
+            f"{expected_working_directory!r}"
+        )
     return failures
+
+
+def reviewed_workflow_context_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    """Reject fail-closed workflow defaults shared by reviewed run contracts."""
+    prefix = f"{display_path(path, root)}: reviewed run contracts"
+    if not isinstance(workflow, dict):
+        return [f"{prefix} requires a workflow mapping"]
+    workflow_fields = [
+        field for field in ("defaults", "env") if field in workflow
+    ]
+    if not workflow_fields:
+        return []
+    return [
+        f"{prefix} workflow must not override reviewed run context: "
+        + ", ".join(workflow_fields)
+    ]
 
 
 def named_step(
@@ -311,6 +393,41 @@ def named_step(
     if len(matches) != 1:
         return None, [f"{prefix} requires exactly one {name!r} step"]
     return matches[0], []
+
+
+def reviewed_bootstrap_failures(
+    steps: Sequence[object],
+    reviewed_step: dict[object, object],
+    expected_steps: Sequence[dict[str, object]],
+    *,
+    step_name: str,
+    prefix: str,
+) -> list[str]:
+    """Require a fresh-runner bootstrap before a reviewed executable step."""
+    reviewed_index = next(
+        index for index, candidate in enumerate(steps) if candidate is reviewed_step
+    )
+    actual_steps = steps[:reviewed_index]
+    for index, (actual, expected) in enumerate(
+        zip(actual_steps, expected_steps, strict=False), start=1
+    ):
+        if actual != expected:
+            return [
+                f"{prefix} {step_name!r} step has an unreviewed bootstrap "
+                f"step {index}: expected {expected!r}, found {actual!r}"
+            ]
+    if len(actual_steps) < len(expected_steps):
+        return [
+            f"{prefix} {step_name!r} step is missing reviewed bootstrap "
+            f"step {len(actual_steps) + 1}: {expected_steps[len(actual_steps)]!r}"
+        ]
+    if len(actual_steps) > len(expected_steps):
+        return [
+            f"{prefix} {step_name!r} step has an unexpected predecessor "
+            f"at position {len(expected_steps) + 1}: "
+            f"{actual_steps[len(expected_steps)]!r}"
+        ]
+    return []
 
 
 def exact_command_mismatch(
@@ -386,40 +503,10 @@ def accessibility_ui_contract_failures(
 ) -> list[str]:
     prefix = f"{display_path(path, root)}: accessibility UI contract"
     job, steps, failures = workflow_job_steps(
-        workflow, job_name="swift", prefix=prefix
+        workflow, job_name=ACCESSIBILITY_UI_JOB, prefix=prefix
     )
     if job is None or steps is None:
         return failures
-
-    cache, step_failures = named_step(
-        steps,
-        name="Cache Swift and Xcode build artifacts",
-        prefix=prefix,
-    )
-    failures.extend(step_failures)
-    if cache is not None:
-        if cache.get("uses") != ACCESSIBILITY_CACHE_ACTION:
-            failures.append(f"{prefix} cache action is not pinned to the reviewed SHA")
-        inputs = cache.get("with")
-        cached_paths = (
-            {
-                line.strip()
-                for line in inputs.get("path", "").splitlines()
-                if line.strip()
-            }
-            if isinstance(inputs, dict) and isinstance(inputs.get("path"), str)
-            else set()
-        )
-        required_paths = {
-            "CREGKit/.build",
-            "${{ runner.temp }}/creg-derived-data",
-            "${{ runner.temp }}/creg-source-packages",
-        }
-        missing_paths = sorted(required_paths - cached_paths)
-        if missing_paths:
-            failures.append(
-                f"{prefix} cache step is missing paths: " + ", ".join(missing_paths)
-            )
 
     ui_test, step_failures = named_step(
         steps,
@@ -429,13 +516,24 @@ def accessibility_ui_contract_failures(
     failures.extend(step_failures)
     if ui_test is not None:
         failures.extend(
-            reviewed_run_context_failures(
-                workflow,
-                job,
+            reviewed_bootstrap_failures(
+                steps,
                 ui_test,
-                job_name="swift",
+                ACCESSIBILITY_UI_BOOTSTRAP_STEPS,
                 step_name="Test focused accessibility UI contracts",
                 prefix=prefix,
+            )
+        )
+        failures.extend(
+            reviewed_run_context_failures(
+                job,
+                ui_test,
+                job_name=ACCESSIBILITY_UI_JOB,
+                step_name="Test focused accessibility UI contracts",
+                prefix=prefix,
+                expected_runner=ACCESSIBILITY_UI_RUNNER,
+                expected_shell=ACCESSIBILITY_UI_SHELL,
+                expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY,
             )
         )
         if ui_test.get("timeout-minutes") != 30:
@@ -449,34 +547,30 @@ def accessibility_ui_contract_failures(
             except ValueError as error:
                 failures.append(f"{prefix} UI test shell command is malformed: {error}")
             else:
-                if command.tokens[:2] != ("xcodebuild", "test"):
+                if command.tokens[:2] != ("/usr/bin/xcodebuild", "test"):
                     failures.append(
                         f"{prefix} UI test step must run xcodebuild test directly"
                     )
                 else:
-                    mismatch = exact_command_mismatch(
-                        command.tokens, ACCESSIBILITY_UI_TEST_COMMAND
-                    )
-                    if mismatch is not None:
+                    unquoted_values = [
+                        value
+                        for flag, value in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
+                        if flag in command.tokens
+                        and run.count(f'"{value}"') != 1
+                    ]
+                    if unquoted_values:
                         failures.append(
-                            f"{prefix} UI test command argument errors: {mismatch}"
+                            f"{prefix} UI test runner paths must be "
+                            "double-quoted: " + ", ".join(unquoted_values)
                         )
                     else:
-                        quoted_values = (
-                            ACCESSIBILITY_UI_TEST_COMMAND[
-                                ACCESSIBILITY_UI_TEST_COMMAND.index(flag) + 1
-                            ]
-                            for flag in ACCESSIBILITY_UI_DOUBLE_QUOTED_FLAGS
+                        mismatch = exact_command_mismatch(
+                            command.tokens, ACCESSIBILITY_UI_TEST_COMMAND
                         )
-                        unquoted_values = [
-                            value
-                            for value in quoted_values
-                            if command.double_quoted_values.count(value) != 1
-                        ]
-                        if unquoted_values:
+                        if mismatch is not None:
                             failures.append(
-                                f"{prefix} UI test runner paths must be "
-                                "double-quoted: " + ", ".join(unquoted_values)
+                                f"{prefix} UI test command argument errors: "
+                                f"{mismatch}"
                             )
 
     upload, step_failures = named_step(
@@ -508,7 +602,7 @@ def testflight_publisher_contract_failures(
 ) -> list[str]:
     prefix = f"{display_path(path, root)}: TestFlight publisher test contract"
     job, steps, failures = workflow_job_steps(
-        workflow, job_name="python", prefix=prefix
+        workflow, job_name=TESTFLIGHT_PUBLISHER_JOB, prefix=prefix
     )
     if job is None or steps is None:
         return failures
@@ -522,13 +616,24 @@ def testflight_publisher_contract_failures(
         return failures
 
     failures.extend(
-        reviewed_run_context_failures(
-            workflow,
-            job,
+        reviewed_bootstrap_failures(
+            steps,
             publisher_test,
-            job_name="python",
+            TESTFLIGHT_PUBLISHER_BOOTSTRAP_STEPS,
             step_name="Run TestFlight publisher tests",
             prefix=prefix,
+        )
+    )
+    failures.extend(
+        reviewed_run_context_failures(
+            job,
+            publisher_test,
+            job_name=TESTFLIGHT_PUBLISHER_JOB,
+            step_name="Run TestFlight publisher tests",
+            prefix=prefix,
+            expected_runner=TESTFLIGHT_PUBLISHER_RUNNER,
+            expected_shell=UBUNTU_REVIEWED_RUN_SHELL,
+            expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY,
         )
     )
 
@@ -552,6 +657,8 @@ def testflight_publisher_contract_failures(
         return failures
     if command.single_quoted_values.count("test_*.py") != 1:
         failures.append(f"{prefix} test discovery pattern must be single-quoted")
+    if command.double_quoted_values.count(TESTFLIGHT_UV_PATH) != 1:
+        failures.append(f"{prefix} setup-uv output path must be double-quoted")
     return failures
 
 
@@ -586,6 +693,11 @@ def main(
         )
     else:
         path, workflow = matches[0]
+        failures.extend(
+            reviewed_workflow_context_failures(
+                path, workflow, root=effective_root
+            )
+        )
         failures.extend(
             accessibility_ui_contract_failures(
                 path, workflow, root=effective_root

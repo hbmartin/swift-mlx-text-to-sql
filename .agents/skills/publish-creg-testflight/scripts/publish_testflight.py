@@ -311,7 +311,7 @@ def require_target_shell_script_contract(
     target_name: str,
     phase_name: str,
     expected_script: str,
-    expected_input_paths: Sequence[str] = (),
+    expected_input_paths: Sequence[str],
 ) -> None:
     phase = target_build_phase(project, target_name, phase_name)
     script = phase.get("shellScript")
@@ -334,8 +334,25 @@ def require_target_shell_script_contract(
     ]
     if script != expected_script:
         drifted_fields.append("shellScript")
-    if configured_inputs != list(expected_input_paths):
-        drifted_fields.append("inputPaths")
+    expected_inputs = list(expected_input_paths)
+    if configured_inputs != expected_inputs:
+        remaining_configured = configured_inputs.copy()
+        missing_inputs = []
+        for path in expected_inputs:
+            try:
+                remaining_configured.remove(path)
+            except ValueError:
+                missing_inputs.append(path)
+        input_path_details = []
+        if missing_inputs:
+            input_path_details.append("missing: " + ", ".join(missing_inputs))
+        if remaining_configured:
+            input_path_details.append(
+                "unexpected: " + ", ".join(remaining_configured)
+            )
+        if not input_path_details:
+            input_path_details.append("order differs")
+        drifted_fields.append("inputPaths (" + "; ".join(input_path_details) + ")")
     if drifted_fields:
         raise ReleaseError(
             f"Xcode target {target_name!r} {phase_name!r} build phase does not "
@@ -690,6 +707,7 @@ def verify_source_contract(repo: Path) -> None:
         target_name=TARGET,
         phase_name="Stamp Distribution Build Number",
         expected_script=STAMP_DISTRIBUTION_BUILD_NUMBER_SHELL_SCRIPT,
+        expected_input_paths=(),
     )
     require_target_shell_script_contract(
         project,

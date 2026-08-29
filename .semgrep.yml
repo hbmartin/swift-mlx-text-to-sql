@@ -38,14 +38,26 @@ rules:
           - pattern: $MAPPING.get("shellScript", $DEFAULT)
           - pattern: $MAPPING["run"]
           - pattern: $MAPPING["shellScript"]
+      - patterns:
+          - pattern: |
+              def $FUNCTION(..., $SCRIPT: str, ...):
+                ...
+          - focus-metavariable: $SCRIPT
+          - metavariable-regex:
+              metavariable: $SCRIPT
+              regex: (?i)^(?:command|run|script|source|[a-z_][a-z0-9_]*_(?:command|run|script|source))$
+    pattern-sanitizers:
+      - pattern: _parse_single_shell_command(...)
     pattern-sinks:
-      - pattern-either:
-          - pattern: $FRAGMENT in $SCRIPT
-          - pattern: $FRAGMENT not in $SCRIPT
-          - pattern: $SCRIPT.find($FRAGMENT)
-          - pattern: $SCRIPT.index($FRAGMENT)
-          - pattern: $SCRIPT.startswith($FRAGMENT)
-          - pattern: $SCRIPT.endswith($FRAGMENT)
+      - patterns:
+          - pattern-either:
+              - pattern: $FRAGMENT in $SCRIPT
+              - pattern: $FRAGMENT not in $SCRIPT
+              - pattern: $SCRIPT.find($FRAGMENT)
+              - pattern: $SCRIPT.index($FRAGMENT)
+              - pattern: $SCRIPT.startswith($FRAGMENT)
+              - pattern: $SCRIPT.endswith($FRAGMENT)
+          - focus-metavariable: $SCRIPT
   - id: creg-identity-requires-structured-components
     message: Use a structured Hashable identity instead of delimiter-joining uncontrolled strings.
     severity: ERROR
