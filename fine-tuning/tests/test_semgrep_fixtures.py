@@ -33,7 +33,8 @@ def test_directory_argument_discovers_new_annotated_fixture(
 ):
     fixture = tmp_path / "nested" / f"new-fixture.{suffix}"
     fixture.parent.mkdir()
-    fixture.write_text(f"# ruleid: {RULE}\nunsafe()\n")
+    comment = "//" if suffix == "swift" else "#"
+    fixture.write_text(f"{comment} ruleid: {RULE}\nunsafe()\n")
 
     run_checker(monkeypatch, [tmp_path], {"results": [finding(fixture, 2)]})
 

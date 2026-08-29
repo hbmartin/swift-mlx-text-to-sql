@@ -202,6 +202,8 @@ def test_reviewed_run_contracts_reject_step_execution_overrides(
         ("env", {"PATH": "/tmp/decoy"}),
         ("if", False),
         ("needs", "skipped-job"),
+        ("permissions", {"contents": "none"}),
+        ("services", {"decoy": {"image": "example.invalid/decoy"}}),
         ("strategy", {"matrix": {"include": []}}),
         ("timeout-minutes", 1),
     ],
@@ -1095,7 +1097,10 @@ def test_security_contract_requires_recursive_semgrep_fixture_coverage():
     failures = check_ci_contracts.security_checker_contract_failures(path, workflow)
 
     assert len(failures) == 1
-    assert "scanned and checked recursively" in failures[0]
+    assert "expected_fixture_test=" in failures[0]
+    assert check_ci_contracts.SEMGREP_FIXTURE_TEST_RUN in failures[0]
+    assert "actual fixture_test=" in failures[0]
+    assert "semgrep-tests/*.py" in failures[0]
 
 
 @pytest.mark.parametrize("condition", ["always()", "${{ always() }}"])

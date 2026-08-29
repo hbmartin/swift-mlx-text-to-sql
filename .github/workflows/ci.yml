@@ -70,7 +70,7 @@ jobs:
             CREGKit/.build
             ${{ runner.temp }}/creg-derived-data
             ${{ runner.temp }}/creg-source-packages
-          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', 'CREG.xcodeproj/project.pbxproj', 'CREG/**', 'CREGUITests/**') }}
 
       - name: Test focused accessibility UI contracts
         timeout-minutes: 30
@@ -212,6 +212,7 @@ jobs:
           --include '.agents/skills/publish-creg-testflight/scripts/**/*.py'
 
       - name: Test Semgrep rules
+        shell: bash
         run: >-
           uvx --from semgrep==1.170.0 semgrep scan --metrics off --json
           --config .semgrep.yml semgrep-tests
