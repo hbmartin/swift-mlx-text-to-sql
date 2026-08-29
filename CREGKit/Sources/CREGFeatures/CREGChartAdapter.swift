@@ -102,9 +102,17 @@ enum CREGChartAdapter {
       return PortfolioValueFormatting.displayString(for: sqlValue, column: column.name)
     })
 
-  /// AutoTableCharts-authored copy shared by preparation diagnostics and
-  /// selection, prepared chart chrome, and recommendation rationale.
-  static let textResolver = AutoChartTextResolver.default
+  /// App-reviewed copy shared by preparation diagnostics and selection,
+  /// prepared chart chrome, and recommendation rationale. Returning nil keeps
+  /// AutoTableCharts' default text for codes CREG has not explicitly adapted.
+  static let textResolver = AutoChartTextResolver { message in
+    switch message.code {
+    case .boxPlotMissingCategoryGroup:
+      "Some category values couldn’t be displayed and are grouped as Missing."
+    default:
+      nil
+    }
+  }
 
   static func dataKeyRevision(
     resultFingerprint: String,
@@ -148,8 +156,18 @@ enum CREGChartAdapter {
         semanticType: .identifier,
         role: .identifier)
     }
+    let sourceValues = values()
+    // SQLite permits mixed storage classes in one result column. Never force
+    // a BLOB-bearing column into a category or measure semantic: charting would
+    // otherwise collapse opaque bytes into the same identity as SQL NULL.
+    if sourceValues.contains(where: {
+      if case .blob = $0 { true } else { false }
+    }) {
+      return AutoChartColumnHints(
+        measureSemantics: measureSemantics(for: aggregation))
+    }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
-    let temporalValues = style == .date ? values() : []
+    let temporalValues = style == .date ? sourceValues : []
     if style == .date,
       temporalValues.isEmpty || hasValidTemporalValues(temporalValues)
     {
@@ -176,33 +194,32 @@ enum CREGChartAdapter {
         role: .dimension)
     }
     if style == .percent {
-      let values = values()
       return quantitativeHints(
-        values: values,
-        unit: percentUnit(for: values),
+        values: sourceValues,
+        unit: percentUnit(for: sourceValues),
         aggregation: aggregation)
     }
     if style == .currency || style == .currencyPerSquareFoot {
       return quantitativeHints(
-        values: values(),
+        values: sourceValues,
         unit: .currency(code: "USD"),
         aggregation: aggregation)
     }
     if style == .squareFeet {
       return quantitativeHints(
-        values: values(),
+        values: sourceValues,
         unit: .area(unit: "sq ft"),
         aggregation: aggregation)
     }
     if style == .count, containsWord(normalized, ["month", "months"]) {
       return quantitativeHints(
-        values: values(),
+        values: sourceValues,
         unit: .duration(unit: "months"),
         aggregation: aggregation)
     }
     if style == .ratio {
       return quantitativeHints(
-        values: values(),
+        values: sourceValues,
         aggregation: aggregation)
     }
     if style == .plainDigits, containsWord(normalized, ["year"]) {

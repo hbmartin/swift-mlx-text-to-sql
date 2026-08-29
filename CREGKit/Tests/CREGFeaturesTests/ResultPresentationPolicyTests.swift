@@ -172,6 +172,51 @@ import Testing
 
 @MainActor
 @Suite struct ResultViewerAnalysisTests {
+  @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
+    let client = CREGChartAnalysisClient.testValue
+    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let diagnostics = DiagnosticEventRecorder()
+    let request = chartTestRequest(
+      resultFingerprint: "viewer-obsolete-policy",
+      dataIdentity: "viewer-obsolete-policy-message")
+    let previousPolicy = AutoTableCharts.recommendationPolicyVersion - 1
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID(
+        "old-policy-specification",
+        policyVersion: previousPolicy))
+    var proposedMigration: ResultPresentationPreference?
+
+    let update = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: previous,
+      migratePreference: { receivedPrevious, updated in
+        #expect(receivedPrevious == previous)
+        proposedMigration = updated
+        return .retained(updated)
+      },
+      diagnostics: diagnostics.client)
+
+    let resolvedID = try #require(update?.resolvedSpecificationID)
+    #expect(resolvedID == loader.analysis?.primaryChart?.recommendation.id)
+    #expect(proposedMigration?.mode == .chart)
+    #expect(proposedMigration?.specificationID == nil)
+    #expect(
+      diagnostics.events
+        == [
+          DiagnosticEvent(
+            level: .info,
+            category: .pipeline,
+            code: "chart_recommendation_policy_changed",
+            summary: "A stored chart pin used an obsolete recommendation policy.",
+            context: [
+              "previous_policy": String(previousPolicy),
+              "current_policy": String(AutoTableCharts.recommendationPolicyVersion),
+            ])
+        ])
+  }
+
   @Test func replacementResultTreatsRetainedSelectionAsInactiveSynchronously() {
     let selection = AutoChartSelection<Int>(
       sourceRowIDs: [0],
@@ -281,6 +326,7 @@ import Testing
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
+    let diagnostics = DiagnosticEventRecorder()
     let request = chartTestRequest(
       resultFingerprint: "viewer-migration-compare-and-set",
       dataIdentity: "viewer-migration-message")
@@ -300,7 +346,8 @@ import Testing
         #expect(receivedPrevious == previous)
         proposedMigration = updated
         return .retained(authoritative)
-      })
+      },
+      diagnostics: diagnostics.client)
 
     guard
       case .resolved(
@@ -315,6 +362,16 @@ import Testing
     #expect(proposedMigration?.specificationID == primary.id)
     #expect(retainedPreference == authoritative)
     #expect(specificationID == primary.id)
+    #expect(
+      diagnostics.events
+        == [
+          DiagnosticEvent(
+            level: .info,
+            category: .pipeline,
+            code: "chart_specification_unavailable",
+            summary:
+              "A stored chart pin was unavailable and the default chart was selected.")
+        ])
   }
 }
 
@@ -420,7 +477,7 @@ import Testing
     let replacement = await loader.analyze(
       replacementRequest,
       preferredSpecificationID: nil)
-    guard case .resolved(let replacementRecommendation, _)? = replacement else {
+    guard case .resolved(let replacementRecommendation, _, _)? = replacement else {
       Issue.record("The replacement fixture should resolve a chart.")
       await gate.releaseFirstAnalysis()
       _ = await superseded.value
