@@ -18,7 +18,7 @@ let package = Package(
     // the exact version tripwire and version-agnostic migration are both tested.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "5cb8c64c940e6f5cc319316d4978121c9689c034"),
+      revision: "91d5fd5caec978b218a7b93bb15d3592a9eb8905"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
