@@ -82,10 +82,12 @@ enum ResultPresentationAnalysisUpdate: Equatable {
   }
 }
 
-/// Sends an automatic chart-ID migration and reports the preference that the
-/// compare-and-set reducer actually retained. A missing message is distinct
-/// from a retained automatic `nil` preference. Capturing the stable ID keeps
-/// view callbacks from retaining an entire message or result-viewer item.
+/// Attempts an automatic chart-ID migration with compare-and-set semantics.
+/// A stale precondition returns the authoritative preference without sending,
+/// and `.migrated` is returned only after the reducer retains the update. A
+/// missing message remains distinct from a retained automatic `nil`
+/// preference. Capturing the stable ID keeps view callbacks from retaining an
+/// entire message or viewer item.
 @MainActor
 func resultPresentationMigrationHandler(
   store: StoreOf<ChatFeature>,
@@ -148,7 +150,6 @@ func analyzeResultPresentation(
           preference: reconciliation)
       }
       guard attemptedPreferences.insert(previous).inserted else {
-        assertionFailure("Chart preference reconciliation repeated a retained preference.")
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: reconciliation)

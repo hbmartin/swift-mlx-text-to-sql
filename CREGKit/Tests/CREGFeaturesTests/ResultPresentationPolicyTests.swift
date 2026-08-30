@@ -469,6 +469,42 @@ import Testing
     #expect(diagnostics.events.first?.category == .presentation)
     #expect(diagnostics.events.first?.code == "chart_recommendation_policy_changed")
   }
+
+  @Test func retainedPreviousPreferenceTerminatesReconciliation() async throws {
+    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let diagnostics = DiagnosticEventRecorder()
+    let request = chartTestRequest(
+      resultFingerprint: "viewer-retained-previous-preference",
+      dataIdentity: "viewer-retained-previous-message")
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("missing-specification"))
+    var attempts = 0
+
+    let update = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: previous,
+      migratePreference: { receivedPrevious, _ in
+        attempts += 1
+        return .retained(receivedPrevious)
+      },
+      diagnostics: diagnostics.client)
+
+    guard
+      case .resolved(
+        let specificationID,
+        preference: .retained(let retainedPreference))? = update
+    else {
+      Issue.record("The repeated authoritative preference should terminate reconciliation.")
+      return
+    }
+    let primary = try #require(loader.analysis?.primaryChart?.recommendation)
+    #expect(attempts == 1)
+    #expect(retainedPreference == previous)
+    #expect(specificationID == primary.id)
+    #expect(diagnostics.events.isEmpty)
+  }
 }
 
 @MainActor
@@ -666,6 +702,24 @@ import Testing
     #expect(
       loader.preparationTaskKey(recommendationID: alternative.id)
         == preparationKey)
+  }
+
+  @Test func preparedChartIsExposedOnlyForItsRecommendation() async throws {
+    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let request = chartTestRequest(
+      resultFingerprint: "matching-prepared-chart")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis)
+    let recommendations = chartTestRecommendations(from: analysis)
+    let primary = try #require(recommendations.first)
+    let alternative = try #require(recommendations.dropFirst().first)
+
+    #expect(
+      loader.matchingPreparedChart(for: primary.id)?.recommendation.id
+        == primary.id)
+    #expect(
+      loader.matchingPreparedChart(for: alternative.id)?.recommendation.id
+        == nil)
   }
 
   @Test func resolvingPreparedPrimaryClearsAnAlternativePreparationFailure()
