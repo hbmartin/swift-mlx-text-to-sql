@@ -194,8 +194,6 @@ import Testing
         rows: [
           [.text("2027-01-01")],
           [.text("2027-02-01")],
-          [.text("2027-03-01")],
-          [.text("2027-04-01")],
           [.blob(Data([0x01]))],
         ]),
       sql: "SELECT maturity_date FROM loans",
@@ -205,8 +203,26 @@ import Testing
     #expect(column.hints.semanticType == .temporal)
     #expect(input.dataset.chartRows[0].chartValue(for: column.id).dateValue != nil)
     #expect(
-      input.dataset.chartRows[4].chartValue(for: column.id)
+      input.dataset.chartRows[2].chartValue(for: column.id)
         == .binary(Data([0x01])))
+  }
+
+  @Test func malformedScalarsStillPreventTemporalSemantics() throws {
+    for malformed in [SQLValue.text("not-a-date"), .integer(20_270_101)] {
+      let input = try CREGChartAdapter.analysisInput(
+        result: QueryResult(
+          columns: ["maturity_date"],
+          rows: [
+            [.text("2027-01-01")],
+            [.text("2027-02-01")],
+            [malformed],
+            [.blob(Data([0x01]))],
+          ]),
+        sql: "SELECT maturity_date FROM loans",
+        question: "Show maturities over time")
+
+      #expect(input.dataset.chartColumns[0].hints.semanticType == nil)
+    }
   }
 
   @Test func chartLayoutKeepsExplicitHeightsAcrossDependencyDefaultChange() {
@@ -337,7 +353,9 @@ import Testing
       sql: "SELECT is_segment, value FROM observations",
       question: "Show the distribution of value")
     let categoryID = CREGChartAdapter.columnID(index: 0, name: "is_segment")
+    let primary = try #require(analysis.primaryChart)
 
+    #expect(primary.recommendation.specification.family == .histogram)
     #expect(
       !chartTestRecommendations(from: analysis).contains {
         $0.specification.family == .boxPlot

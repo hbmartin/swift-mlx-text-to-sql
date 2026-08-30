@@ -457,6 +457,18 @@ final class ResultChartLoader {
     loadedAnalysis?.key == key
   }
 
+  /// SwiftUI can observe a new selection before its preparation task runs.
+  /// Never expose a prepared chart belonging to the preceding recommendation
+  /// during that interval.
+  func matchingPreparedChart(
+    for recommendationID: AutoChartRecommendationID
+  ) -> AutoChartPreparedChart<Int>? {
+    guard preparedChart?.recommendation.id == recommendationID else {
+      return nil
+    }
+    return preparedChart
+  }
+
   /// Prepares the selected recommendation's chart, reusing the analysis's
   /// primary chart when it matches. Only the latest invocation may commit;
   /// cancellation is cooperative and therefore cannot be the commit guard.
@@ -541,7 +553,7 @@ final class ResultChartLoader {
 
   private func applyResolvedRecommendation(
     _ recommendation: AutoChartRecommendation,
-    analysis loadedAnalysis: AutoChartAnalysis<Int>,
+    analysis resolvedAnalysis: AutoChartAnalysis<Int>,
     defaultReason: AutoChartRecommendationResolution.DefaultReason?
   ) -> Resolution {
     if resolvedRecommendationID != recommendation.id {
@@ -551,12 +563,12 @@ final class ResultChartLoader {
     resolvedRecommendationID = recommendation.id
     if preparedChart?.recommendation.id != recommendation.id {
       preparedChart =
-        loadedAnalysis.primaryChart?.recommendation.id == recommendation.id
-        ? loadedAnalysis.primaryChart : nil
+        resolvedAnalysis.primaryChart?.recommendation.id == recommendation.id
+        ? resolvedAnalysis.primaryChart : nil
     }
     return .resolved(
       recommendation,
-      analysis: loadedAnalysis,
+      analysis: resolvedAnalysis,
       defaultReason: defaultReason)
   }
 }

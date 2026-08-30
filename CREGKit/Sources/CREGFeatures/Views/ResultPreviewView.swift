@@ -179,7 +179,7 @@ struct ResultPreviewView: View {
   private func chartArea(
     recommendation: AutoChartRecommendation
   ) -> some View {
-    if let preparedChart = chart.preparedChart {
+    if let preparedChart = chart.matchingPreparedChart(for: recommendation.id) {
       AutoChartView(
         preparedChart: preparedChart,
         presentation: .preview(

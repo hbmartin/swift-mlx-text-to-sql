@@ -324,7 +324,9 @@ struct ResultViewerView: View {
           ResultChartExplorerContainer(
             recommendation: selectedRecommendation
           ) {
-            if let preparedChart = chart.preparedChart {
+            if let preparedChart = chart.matchingPreparedChart(
+              for: selectedRecommendation.id)
+            {
               AutoChartView(
                 preparedChart: preparedChart,
                 selection: chartSelectionBinding,

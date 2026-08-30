@@ -106,11 +106,9 @@ enum CREGChartAdapter {
   /// prepared chart chrome, and recommendation rationale. Returning nil keeps
   /// AutoTableCharts' default text for codes CREG has not explicitly adapted.
   static let textResolver = AutoChartTextResolver { message -> String? in
-    guard message.category == .diagnostic, message.arguments.isEmpty else {
-      return nil
-    }
     switch message.code {
-    case .boxPlotMissingCategoryGroup:
+    case .boxPlotMissingCategoryGroup
+    where message.category == .diagnostic && message.arguments.isEmpty:
       return "Some category values couldn’t be displayed and are grouped as “Missing value”."
     default:
       return nil
@@ -501,14 +499,20 @@ enum CREGChartAdapter {
   }
 
   private static func hasValidTemporalValues(_ values: [SQLValue]) -> Bool {
-    let nonNull = values.filter { if case .null = $0 { false } else { true } }
-    guard !nonNull.isEmpty else { return false }
-    let validCount = nonNull.reduce(into: 0) { count, value in
+    let temporalCandidates = values.filter { value in
+      switch value {
+      case .null, .blob: false
+      case .integer, .real, .text: true
+      }
+    }
+    guard !temporalCandidates.isEmpty else { return false }
+    let validCount = temporalCandidates.reduce(into: 0) { count, value in
       guard case .text(let text) = value, parseISODate(text) != nil else { return }
       count += 1
     }
-    return validCount == nonNull.count
-      || (validCount >= 2 && Double(validCount) / Double(nonNull.count) >= 0.8)
+    return validCount == temporalCandidates.count
+      || (validCount >= 2
+        && Double(validCount) / Double(temporalCandidates.count) >= 0.8)
   }
 
   private static func containsBlob(_ values: [SQLValue]) -> Bool {
