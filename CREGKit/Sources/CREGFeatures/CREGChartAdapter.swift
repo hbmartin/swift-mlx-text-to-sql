@@ -499,20 +499,17 @@ enum CREGChartAdapter {
   }
 
   private static func hasValidTemporalValues(_ values: [SQLValue]) -> Bool {
-    let temporalCandidates = values.filter { value in
-      switch value {
-      case .null, .blob: false
-      case .integer, .real, .text: true
-      }
-    }
-    guard !temporalCandidates.isEmpty else { return false }
-    let validCount = temporalCandidates.reduce(into: 0) { count, value in
+    // SQL NULL is genuinely absent. BLOBs are present but opaque to charting,
+    // so they must consume the same invalid-value budget as malformed scalars.
+    let nonNull = values.filter { if case .null = $0 { false } else { true } }
+    guard !nonNull.isEmpty else { return false }
+    let validCount = nonNull.reduce(into: 0) { count, value in
       guard case .text(let text) = value, parseISODate(text) != nil else { return }
       count += 1
     }
-    return validCount == temporalCandidates.count
+    return validCount == nonNull.count
       || (validCount >= 2
-        && Double(validCount) / Double(temporalCandidates.count) >= 0.8)
+        && Double(validCount) / Double(nonNull.count) >= 0.8)
   }
 
   private static func containsBlob(_ values: [SQLValue]) -> Bool {

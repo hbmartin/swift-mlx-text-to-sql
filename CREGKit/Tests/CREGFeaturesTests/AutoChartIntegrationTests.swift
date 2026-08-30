@@ -194,6 +194,8 @@ import Testing
         rows: [
           [.text("2027-01-01")],
           [.text("2027-02-01")],
+          [.text("2027-03-01")],
+          [.text("2027-04-01")],
           [.blob(Data([0x01]))],
         ]),
       sql: "SELECT maturity_date FROM loans",
@@ -203,8 +205,47 @@ import Testing
     #expect(column.hints.semanticType == .temporal)
     #expect(input.dataset.chartRows[0].chartValue(for: column.id).dateValue != nil)
     #expect(
-      input.dataset.chartRows[2].chartValue(for: column.id)
+      input.dataset.chartRows[4].chartValue(for: column.id)
         == .binary(Data([0x01])))
+  }
+
+  @Test func temporalSemanticsAllowTheExactValidityThreshold() throws {
+    let input = try CREGChartAdapter.analysisInput(
+      result: QueryResult(
+        columns: ["maturity_date"],
+        rows: [
+          [.text("2027-01-01")],
+          [.text("2027-02-01")],
+          [.text("2027-03-01")],
+          [.text("2027-04-01")],
+          [.text("not-a-date")],
+        ]),
+      sql: "SELECT maturity_date FROM loans",
+      question: "Show maturities over time")
+
+    #expect(input.dataset.chartColumns[0].hints.semanticType == .temporal)
+  }
+
+  @Test func mostlyBlobColumnsDoNotAcquireTemporalSemantics() throws {
+    let input = try CREGChartAdapter.analysisInput(
+      result: QueryResult(
+        columns: ["maturity_date"],
+        rows: [
+          [.text("2027-01-01")],
+          [.text("2027-02-01")],
+          [.blob(Data([0x01]))],
+          [.blob(Data([0x02]))],
+          [.blob(Data([0x03]))],
+          [.blob(Data([0x04]))],
+          [.blob(Data([0x05]))],
+          [.blob(Data([0x06]))],
+          [.blob(Data([0x07]))],
+          [.blob(Data([0x08]))],
+        ]),
+      sql: "SELECT maturity_date FROM loans",
+      question: "Show maturities over time")
+
+    #expect(input.dataset.chartColumns[0].hints.semanticType == nil)
   }
 
   @Test func malformedScalarsStillPreventTemporalSemantics() throws {
