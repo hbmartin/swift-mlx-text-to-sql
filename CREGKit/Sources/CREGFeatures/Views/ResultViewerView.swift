@@ -26,7 +26,6 @@ struct ResultViewerView: View {
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
   @State var presentationPreference: ResultPresentationPreference
-  @State var selectedSpecificationID: AutoChartRecommendationID?
   @State var chartSelectionState: ResultChartSelectionState?
   @State var copyFeedbackMessage: String?
   @State var copyFeedbackTrigger = 0
@@ -140,7 +139,6 @@ struct ResultViewerView: View {
     self._selectedCell = State(initialValue: initialSelection)
     self._presentationPreference = State(
       initialValue: preference ?? ResultPresentationPreference(mode: .chart))
-    self._selectedSpecificationID = State(initialValue: preference?.specificationID)
     self._chartSelectionState = State(
       initialValue: initialChartSelection.map {
         ResultChartSelectionState(
@@ -405,7 +403,6 @@ struct ResultViewerView: View {
       ) == true {
         clearChartSelection()
       }
-      selectedSpecificationID = update.resolvedSpecificationID
       switch update.preferenceReconciliation {
       case .retained(let authoritativePreference):
         presentationPreference =

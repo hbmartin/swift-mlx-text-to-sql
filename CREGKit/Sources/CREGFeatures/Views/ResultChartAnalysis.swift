@@ -310,13 +310,14 @@ struct ResultChartPreparationTaskKey: Equatable {
   fileprivate var attempt: Int
 }
 
-/// The one chart-loading state machine shared by the inline Result Preview
-/// and the full-screen Result Viewer. Views keep their own presentation
+/// The chart-loading state machine used independently by the inline Result
+/// Preview and full-screen Result Viewer. Views keep their own presentation
 /// policy — what to select, when to fall back to the table, what to persist —
-/// while this owns the analyze/prepare mechanics, so the two surfaces can
-/// never render different charts for the same message. It warm-starts from
-/// the client's snapshot of a finished analysis so a re-created transcript
-/// cell renders its chart immediately instead of re-blanking into a spinner.
+/// while each loader owns its surface's analyze/prepare mechanics. The shared
+/// client snapshot and synchronized preference input keep separate surfaces
+/// aligned for the same message. A loader warm-starts from that snapshot so a
+/// re-created transcript cell renders immediately instead of re-blanking into
+/// a spinner.
 @MainActor
 @Observable
 final class ResultChartLoader {
