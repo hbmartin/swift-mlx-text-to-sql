@@ -155,6 +155,10 @@ extension ResultViewerView {
           set: { id in
             guard id != selectedRecommendation?.id else { return }
             guard
+              let id,
+              chartRecommendations.contains(where: { $0.id == id })
+            else { return }
+            guard
               case .resolved(let recommendation, _, _)? =
                 chart.resolveLoadedRecommendation(
                   preferredSpecificationID: id)
@@ -162,8 +166,7 @@ extension ResultViewerView {
             clearChartSelection()
             let updated = ResultViewerLogic.chartTypeSelectionPreference(
               specificationID: recommendation.id)
-            presentationPreference = updated
-            persistPreference(updated)
+            applyUserPreference(updated)
           })
       ) {
         ForEach(chartRecommendations) { recommendation in
