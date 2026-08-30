@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shared recovery actions shown when a recommended chart could not be
+/// Shared recovery actions shown when a chart could not be analyzed or
 /// prepared. Actions stack at accessibility sizes instead of competing with
 /// the status label for one increasingly narrow row.
 struct ResultChartRecoveryControls: View {
