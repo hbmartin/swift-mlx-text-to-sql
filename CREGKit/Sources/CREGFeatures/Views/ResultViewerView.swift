@@ -428,7 +428,7 @@ struct ResultViewerView: View {
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
     handleResultPresentationModeSelection(
       selectedMode,
-      state: &presentationState,
+      state: $presentationState,
       authoritativePreference: preference,
       requestKey: chartRequest.key,
       preparationFailed: selectedPreparationFailed,

@@ -1,6 +1,7 @@
 import AutoTableCharts
 import ComposableArchitecture
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import CREGEngine
@@ -138,21 +139,20 @@ import Testing
 
     let chartKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preference: chartPreference)
+      preferredSpecificationID: chartPreference.specificationID)
     let tableKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preference: tablePreference)
+      preferredSpecificationID: tablePreference.specificationID)
     let selectionKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preference: ResultPresentationPreference(
-        mode: .chart,
-        specificationID: chartTestRecommendationID("bar|category|value")))
+      preferredSpecificationID: chartTestRecommendationID(
+        "bar|category|value"))
     let replacementRequestKey = ResultPresentationAnalysisTaskKey(
       chartRequest: chartTestRequest(
         resultFingerprint: "replacement-preview-result",
         dataIdentity: "same-preview-message"
       ).key,
-      preference: chartPreference)
+      preferredSpecificationID: chartPreference.specificationID)
 
     #expect(chartKey == tableKey)
     #expect(chartKey != selectionKey)
@@ -211,21 +211,39 @@ import Testing
 
     state.apply(.stalled(resolved), requestKey: requestKey)
     state.synchronize(with: stale, requestKey: requestKey)
+    let expectedPreference = ResultPresentationPreference(
+      mode: .table,
+      specificationID: resolved.specificationID)
+    var expectedState = state
+    expectedState.applyUserPreference(
+      expectedPreference,
+      authoritativePreference: stale,
+      requestKey: requestKey)
+    let stateBox = ResultPresentationStateBox(state)
+    var persistedPreference: ResultPresentationPreference?
+    var stateObservedByPersistence: ResultPresentationState?
 
     #expect(
       state.effectivePreference(
         authoritativePreference: stale,
         requestKey: requestKey) == resolved)
-    #expect(
-      state.modeSelectionIntent(
-        .table,
-        authoritativePreference: stale,
-        requestKey: requestKey,
-        preparationFailed: false)
-        == .persist(
-          ResultPresentationPreference(
-            mode: .table,
-            specificationID: resolved.specificationID)))
+    handleResultPresentationModeSelection(
+      .table,
+      state: stateBox.binding,
+      authoritativePreference: stale,
+      requestKey: requestKey,
+      preparationFailed: false,
+      retryPreparation: {
+        Issue.record("A normal mode change must not retry preparation.")
+      },
+      persistPreference: { updated in
+        stateObservedByPersistence = stateBox.value
+        persistedPreference = updated
+      })
+
+    #expect(stateBox.value == expectedState)
+    #expect(stateObservedByPersistence == expectedState)
+    #expect(persistedPreference == expectedPreference)
   }
 
   @Test func synchronizingAnAutomaticPreferenceDoesNotPinTheResolvedChart() {
@@ -239,18 +257,30 @@ import Testing
       requestKey: requestKey)
 
     state.synchronize(with: nil, requestKey: requestKey)
+    let expectedState = ResultPresentationState(
+      preference: nil,
+      requestKey: requestKey)
+    let stateBox = ResultPresentationStateBox(state)
+    let expectedPreference = ResultPresentationPreference(mode: .table)
+    var persistedPreference: ResultPresentationPreference?
 
+    #expect(state == expectedState)
+    handleResultPresentationModeSelection(
+      .table,
+      state: stateBox.binding,
+      authoritativePreference: nil,
+      requestKey: requestKey,
+      preparationFailed: false,
+      retryPreparation: {
+        Issue.record("A normal mode change must not retry preparation.")
+      },
+      persistPreference: { persistedPreference = $0 })
+
+    #expect(persistedPreference == expectedPreference)
     #expect(
-      state.effectivePreference(
+      stateBox.value.effectivePreference(
         authoritativePreference: nil,
-        requestKey: requestKey) == nil)
-    #expect(
-      state.modeSelectionIntent(
-        .table,
-        authoritativePreference: nil,
-        requestKey: requestKey,
-        preparationFailed: false)
-        == .persist(ResultPresentationPreference(mode: .table)))
+        requestKey: requestKey) == expectedPreference)
   }
 
   @Test func modeOnlyAuthoritativeUpdatePreservesAStalledSpecification() {
@@ -282,21 +312,32 @@ import Testing
     state.synchronize(
       with: authoritativeTable,
       requestKey: requestKey)
+    let stateBox = ResultPresentationStateBox(state)
+    let expectedSelection = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: resolved.specificationID)
+    var persistedPreference: ResultPresentationPreference?
 
     #expect(
       state.effectivePreference(
         authoritativePreference: authoritativeTable,
         requestKey: requestKey) == expected)
+    handleResultPresentationModeSelection(
+      .chart,
+      state: stateBox.binding,
+      authoritativePreference: authoritativeTable,
+      requestKey: requestKey,
+      preparationFailed: false,
+      retryPreparation: {
+        Issue.record("A normal mode change must not retry preparation.")
+      },
+      persistPreference: { persistedPreference = $0 })
+
+    #expect(persistedPreference == expectedSelection)
     #expect(
-      state.modeSelectionIntent(
-        .chart,
+      stateBox.value.effectivePreference(
         authoritativePreference: authoritativeTable,
-        requestKey: requestKey,
-        preparationFailed: false)
-        == .persist(
-          ResultPresentationPreference(
-            mode: .chart,
-            specificationID: resolved.specificationID)))
+        requestKey: requestKey) == expectedSelection)
   }
 
   @Test func replacementRequestRejectsAStalledPreferenceSynchronously() {
@@ -328,9 +369,10 @@ import Testing
     state.apply(.stalled(resolved), requestKey: originalKey)
 
     #expect(
-      state.effectivePreference(
-        authoritativePreference: stale,
-        requestKey: replacementKey) == stale)
+      state
+        == ResultPresentationState(
+          preference: stale,
+          requestKey: replacementKey))
   }
 
   @Test func changedAuthoritativeInputIsEffectiveBeforeStateSynchronization() {
@@ -351,9 +393,10 @@ import Testing
     state.synchronize(with: replacement, requestKey: requestKey)
 
     #expect(
-      state.effectivePreference(
-        authoritativePreference: replacement,
-        requestKey: requestKey) == replacement)
+      state
+        == ResultPresentationState(
+          preference: replacement,
+          requestKey: requestKey))
   }
 
   @Test func leaseListingPreviewUsesAResolvableSelectionSpecification() async throws {
@@ -924,41 +967,55 @@ import Testing
     #expect(loader.analysis == nil)
   }
 
-  @Test func changedPreferenceReusesAnInFlightAnalysis() async throws {
-    let gate = SupersededChartAnalysisGate()
+  @Test func cancellingAnalysisCancelsTheInjectedOperation() async {
+    let probe = ChartAnalysisCancellationProbe()
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
-      analyzeChart: { request in
-        try await gate.analyze(request)
+      analyzeChart: { _ in
+        try await probe.waitUntilCancelled()
+        throw CancellationError()
       })
     let request = chartTestRequest(
-      resultFingerprint: "in-flight-preference-change")
-    let first = Task {
+      resultFingerprint: "cancel-propagates-to-analysis")
+    let analysis = Task {
       await loader.analyze(
         request,
         preferredSpecificationID: nil)
     }
-    await gate.waitUntilFirstAnalysisStarts()
+    await probe.waitUntilStarted()
 
-    first.cancel()
-    let latestPreference = chartTestRecommendationID("bar|category|value")
-    let replacement = Task {
-      await loader.analyze(
-        request,
-        preferredSpecificationID: latestPreference)
-    }
-    await gate.releaseFirstAnalysis()
+    analysis.cancel()
 
-    let firstResolution = await first.value
-    let replacementResolution = await replacement.value
-    let analysisCallCount = await gate.analysisCallCount
-    #expect(firstResolution == nil)
-    guard case .resolved? = replacementResolution else {
-      Issue.record("The replacement preference should reuse the analysis result.")
+    #expect(await analysis.value == nil)
+    #expect(await probe.cancellationWasObserved)
+    #expect(loader.analysis == nil)
+  }
+
+  @Test func failedAnalysisDoesNotPoisonTheNextAttempt() async {
+    let attempts = FailingFirstChartAnalysis()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      analyzeChart: { request in
+        try await attempts.analyze(request)
+      })
+    let request = chartTestRequest(
+      resultFingerprint: "retry-after-analysis-failure")
+
+    let failed = await loader.analyze(
+      request,
+      preferredSpecificationID: nil)
+    let retried = await loader.analyze(
+      request,
+      preferredSpecificationID: nil)
+
+    #expect(failed == nil)
+    guard case .resolved? = retried else {
+      Issue.record("A retry should start fresh after an analysis failure.")
       return
     }
-    #expect(analysisCallCount == 1)
+    #expect(await attempts.count == 2)
   }
 
   @Test func selectionGateAcceptsOnlyTheCurrentlyLoadedRequest() async {
@@ -1295,6 +1352,83 @@ import Testing
   }
 }
 
+@MainActor
+private final class ResultPresentationStateBox {
+  var value: ResultPresentationState
+
+  init(_ value: ResultPresentationState) {
+    self.value = value
+  }
+
+  var binding: Binding<ResultPresentationState> {
+    Binding(
+      get: { self.value },
+      set: { self.value = $0 })
+  }
+}
+
+private actor ChartAnalysisCancellationProbe {
+  private var didStart = false
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var cancellationContinuation: CheckedContinuation<Void, Never>?
+  private(set) var cancellationWasObserved = false
+
+  func waitUntilCancelled() async throws {
+    didStart = true
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
+
+    await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        if cancellationWasObserved {
+          continuation.resume()
+        } else {
+          cancellationContinuation = continuation
+        }
+      }
+    } onCancel: {
+      Task { await self.observeCancellation() }
+    }
+    try Task.checkCancellation()
+  }
+
+  func waitUntilStarted() async {
+    guard !didStart else { return }
+    await withCheckedContinuation { continuation in
+      startWaiters.append(continuation)
+    }
+  }
+
+  private func observeCancellation() {
+    cancellationWasObserved = true
+    cancellationContinuation?.resume()
+    cancellationContinuation = nil
+  }
+}
+
+private actor FailingFirstChartAnalysis {
+  private let client = CREGChartAnalysisClient.testValue
+  private(set) var count = 0
+
+  func analyze(
+    _ request: ResultChartLoader.Request
+  ) async throws -> AutoChartAnalysis<Int> {
+    count += 1
+    if count == 1 {
+      throw PreferenceSaveTestError.failed
+    }
+    return try await client.analyze(
+      result: request.result,
+      sql: request.sql,
+      question: request.question,
+      resultFingerprint: request.resultFingerprint,
+      dataIdentity: request.dataIdentity)
+  }
+}
+
 private actor SupersededChartPreparationGate {
   private let firstCallGate = FirstCallGate()
 
@@ -1340,10 +1474,6 @@ private actor SupersededChartAnalysisGate {
   func releaseFirstAnalysis() async {
     await firstCallGate.releaseFirstCall()
   }
-
-  var analysisCallCount: Int {
-    get async { await firstCallGate.count }
-  }
 }
 
 private actor FirstCallGate {
@@ -1351,8 +1481,6 @@ private actor FirstCallGate {
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
   private var releaseContinuation: CheckedContinuation<Void, Never>?
   private var releaseRequested = false
-
-  var count: Int { callCount }
 
   func pauseIfFirstCall() async -> Bool {
     callCount += 1
