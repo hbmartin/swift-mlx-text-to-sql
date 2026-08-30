@@ -206,21 +206,15 @@ struct ResultViewerView: View {
     chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
-  var analysisTaskKey: ResultPresentationAnalysisTaskKey {
-    ResultPresentationAnalysisTaskKey(
-      chartRequest: chartRequest.key,
-      preferredSpecificationID: preference?.specificationID)
-  }
-
-  var presentationPreference: ResultPresentationPreference? {
-    presentationState.effectivePreference(
+  var requestedMode: ResultPresentationPreference.Mode {
+    presentationState.requestedMode(
       authoritativePreference: preference,
       requestKey: chartRequest.key)
   }
 
   var effectiveResultMode: ResultPresentationPreference.Mode {
     ResultViewerLogic.effectivePresentationMode(
-      requestedMode: presentationPreference?.mode ?? .chart,
+      requestedMode: requestedMode,
       hasChart: selectedRecommendation != nil,
       preparationFailed: selectedPreparationFailed)
   }
@@ -311,7 +305,7 @@ struct ResultViewerView: View {
         }
 
         if selectedPreparationFailed,
-          (presentationPreference?.mode ?? .chart) == .chart
+          requestedMode == .chart
         {
           ResultChartRecoveryControls(
             spacing: 12,
@@ -380,8 +374,7 @@ struct ResultViewerView: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
           if chartRecommendations.count > 1,
-            (presentationPreference?.mode ?? .chart) == .chart
-              || selectedPreparationFailed
+            requestedMode == .chart || selectedPreparationFailed
           {
             chartTypeMenu
           }
@@ -399,41 +392,29 @@ struct ResultViewerView: View {
     .onChange(of: chartSelection) { _, _ in
       selectedCell = nil
     }
-    .onChange(of: preference) { _, authoritativePreference in
-      synchronizePresentationState(with: authoritativePreference)
-    }
-    .onChange(of: chartRequest.key) { _, _ in
-      synchronizePresentationState(with: preference)
-    }
-    .task(id: analysisTaskKey) {
-      let requestKey = chartRequest.key
-      presentationState.synchronize(
-        with: preference,
-        requestKey: requestKey)
-      if chartSelectionState?.isStale(comparedTo: resultFingerprint) == true {
-        clearChartSelection()
+    .resultPresentationLifecycle(
+      chart: chart,
+      request: chartRequest,
+      authoritativePreference: preference,
+      presentationState: $presentationState,
+      migratePreference: migratePreference,
+      diagnostics: diagnostics,
+      willAnalyze: {
+        if chartSelectionState?.isStale(
+          comparedTo: resultFingerprint) == true
+        {
+          clearChartSelection()
+        }
+      },
+      didApplyAnalysis: { update in
+        if chartSelectionState?.isInvalidated(
+          by: update,
+          currentResultFingerprint: resultFingerprint
+        ) == true {
+          clearChartSelection()
+        }
       }
-
-      guard
-        let update = await analyzeResultPresentation(
-          chart,
-          request: chartRequest,
-          preference: preference,
-          migratePreference: migratePreference,
-          diagnostics: diagnostics
-        )
-      else { return }
-
-      if chartSelectionState?.isInvalidated(
-        by: update,
-        currentResultFingerprint: resultFingerprint
-      ) == true {
-        clearChartSelection()
-      }
-      presentationState.apply(
-        update.preferenceReconciliation,
-        requestKey: requestKey)
-    }
+    )
     .task(
       id: chart.preparationTaskKey(
         recommendationID: selectedRecommendation?.id)
@@ -445,24 +426,14 @@ struct ResultViewerView: View {
   }
 
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
-    synchronizePresentationState(with: preference)
-    let currentPreference = presentationState.preference
-    switch ResultViewerLogic.modeSelectionIntent(
+    handleResultPresentationModeSelection(
       selectedMode,
-      requestedMode: currentPreference?.mode ?? .chart,
-      preserving: currentPreference?.specificationID,
-      preparationFailed: selectedPreparationFailed
-    ) {
-    case .none:
-      break
-    case .persist(let updated):
-      applyUserPreference(updated)
-    case .retryChart(let updated):
-      chart.retryPreparation()
-      if let updated {
-        applyUserPreference(updated)
-      }
-    }
+      state: &presentationState,
+      authoritativePreference: preference,
+      requestKey: chartRequest.key,
+      preparationFailed: selectedPreparationFailed,
+      retryPreparation: chart.retryPreparation,
+      persistPreference: persistPreference)
   }
 
   func applyUserPreference(_ updated: ResultPresentationPreference) {
@@ -473,11 +444,4 @@ struct ResultViewerView: View {
     persistPreference(updated)
   }
 
-  private func synchronizePresentationState(
-    with authoritativePreference: ResultPresentationPreference?
-  ) {
-    presentationState.synchronize(
-      with: authoritativePreference,
-      requestKey: chartRequest.key)
-  }
 }
