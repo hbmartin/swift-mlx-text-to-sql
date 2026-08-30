@@ -366,14 +366,7 @@ final class ResultChartLoader {
     let value: AutoChartAnalysis<Int>
   }
 
-  private struct InFlightAnalysis {
-    let key: Request.Key
-    let analysisGeneration: Int
-    let task: Task<AutoChartAnalysis<Int>, Error>
-  }
-
   private var loadedAnalysis: LoadedAnalysis?
-  private var inFlightAnalysis: InFlightAnalysis?
   var analysis: AutoChartAnalysis<Int>? {
     loadedAnalysis?.value
   }
@@ -396,10 +389,6 @@ final class ResultChartLoader {
   /// superseded analysis and a preparation suspended on its predecessor from
   /// committing after a newer request has taken ownership of the loader.
   private var analysisGeneration = 0
-  /// Every analysis invocation supersedes the preceding resolution request,
-  /// even when both await the same immutable analysis computation.
-  private var analysisInvocationGeneration = 0
-
   init(
     client: CREGChartAnalysisClient,
     warmStart request: Request?,
@@ -440,55 +429,28 @@ final class ResultChartLoader {
     _ request: Request,
     preferredSpecificationID: AutoChartRecommendationID?
   ) async -> Resolution? {
-    analysisInvocationGeneration += 1
-    let invocationGeneration = analysisInvocationGeneration
     if let loadedAnalysis, loadedAnalysis.key == request.key {
       return applyResolution(
         of: loadedAnalysis.value,
         preferred: preferredSpecificationID)
     }
 
-    let flight: InFlightAnalysis
-    if let inFlightAnalysis, inFlightAnalysis.key == request.key {
-      flight = inFlightAnalysis
-    } else {
-      inFlightAnalysis?.task.cancel()
-      failedPreparationRecommendationID = nil
-      resolvedRecommendationID = nil
-      resolvedRecommendation = nil
-      loadedAnalysis = nil
-      preparedChart = nil
-      analysisGeneration += 1
-      let analyzeChart = analyzeChart
-      let task = Task {
-        try await analyzeChart(request)
-      }
-      flight = InFlightAnalysis(
-        key: request.key,
-        analysisGeneration: analysisGeneration,
-        task: task)
-      inFlightAnalysis = flight
-    }
-
+    failedPreparationRecommendationID = nil
+    resolvedRecommendationID = nil
+    resolvedRecommendation = nil
+    loadedAnalysis = nil
+    preparedChart = nil
+    analysisGeneration += 1
+    let requestGeneration = analysisGeneration
     do {
-      let loaded = try await flight.task.value
+      let loaded = try await analyzeChart(request)
       try Task.checkCancellation()
-      guard invocationGeneration == analysisInvocationGeneration,
-        flight.analysisGeneration == analysisGeneration
-      else { return nil }
-      if inFlightAnalysis?.analysisGeneration == flight.analysisGeneration {
-        inFlightAnalysis = nil
-      }
+      guard requestGeneration == analysisGeneration else { return nil }
       loadedAnalysis = LoadedAnalysis(key: request.key, value: loaded)
       return applyResolution(
         of: loaded,
         preferred: preferredSpecificationID)
     } catch {
-      if !Task.isCancelled,
-        inFlightAnalysis?.analysisGeneration == flight.analysisGeneration
-      {
-        inFlightAnalysis = nil
-      }
       return nil
     }
   }
@@ -515,20 +477,16 @@ final class ResultChartLoader {
   ) -> Bool {
     guard let analysis,
       case .charts(let recommendations) = analysis.outcome,
-      recommendations.contains(where: { $0.id == recommendationID })
+      let recommendation = recommendations.first(where: {
+        $0.id == recommendationID
+      })
     else { return false }
 
-    switch applyResolution(of: analysis, preferred: recommendationID) {
-    case .resolved(let recommendation, _, _):
-      guard recommendation.id == recommendationID else {
-        assertionFailure("An available recommendation did not resolve exactly.")
-        return false
-      }
-      return true
-    case .unavailable:
-      assertionFailure("A loaded recommendation resolved as unavailable.")
-      return false
-    }
+    _ = applyResolvedRecommendation(
+      recommendation,
+      analysis: analysis,
+      defaultReason: nil)
+    return true
   }
 
   /// SwiftUI can observe a new selection before its preparation task runs.

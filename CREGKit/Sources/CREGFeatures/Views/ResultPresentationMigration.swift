@@ -1,6 +1,7 @@
 import AutoTableCharts
 import ComposableArchitecture
 import Foundation
+import SwiftUI
 
 enum ResultPresentationMigrationOutcome: Equatable {
   case migrated(ResultPresentationPreference)
@@ -31,18 +32,18 @@ struct ResultPresentationAnalysisTaskKey: Hashable {
 
   init(
     chartRequest: ResultChartLoader.Request.Key,
-    preference: ResultPresentationPreference?
+    preferredSpecificationID: AutoChartRecommendationID?
   ) {
     self.chartRequest = chartRequest
-    self.preferredSpecificationID = preference?.specificationID
+    self.preferredSpecificationID = preferredSpecificationID
   }
 }
 
 /// Surface-local presentation policy with explicit provenance. Reconciled and
 /// optimistic preferences remain useful while the parent still supplies the
 /// preceding value, but can never cross into a replacement result request.
-struct ResultPresentationState {
-  private enum LocalOverride {
+struct ResultPresentationState: Equatable {
+  private enum LocalOverride: Equatable {
     /// Reconciliation could not update the authoritative store, so explicit
     /// user writes must preserve this resolvable replacement instead of the
     /// dead specification that remains in the store.
@@ -92,8 +93,9 @@ struct ResultPresentationState {
     requestKey: ResultChartLoader.Request.Key
   ) {
     guard
-      requestKey != self.requestKey
-        || authoritativePreference != synchronizedInputPreference
+      !isSynchronized(
+        with: authoritativePreference,
+        requestKey: requestKey)
     else { return }
     let synchronized =
       requestKey == self.requestKey
@@ -111,8 +113,9 @@ struct ResultPresentationState {
     authoritativePreference: ResultPresentationPreference?,
     requestKey: ResultChartLoader.Request.Key
   ) {
-    if requestKey != self.requestKey
-      || authoritativePreference != synchronizedInputPreference
+    if !isSynchronized(
+      with: authoritativePreference,
+      requestKey: requestKey)
     {
       recordSynchronization(
         authoritativePreference: authoritativePreference,
@@ -121,35 +124,6 @@ struct ResultPresentationState {
     }
     preference = updated
     localOverride = nil
-  }
-
-  mutating func modeSelectionIntent(
-    _ selectedMode: ResultPresentationPreference.Mode,
-    authoritativePreference: ResultPresentationPreference?,
-    requestKey: ResultChartLoader.Request.Key,
-    preparationFailed: Bool
-  ) -> ResultViewerLogic.ModeSelectionIntent {
-    let currentPreference = effectivePreference(
-      authoritativePreference: authoritativePreference,
-      requestKey: requestKey)
-    let intent = ResultViewerLogic.modeSelectionIntent(
-      selectedMode,
-      requestedMode: Self.mode(for: currentPreference),
-      preserving: currentPreference?.specificationID,
-      preparationFailed: preparationFailed)
-
-    switch intent {
-    case .persist(let updated), .retryChart(.some(let updated)):
-      applyUserPreference(
-        updated,
-        authoritativePreference: authoritativePreference,
-        requestKey: requestKey)
-    case .none, .retryChart(nil):
-      synchronize(
-        with: authoritativePreference,
-        requestKey: requestKey)
-    }
-    return intent
   }
 
   @discardableResult
@@ -206,6 +180,14 @@ struct ResultPresentationState {
     preference?.mode ?? .chart
   }
 
+  private func isSynchronized(
+    with authoritativePreference: ResultPresentationPreference?,
+    requestKey: ResultChartLoader.Request.Key
+  ) -> Bool {
+    requestKey == self.requestKey
+      && authoritativePreference == synchronizedInputPreference
+  }
+
   private mutating func recordSynchronization(
     authoritativePreference: ResultPresentationPreference?,
     requestKey: ResultChartLoader.Request.Key,
@@ -220,24 +202,49 @@ struct ResultPresentationState {
 @MainActor
 func handleResultPresentationModeSelection(
   _ selectedMode: ResultPresentationPreference.Mode,
-  state: inout ResultPresentationState,
+  state: Binding<ResultPresentationState>,
   authoritativePreference: ResultPresentationPreference?,
   requestKey: ResultChartLoader.Request.Key,
   preparationFailed: Bool,
   retryPreparation: () -> Void,
   persistPreference: (ResultPresentationPreference) -> Void
 ) {
-  switch state.modeSelectionIntent(
-    selectedMode,
+  var updatedState = state.wrappedValue
+  let currentPreference = updatedState.effectivePreference(
     authoritativePreference: authoritativePreference,
-    requestKey: requestKey,
+    requestKey: requestKey)
+  let intent = ResultViewerLogic.modeSelectionIntent(
+    selectedMode,
+    requestedMode: currentPreference?.mode ?? .chart,
+    preserving: currentPreference?.specificationID,
     preparationFailed: preparationFailed
-  ) {
+  )
+
+  switch intent {
   case .none:
-    break
+    updatedState.synchronize(
+      with: authoritativePreference,
+      requestKey: requestKey)
+    state.wrappedValue = updatedState
   case .persist(let updated):
+    updatedState.applyUserPreference(
+      updated,
+      authoritativePreference: authoritativePreference,
+      requestKey: requestKey)
+    state.wrappedValue = updatedState
     persistPreference(updated)
   case .retryChart(let updated):
+    if let updated {
+      updatedState.applyUserPreference(
+        updated,
+        authoritativePreference: authoritativePreference,
+        requestKey: requestKey)
+    } else {
+      updatedState.synchronize(
+        with: authoritativePreference,
+        requestKey: requestKey)
+    }
+    state.wrappedValue = updatedState
     retryPreparation()
     if let updated {
       persistPreference(updated)

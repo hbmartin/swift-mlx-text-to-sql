@@ -16,7 +16,7 @@ private struct ResultPresentationLifecycleModifier: ViewModifier {
   private var analysisTaskKey: ResultPresentationAnalysisTaskKey {
     ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preference: authoritativePreference)
+      preferredSpecificationID: authoritativePreference?.specificationID)
   }
 
   func body(content: Content) -> some View {
