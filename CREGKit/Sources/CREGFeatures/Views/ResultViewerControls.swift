@@ -154,16 +154,17 @@ extension ResultViewerView {
           get: { selectedSpecificationID },
           set: { id in
             guard id != selectedSpecificationID else { return }
-            let isRecoveringFromFailure = chart.preparationFailed
-            selectedSpecificationID = id
+            guard
+              case .resolved(let recommendation, _, _)? =
+                chart.resolveLoadedRecommendation(
+                  preferredSpecificationID: id)
+            else { return }
+            selectedSpecificationID = recommendation.id
             clearChartSelection()
             let updated = ResultViewerLogic.chartTypeSelectionPreference(
-              specificationID: id)
+              specificationID: recommendation.id)
             presentationPreference = updated
             persistPreference(updated)
-            if isRecoveringFromFailure {
-              chart.retryPreparation()
-            }
           })
       ) {
         ForEach(chartRecommendations) { recommendation in

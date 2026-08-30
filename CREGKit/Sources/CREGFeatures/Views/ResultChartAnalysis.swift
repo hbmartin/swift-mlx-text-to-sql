@@ -369,11 +369,9 @@ final class ResultChartLoader {
   var analysis: AutoChartAnalysis<Int>? {
     loadedAnalysis?.value
   }
-  private(set) var preparedChart: AutoChartPreparedChart<Int>?
+  private(set) var resolvedRecommendation: AutoChartRecommendation?
+  private var preparedChart: AutoChartPreparedChart<Int>?
   private var failedPreparationRecommendationID: AutoChartRecommendationID?
-  var preparationFailed: Bool {
-    failedPreparationRecommendationID != nil
-  }
   private let analyzeChart: AnalyzeChart
   private let prepareChart: PrepareChart
   /// The recommendation the loader most recently resolved or was asked to
@@ -437,6 +435,7 @@ final class ResultChartLoader {
     } else {
       failedPreparationRecommendationID = nil
       resolvedRecommendationID = nil
+      resolvedRecommendation = nil
       loadedAnalysis = nil
       preparedChart = nil
       analysisGeneration += 1
@@ -457,6 +456,16 @@ final class ResultChartLoader {
     loadedAnalysis?.key == key
   }
 
+  /// Re-resolves the loaded immutable analysis and synchronizes every piece of
+  /// recommendation-owned presentation state before a view observes the choice.
+  func resolveLoadedRecommendation(
+    preferredSpecificationID: AutoChartRecommendationID?
+  ) -> Resolution? {
+    guard let analysis else { return nil }
+    return applyResolution(
+      of: analysis, preferred: preferredSpecificationID)
+  }
+
   /// SwiftUI can observe a new selection before its preparation task runs.
   /// Never expose a prepared chart belonging to the preceding recommendation
   /// during that interval.
@@ -469,16 +478,21 @@ final class ResultChartLoader {
     return preparedChart
   }
 
+  func preparationFailed(
+    for recommendationID: AutoChartRecommendationID?
+  ) -> Bool {
+    guard let recommendationID else { return false }
+    return failedPreparationRecommendationID == recommendationID
+  }
+
   /// Prepares the selected recommendation's chart, reusing the analysis's
   /// primary chart when it matches. Only the latest invocation may commit;
   /// cancellation is cooperative and therefore cannot be the commit guard.
-  func prepareSelected(
-    _ recommendation: AutoChartRecommendation?
-  ) async {
+  func prepareResolvedRecommendation() async {
     preparationGeneration += 1
     let preparation = preparationGeneration
     failedPreparationRecommendationID = nil
-    resolvedRecommendationID = recommendation?.id
+    let recommendation = resolvedRecommendation
     guard let chartAnalysis = analysis, let recommendation else {
       preparedChart = nil
       return
@@ -545,6 +559,7 @@ final class ResultChartLoader {
         defaultReason: reason)
     case .unavailable:
       resolvedRecommendationID = nil
+      resolvedRecommendation = nil
       preparedChart = nil
       failedPreparationRecommendationID = nil
       return .unavailable
@@ -561,6 +576,7 @@ final class ResultChartLoader {
       failedPreparationRecommendationID = nil
     }
     resolvedRecommendationID = recommendation.id
+    resolvedRecommendation = recommendation
     if preparedChart?.recommendation.id != recommendation.id {
       preparedChart =
         resolvedAnalysis.primaryChart?.recommendation.id == recommendation.id

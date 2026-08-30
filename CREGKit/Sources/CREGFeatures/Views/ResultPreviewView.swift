@@ -68,13 +68,11 @@ struct ResultPreviewView: View {
   }
 
   private var selectedRecommendation: AutoChartRecommendation? {
-    guard let analysis = chart.analysis else { return nil }
-    switch analysis.resolve(preference?.specificationID) {
-    case .exact(let recommendation), .defaulted(let recommendation, _):
-      return recommendation
-    case .unavailable:
-      return nil
-    }
+    chart.resolvedRecommendation
+  }
+
+  private var selectedPreparationFailed: Bool {
+    chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
   var body: some View {
@@ -103,7 +101,7 @@ struct ResultPreviewView: View {
           .accessibilityIdentifier("result-preview-mode")
         }
 
-        if chart.preparationFailed,
+        if selectedPreparationFailed,
           (preference?.mode ?? .chart) == .chart
         {
           ResultChartRecoveryControls(
@@ -170,7 +168,7 @@ struct ResultPreviewView: View {
         id: chart.preparationTaskKey(
           recommendationID: selected?.id)
       ) {
-        await chart.prepareSelected(selected)
+        await chart.prepareResolvedRecommendation()
       }
     }
   }
@@ -200,7 +198,7 @@ struct ResultPreviewView: View {
     ResultViewerLogic.effectivePresentationMode(
       requestedMode: preference?.mode ?? .chart,
       hasChart: hasChart,
-      preparationFailed: chart.preparationFailed)
+      preparationFailed: selectedPreparationFailed)
   }
 
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
@@ -208,7 +206,7 @@ struct ResultPreviewView: View {
       selectedMode,
       requestedMode: preference?.mode ?? .chart,
       preserving: preference?.specificationID,
-      preparationFailed: chart.preparationFailed
+      preparationFailed: selectedPreparationFailed
     ) {
     case .none:
       break

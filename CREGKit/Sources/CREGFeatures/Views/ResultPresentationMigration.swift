@@ -15,6 +15,10 @@ typealias ResultPresentationMigrationHandler = (
 enum ResultPresentationPreferenceReconciliation: Equatable {
   case unchanged
   case retained(ResultPresentationPreference?)
+  /// The migration callback returned an unchanged stale preference. The store
+  /// remains authoritative, but views use this resolvable preference for any
+  /// subsequent explicit user write instead of persisting the dead pin again.
+  case stalled(ResultPresentationPreference)
   case messageMissing
 }
 
@@ -131,7 +135,7 @@ func analyzeResultPresentation(
     request,
     preferredSpecificationID: preference?.specificationID
   ) {
-  case .resolved(let recommendation, let analysis, let defaultReason)?:
+  case .resolved(let recommendation, _, let defaultReason)?:
     var resolvedRecommendation = recommendation
     var resolvedDefaultReason = defaultReason
     var authoritativePreference = preference
@@ -150,9 +154,14 @@ func analyzeResultPresentation(
           preference: reconciliation)
       }
       guard attemptedPreferences.insert(previous).inserted else {
+        diagnostics.record(DiagnosticEvent(
+          level: .error,
+          category: .presentation,
+          code: "chart_preference_reconciliation_stalled",
+          summary: "Chart preference reconciliation made no progress."))
         return .resolved(
           specificationID: resolvedRecommendation.id,
-          preference: reconciliation)
+          preference: .stalled(migrated))
       }
 
       switch migratePreference(previous, migrated) {
@@ -171,14 +180,13 @@ func analyzeResultPresentation(
           preference: .messageMissing)
       }
 
-      switch analysis.resolve(authoritativePreference?.specificationID) {
-      case .exact(let authoritative):
-        resolvedRecommendation = authoritative
-        resolvedDefaultReason = nil
-      case .defaulted(let authoritative, let reason):
+      switch chart.resolveLoadedRecommendation(
+        preferredSpecificationID: authoritativePreference?.specificationID
+      ) {
+      case .resolved(let authoritative, _, let reason)?:
         resolvedRecommendation = authoritative
         resolvedDefaultReason = reason
-      case .unavailable:
+      case .unavailable?:
         // The outer resolution proves this immutable analysis has a chart, so
         // resolving another preference cannot become unavailable. Preserve the
         // latest reconciliation if that package invariant ever changes,
@@ -187,6 +195,8 @@ func analyzeResultPresentation(
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: reconciliation)
+      case nil:
+        return nil
       }
     }
   case .unavailable?:

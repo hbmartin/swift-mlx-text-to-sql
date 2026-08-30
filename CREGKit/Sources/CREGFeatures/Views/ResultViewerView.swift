@@ -197,26 +197,18 @@ struct ResultViewerView: View {
   }
 
   var selectedRecommendation: AutoChartRecommendation? {
-    guard let analysis = chart.analysis else { return nil }
-    return selectedRecommendation(in: analysis)
+    chart.resolvedRecommendation
   }
 
-  func selectedRecommendation(
-    in analysis: AutoChartAnalysis<Int>
-  ) -> AutoChartRecommendation? {
-    switch analysis.resolve(selectedSpecificationID) {
-    case .exact(let recommendation), .defaulted(let recommendation, _):
-      return recommendation
-    case .unavailable:
-      return nil
-    }
+  var selectedPreparationFailed: Bool {
+    chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
   var effectiveResultMode: ResultPresentationPreference.Mode {
     ResultViewerLogic.effectivePresentationMode(
       requestedMode: presentationPreference.mode,
       hasChart: selectedRecommendation != nil,
-      preparationFailed: chart.preparationFailed)
+      preparationFailed: selectedPreparationFailed)
   }
 
   var filteredResult: QueryResult {
@@ -304,7 +296,7 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-view-mode")
         }
 
-        if chart.preparationFailed,
+        if selectedPreparationFailed,
           presentationPreference.mode == .chart
         {
           ResultChartRecoveryControls(
@@ -319,7 +311,7 @@ struct ResultViewerView: View {
 
         if effectiveResultMode == .chart,
           let analysis = chart.analysis,
-          let selectedRecommendation = selectedRecommendation(in: analysis)
+          let selectedRecommendation
         {
           ResultChartExplorerContainer(
             recommendation: selectedRecommendation
@@ -374,7 +366,7 @@ struct ResultViewerView: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
           if chartRecommendations.count > 1,
-            presentationPreference.mode == .chart || chart.preparationFailed
+            presentationPreference.mode == .chart || selectedPreparationFailed
           {
             chartTypeMenu
           }
@@ -414,9 +406,14 @@ struct ResultViewerView: View {
         clearChartSelection()
       }
       selectedSpecificationID = update.resolvedSpecificationID
-      if case .retained(let authoritativePreference) = update.preferenceReconciliation {
+      switch update.preferenceReconciliation {
+      case .retained(let authoritativePreference):
         presentationPreference =
           authoritativePreference ?? ResultPresentationPreference(mode: .chart)
+      case .stalled(let resolvedPreference):
+        presentationPreference = resolvedPreference
+      case .unchanged, .messageMissing:
+        break
       }
     }
     .task(
@@ -425,7 +422,7 @@ struct ResultViewerView: View {
     ) {
       // Analysis reconciliation and chart-type changes own exact-mark
       // selection policy; preparing the chosen chart does not mutate it.
-      await chart.prepareSelected(selectedRecommendation)
+      await chart.prepareResolvedRecommendation()
     }
   }
 
@@ -434,7 +431,7 @@ struct ResultViewerView: View {
       selectedMode,
       requestedMode: presentationPreference.mode,
       preserving: presentationPreference.specificationID,
-      preparationFailed: chart.preparationFailed
+      preparationFailed: selectedPreparationFailed
     ) {
     case .none:
       break
