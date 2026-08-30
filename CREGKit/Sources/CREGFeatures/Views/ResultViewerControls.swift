@@ -154,18 +154,10 @@ extension ResultViewerView {
           get: { selectedRecommendation?.id },
           set: { id in
             guard id != selectedRecommendation?.id else { return }
-            guard
-              let id,
-              chartRecommendations.contains(where: { $0.id == id })
-            else { return }
-            guard
-              case .resolved(let recommendation, _, _)? =
-                chart.resolveLoadedRecommendation(
-                  preferredSpecificationID: id)
-            else { return }
+            guard let id, chart.selectLoadedRecommendation(id) else { return }
             clearChartSelection()
             let updated = ResultViewerLogic.chartTypeSelectionPreference(
-              specificationID: recommendation.id)
+              specificationID: id)
             applyUserPreference(updated)
           })
       ) {

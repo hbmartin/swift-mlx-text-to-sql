@@ -366,7 +366,14 @@ final class ResultChartLoader {
     let value: AutoChartAnalysis<Int>
   }
 
+  private struct InFlightAnalysis {
+    let key: Request.Key
+    let analysisGeneration: Int
+    let task: Task<AutoChartAnalysis<Int>, Error>
+  }
+
   private var loadedAnalysis: LoadedAnalysis?
+  private var inFlightAnalysis: InFlightAnalysis?
   var analysis: AutoChartAnalysis<Int>? {
     loadedAnalysis?.value
   }
@@ -389,6 +396,9 @@ final class ResultChartLoader {
   /// superseded analysis and a preparation suspended on its predecessor from
   /// committing after a newer request has taken ownership of the loader.
   private var analysisGeneration = 0
+  /// Every analysis invocation supersedes the preceding resolution request,
+  /// even when both await the same immutable analysis computation.
+  private var analysisInvocationGeneration = 0
 
   init(
     client: CREGChartAnalysisClient,
@@ -430,27 +440,57 @@ final class ResultChartLoader {
     _ request: Request,
     preferredSpecificationID: AutoChartRecommendationID?
   ) async -> Resolution? {
-    let loaded: AutoChartAnalysis<Int>
+    analysisInvocationGeneration += 1
+    let invocationGeneration = analysisInvocationGeneration
     if let loadedAnalysis, loadedAnalysis.key == request.key {
-      loaded = loadedAnalysis.value
+      return applyResolution(
+        of: loadedAnalysis.value,
+        preferred: preferredSpecificationID)
+    }
+
+    let flight: InFlightAnalysis
+    if let inFlightAnalysis, inFlightAnalysis.key == request.key {
+      flight = inFlightAnalysis
     } else {
+      inFlightAnalysis?.task.cancel()
       failedPreparationRecommendationID = nil
       resolvedRecommendationID = nil
       resolvedRecommendation = nil
       loadedAnalysis = nil
       preparedChart = nil
       analysisGeneration += 1
-      let requestGeneration = analysisGeneration
-      do {
-        loaded = try await analyzeChart(request)
-      } catch {
-        return nil
+      let analyzeChart = analyzeChart
+      let task = Task {
+        try await analyzeChart(request)
       }
-      guard requestGeneration == analysisGeneration else { return nil }
-      loadedAnalysis = LoadedAnalysis(key: request.key, value: loaded)
+      flight = InFlightAnalysis(
+        key: request.key,
+        analysisGeneration: analysisGeneration,
+        task: task)
+      inFlightAnalysis = flight
     }
-    return applyResolution(
-      of: loaded, preferred: preferredSpecificationID)
+
+    do {
+      let loaded = try await flight.task.value
+      try Task.checkCancellation()
+      guard invocationGeneration == analysisInvocationGeneration,
+        flight.analysisGeneration == analysisGeneration
+      else { return nil }
+      if inFlightAnalysis?.analysisGeneration == flight.analysisGeneration {
+        inFlightAnalysis = nil
+      }
+      loadedAnalysis = LoadedAnalysis(key: request.key, value: loaded)
+      return applyResolution(
+        of: loaded,
+        preferred: preferredSpecificationID)
+    } catch {
+      if !Task.isCancelled,
+        inFlightAnalysis?.analysisGeneration == flight.analysisGeneration
+      {
+        inFlightAnalysis = nil
+      }
+      return nil
+    }
   }
 
   func hasLoadedAnalysis(for key: Request.Key) -> Bool {
@@ -465,6 +505,30 @@ final class ResultChartLoader {
     guard let analysis else { return nil }
     return applyResolution(
       of: analysis, preferred: preferredSpecificationID)
+  }
+
+  /// Selects one recommendation from the currently loaded analysis and applies
+  /// all recommendation-owned loader state. Rejecting IDs outside the loaded
+  /// recommendation set keeps picker input from silently defaulting.
+  func selectLoadedRecommendation(
+    _ recommendationID: AutoChartRecommendationID
+  ) -> Bool {
+    guard let analysis,
+      case .charts(let recommendations) = analysis.outcome,
+      recommendations.contains(where: { $0.id == recommendationID })
+    else { return false }
+
+    switch applyResolution(of: analysis, preferred: recommendationID) {
+    case .resolved(let recommendation, _, _):
+      guard recommendation.id == recommendationID else {
+        assertionFailure("An available recommendation did not resolve exactly.")
+        return false
+      }
+      return true
+    case .unavailable:
+      assertionFailure("A loaded recommendation resolved as unavailable.")
+      return false
+    }
   }
 
   /// SwiftUI can observe a new selection before its preparation task runs.

@@ -80,14 +80,8 @@ struct ResultPreviewView: View {
     chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
-  private var analysisTaskKey: ResultPresentationAnalysisTaskKey {
-    ResultPresentationAnalysisTaskKey(
-      chartRequest: chartRequest.key,
-      preferredSpecificationID: preference?.specificationID)
-  }
-
-  private var presentationPreference: ResultPresentationPreference? {
-    presentationState.effectivePreference(
+  private var requestedMode: ResultPresentationPreference.Mode {
+    presentationState.requestedMode(
       authoritativePreference: preference,
       requestKey: chartRequest.key)
   }
@@ -119,7 +113,7 @@ struct ResultPreviewView: View {
         }
 
         if selectedPreparationFailed,
-          (presentationPreference?.mode ?? .chart) == .chart
+          requestedMode == .chart
         {
           ResultChartRecoveryControls(
             spacing: 10,
@@ -173,29 +167,14 @@ struct ResultPreviewView: View {
         )
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
-      .onChange(of: preference) { _, authoritativePreference in
-        synchronizePresentationState(with: authoritativePreference)
-      }
-      .onChange(of: chartRequest.key) { _, _ in
-        synchronizePresentationState(with: preference)
-      }
-      .task(id: analysisTaskKey) {
-        let requestKey = chartRequest.key
-        presentationState.synchronize(
-          with: preference,
-          requestKey: requestKey)
-        guard
-          let update = await analyzeResultPresentation(
-            chart,
-            request: chartRequest,
-            preference: preference,
-            migratePreference: migratePreference,
-            diagnostics: diagnostics)
-        else { return }
-        presentationState.apply(
-          update.preferenceReconciliation,
-          requestKey: requestKey)
-      }
+      .resultPresentationLifecycle(
+        chart: chart,
+        request: chartRequest,
+        authoritativePreference: preference,
+        presentationState: $presentationState,
+        migratePreference: migratePreference,
+        diagnostics: diagnostics
+      )
       .task(
         id: chart.preparationTaskKey(
           recommendationID: selected?.id)
@@ -228,46 +207,20 @@ struct ResultPreviewView: View {
 
   private func effectiveMode(hasChart: Bool) -> ResultPresentationPreference.Mode {
     ResultViewerLogic.effectivePresentationMode(
-      requestedMode: presentationPreference?.mode ?? .chart,
+      requestedMode: requestedMode,
       hasChart: hasChart,
       preparationFailed: selectedPreparationFailed)
   }
 
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
-    synchronizePresentationState(with: preference)
-    let currentPreference = presentationState.preference
-    switch ResultViewerLogic.modeSelectionIntent(
+    handleResultPresentationModeSelection(
       selectedMode,
-      requestedMode: currentPreference?.mode ?? .chart,
-      preserving: currentPreference?.specificationID,
-      preparationFailed: selectedPreparationFailed
-    ) {
-    case .none:
-      break
-    case .persist(let updated):
-      presentationState.applyUserPreference(
-        updated,
-        authoritativePreference: preference,
-        requestKey: chartRequest.key)
-      setPreference(updated)
-    case .retryChart(let updated):
-      chart.retryPreparation()
-      if let updated {
-        presentationState.applyUserPreference(
-          updated,
-          authoritativePreference: preference,
-          requestKey: chartRequest.key)
-        setPreference(updated)
-      }
-    }
-  }
-
-  private func synchronizePresentationState(
-    with authoritativePreference: ResultPresentationPreference?
-  ) {
-    presentationState.synchronize(
-      with: authoritativePreference,
-      requestKey: chartRequest.key)
+      state: &presentationState,
+      authoritativePreference: preference,
+      requestKey: chartRequest.key,
+      preparationFailed: selectedPreparationFailed,
+      retryPreparation: chart.retryPreparation,
+      persistPreference: setPreference)
   }
 
   private var tablePreview: some View {

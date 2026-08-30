@@ -138,18 +138,21 @@ import Testing
 
     let chartKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preferredSpecificationID: chartPreference.specificationID)
+      preference: chartPreference)
     let tableKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preferredSpecificationID: tablePreference.specificationID)
+      preference: tablePreference)
     let selectionKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preferredSpecificationID: chartTestRecommendationID("bar|category|value"))
+      preference: ResultPresentationPreference(
+        mode: .chart,
+        specificationID: chartTestRecommendationID("bar|category|value")))
     let replacementRequestKey = ResultPresentationAnalysisTaskKey(
       chartRequest: chartTestRequest(
         resultFingerprint: "replacement-preview-result",
-        dataIdentity: "same-preview-message").key,
-      preferredSpecificationID: specificationID)
+        dataIdentity: "same-preview-message"
+      ).key,
+      preference: chartPreference)
 
     #expect(chartKey == tableKey)
     #expect(chartKey != selectionKey)
@@ -200,7 +203,8 @@ import Testing
       mode: .chart,
       specificationID: chartTestRecommendationID("bar|category|value"))
     let requestKey = chartTestRequest(
-      resultFingerprint: "stalled-preview-result").key
+      resultFingerprint: "stalled-preview-result"
+    ).key
     var state = ResultPresentationState(
       preference: stale,
       requestKey: requestKey)
@@ -208,12 +212,15 @@ import Testing
     state.apply(.stalled(resolved), requestKey: requestKey)
     state.synchronize(with: stale, requestKey: requestKey)
 
-    #expect(state.preference == resolved)
     #expect(
-      ResultViewerLogic.modeSelectionIntent(
+      state.effectivePreference(
+        authoritativePreference: stale,
+        requestKey: requestKey) == resolved)
+    #expect(
+      state.modeSelectionIntent(
         .table,
-        requestedMode: state.preference?.mode ?? .chart,
-        preserving: state.preference?.specificationID,
+        authoritativePreference: stale,
+        requestKey: requestKey,
         preparationFailed: false)
         == .persist(
           ResultPresentationPreference(
@@ -223,7 +230,8 @@ import Testing
 
   @Test func synchronizingAnAutomaticPreferenceDoesNotPinTheResolvedChart() {
     let requestKey = chartTestRequest(
-      resultFingerprint: "automatic-preview-result").key
+      resultFingerprint: "automatic-preview-result"
+    ).key
     var state = ResultPresentationState(
       preference: ResultPresentationPreference(
         mode: .chart,
@@ -232,14 +240,63 @@ import Testing
 
     state.synchronize(with: nil, requestKey: requestKey)
 
-    #expect(state.preference == nil)
     #expect(
-      ResultViewerLogic.modeSelectionIntent(
+      state.effectivePreference(
+        authoritativePreference: nil,
+        requestKey: requestKey) == nil)
+    #expect(
+      state.modeSelectionIntent(
         .table,
-        requestedMode: state.preference?.mode ?? .chart,
-        preserving: state.preference?.specificationID,
+        authoritativePreference: nil,
+        requestKey: requestKey,
         preparationFailed: false)
         == .persist(ResultPresentationPreference(mode: .table)))
+  }
+
+  @Test func modeOnlyAuthoritativeUpdatePreservesAStalledSpecification() {
+    let stale = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("obsolete|line|date|value"))
+    let resolved = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("bar|category|value"))
+    let authoritativeTable = ResultPresentationPreference(
+      mode: .table,
+      specificationID: stale.specificationID)
+    let requestKey = chartTestRequest(
+      resultFingerprint: "stalled-mode-only-result"
+    ).key
+    var state = ResultPresentationState(
+      preference: stale,
+      requestKey: requestKey)
+    state.apply(.stalled(resolved), requestKey: requestKey)
+    let expected = ResultPresentationPreference(
+      mode: .table,
+      specificationID: resolved.specificationID)
+
+    #expect(
+      state.effectivePreference(
+        authoritativePreference: authoritativeTable,
+        requestKey: requestKey) == expected)
+
+    state.synchronize(
+      with: authoritativeTable,
+      requestKey: requestKey)
+
+    #expect(
+      state.effectivePreference(
+        authoritativePreference: authoritativeTable,
+        requestKey: requestKey) == expected)
+    #expect(
+      state.modeSelectionIntent(
+        .chart,
+        authoritativePreference: authoritativeTable,
+        requestKey: requestKey,
+        preparationFailed: false)
+        == .persist(
+          ResultPresentationPreference(
+            mode: .chart,
+            specificationID: resolved.specificationID)))
   }
 
   @Test func replacementRequestRejectsAStalledPreferenceSynchronously() {
@@ -251,10 +308,12 @@ import Testing
       specificationID: chartTestRecommendationID("bar|category|value"))
     let originalKey = chartTestRequest(
       resultFingerprint: "original-preview-result",
-      dataIdentity: "reused-preview-message").key
+      dataIdentity: "reused-preview-message"
+    ).key
     let replacementKey = chartTestRequest(
       resultFingerprint: "replacement-preview-result",
-      dataIdentity: "reused-preview-message").key
+      dataIdentity: "reused-preview-message"
+    ).key
     var state = ResultPresentationState(
       preference: stale,
       requestKey: originalKey)
@@ -268,12 +327,16 @@ import Testing
     state.synchronize(with: stale, requestKey: replacementKey)
     state.apply(.stalled(resolved), requestKey: originalKey)
 
-    #expect(state.preference == stale)
+    #expect(
+      state.effectivePreference(
+        authoritativePreference: stale,
+        requestKey: replacementKey) == stale)
   }
 
   @Test func changedAuthoritativeInputIsEffectiveBeforeStateSynchronization() {
     let requestKey = chartTestRequest(
-      resultFingerprint: "authoritative-preview-result").key
+      resultFingerprint: "authoritative-preview-result"
+    ).key
     let original = ResultPresentationPreference(mode: .chart)
     let replacement = ResultPresentationPreference(mode: .table)
     var state = ResultPresentationState(
@@ -287,7 +350,10 @@ import Testing
 
     state.synchronize(with: replacement, requestKey: requestKey)
 
-    #expect(state.preference == replacement)
+    #expect(
+      state.effectivePreference(
+        authoritativePreference: replacement,
+        requestKey: requestKey) == replacement)
   }
 
   @Test func leaseListingPreviewUsesAResolvableSelectionSpecification() async throws {
@@ -587,10 +653,11 @@ import Testing
       specificationID: chartTestRecommendationID(
         "authoritative-obsolete-specification",
         policyVersion: previousPolicy))
-    var attempts: [(
-      previous: ResultPresentationPreference,
-      updated: ResultPresentationPreference
-    )] = []
+    var attempts:
+      [(
+        previous: ResultPresentationPreference,
+        updated: ResultPresentationPreference
+      )] = []
 
     let update = await analyzeResultPresentation(
       loader,
@@ -857,6 +924,43 @@ import Testing
     #expect(loader.analysis == nil)
   }
 
+  @Test func changedPreferenceReusesAnInFlightAnalysis() async throws {
+    let gate = SupersededChartAnalysisGate()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      analyzeChart: { request in
+        try await gate.analyze(request)
+      })
+    let request = chartTestRequest(
+      resultFingerprint: "in-flight-preference-change")
+    let first = Task {
+      await loader.analyze(
+        request,
+        preferredSpecificationID: nil)
+    }
+    await gate.waitUntilFirstAnalysisStarts()
+
+    first.cancel()
+    let latestPreference = chartTestRecommendationID("bar|category|value")
+    let replacement = Task {
+      await loader.analyze(
+        request,
+        preferredSpecificationID: latestPreference)
+    }
+    await gate.releaseFirstAnalysis()
+
+    let firstResolution = await first.value
+    let replacementResolution = await replacement.value
+    let analysisCallCount = await gate.analysisCallCount
+    #expect(firstResolution == nil)
+    guard case .resolved? = replacementResolution else {
+      Issue.record("The replacement preference should reuse the analysis result.")
+      return
+    }
+    #expect(analysisCallCount == 1)
+  }
+
   @Test func selectionGateAcceptsOnlyTheCurrentlyLoadedRequest() async {
     let loader = ResultChartLoader(client: .testValue, warmStart: nil)
     let loadedRequest = chartTestRequest(
@@ -904,8 +1008,7 @@ import Testing
     let recommendations = chartTestRecommendations(from: analysis)
     let alternative = try #require(recommendations.dropFirst().first)
 
-    _ = loader.resolveLoadedRecommendation(
-      preferredSpecificationID: alternative.id)
+    #expect(loader.selectLoadedRecommendation(alternative.id))
     await loader.prepareResolvedRecommendation()
     let preparationKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
@@ -923,6 +1026,18 @@ import Testing
     #expect(
       loader.preparationTaskKey(recommendationID: alternative.id)
         == preparationKey)
+  }
+
+  @Test func loadedRecommendationSelectionRejectsAnUnknownID() async throws {
+    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let request = chartTestRequest(
+      resultFingerprint: "invalid-loaded-recommendation-selection")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let selectedBefore = try #require(loader.resolvedRecommendation?.id)
+    let unknownID = chartTestRecommendationID("unknown|category|value")
+
+    #expect(!loader.selectLoadedRecommendation(unknownID))
+    #expect(loader.resolvedRecommendation?.id == selectedBefore)
   }
 
   @Test func preparedChartIsExposedOnlyForItsRecommendation() async throws {
@@ -1225,6 +1340,10 @@ private actor SupersededChartAnalysisGate {
   func releaseFirstAnalysis() async {
     await firstCallGate.releaseFirstCall()
   }
+
+  var analysisCallCount: Int {
+    get async { await firstCallGate.count }
+  }
 }
 
 private actor FirstCallGate {
@@ -1232,6 +1351,8 @@ private actor FirstCallGate {
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
   private var releaseContinuation: CheckedContinuation<Void, Never>?
   private var releaseRequested = false
+
+  var count: Int { callCount }
 
   func pauseIfFirstCall() async -> Bool {
     callCount += 1
