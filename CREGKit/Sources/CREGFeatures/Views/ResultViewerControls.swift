@@ -151,15 +151,14 @@ extension ResultViewerView {
       Picker(
         "Chart type",
         selection: Binding(
-          get: { selectedSpecificationID },
+          get: { selectedRecommendation?.id },
           set: { id in
-            guard id != selectedSpecificationID else { return }
+            guard id != selectedRecommendation?.id else { return }
             guard
               case .resolved(let recommendation, _, _)? =
                 chart.resolveLoadedRecommendation(
                   preferredSpecificationID: id)
             else { return }
-            selectedSpecificationID = recommendation.id
             clearChartSelection()
             let updated = ResultViewerLogic.chartTypeSelectionPreference(
               specificationID: recommendation.id)

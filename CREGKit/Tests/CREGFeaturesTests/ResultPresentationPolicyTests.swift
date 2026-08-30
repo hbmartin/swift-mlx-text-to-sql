@@ -124,6 +124,102 @@ import Testing
 
 @MainActor
 @Suite struct ResultPreviewAnalysisTests {
+  @Test func analysisTaskIdentityChangesWithTheAuthoritativePreference() {
+    let request = chartTestRequest(
+      resultFingerprint: "same-preview-result",
+      dataIdentity: "same-preview-message")
+    let original = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("line|date|value"))
+    let replacement = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("bar|category|value"))
+
+    let originalKey = ResultPreviewAnalysisTaskKey(
+      chartRequest: request.key,
+      preference: original)
+    let replacementKey = ResultPreviewAnalysisTaskKey(
+      chartRequest: request.key,
+      preference: replacement)
+
+    #expect(originalKey != replacementKey)
+  }
+
+  @Test func changedPreferenceReresolvesTheReusedPreviewAnalysis() async throws {
+    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let request = chartTestRequest(
+      resultFingerprint: "reused-preview-result",
+      dataIdentity: "reused-preview-message")
+    _ = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, updated in .migrated(updated) },
+      diagnostics: .noop)
+    let analysis = try #require(loader.analysis)
+    let alternative = try #require(
+      chartTestRecommendations(from: analysis).dropFirst().first)
+    let changedPreference = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: alternative.id)
+
+    let update = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: changedPreference,
+      migratePreference: { _, _ in
+        Issue.record("An exact changed preference must not migrate.")
+        return .retained(changedPreference)
+      },
+      diagnostics: .noop)
+
+    #expect(update?.resolvedSpecificationID == alternative.id)
+    #expect(loader.resolvedRecommendation?.id == alternative.id)
+  }
+
+  @Test func stalledReconciliationBecomesThePreviewWritePreference() {
+    let stale = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("obsolete|line|date|value"))
+    let resolved = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("bar|category|value"))
+    var state = ResultPreviewPresentationState(preference: stale)
+
+    state.apply(.stalled(resolved))
+    state.synchronize(with: stale)
+
+    #expect(state.preference == resolved)
+    #expect(
+      ResultViewerLogic.modeSelectionIntent(
+        .table,
+        requestedMode: state.preference?.mode ?? .chart,
+        preserving: state.preference?.specificationID,
+        preparationFailed: false)
+        == .persist(
+          ResultPresentationPreference(
+            mode: .table,
+            specificationID: resolved.specificationID)))
+  }
+
+  @Test func synchronizingAnAutomaticPreferenceDoesNotPinTheResolvedChart() {
+    var state = ResultPreviewPresentationState(
+      preference: ResultPresentationPreference(
+        mode: .chart,
+        specificationID: chartTestRecommendationID("bar|category|value")))
+
+    state.synchronize(with: nil)
+
+    #expect(state.preference == nil)
+    #expect(
+      ResultViewerLogic.modeSelectionIntent(
+        .table,
+        requestedMode: state.preference?.mode ?? .chart,
+        preserving: state.preference?.specificationID,
+        preparationFailed: false)
+        == .persist(ResultPresentationPreference(mode: .table)))
+  }
+
   @Test func leaseListingPreviewUsesAResolvableSelectionSpecification() async throws {
     let loader = ResultChartLoader(
       client: CREGChartAnalysisClient.testValue,
