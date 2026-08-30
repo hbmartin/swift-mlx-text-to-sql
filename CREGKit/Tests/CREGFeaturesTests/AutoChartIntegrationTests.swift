@@ -149,11 +149,26 @@ import Testing
       category: .diagnostic,
       code: .validationFailed,
       defaultText: "Upstream fallback")
+    let sameCodeInAnotherCategory = AutoChartMessage(
+      category: .rationale,
+      code: .boxPlotMissingCategoryGroup,
+      defaultText: "Rationale fallback")
+    let sameCodeWithFutureArguments = AutoChartMessage(
+      category: .diagnostic,
+      code: .boxPlotMissingCategoryGroup,
+      arguments: ["label": .string("Future label")],
+      defaultText: "Argument-aware fallback")
 
     #expect(
       CREGChartAdapter.textResolver(upstream)
-        == "Some category values couldn’t be displayed and are grouped as Missing.")
+        == "Some category values couldn’t be displayed and are grouped as “Missing value”.")
     #expect(CREGChartAdapter.textResolver(unrelated) == "Upstream fallback")
+    #expect(
+      CREGChartAdapter.textResolver(sameCodeInAnotherCategory)
+        == "Rationale fallback")
+    #expect(
+      CREGChartAdapter.textResolver(sameCodeWithFutureArguments)
+        == "Argument-aware fallback")
   }
 
   @Test func blobBearingColumnsAreNotForcedIntoCategorySemantics() throws {
@@ -170,6 +185,28 @@ import Testing
 
     #expect(input.dataset.chartColumns[0].hints.semanticType == nil)
     #expect(input.dataset.chartColumns[0].hints.role == nil)
+  }
+
+  @Test func blobDoesNotEraseOtherwiseValidTemporalSemantics() throws {
+    let input = try CREGChartAdapter.analysisInput(
+      result: QueryResult(
+        columns: ["maturity_date"],
+        rows: [
+          [.text("2027-01-01")],
+          [.text("2027-02-01")],
+          [.text("2027-03-01")],
+          [.text("2027-04-01")],
+          [.blob(Data([0x01]))],
+        ]),
+      sql: "SELECT maturity_date FROM loans",
+      question: "Show maturities over time")
+    let column = input.dataset.chartColumns[0]
+
+    #expect(column.hints.semanticType == .temporal)
+    #expect(input.dataset.chartRows[0].chartValue(for: column.id).dateValue != nil)
+    #expect(
+      input.dataset.chartRows[4].chartValue(for: column.id)
+        == .binary(Data([0x01])))
   }
 
   @Test func chartLayoutKeepsExplicitHeightsAcrossDependencyDefaultChange() {
@@ -290,10 +327,12 @@ import Testing
       result: QueryResult(
         columns: ["is_segment", "value"],
         rows: [
-          [.integer(1), .real(10)],
-          [.integer(1), .real(12)],
-          [.blob(Data([0x01])), .real(20)],
-          [.null, .real(22)],
+          [.integer(0), .real(10)],
+          [.integer(0), .real(12)],
+          [.integer(1), .real(20)],
+          [.integer(1), .real(22)],
+          [.blob(Data([0x01])), .real(24)],
+          [.null, .real(26)],
         ]),
       sql: "SELECT is_segment, value FROM observations",
       question: "Show the distribution of value")

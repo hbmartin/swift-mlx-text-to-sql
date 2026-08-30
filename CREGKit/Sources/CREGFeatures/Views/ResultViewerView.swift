@@ -68,7 +68,7 @@ struct ResultViewerView: View {
       question: question,
       preference: preference,
       persistPreference: persistPreference,
-      migratePreference: { _, updated in .retained(updated) },
+      migratePreference: { _, updated in .migrated(updated) },
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
       initialChartSelection: initialChartSelection)

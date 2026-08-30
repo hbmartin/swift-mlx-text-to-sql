@@ -3,6 +3,7 @@ import ComposableArchitecture
 import Foundation
 
 enum ResultPresentationMigrationOutcome: Equatable {
+  case migrated(ResultPresentationPreference)
   case retained(ResultPresentationPreference?)
   case messageMissing
 }
@@ -91,6 +92,12 @@ func resultPresentationMigrationHandler(
   messageID: UUID
 ) -> ResultPresentationMigrationHandler {
   { previous, updated in
+    guard let message = store.messages[id: messageID] else {
+      return .messageMissing
+    }
+    guard message.resultPresentation == previous else {
+      return .retained(message.resultPresentation)
+    }
     store.send(
       .resultPresentationMigrated(
         .init(
@@ -100,7 +107,10 @@ func resultPresentationMigrationHandler(
     guard let message = store.messages[id: messageID] else {
       return .messageMissing
     }
-    return .retained(message.resultPresentation)
+    guard message.resultPresentation == updated else {
+      return .retained(message.resultPresentation)
+    }
+    return .migrated(updated)
   }
 }
 
@@ -113,48 +123,70 @@ func analyzeResultPresentation(
   request: ResultChartLoader.Request,
   preference: ResultPresentationPreference?,
   migratePreference: ResultPresentationMigrationHandler,
-  diagnostics: DiagnosticsClient = .noop
+  diagnostics: DiagnosticsClient
 ) async -> ResultPresentationAnalysisUpdate? {
   switch await chart.analyze(
     request,
     preferredSpecificationID: preference?.specificationID
   ) {
   case .resolved(let recommendation, let analysis, let defaultReason)?:
-    recordChartResolutionDefault(
-      defaultReason,
-      diagnostics: diagnostics)
-    guard
-      let previous = preference,
-      let migrated = ResultViewerLogic.migratedPreference(
-        previous,
-        resolvedSpecificationID: recommendation.id)
-    else {
-      return .resolved(
-        specificationID: recommendation.id,
-        preference: .unchanged)
-    }
+    var resolvedRecommendation = recommendation
+    var resolvedDefaultReason = defaultReason
+    var authoritativePreference = preference
+    var reconciliation = ResultPresentationPreferenceReconciliation.unchanged
+    var attemptedPreferences: Set<ResultPresentationPreference> = []
 
-    switch migratePreference(previous, migrated) {
-    case .retained(let authoritativePreference):
-      switch analysis.resolve(authoritativePreference?.specificationID) {
-      case .exact(let authoritative), .defaulted(let authoritative, _):
+    while true {
+      guard
+        let previous = authoritativePreference,
+        let migrated = ResultViewerLogic.migratedPreference(
+          previous,
+          resolvedSpecificationID: resolvedRecommendation.id)
+      else {
         return .resolved(
-          specificationID: authoritative.id,
-          preference: .retained(authoritativePreference))
+          specificationID: resolvedRecommendation.id,
+          preference: reconciliation)
+      }
+      guard attemptedPreferences.insert(previous).inserted else {
+        assertionFailure("Chart preference reconciliation repeated a retained preference.")
+        return .resolved(
+          specificationID: resolvedRecommendation.id,
+          preference: reconciliation)
+      }
+
+      switch migratePreference(previous, migrated) {
+      case .migrated(let retainedPreference):
+        recordChartPreferenceMigration(
+          resolvedDefaultReason,
+          diagnostics: diagnostics)
+        authoritativePreference = retainedPreference
+        reconciliation = .retained(retainedPreference)
+      case .retained(let retainedPreference):
+        authoritativePreference = retainedPreference
+        reconciliation = .retained(retainedPreference)
+      case .messageMissing:
+        return .resolved(
+          specificationID: resolvedRecommendation.id,
+          preference: .messageMissing)
+      }
+
+      switch analysis.resolve(authoritativePreference?.specificationID) {
+      case .exact(let authoritative):
+        resolvedRecommendation = authoritative
+        resolvedDefaultReason = nil
+      case .defaulted(let authoritative, let reason):
+        resolvedRecommendation = authoritative
+        resolvedDefaultReason = reason
       case .unavailable:
         // The outer resolution proves this immutable analysis has a chart, so
         // resolving another preference cannot become unavailable. Preserve the
-        // committed reconciliation if that package invariant ever changes,
+        // latest reconciliation if that package invariant ever changes,
         // while retaining the chart the analysis already resolved.
         assertionFailure("A resolved chart analysis became unavailable.")
         return .resolved(
-          specificationID: recommendation.id,
-          preference: .retained(authoritativePreference))
+          specificationID: resolvedRecommendation.id,
+          preference: reconciliation)
       }
-    case .messageMissing:
-      return .resolved(
-        specificationID: recommendation.id,
-        preference: .messageMissing)
     }
   case .unavailable?:
     return .unavailable
@@ -163,7 +195,7 @@ func analyzeResultPresentation(
   }
 }
 
-private func recordChartResolutionDefault(
+private func recordChartPreferenceMigration(
   _ reason: AutoChartRecommendationResolution.DefaultReason?,
   diagnostics: DiagnosticsClient
 ) {
@@ -173,7 +205,7 @@ private func recordChartResolutionDefault(
     return
   case .policyVersionChanged(let previous, let current):
     diagnostics.info(
-      category: .pipeline,
+      category: .presentation,
       code: "chart_recommendation_policy_changed",
       summary: "A stored chart pin used an obsolete recommendation policy.",
       context: [
@@ -182,7 +214,7 @@ private func recordChartResolutionDefault(
       ])
   case .specificationUnavailable:
     diagnostics.info(
-      category: .pipeline,
+      category: .presentation,
       code: "chart_specification_unavailable",
       summary: "A stored chart pin was unavailable and the default chart was selected.")
   }
