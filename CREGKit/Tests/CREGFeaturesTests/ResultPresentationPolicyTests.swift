@@ -124,25 +124,36 @@ import Testing
 
 @MainActor
 @Suite struct ResultPreviewAnalysisTests {
-  @Test func analysisTaskIdentityChangesWithTheAuthoritativePreference() {
+  @Test func analysisTaskIdentityTracksOnlyRequestAndSpecification() {
     let request = chartTestRequest(
       resultFingerprint: "same-preview-result",
       dataIdentity: "same-preview-message")
-    let original = ResultPresentationPreference(
+    let specificationID = chartTestRecommendationID("line|date|value")
+    let chartPreference = ResultPresentationPreference(
       mode: .chart,
-      specificationID: chartTestRecommendationID("line|date|value"))
-    let replacement = ResultPresentationPreference(
-      mode: .chart,
-      specificationID: chartTestRecommendationID("bar|category|value"))
+      specificationID: specificationID)
+    let tablePreference = ResultPresentationPreference(
+      mode: .table,
+      specificationID: specificationID)
 
-    let originalKey = ResultPreviewAnalysisTaskKey(
+    let chartKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preference: original)
-    let replacementKey = ResultPreviewAnalysisTaskKey(
+      preferredSpecificationID: chartPreference.specificationID)
+    let tableKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preference: replacement)
+      preferredSpecificationID: tablePreference.specificationID)
+    let selectionKey = ResultPresentationAnalysisTaskKey(
+      chartRequest: request.key,
+      preferredSpecificationID: chartTestRecommendationID("bar|category|value"))
+    let replacementRequestKey = ResultPresentationAnalysisTaskKey(
+      chartRequest: chartTestRequest(
+        resultFingerprint: "replacement-preview-result",
+        dataIdentity: "same-preview-message").key,
+      preferredSpecificationID: specificationID)
 
-    #expect(originalKey != replacementKey)
+    #expect(chartKey == tableKey)
+    #expect(chartKey != selectionKey)
+    #expect(chartKey != replacementRequestKey)
   }
 
   @Test func changedPreferenceReresolvesTheReusedPreviewAnalysis() async throws {
@@ -173,7 +184,11 @@ import Testing
       },
       diagnostics: .noop)
 
-    #expect(update?.resolvedSpecificationID == alternative.id)
+    guard case .resolved(let resolvedID, _)? = update else {
+      Issue.record("The changed preference should resolve a chart.")
+      return
+    }
+    #expect(resolvedID == alternative.id)
     #expect(loader.resolvedRecommendation?.id == alternative.id)
   }
 
@@ -184,10 +199,14 @@ import Testing
     let resolved = ResultPresentationPreference(
       mode: .chart,
       specificationID: chartTestRecommendationID("bar|category|value"))
-    var state = ResultPreviewPresentationState(preference: stale)
+    let requestKey = chartTestRequest(
+      resultFingerprint: "stalled-preview-result").key
+    var state = ResultPresentationState(
+      preference: stale,
+      requestKey: requestKey)
 
-    state.apply(.stalled(resolved))
-    state.synchronize(with: stale)
+    state.apply(.stalled(resolved), requestKey: requestKey)
+    state.synchronize(with: stale, requestKey: requestKey)
 
     #expect(state.preference == resolved)
     #expect(
@@ -203,12 +222,15 @@ import Testing
   }
 
   @Test func synchronizingAnAutomaticPreferenceDoesNotPinTheResolvedChart() {
-    var state = ResultPreviewPresentationState(
+    let requestKey = chartTestRequest(
+      resultFingerprint: "automatic-preview-result").key
+    var state = ResultPresentationState(
       preference: ResultPresentationPreference(
         mode: .chart,
-        specificationID: chartTestRecommendationID("bar|category|value")))
+        specificationID: chartTestRecommendationID("bar|category|value")),
+      requestKey: requestKey)
 
-    state.synchronize(with: nil)
+    state.synchronize(with: nil, requestKey: requestKey)
 
     #expect(state.preference == nil)
     #expect(
@@ -218,6 +240,54 @@ import Testing
         preserving: state.preference?.specificationID,
         preparationFailed: false)
         == .persist(ResultPresentationPreference(mode: .table)))
+  }
+
+  @Test func replacementRequestRejectsAStalledPreferenceSynchronously() {
+    let stale = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("obsolete|line|date|value"))
+    let resolved = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("bar|category|value"))
+    let originalKey = chartTestRequest(
+      resultFingerprint: "original-preview-result",
+      dataIdentity: "reused-preview-message").key
+    let replacementKey = chartTestRequest(
+      resultFingerprint: "replacement-preview-result",
+      dataIdentity: "reused-preview-message").key
+    var state = ResultPresentationState(
+      preference: stale,
+      requestKey: originalKey)
+    state.apply(.stalled(resolved), requestKey: originalKey)
+
+    #expect(
+      state.effectivePreference(
+        authoritativePreference: stale,
+        requestKey: replacementKey) == stale)
+
+    state.synchronize(with: stale, requestKey: replacementKey)
+    state.apply(.stalled(resolved), requestKey: originalKey)
+
+    #expect(state.preference == stale)
+  }
+
+  @Test func changedAuthoritativeInputIsEffectiveBeforeStateSynchronization() {
+    let requestKey = chartTestRequest(
+      resultFingerprint: "authoritative-preview-result").key
+    let original = ResultPresentationPreference(mode: .chart)
+    let replacement = ResultPresentationPreference(mode: .table)
+    var state = ResultPresentationState(
+      preference: original,
+      requestKey: requestKey)
+
+    #expect(
+      state.effectivePreference(
+        authoritativePreference: replacement,
+        requestKey: requestKey) == replacement)
+
+    state.synchronize(with: replacement, requestKey: requestKey)
+
+    #expect(state.preference == replacement)
   }
 
   @Test func leaseListingPreviewUsesAResolvableSelectionSpecification() async throws {
@@ -295,7 +365,10 @@ import Testing
       },
       diagnostics: diagnostics.client)
 
-    let resolvedID = try #require(update?.resolvedSpecificationID)
+    guard case .resolved(let resolvedID, _)? = update else {
+      Issue.record("The chartable fixture should resolve a viewer chart.")
+      return
+    }
     #expect(resolvedID == loader.analysis?.primaryChart?.recommendation.id)
     #expect(proposedMigration?.mode == .chart)
     #expect(proposedMigration?.specificationID == nil)
@@ -349,7 +422,6 @@ import Testing
       specificationID: AutoChartSpecificationID(rawValue: "bar|fund|value"),
       markID: "core")
 
-    #expect(update.resolvedSpecificationID == nil)
     #expect(update.preferenceReconciliation == .unchanged)
     #expect(update.invalidatesChartSelection(selection.specificationID))
     #expect(!update.invalidatesChartSelection(nil))
@@ -487,7 +559,11 @@ import Testing
       migratePreference: { _, _ in .retained(authoritative) },
       diagnostics: diagnostics.client)
 
-    #expect(update?.resolvedSpecificationID == alternative.id)
+    guard case .resolved(let resolvedID, _)? = update else {
+      Issue.record("The retained preference should resolve a chart.")
+      return
+    }
+    #expect(resolvedID == alternative.id)
     #expect(loader.resolvedRecommendation?.id == alternative.id)
     #expect(loader.matchingPreparedChart(for: primary.id) == nil)
     #expect(loader.matchingPreparedChart(for: alternative.id) == nil)

@@ -22,6 +22,88 @@ enum ResultPresentationPreferenceReconciliation: Equatable {
   case messageMissing
 }
 
+/// Inputs that can change which recommendation an existing analysis resolves.
+/// Presentation mode is deliberately excluded: switching Chart/Table does not
+/// require cancelling or repeating chart analysis.
+struct ResultPresentationAnalysisTaskKey: Hashable {
+  var chartRequest: ResultChartLoader.Request.Key
+  var preferredSpecificationID: AutoChartRecommendationID?
+}
+
+/// Surface-local presentation policy with explicit provenance. Reconciled and
+/// optimistic preferences remain useful while the parent still supplies the
+/// preceding value, but can never cross into a replacement result request.
+struct ResultPresentationState: Equatable {
+  private(set) var preference: ResultPresentationPreference?
+  private var requestKey: ResultChartLoader.Request.Key
+  private var synchronizedInputPreference: ResultPresentationPreference?
+
+  init(
+    preference: ResultPresentationPreference?,
+    requestKey: ResultChartLoader.Request.Key
+  ) {
+    self.preference = preference
+    self.requestKey = requestKey
+    self.synchronizedInputPreference = preference
+  }
+
+  /// Returns the authoritative input immediately when SwiftUI has rebuilt the
+  /// view but has not yet delivered its change callback to local state.
+  func effectivePreference(
+    authoritativePreference: ResultPresentationPreference?,
+    requestKey: ResultChartLoader.Request.Key
+  ) -> ResultPresentationPreference? {
+    guard requestKey == self.requestKey else {
+      return authoritativePreference
+    }
+    guard authoritativePreference == synchronizedInputPreference else {
+      return authoritativePreference
+    }
+    return preference
+  }
+
+  mutating func synchronize(
+    with authoritativePreference: ResultPresentationPreference?,
+    requestKey: ResultChartLoader.Request.Key
+  ) {
+    guard requestKey == self.requestKey else {
+      self.requestKey = requestKey
+      synchronizedInputPreference = authoritativePreference
+      preference = authoritativePreference
+      return
+    }
+    guard authoritativePreference != synchronizedInputPreference else { return }
+    synchronizedInputPreference = authoritativePreference
+    preference = authoritativePreference
+  }
+
+  mutating func applyUserPreference(
+    _ updated: ResultPresentationPreference,
+    authoritativePreference: ResultPresentationPreference?,
+    requestKey: ResultChartLoader.Request.Key
+  ) {
+    synchronize(
+      with: authoritativePreference,
+      requestKey: requestKey)
+    preference = updated
+  }
+
+  mutating func apply(
+    _ reconciliation: ResultPresentationPreferenceReconciliation,
+    requestKey: ResultChartLoader.Request.Key
+  ) {
+    guard requestKey == self.requestKey else { return }
+    switch reconciliation {
+    case .retained(let authoritativePreference):
+      preference = authoritativePreference
+    case .stalled(let resolvedPreference):
+      preference = resolvedPreference
+    case .unchanged, .messageMissing:
+      break
+    }
+  }
+}
+
 /// Exact-mark row IDs index one result revision. Keeping selection and
 /// provenance in one value prevents either half from outliving the other.
 struct ResultChartSelectionState {
@@ -58,13 +140,6 @@ enum ResultPresentationAnalysisUpdate: Equatable {
     specificationID: AutoChartRecommendationID,
     preference: ResultPresentationPreferenceReconciliation)
   case unavailable
-
-  var resolvedSpecificationID: AutoChartRecommendationID? {
-    switch self {
-    case .resolved(let specificationID, _): specificationID
-    case .unavailable: nil
-    }
-  }
 
   var preferenceReconciliation: ResultPresentationPreferenceReconciliation {
     switch self {

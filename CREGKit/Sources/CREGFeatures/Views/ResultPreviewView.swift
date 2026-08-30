@@ -3,42 +3,6 @@ import CREGEngine
 import ComposableArchitecture
 import SwiftUI
 
-struct ResultPreviewAnalysisTaskKey: Hashable {
-  var chartRequest: ResultChartLoader.Request.Key
-  var preference: ResultPresentationPreference?
-}
-
-struct ResultPreviewPresentationState: Equatable {
-  private(set) var preference: ResultPresentationPreference?
-  private var synchronizedInputPreference: ResultPresentationPreference?
-
-  init(preference: ResultPresentationPreference?) {
-    self.preference = preference
-    self.synchronizedInputPreference = preference
-  }
-
-  mutating func synchronize(
-    with authoritativePreference: ResultPresentationPreference?
-  ) {
-    guard authoritativePreference != synchronizedInputPreference else { return }
-    synchronizedInputPreference = authoritativePreference
-    preference = authoritativePreference
-  }
-
-  mutating func apply(
-    _ reconciliation: ResultPresentationPreferenceReconciliation
-  ) {
-    switch reconciliation {
-    case .retained(let authoritativePreference):
-      preference = authoritativePreference
-    case .stalled(let resolvedPreference):
-      preference = resolvedPreference
-    case .unchanged, .messageMissing:
-      break
-    }
-  }
-}
-
 /// The four-row Result Preview shown inline in the transcript; tapping it
 /// opens the full-screen Result Viewer.
 struct ResultPreviewView: View {
@@ -57,7 +21,7 @@ struct ResultPreviewView: View {
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Dependency(\.diagnostics) private var diagnostics
   @State private var chart: ResultChartLoader
-  @State private var presentationState: ResultPreviewPresentationState
+  @State private var presentationState: ResultPresentationState
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
   @State private var pinchHapticTrigger = 0
@@ -97,7 +61,9 @@ struct ResultPreviewView: View {
         warmStart: request,
         preferredSpecificationID: preference?.specificationID))
     self._presentationState = State(
-      initialValue: ResultPreviewPresentationState(preference: preference))
+      initialValue: ResultPresentationState(
+        preference: preference,
+        requestKey: request.key))
   }
 
   private var renderedScale: CGFloat {
@@ -114,10 +80,16 @@ struct ResultPreviewView: View {
     chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
-  private var analysisTaskKey: ResultPreviewAnalysisTaskKey {
-    ResultPreviewAnalysisTaskKey(
+  private var analysisTaskKey: ResultPresentationAnalysisTaskKey {
+    ResultPresentationAnalysisTaskKey(
       chartRequest: chartRequest.key,
-      preference: preference)
+      preferredSpecificationID: preference?.specificationID)
+  }
+
+  private var presentationPreference: ResultPresentationPreference? {
+    presentationState.effectivePreference(
+      authoritativePreference: preference,
+      requestKey: chartRequest.key)
   }
 
   var body: some View {
@@ -147,7 +119,7 @@ struct ResultPreviewView: View {
         }
 
         if selectedPreparationFailed,
-          (presentationState.preference?.mode ?? .chart) == .chart
+          (presentationPreference?.mode ?? .chart) == .chart
         {
           ResultChartRecoveryControls(
             spacing: 10,
@@ -201,8 +173,17 @@ struct ResultPreviewView: View {
         )
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
+      .onChange(of: preference) { _, authoritativePreference in
+        synchronizePresentationState(with: authoritativePreference)
+      }
+      .onChange(of: chartRequest.key) { _, _ in
+        synchronizePresentationState(with: preference)
+      }
       .task(id: analysisTaskKey) {
-        presentationState.synchronize(with: preference)
+        let requestKey = chartRequest.key
+        presentationState.synchronize(
+          with: preference,
+          requestKey: requestKey)
         guard
           let update = await analyzeResultPresentation(
             chart,
@@ -211,7 +192,9 @@ struct ResultPreviewView: View {
             migratePreference: migratePreference,
             diagnostics: diagnostics)
         else { return }
-        presentationState.apply(update.preferenceReconciliation)
+        presentationState.apply(
+          update.preferenceReconciliation,
+          requestKey: requestKey)
       }
       .task(
         id: chart.preparationTaskKey(
@@ -245,30 +228,46 @@ struct ResultPreviewView: View {
 
   private func effectiveMode(hasChart: Bool) -> ResultPresentationPreference.Mode {
     ResultViewerLogic.effectivePresentationMode(
-      requestedMode: presentationState.preference?.mode ?? .chart,
+      requestedMode: presentationPreference?.mode ?? .chart,
       hasChart: hasChart,
       preparationFailed: selectedPreparationFailed)
   }
 
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
+    synchronizePresentationState(with: preference)
+    let currentPreference = presentationState.preference
     switch ResultViewerLogic.modeSelectionIntent(
       selectedMode,
-      requestedMode: presentationState.preference?.mode ?? .chart,
-      preserving: presentationState.preference?.specificationID,
+      requestedMode: currentPreference?.mode ?? .chart,
+      preserving: currentPreference?.specificationID,
       preparationFailed: selectedPreparationFailed
     ) {
     case .none:
       break
     case .persist(let updated):
-      presentationState.synchronize(with: updated)
+      presentationState.applyUserPreference(
+        updated,
+        authoritativePreference: preference,
+        requestKey: chartRequest.key)
       setPreference(updated)
     case .retryChart(let updated):
       chart.retryPreparation()
       if let updated {
-        presentationState.synchronize(with: updated)
+        presentationState.applyUserPreference(
+          updated,
+          authoritativePreference: preference,
+          requestKey: chartRequest.key)
         setPreference(updated)
       }
     }
+  }
+
+  private func synchronizePresentationState(
+    with authoritativePreference: ResultPresentationPreference?
+  ) {
+    presentationState.synchronize(
+      with: authoritativePreference,
+      requestKey: chartRequest.key)
   }
 
   private var tablePreview: some View {
