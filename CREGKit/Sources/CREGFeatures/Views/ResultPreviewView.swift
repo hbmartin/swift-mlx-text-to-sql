@@ -20,7 +20,7 @@ struct ResultPreviewView: View {
   let chartRequest: ResultChartLoader.Request
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Dependency(\.diagnostics) private var diagnostics
-  @State private var chart: ResultChartLoader
+  @State private var chartOwner: ResultChartLoaderOwner
   @State private var presentationState: ResultPresentationState
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
@@ -55,15 +55,22 @@ struct ResultPreviewView: View {
       resultFingerprint: resultFingerprint,
       dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
     self.chartRequest = request
-    self._chart = State(
-      initialValue: ResultChartLoader(
-        client: _chartAnalysis.wrappedValue,
-        warmStart: request,
-        preferredSpecificationID: preference?.specificationID))
+    let chartAnalysis = _chartAnalysis.wrappedValue
+    self._chartOwner = State(
+      initialValue: ResultChartLoaderOwner {
+        ResultChartLoader(
+          client: chartAnalysis,
+          warmStart: request,
+          preferredSpecificationID: preference?.specificationID)
+      })
     self._presentationState = State(
       initialValue: ResultPresentationState(
         preference: preference,
         requestKey: request.key))
+  }
+
+  private var chart: ResultChartLoader {
+    chartOwner.loader
   }
 
   private var renderedScale: CGFloat {

@@ -546,7 +546,7 @@ import Testing
     #expect(diagnostics.events.count == 1)
   }
 
-  @Test func unexpectedDatasetFailureRemainsRetryable() async {
+  @Test func invalidDatasetFailureFallsBackWithoutOfferingRetry() async {
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
@@ -557,7 +557,7 @@ import Testing
       })
     let diagnostics = DiagnosticEventRecorder()
     let request = chartTestRequest(
-      resultFingerprint: "dataset-analysis-failure")
+      resultFingerprint: "terminal-analysis-failure")
     let taskKey = loader.analysisTaskKey(
       requestKey: request.key,
       preference: nil)
@@ -569,17 +569,17 @@ import Testing
       migratePreference: { _, updated in .migrated(updated) },
       diagnostics: diagnostics.client)
 
-    #expect(update == nil)
-    #expect(loader.analysisRetryAvailable(for: request.key))
+    #expect(update == .unavailable)
+    #expect(!loader.analysisRetryAvailable(for: request.key))
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.level == .error)
     #expect(
-      diagnostics.events.first?.code == "chart_analysis_failed")
+      diagnostics.events.first?.code == "chart_analysis_invalid_dataset")
 
     loader.retryAnalysis(for: request.key)
     #expect(
       loader.analysisTaskKey(requestKey: request.key, preference: nil)
-        != taskKey)
+        == taskKey)
   }
 
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
@@ -1046,6 +1046,20 @@ import Testing
 
 @MainActor
 @Suite struct ResultChartLoaderSupersessionTests {
+  @Test func loaderOwnerDefersAndReusesConstruction() {
+    var constructionCount = 0
+    let owner = ResultChartLoaderOwner {
+      constructionCount += 1
+      return ResultChartLoader(client: .testValue, warmStart: nil)
+    }
+
+    #expect(constructionCount == 0)
+    let first = owner.loader
+    #expect(constructionCount == 1)
+    #expect(first === owner.loader)
+    #expect(constructionCount == 1)
+  }
+
   @Test func supersededAnalysisCannotReplaceANewerResult() async throws {
     let gate = SupersededChartAnalysisGate()
     let loader = ResultChartLoader(
@@ -1177,7 +1191,7 @@ import Testing
     #expect(await attempts.count == 2)
   }
 
-  @Test func replacementRequestInvalidatesAnEarlierRetryState() async {
+  @Test func alreadyCancelledReplacementInvalidatesAnEarlierRetryState() async {
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
@@ -1192,11 +1206,8 @@ import Testing
       preferredSpecificationID: nil)
     #expect(loader.analysisRetryAvailable(for: failedRequest.key))
 
-    let cancelledReplacement = Task {
-      while !Task.isCancelled {
-        await Task.yield()
-      }
-      return await analyzeResultPresentation(
+    let cancelledReplacement = Task { @MainActor in
+      await analyzeResultPresentation(
         loader,
         request: replacementRequest,
         preference: nil,

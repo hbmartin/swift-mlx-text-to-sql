@@ -310,6 +310,23 @@ struct ResultChartPreparationTaskKey: Equatable {
   fileprivate var attempt: Int
 }
 
+/// Defers loader construction until SwiftUI reads the state owner retained for
+/// this view identity. Recomputed view values create only this inexpensive
+/// wrapper; discarded values never probe or resolve the warm-start snapshot.
+@MainActor
+final class ResultChartLoaderOwner {
+  private let makeLoader: @MainActor () -> ResultChartLoader
+  private lazy var storedLoader = makeLoader()
+
+  init(makeLoader: @escaping @MainActor () -> ResultChartLoader) {
+    self.makeLoader = makeLoader
+  }
+
+  var loader: ResultChartLoader {
+    storedLoader
+  }
+}
+
 /// The chart-loading state machine used independently by the inline Result
 /// Preview and full-screen Result Viewer. Views keep their own presentation
 /// policy — what to select, when to fall back to the table, what to persist —
@@ -353,13 +370,28 @@ final class ResultChartLoader {
     }
   }
 
+  struct AnalysisFailure: Sendable {
+    enum Retryability: Equatable, Sendable {
+      case retryable
+      case terminal
+    }
+
+    let details: String
+    let retryability: Retryability
+
+    fileprivate init(_ error: any Error) {
+      details = DiagnosticDetails.describe(error)
+      retryability = error is AutoChartDatasetError ? .terminal : .retryable
+    }
+  }
+
   enum Resolution {
     case resolved(
       AutoChartRecommendation,
       analysis: AutoChartAnalysis<Int>,
       defaultReason: AutoChartRecommendationResolution.DefaultReason?)
     case unavailable
-    case failed(details: String)
+    case failed(AnalysisFailure)
   }
 
   private struct LoadedAnalysis {
@@ -463,8 +495,10 @@ final class ResultChartLoader {
       guard !Task.isCancelled, requestGeneration == analysisGeneration else {
         return nil
       }
-      failedAnalysisKey = request.key
-      return .failed(details: DiagnosticDetails.describe(error))
+      let failure = AnalysisFailure(error)
+      failedAnalysisKey =
+        failure.retryability == .retryable ? request.key : nil
+      return .failed(failure)
     }
   }
 

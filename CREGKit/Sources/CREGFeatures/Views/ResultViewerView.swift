@@ -22,7 +22,7 @@ struct ResultViewerView: View {
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Dependency(\.diagnostics) private var diagnostics
   @Binding var textSize: ResultTableTextSize
-  @State var chart: ResultChartLoader
+  @State private var chartOwner: ResultChartLoaderOwner
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
@@ -156,11 +156,18 @@ struct ResultViewerView: View {
           selection: $0,
           resultFingerprint: resultFingerprint)
       })
-    self._chart = State(
-      initialValue: ResultChartLoader(
-        client: _chartAnalysis.wrappedValue,
-        warmStart: request,
-        preferredSpecificationID: preference?.specificationID))
+    let chartAnalysis = _chartAnalysis.wrappedValue
+    self._chartOwner = State(
+      initialValue: ResultChartLoaderOwner {
+        ResultChartLoader(
+          client: chartAnalysis,
+          warmStart: request,
+          preferredSpecificationID: preference?.specificationID)
+      })
+  }
+
+  var chart: ResultChartLoader {
+    chartOwner.loader
   }
 
   var chartRecommendations: [AutoChartRecommendation] {
