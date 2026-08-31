@@ -164,7 +164,7 @@ struct ResultViewerView: View {
   }
 
   var chartRecommendations: [AutoChartRecommendation] {
-    guard let analysis = chart.analysis,
+    guard let analysis = chart.analysis(for: chartRequest.key),
       case .charts(let recommendations) = analysis.outcome
     else {
       return []
@@ -199,19 +199,19 @@ struct ResultViewerView: View {
   }
 
   var selectedRecommendation: AutoChartRecommendation? {
-    chart.resolvedRecommendation
+    chart.resolvedRecommendation(for: chartRequest.key)
   }
 
   var selectedPreparationFailed: Bool {
     chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
-  var selectedAnalysisFailed: Bool {
-    chart.analysisFailed(for: chartRequest.key)
+  var selectedAnalysisRetryAvailable: Bool {
+    chart.analysisRetryAvailable(for: chartRequest.key)
   }
 
   var selectedChartFailed: Bool {
-    selectedAnalysisFailed || selectedPreparationFailed
+    selectedAnalysisRetryAvailable || selectedPreparationFailed
   }
 
   var requestedMode: ResultPresentationPreference.Mode {
@@ -290,7 +290,7 @@ struct ResultViewerView: View {
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
-        if !chartRecommendations.isEmpty || selectedAnalysisFailed {
+        if !chartRecommendations.isEmpty || selectedAnalysisRetryAvailable {
           // Requested-mode persistence rides the binding's setter. Analysis
           // migrations use their separate compare-and-set callback below.
           Picker(
@@ -326,7 +326,7 @@ struct ResultViewerView: View {
         }
 
         if effectiveResultMode == .chart,
-          let analysis = chart.analysis,
+          let analysis = chart.analysis(for: chartRequest.key),
           let selectedRecommendation
         {
           ResultChartExplorerContainer(
@@ -447,7 +447,7 @@ struct ResultViewerView: View {
   }
 
   private func retryFailedChart() {
-    if selectedAnalysisFailed {
+    if selectedAnalysisRetryAvailable {
       chart.retryAnalysis(for: chartRequest.key)
     } else {
       chart.retryPreparation()

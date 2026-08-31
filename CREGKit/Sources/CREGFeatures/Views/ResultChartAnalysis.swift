@@ -353,13 +353,28 @@ final class ResultChartLoader {
     }
   }
 
+  struct AnalysisFailure: Sendable {
+    enum Retryability: Equatable, Sendable {
+      case retryable
+      case terminal
+    }
+
+    let details: String
+    let retryability: Retryability
+
+    fileprivate init(_ error: any Error) {
+      details = DiagnosticDetails.describe(error)
+      retryability = error is AutoChartDatasetError ? .terminal : .retryable
+    }
+  }
+
   enum Resolution {
     case resolved(
       AutoChartRecommendation,
       analysis: AutoChartAnalysis<Int>,
       defaultReason: AutoChartRecommendationResolution.DefaultReason?)
     case unavailable
-    case failed(details: String)
+    case failed(AnalysisFailure)
   }
 
   private struct LoadedAnalysis {
@@ -367,12 +382,8 @@ final class ResultChartLoader {
     let value: AutoChartAnalysis<Int>
   }
 
-  private struct FailedAnalysis {
-    let key: Request.Key
-  }
-
   private var loadedAnalysis: LoadedAnalysis?
-  private var failedAnalysis: FailedAnalysis?
+  private var failedAnalysisKey: Request.Key?
   var analysis: AutoChartAnalysis<Int>? {
     loadedAnalysis?.value
   }
@@ -434,20 +445,20 @@ final class ResultChartLoader {
 
   /// Analyzes (or reuses the warm-started analysis) and resolves the preferred
   /// specification. Returns nil when cancelled or superseded; analyzer failures
-  /// remain explicit so the caller can record and offer a retry.
+  /// remain explicit so the caller can record and apply their recovery policy.
   func analyze(
     _ request: Request,
     preferredSpecificationID: AutoChartRecommendationID?
   ) async -> Resolution? {
     guard !Task.isCancelled else { return nil }
     if let loadedAnalysis, loadedAnalysis.key == request.key {
-      failedAnalysis = nil
+      failedAnalysisKey = nil
       return applyResolution(
         of: loadedAnalysis.value,
         preferred: preferredSpecificationID)
     }
 
-    failedAnalysis = nil
+    failedAnalysisKey = nil
     failedPreparationRecommendationID = nil
     resolvedRecommendationID = nil
     resolvedRecommendation = nil
@@ -463,15 +474,14 @@ final class ResultChartLoader {
       return applyResolution(
         of: loaded,
         preferred: preferredSpecificationID)
-    } catch is CancellationError {
-      return nil
     } catch {
       guard !Task.isCancelled, requestGeneration == analysisGeneration else {
         return nil
       }
-      let details = DiagnosticDetails.describe(error)
-      failedAnalysis = FailedAnalysis(key: request.key)
-      return .failed(details: details)
+      let failure = AnalysisFailure(error)
+      failedAnalysisKey =
+        failure.retryability == .retryable ? request.key : nil
+      return .failed(failure)
     }
   }
 
@@ -479,8 +489,20 @@ final class ResultChartLoader {
     loadedAnalysis?.key == key
   }
 
-  func analysisFailed(for key: Request.Key) -> Bool {
-    failedAnalysis?.key == key
+  func analysis(for key: Request.Key) -> AutoChartAnalysis<Int>? {
+    guard loadedAnalysis?.key == key else { return nil }
+    return loadedAnalysis?.value
+  }
+
+  func resolvedRecommendation(
+    for key: Request.Key
+  ) -> AutoChartRecommendation? {
+    guard loadedAnalysis?.key == key else { return nil }
+    return resolvedRecommendation
+  }
+
+  func analysisRetryAvailable(for key: Request.Key) -> Bool {
+    failedAnalysisKey == key
   }
 
   /// Re-resolves the loaded immutable analysis and synchronizes every piece of
@@ -559,10 +581,9 @@ final class ResultChartLoader {
         resolvedRecommendationID == recommendation.id
       else { return }
       preparedChart = prepared
-    } catch is CancellationError {
-      return
     } catch {
-      guard requestAnalysisGeneration == analysisGeneration,
+      guard !Task.isCancelled,
+        requestAnalysisGeneration == analysisGeneration,
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
       else { return }
@@ -598,8 +619,8 @@ final class ResultChartLoader {
   /// Clears a current analysis failure and advances the SwiftUI task identity.
   /// A stale surface cannot retry a failure belonging to a replacement request.
   func retryAnalysis(for requestKey: Request.Key) {
-    guard failedAnalysis?.key == requestKey else { return }
-    failedAnalysis = nil
+    guard failedAnalysisKey == requestKey else { return }
+    failedAnalysisKey = nil
     analysisAttempt += 1
   }
 

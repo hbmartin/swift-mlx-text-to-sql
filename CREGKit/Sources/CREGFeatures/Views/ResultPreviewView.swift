@@ -73,19 +73,19 @@ struct ResultPreviewView: View {
   }
 
   private var selectedRecommendation: AutoChartRecommendation? {
-    chart.resolvedRecommendation
+    chart.resolvedRecommendation(for: chartRequest.key)
   }
 
   private var selectedPreparationFailed: Bool {
     chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
-  private var selectedAnalysisFailed: Bool {
-    chart.analysisFailed(for: chartRequest.key)
+  private var selectedAnalysisRetryAvailable: Bool {
+    chart.analysisRetryAvailable(for: chartRequest.key)
   }
 
   private var selectedChartFailed: Bool {
-    selectedAnalysisFailed || selectedPreparationFailed
+    selectedAnalysisRetryAvailable || selectedPreparationFailed
   }
 
   private var requestedMode: ResultPresentationPreference.Mode {
@@ -104,7 +104,7 @@ struct ResultPreviewView: View {
       let selected = selectedRecommendation
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
-        if selected != nil || selectedAnalysisFailed {
+        if selected != nil || selectedAnalysisRetryAvailable {
           Picker(
             "Result preview",
             selection: Binding(
@@ -234,7 +234,7 @@ struct ResultPreviewView: View {
   }
 
   private func retryFailedChart() {
-    if selectedAnalysisFailed {
+    if selectedAnalysisRetryAvailable {
       chart.retryAnalysis(for: chartRequest.key)
     } else {
       chart.retryPreparation()
