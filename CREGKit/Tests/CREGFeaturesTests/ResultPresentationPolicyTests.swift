@@ -522,7 +522,7 @@ import Testing
       migratePreference: { _, updated in .migrated(updated) },
       diagnostics: diagnostics.client)
 
-    #expect(failed == nil)
+    #expect(failed == .failed)
     #expect(loader.analysisRetryAvailable(for: request.key))
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.level == .error)
@@ -546,7 +546,7 @@ import Testing
     #expect(diagnostics.events.count == 1)
   }
 
-  @Test func unexpectedDatasetFailureRemainsRetryable() async {
+  @Test func invalidDatasetFailureFallsBackWithoutOfferingRetry() async {
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
@@ -557,7 +557,7 @@ import Testing
       })
     let diagnostics = DiagnosticEventRecorder()
     let request = chartTestRequest(
-      resultFingerprint: "dataset-analysis-failure")
+      resultFingerprint: "terminal-analysis-failure")
     let taskKey = loader.analysisTaskKey(
       requestKey: request.key,
       preference: nil)
@@ -569,17 +569,17 @@ import Testing
       migratePreference: { _, updated in .migrated(updated) },
       diagnostics: diagnostics.client)
 
-    #expect(update == nil)
-    #expect(loader.analysisRetryAvailable(for: request.key))
+    #expect(update == .unavailable)
+    #expect(!loader.analysisRetryAvailable(for: request.key))
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.level == .error)
     #expect(
-      diagnostics.events.first?.code == "chart_analysis_failed")
+      diagnostics.events.first?.code == "chart_analysis_invalid_dataset")
 
     loader.retryAnalysis(for: request.key)
     #expect(
       loader.analysisTaskKey(requestKey: request.key, preference: nil)
-        != taskKey)
+        == taskKey)
   }
 
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
@@ -661,6 +661,19 @@ import Testing
 
   @Test func unavailableAnalysisInvalidatesExactMarkSelection() {
     let update = ResultPresentationAnalysisUpdate.unavailable
+    let selection = AutoChartSelection<Int>(
+      sourceRowIDs: [0],
+      family: .bar,
+      specificationID: AutoChartSpecificationID(rawValue: "bar|fund|value"),
+      markID: "core")
+
+    #expect(update.preferenceReconciliation == .unchanged)
+    #expect(update.invalidatesChartSelection(selection.specificationID))
+    #expect(!update.invalidatesChartSelection(nil))
+  }
+
+  @Test func failedAnalysisInvalidatesExactMarkSelection() {
+    let update = ResultPresentationAnalysisUpdate.failed
     let selection = AutoChartSelection<Int>(
       sourceRowIDs: [0],
       family: .bar,
@@ -1046,48 +1059,19 @@ import Testing
 
 @MainActor
 @Suite struct ResultChartLoaderSupersessionTests {
-  @Test func loaderOwnerDefersAndReusesConstruction() {
-    var constructionCount = 0
-    let request = chartTestRequest(
-      resultFingerprint: "deferred-loader-owner")
-    var receivedRequestKey: ResultChartLoader.Request.Key?
-    let owner = ResultChartLoaderOwner { request, preferredSpecificationID in
-      constructionCount += 1
-      receivedRequestKey = request.key
-      #expect(preferredSpecificationID == nil)
-      return ResultChartLoader(client: .testValue, warmStart: nil)
-    }
-
-    #expect(constructionCount == 0)
+  @Test func loaderOwnerReusesItsResolvedLoader() {
+    let owner = ResultChartLoaderOwner(client: .testValue)
     let first = owner.loader(
-      warmStart: request,
-      preferredSpecificationID: nil)
-    #expect(constructionCount == 1)
-    #expect(receivedRequestKey == request.key)
-    #expect(
-      first
-        === owner.loader(
-          warmStart: chartTestRequest(
-            resultFingerprint: "ignored-after-loader-construction"),
-          preferredSpecificationID: nil))
-    #expect(constructionCount == 1)
-  }
-
-  @Test func loaderOwnerReleasesFactoryAfterConstruction() {
-    var probe: LoaderFactoryLifetimeProbe? = LoaderFactoryLifetimeProbe()
-    weak let retainedProbe = probe
-    let owner = ResultChartLoaderOwner { [probe] _, _ in
-      _ = probe
-      return ResultChartLoader(client: .testValue, warmStart: nil)
-    }
-    probe = nil
-
-    #expect(retainedProbe != nil)
-    _ = owner.loader(
       warmStart: chartTestRequest(
-        resultFingerprint: "released-loader-factory"),
+        resultFingerprint: "deferred-loader-owner"),
       preferredSpecificationID: nil)
-    #expect(retainedProbe == nil)
+
+    let reused = owner.loader(
+      warmStart: chartTestRequest(
+        resultFingerprint: "ignored-after-loader-construction"),
+      preferredSpecificationID: nil)
+
+    #expect(first === reused)
   }
 
   @Test func supersededAnalysisCannotReplaceANewerResult() async throws {
@@ -1242,9 +1226,6 @@ import Testing
     #expect(await invocations.count == 1)
 
     let cancelledReplacement = Task { @MainActor in
-      while !Task.isCancelled {
-        await Task.yield()
-      }
       await analyzeResultPresentation(
         loader,
         request: replacementRequest,
@@ -1765,8 +1746,6 @@ private actor ChartAnalysisInvocationCounter {
     count += 1
   }
 }
-
-private final class LoaderFactoryLifetimeProbe {}
 
 private actor FailingFirstChartAnalysis {
   private let client = CREGChartAnalysisClient.testValue

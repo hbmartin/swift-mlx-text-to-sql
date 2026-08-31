@@ -620,40 +620,44 @@ import Testing
     withDependencies {
       $0.chartAnalysis = client
     } operation: {
-      let previewRenderer = ImageRenderer(
-        content: ResultPreviewView(
-          messageID: messageID,
-          resultFingerprint: resultFingerprint,
-          result: result,
-          sql: sql,
-          question: question,
-          preference: nil,
-          setPreference: { _ in },
-          migratePreference: { _, updated in .migrated(updated) },
-          open: {}
-        )
-        .frame(width: 400, height: 320))
+      let preview = ResultPreviewView(
+        messageID: messageID,
+        resultFingerprint: resultFingerprint,
+        result: result,
+        sql: sql,
+        question: question,
+        preference: nil,
+        setPreference: { _ in },
+        migratePreference: { _, updated in .migrated(updated) },
+        open: {}
+      )
+      .frame(width: 400, height: 320)
+      #expect(client.snapshotStatistics == statisticsBeforeRendering)
+      let previewRenderer = ImageRenderer(content: preview)
       #expect(previewRenderer.cgImage != nil)
     }
     #expect(
       client.snapshotStatistics.hits
         == statisticsBeforeRendering.hits + 1)
+    let statisticsBeforeViewerConstruction = client.snapshotStatistics
 
     withDependencies {
       $0.chartAnalysis = client
     } operation: {
-      let viewerRenderer = ImageRenderer(
-        content: ResultViewerView(
-          result: result,
-          runtimeMode: .evaluated,
-          textSize: .constant(.standard),
-          messageID: messageID,
-          resultFingerprint: resultFingerprint,
-          sql: sql,
-          question: question,
-          migratePreference: { _, updated in .migrated(updated) }
-        )
-        .frame(width: 400, height: 800))
+      let viewer = ResultViewerView(
+        result: result,
+        runtimeMode: .evaluated,
+        textSize: .constant(.standard),
+        messageID: messageID,
+        resultFingerprint: resultFingerprint,
+        sql: sql,
+        question: question,
+        migratePreference: { _, updated in .migrated(updated) }
+      )
+      .frame(width: 400, height: 800)
+      #expect(
+        client.snapshotStatistics == statisticsBeforeViewerConstruction)
+      let viewerRenderer = ImageRenderer(content: viewer)
       #expect(viewerRenderer.cgImage != nil)
     }
     #expect(
