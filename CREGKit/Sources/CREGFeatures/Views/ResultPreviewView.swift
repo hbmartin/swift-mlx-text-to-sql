@@ -55,14 +55,9 @@ struct ResultPreviewView: View {
       resultFingerprint: resultFingerprint,
       dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
     self.chartRequest = request
-    let chartAnalysis = _chartAnalysis.wrappedValue
     self._chartOwner = State(
-      initialValue: ResultChartLoaderOwner {
-        ResultChartLoader(
-          client: chartAnalysis,
-          warmStart: request,
-          preferredSpecificationID: preference?.specificationID)
-      })
+      initialValue: ResultChartLoaderOwner(
+        client: _chartAnalysis.wrappedValue))
     self._presentationState = State(
       initialValue: ResultPresentationState(
         preference: preference,
@@ -70,7 +65,9 @@ struct ResultPreviewView: View {
   }
 
   private var chart: ResultChartLoader {
-    chartOwner.loader
+    chartOwner.loader(
+      warmStart: chartRequest,
+      preferredSpecificationID: preference?.specificationID)
   }
 
   private var renderedScale: CGFloat {

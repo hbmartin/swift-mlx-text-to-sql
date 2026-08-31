@@ -315,15 +315,43 @@ struct ResultChartPreparationTaskKey: Equatable {
 /// wrapper; discarded values never probe or resolve the warm-start snapshot.
 @MainActor
 final class ResultChartLoaderOwner {
-  private let makeLoader: @MainActor () -> ResultChartLoader
-  private lazy var storedLoader = makeLoader()
+  typealias MakeLoader =
+    @MainActor (
+      ResultChartLoader.Request,
+      AutoChartRecommendationID?
+    ) -> ResultChartLoader
 
-  init(makeLoader: @escaping @MainActor () -> ResultChartLoader) {
+  private var makeLoader: MakeLoader?
+  private var storedLoader: ResultChartLoader?
+
+  init(client: CREGChartAnalysisClient) {
+    self.makeLoader = { request, preferredSpecificationID in
+      ResultChartLoader(
+        client: client,
+        warmStart: request,
+        preferredSpecificationID: preferredSpecificationID)
+    }
+  }
+
+  init(makeLoader: @escaping MakeLoader) {
     self.makeLoader = makeLoader
   }
 
-  var loader: ResultChartLoader {
-    storedLoader
+  /// The first retained view value supplies the authoritative request. This
+  /// avoids freezing a request from an earlier, unrendered value in `@State`.
+  /// Releasing the one-shot factory also releases everything it captured.
+  func loader(
+    warmStart request: ResultChartLoader.Request,
+    preferredSpecificationID: AutoChartRecommendationID?
+  ) -> ResultChartLoader {
+    if let storedLoader { return storedLoader }
+    guard let makeLoader else {
+      preconditionFailure("A chart loader owner lost its construction factory.")
+    }
+    let loader = makeLoader(request, preferredSpecificationID)
+    storedLoader = loader
+    self.makeLoader = nil
+    return loader
   }
 }
 
@@ -370,28 +398,13 @@ final class ResultChartLoader {
     }
   }
 
-  struct AnalysisFailure: Sendable {
-    enum Retryability: Equatable, Sendable {
-      case retryable
-      case terminal
-    }
-
-    let details: String
-    let retryability: Retryability
-
-    fileprivate init(_ error: any Error) {
-      details = DiagnosticDetails.describe(error)
-      retryability = error is AutoChartDatasetError ? .terminal : .retryable
-    }
-  }
-
   enum Resolution {
     case resolved(
       AutoChartRecommendation,
       analysis: AutoChartAnalysis<Int>,
       defaultReason: AutoChartRecommendationResolution.DefaultReason?)
     case unavailable
-    case failed(AnalysisFailure)
+    case failed(details: String)
   }
 
   private struct LoadedAnalysis {
@@ -495,10 +508,8 @@ final class ResultChartLoader {
       guard !Task.isCancelled, requestGeneration == analysisGeneration else {
         return nil
       }
-      let failure = AnalysisFailure(error)
-      failedAnalysisKey =
-        failure.retryability == .retryable ? request.key : nil
-      return .failed(failure)
+      failedAnalysisKey = request.key
+      return .failed(details: DiagnosticDetails.describe(error))
     }
   }
 
