@@ -156,18 +156,15 @@ struct ResultViewerView: View {
           selection: $0,
           resultFingerprint: resultFingerprint)
       })
-    let chartAnalysis = _chartAnalysis.wrappedValue
     self._chartOwner = State(
-      initialValue: ResultChartLoaderOwner {
-        ResultChartLoader(
-          client: chartAnalysis,
-          warmStart: request,
-          preferredSpecificationID: preference?.specificationID)
-      })
+      initialValue: ResultChartLoaderOwner(
+        client: _chartAnalysis.wrappedValue))
   }
 
   var chart: ResultChartLoader {
-    chartOwner.loader
+    chartOwner.loader(
+      warmStart: chartRequest,
+      preferredSpecificationID: preference?.specificationID)
   }
 
   var chartRecommendations: [AutoChartRecommendation] {

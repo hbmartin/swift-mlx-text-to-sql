@@ -2,6 +2,7 @@ import AutoTableCharts
 import CREGData
 import ComposableArchitecture
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import CREGEngine
@@ -597,6 +598,67 @@ import Testing
     }
 
     #expect(client.snapshotStatistics == statisticsBeforeViewConstruction)
+  }
+
+  @MainActor
+  @Test func retainedChartViewsWarmStartSnapshotsWhenRendered() async throws {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached))
+    let messageID = UUID()
+    let result = PreviewFixtures.fundValueResult
+    let sql = StarterQueryID.portfolioValueByFundV1.sql
+    let question = StarterQueryID.portfolioValueByFundV1.question
+    let resultFingerprint = "rendered-chart-view-loader"
+    _ = try await client.analyze(
+      result: result,
+      sql: sql,
+      question: question,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
+    let statisticsBeforeRendering = client.snapshotStatistics
+
+    withDependencies {
+      $0.chartAnalysis = client
+    } operation: {
+      let previewRenderer = ImageRenderer(
+        content: ResultPreviewView(
+          messageID: messageID,
+          resultFingerprint: resultFingerprint,
+          result: result,
+          sql: sql,
+          question: question,
+          preference: nil,
+          setPreference: { _ in },
+          migratePreference: { _, updated in .migrated(updated) },
+          open: {}
+        )
+        .frame(width: 400, height: 320))
+      #expect(previewRenderer.cgImage != nil)
+    }
+    #expect(
+      client.snapshotStatistics.hits
+        == statisticsBeforeRendering.hits + 1)
+
+    withDependencies {
+      $0.chartAnalysis = client
+    } operation: {
+      let viewerRenderer = ImageRenderer(
+        content: ResultViewerView(
+          result: result,
+          runtimeMode: .evaluated,
+          textSize: .constant(.standard),
+          messageID: messageID,
+          resultFingerprint: resultFingerprint,
+          sql: sql,
+          question: question,
+          migratePreference: { _, updated in .migrated(updated) }
+        )
+        .frame(width: 400, height: 800))
+      #expect(viewerRenderer.cgImage != nil)
+    }
+    #expect(
+      client.snapshotStatistics.hits
+        == statisticsBeforeRendering.hits + 2)
   }
 
   @MainActor
