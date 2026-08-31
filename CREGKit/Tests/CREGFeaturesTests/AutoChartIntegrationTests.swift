@@ -556,6 +556,50 @@ import Testing
   }
 
   @MainActor
+  @Test func discardedChartViewValuesDoNotProbeWarmStartSnapshots() async throws {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached))
+    let messageID = UUID()
+    let result = PreviewFixtures.fundValueResult
+    let sql = StarterQueryID.portfolioValueByFundV1.sql
+    let question = StarterQueryID.portfolioValueByFundV1.question
+    let resultFingerprint = "deferred-chart-view-loader"
+    _ = try await client.analyze(
+      result: result,
+      sql: sql,
+      question: question,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
+    let statisticsBeforeViewConstruction = client.snapshotStatistics
+
+    withDependencies {
+      $0.chartAnalysis = client
+    } operation: {
+      _ = ResultPreviewView(
+        messageID: messageID,
+        resultFingerprint: resultFingerprint,
+        result: result,
+        sql: sql,
+        question: question,
+        preference: nil,
+        setPreference: { _ in },
+        migratePreference: { _, updated in .migrated(updated) },
+        open: {})
+      _ = ResultViewerView(
+        result: result,
+        runtimeMode: .evaluated,
+        textSize: .constant(.standard),
+        messageID: messageID,
+        resultFingerprint: resultFingerprint,
+        sql: sql,
+        question: question,
+        migratePreference: { _, updated in .migrated(updated) })
+    }
+
+    #expect(client.snapshotStatistics == statisticsBeforeViewConstruction)
+  }
+
+  @MainActor
   @Test func warmStartRequiresMatchingTitleWhenGoalIsUnchanged() async throws {
     let client = CREGChartAnalysisClient(
       analyzer: AutoChartAnalyzer(configuration: .uncached))
