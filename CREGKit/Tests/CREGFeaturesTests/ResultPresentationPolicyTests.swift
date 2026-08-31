@@ -522,7 +522,7 @@ import Testing
       diagnostics: diagnostics.client)
 
     #expect(failed == nil)
-    #expect(loader.analysisFailed(for: request.key))
+    #expect(loader.analysisRetryAvailable(for: request.key))
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.level == .error)
     #expect(diagnostics.events.first?.category == .presentation)
@@ -541,8 +541,44 @@ import Testing
       Issue.record("The explicit analysis retry should resolve a chart.")
       return
     }
-    #expect(!loader.analysisFailed(for: request.key))
+    #expect(!loader.analysisRetryAvailable(for: request.key))
     #expect(diagnostics.events.count == 1)
+  }
+
+  @Test func invalidDatasetFailureFallsBackWithoutOfferingRetry() async {
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      analyzeChart: { _ in
+        throw AutoChartDatasetError(
+          code: .duplicateColumnID,
+          identifier: "duplicate-column")
+      })
+    let diagnostics = DiagnosticEventRecorder()
+    let request = chartTestRequest(
+      resultFingerprint: "terminal-analysis-failure")
+    let taskKey = loader.analysisTaskKey(
+      requestKey: request.key,
+      preference: nil)
+
+    let update = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, updated in .migrated(updated) },
+      diagnostics: diagnostics.client)
+
+    #expect(update == .unavailable)
+    #expect(!loader.analysisRetryAvailable(for: request.key))
+    #expect(diagnostics.events.count == 1)
+    #expect(diagnostics.events.first?.level == .error)
+    #expect(
+      diagnostics.events.first?.code == "chart_analysis_invalid_dataset")
+
+    loader.retryAnalysis(for: request.key)
+    #expect(
+      loader.analysisTaskKey(requestKey: request.key, preference: nil)
+        == taskKey)
   }
 
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
@@ -1050,17 +1086,24 @@ import Testing
     }
   }
 
-  @Test func cancelledAnalysisCannotProduceAnUpdate() async {
+  @Test func cancellationErrorFromLiveAnalysisRemainsRetryable() async {
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
       analyzeChart: { _ in throw CancellationError() })
+    let request = chartTestRequest(
+      resultFingerprint: "live-analysis-cancellation-error")
 
     let resolution = await loader.analyze(
-      chartTestRequest(resultFingerprint: "cancelled-analysis"),
+      request,
       preferredSpecificationID: nil)
 
-    #expect(resolution == nil)
+    guard case .failed(let failure)? = resolution else {
+      Issue.record("A live caller must retain a retryable analyzer failure.")
+      return
+    }
+    #expect(failure.retryability == .retryable)
+    #expect(loader.analysisRetryAvailable(for: request.key))
     #expect(loader.analysis == nil)
   }
 
@@ -1110,7 +1153,7 @@ import Testing
       Issue.record("A real analyzer error should remain distinct from cancellation.")
       return
     }
-    #expect(loader.analysisFailed(for: request.key))
+    #expect(loader.analysisRetryAvailable(for: request.key))
 
     loader.retryAnalysis(for: request.key)
     let retryTaskKey = loader.analysisTaskKey(
@@ -1121,7 +1164,7 @@ import Testing
       preferredSpecificationID: nil)
 
     #expect(failedTaskKey != retryTaskKey)
-    #expect(!loader.analysisFailed(for: request.key))
+    #expect(!loader.analysisRetryAvailable(for: request.key))
     guard case .resolved? = retried else {
       Issue.record("A retry should start fresh after an analysis failure.")
       return
@@ -1140,6 +1183,10 @@ import Testing
     _ = await loader.analyze(loadedRequest, preferredSpecificationID: nil)
     #expect(loader.hasLoadedAnalysis(for: loadedRequest.key))
     #expect(!loader.hasLoadedAnalysis(for: otherRequest.key))
+    #expect(loader.analysis(for: loadedRequest.key) != nil)
+    #expect(loader.analysis(for: otherRequest.key) == nil)
+    #expect(loader.resolvedRecommendation(for: loadedRequest.key) != nil)
+    #expect(loader.resolvedRecommendation(for: otherRequest.key) == nil)
   }
 
   @Test func cancelledWarmAnalysisCannotChangeTheResolvedRecommendation() async throws {
@@ -1302,6 +1349,25 @@ import Testing
       loader.matchingPreparedChart(for: primary.id)?.recommendation.id
         == primary.id)
     #expect(!loader.preparationFailed(for: primary.id))
+  }
+
+  @Test func cancellationErrorFromLivePreparationRemainsRetryable() async throws {
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      prepareChart: { _, _ in throw CancellationError() })
+    let request = chartTestRequest(
+      resultFingerprint: "live-preparation-cancellation-error")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis(for: request.key))
+    let recommendation = try #require(
+      chartTestRecommendations(from: analysis).dropFirst().first)
+
+    _ = loader.resolveLoadedRecommendation(
+      preferredSpecificationID: recommendation.id)
+    await loader.prepareResolvedRecommendation()
+
+    #expect(loader.preparationFailed(for: recommendation.id))
   }
 
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
