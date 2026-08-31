@@ -398,6 +398,7 @@ func analyzeResultPresentation(
   migratePreference: ResultPresentationMigrationHandler,
   diagnostics: DiagnosticsClient
 ) async -> ResultPresentationAnalysisUpdate? {
+  chart.synchronizeRequest(request.key)
   guard !Task.isCancelled else { return nil }
   let resolution = await chart.analyze(
     request,
@@ -453,6 +454,7 @@ func analyzeResultPresentation(
       }
 
       switch chart.resolveLoadedRecommendation(
+        for: request.key,
         preferredSpecificationID: authoritativePreference?.specificationID
       ) {
       case .resolved(let authoritative, _, let reason)?:
@@ -476,27 +478,15 @@ func analyzeResultPresentation(
     }
   case .unavailable?:
     return .unavailable
-  case .failed(let failure)?:
-    switch failure.retryability {
-    case .retryable:
-      diagnostics.record(
-        DiagnosticEvent(
-          level: .error,
-          category: .presentation,
-          code: "chart_analysis_failed",
-          summary: "Chart analysis failed and can be retried.",
-          details: failure.details))
-      return nil
-    case .terminal:
-      diagnostics.record(
-        DiagnosticEvent(
-          level: .error,
-          category: .presentation,
-          code: "chart_analysis_invalid_dataset",
-          summary: "Chart analysis failed because the result data was invalid.",
-          details: failure.details))
-      return .unavailable
-    }
+  case .failed(let details)?:
+    diagnostics.record(
+      DiagnosticEvent(
+        level: .error,
+        category: .presentation,
+        code: "chart_analysis_failed",
+        summary: "Chart analysis failed and can be retried.",
+        details: details))
+    return nil
   case nil:
     return nil
   }

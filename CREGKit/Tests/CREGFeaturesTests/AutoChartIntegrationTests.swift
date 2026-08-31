@@ -604,14 +604,15 @@ import Testing
     let loader = ResultChartLoader(
       client: client,
       warmStart: replacementRequest)
-    #expect(loader.analysis == nil)
+    #expect(loader.analysis(for: replacementRequest.key) == nil)
 
     _ = await loader.analyze(
       replacementRequest,
       preferredSpecificationID: nil)
 
     #expect(
-      loader.analysis?.primaryChart?.recommendation.specification.title
+      loader.analysis(for: replacementRequest.key)?.primaryChart?.recommendation
+        .specification.title
         == replacementQuestion)
     #expect(
       client.cachedAnalysis(
@@ -664,34 +665,32 @@ import Testing
     let question = StarterQueryID.portfolioValueByFundV1.question
     let loader = ResultChartLoader(client: client, warmStart: nil)
 
-    _ = await loader.analyze(
-      chartTestRequest(
-        result: firstResult,
-        sql: sql,
-        question: question,
-        resultFingerprint: "first-revision",
-        dataIdentity: "message-1"),
-      preferredSpecificationID: nil)
+    let firstRequest = chartTestRequest(
+      result: firstResult,
+      sql: sql,
+      question: question,
+      resultFingerprint: "first-revision",
+      dataIdentity: "message-1")
+    _ = await loader.analyze(firstRequest, preferredSpecificationID: nil)
     let firstRecommendationID = try #require(
-      loader.analysis?.primaryChart?.recommendation.id)
+      loader.analysis(for: firstRequest.key)?.primaryChart?.recommendation.id)
     let firstKey = loader.preparationTaskKey(
       recommendationID: firstRecommendationID)
 
-    _ = await loader.analyze(
-      chartTestRequest(
-        result: secondResult,
-        sql: sql,
-        question: question,
-        resultFingerprint: "second-revision",
-        dataIdentity: "message-1"),
-      preferredSpecificationID: nil)
+    let secondRequest = chartTestRequest(
+      result: secondResult,
+      sql: sql,
+      question: question,
+      resultFingerprint: "second-revision",
+      dataIdentity: "message-1")
+    _ = await loader.analyze(secondRequest, preferredSpecificationID: nil)
     let secondRecommendationID = try #require(
-      loader.analysis?.primaryChart?.recommendation.id)
+      loader.analysis(for: secondRequest.key)?.primaryChart?.recommendation.id)
     try #require(firstRecommendationID == secondRecommendationID)
     let replacementKey = loader.preparationTaskKey(
       recommendationID: secondRecommendationID)
     let recommendations = chartTestRecommendations(
-      from: try #require(loader.analysis))
+      from: try #require(loader.analysis(for: secondRequest.key)))
     let alternativeID = try #require(recommendations.dropFirst().first?.id)
     let alternativeKey = loader.preparationTaskKey(
       recommendationID: alternativeID)

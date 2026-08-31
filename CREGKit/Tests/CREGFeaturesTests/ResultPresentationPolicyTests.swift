@@ -171,7 +171,7 @@ import Testing
       preference: nil,
       migratePreference: { _, updated in .migrated(updated) },
       diagnostics: .noop)
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let alternative = try #require(
       chartTestRecommendations(from: analysis).dropFirst().first)
     let changedPreference = ResultPresentationPreference(
@@ -193,7 +193,7 @@ import Testing
       return
     }
     #expect(resolvedID == alternative.id)
-    #expect(loader.resolvedRecommendation?.id == alternative.id)
+    #expect(loader.resolvedRecommendation(for: request.key)?.id == alternative.id)
   }
 
   @Test func stalledReconciliationBecomesThePreviewWritePreference() {
@@ -465,7 +465,8 @@ import Testing
 
     _ = await loader.analyze(request, preferredSpecificationID: nil)
 
-    let recommendation = try #require(loader.analysis?.primaryChart?.recommendation)
+    let recommendation = try #require(
+      loader.analysis(for: request.key)?.primaryChart?.recommendation)
     #expect(
       PreviewFixtures.filteredLeaseChartSelection.specificationID
         == recommendation.specification.id)
@@ -489,7 +490,7 @@ import Testing
       },
       diagnostics: .noop)
 
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     switch analysis.resolve(nil) {
     case .exact, .defaulted:
       break
@@ -545,7 +546,7 @@ import Testing
     #expect(diagnostics.events.count == 1)
   }
 
-  @Test func invalidDatasetFailureFallsBackWithoutOfferingRetry() async {
+  @Test func unexpectedDatasetFailureRemainsRetryable() async {
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
@@ -556,7 +557,7 @@ import Testing
       })
     let diagnostics = DiagnosticEventRecorder()
     let request = chartTestRequest(
-      resultFingerprint: "terminal-analysis-failure")
+      resultFingerprint: "dataset-analysis-failure")
     let taskKey = loader.analysisTaskKey(
       requestKey: request.key,
       preference: nil)
@@ -568,17 +569,17 @@ import Testing
       migratePreference: { _, updated in .migrated(updated) },
       diagnostics: diagnostics.client)
 
-    #expect(update == .unavailable)
-    #expect(!loader.analysisRetryAvailable(for: request.key))
+    #expect(update == nil)
+    #expect(loader.analysisRetryAvailable(for: request.key))
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.level == .error)
     #expect(
-      diagnostics.events.first?.code == "chart_analysis_invalid_dataset")
+      diagnostics.events.first?.code == "chart_analysis_failed")
 
     loader.retryAnalysis(for: request.key)
     #expect(
       loader.analysisTaskKey(requestKey: request.key, preference: nil)
-        == taskKey)
+        != taskKey)
   }
 
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
@@ -611,7 +612,9 @@ import Testing
       Issue.record("The chartable fixture should resolve a viewer chart.")
       return
     }
-    #expect(resolvedID == loader.analysis?.primaryChart?.recommendation.id)
+    #expect(
+      resolvedID
+        == loader.analysis(for: request.key)?.primaryChart?.recommendation.id)
     #expect(proposedMigration?.mode == .chart)
     #expect(proposedMigration?.specificationID == nil)
     #expect(
@@ -768,7 +771,7 @@ import Testing
       Issue.record("The chartable fixture should resolve a viewer chart.")
       return
     }
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let primary = try #require(analysis.primaryChart?.recommendation)
     #expect(proposedMigration?.specificationID == primary.id)
     #expect(retainedPreference == authoritative)
@@ -783,7 +786,7 @@ import Testing
       resultFingerprint: "viewer-loader-owned-resolution",
       dataIdentity: "viewer-loader-owned-message")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendations = chartTestRecommendations(from: analysis)
     let primary = try #require(recommendations.first)
     let alternative = try #require(recommendations.dropFirst().first)
@@ -806,7 +809,7 @@ import Testing
       return
     }
     #expect(resolvedID == alternative.id)
-    #expect(loader.resolvedRecommendation?.id == alternative.id)
+    #expect(loader.resolvedRecommendation(for: request.key)?.id == alternative.id)
     #expect(loader.matchingPreparedChart(for: primary.id) == nil)
     #expect(loader.matchingPreparedChart(for: alternative.id) == nil)
     #expect(!loader.preparationFailed(for: alternative.id))
@@ -855,7 +858,8 @@ import Testing
       Issue.record("The authoritative obsolete pin should be reconciled.")
       return
     }
-    let primary = try #require(loader.analysis?.primaryChart?.recommendation)
+    let primary = try #require(
+      loader.analysis(for: request.key)?.primaryChart?.recommendation)
     #expect(specificationID == primary.id)
     #expect(attempts.count == 2)
     #expect(attempts[0].previous == previous)
@@ -947,12 +951,13 @@ import Testing
       Issue.record("The repeated authoritative preference should terminate reconciliation.")
       return
     }
-    let primary = try #require(loader.analysis?.primaryChart?.recommendation)
+    let primary = try #require(
+      loader.analysis(for: request.key)?.primaryChart?.recommendation)
     #expect(attempts == 1)
     #expect(resolvedPreference.mode == previous.mode)
     #expect(resolvedPreference.specificationID == primary.id)
     #expect(specificationID == primary.id)
-    #expect(loader.resolvedRecommendation?.id == primary.id)
+    #expect(loader.resolvedRecommendation(for: request.key)?.id == primary.id)
     #expect(
       diagnostics.events
         == [
@@ -1077,7 +1082,8 @@ import Testing
     await gate.releaseFirstAnalysis()
     let supersededResolution = await superseded.value
     #expect(supersededResolution == nil)
-    let retainedAnalysis = try #require(loader.analysis)
+    let retainedAnalysis = try #require(
+      loader.analysis(for: replacementRequest.key))
     switch retainedAnalysis.resolve(nil) {
     case .exact(let recommendation), .defaulted(let recommendation, _):
       #expect(recommendation.id == replacementRecommendation.id)
@@ -1098,13 +1104,12 @@ import Testing
       request,
       preferredSpecificationID: nil)
 
-    guard case .failed(let failure)? = resolution else {
+    guard case .failed? = resolution else {
       Issue.record("A live caller must retain a retryable analyzer failure.")
       return
     }
-    #expect(failure.retryability == .retryable)
     #expect(loader.analysisRetryAvailable(for: request.key))
-    #expect(loader.analysis == nil)
+    #expect(loader.analysis(for: request.key) == nil)
   }
 
   @Test func cancellingAnalysisCancelsTheInjectedOperation() async {
@@ -1129,7 +1134,7 @@ import Testing
 
     #expect(await analysis.value == nil)
     #expect(await probe.cancellationWasObserved)
-    #expect(loader.analysis == nil)
+    #expect(loader.analysis(for: request.key) == nil)
   }
 
   @Test func failedAnalysisDoesNotPoisonTheNextAttempt() async {
@@ -1172,6 +1177,40 @@ import Testing
     #expect(await attempts.count == 2)
   }
 
+  @Test func replacementRequestInvalidatesAnEarlierRetryState() async {
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      analyzeChart: { _ in throw PreferenceSaveTestError.failed })
+    let failedRequest = chartTestRequest(
+      resultFingerprint: "failed-before-replacement")
+    let replacementRequest = chartTestRequest(
+      resultFingerprint: "replacement-before-analysis")
+
+    _ = await loader.analyze(
+      failedRequest,
+      preferredSpecificationID: nil)
+    #expect(loader.analysisRetryAvailable(for: failedRequest.key))
+
+    let cancelledReplacement = Task {
+      while !Task.isCancelled {
+        await Task.yield()
+      }
+      return await analyzeResultPresentation(
+        loader,
+        request: replacementRequest,
+        preference: nil,
+        migratePreference: { _, updated in .migrated(updated) },
+        diagnostics: .noop)
+    }
+    cancelledReplacement.cancel()
+
+    #expect(await cancelledReplacement.value == nil)
+    loader.synchronizeRequest(failedRequest.key)
+
+    #expect(!loader.analysisRetryAvailable(for: failedRequest.key))
+  }
+
   @Test func selectionGateAcceptsOnlyTheCurrentlyLoadedRequest() async {
     let loader = ResultChartLoader(client: .testValue, warmStart: nil)
     let loadedRequest = chartTestRequest(
@@ -1189,12 +1228,42 @@ import Testing
     #expect(loader.resolvedRecommendation(for: otherRequest.key) == nil)
   }
 
+  @Test func replacementRequestCannotResolveOrPrepareStaleAnalysis() async throws {
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      prepareChart: { _, _ in
+        Issue.record("A replacement request must not prepare stale analysis.")
+        throw PreferenceSaveTestError.failed
+      })
+    let loadedRequest = chartTestRequest(
+      resultFingerprint: "keyed-preparation-loaded")
+    let replacementRequest = chartTestRequest(
+      resultFingerprint: "keyed-preparation-replacement")
+    _ = await loader.analyze(loadedRequest, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis(for: loadedRequest.key))
+    let alternative = try #require(
+      chartTestRecommendations(from: analysis).dropFirst().first)
+
+    guard
+      case nil = loader.resolveLoadedRecommendation(
+        for: replacementRequest.key,
+        preferredSpecificationID: alternative.id)
+    else {
+      Issue.record("A replacement request must not resolve stale analysis.")
+      return
+    }
+    await loader.prepareResolvedRecommendation(for: replacementRequest.key)
+
+    #expect(!loader.preparationFailed(for: alternative.id))
+  }
+
   @Test func cancelledWarmAnalysisCannotChangeTheResolvedRecommendation() async throws {
     let loader = ResultChartLoader(client: .testValue, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "cancelled-warm-analysis")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendations = chartTestRecommendations(from: analysis)
     let original = try #require(recommendations.first)
     let alternative = try #require(recommendations.dropFirst().first)
@@ -1210,7 +1279,7 @@ import Testing
     cancelled.cancel()
 
     #expect(await cancelled.value == nil)
-    #expect(loader.resolvedRecommendation?.id == original.id)
+    #expect(loader.resolvedRecommendation(for: request.key)?.id == original.id)
   }
 
   @Test func requestKeysKeepStructuredComponentsDistinct() {
@@ -1243,12 +1312,12 @@ import Testing
     let request = chartTestRequest(
       resultFingerprint: "reused-analysis-preparation")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendations = chartTestRecommendations(from: analysis)
     let alternative = try #require(recommendations.dropFirst().first)
 
     #expect(loader.selectLoadedRecommendation(alternative.id, for: request.key))
-    await loader.prepareResolvedRecommendation()
+    await loader.prepareResolvedRecommendation(for: request.key)
     let preparationKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
     #expect(
@@ -1272,11 +1341,12 @@ import Testing
     let request = chartTestRequest(
       resultFingerprint: "invalid-loaded-recommendation-selection")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let selectedBefore = try #require(loader.resolvedRecommendation?.id)
+    let selectedBefore = try #require(
+      loader.resolvedRecommendation(for: request.key)?.id)
     let unknownID = chartTestRecommendationID("unknown|category|value")
 
     #expect(!loader.selectLoadedRecommendation(unknownID, for: request.key))
-    #expect(loader.resolvedRecommendation?.id == selectedBefore)
+    #expect(loader.resolvedRecommendation(for: request.key)?.id == selectedBefore)
   }
 
   @Test func loadedRecommendationSelectionRejectsAReplacementRequest() async throws {
@@ -1286,8 +1356,9 @@ import Testing
     let replacementRequest = chartTestRequest(
       resultFingerprint: "stale-recommendation-replacement")
     _ = await loader.analyze(loadedRequest, preferredSpecificationID: nil)
-    let selectedBefore = try #require(loader.resolvedRecommendation?.id)
-    let analysis = try #require(loader.analysis)
+    let selectedBefore = try #require(
+      loader.resolvedRecommendation(for: loadedRequest.key)?.id)
+    let analysis = try #require(loader.analysis(for: loadedRequest.key))
     let alternative = try #require(
       chartTestRecommendations(from: analysis)
         .dropFirst().first)
@@ -1296,7 +1367,9 @@ import Testing
       !loader.selectLoadedRecommendation(
         alternative.id,
         for: replacementRequest.key))
-    #expect(loader.resolvedRecommendation?.id == selectedBefore)
+    #expect(
+      loader.resolvedRecommendation(for: loadedRequest.key)?.id
+        == selectedBefore)
   }
 
   @Test func preparedChartIsExposedOnlyForItsRecommendation() async throws {
@@ -1304,7 +1377,7 @@ import Testing
     let request = chartTestRequest(
       resultFingerprint: "matching-prepared-chart")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendations = chartTestRecommendations(from: analysis)
     let primary = try #require(recommendations.first)
     let alternative = try #require(recommendations.dropFirst().first)
@@ -1330,19 +1403,21 @@ import Testing
     let request = chartTestRequest(
       resultFingerprint: "failure-followed-by-primary-resolution")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendations = chartTestRecommendations(from: analysis)
     let primary = try #require(recommendations.first)
     let alternative = try #require(recommendations.dropFirst().first)
 
     _ = loader.resolveLoadedRecommendation(
+      for: request.key,
       preferredSpecificationID: alternative.id)
-    await loader.prepareResolvedRecommendation()
+    await loader.prepareResolvedRecommendation(for: request.key)
     #expect(loader.matchingPreparedChart(for: alternative.id) == nil)
     #expect(loader.preparationFailed(for: alternative.id))
     #expect(!loader.preparationFailed(for: primary.id))
 
     _ = loader.resolveLoadedRecommendation(
+      for: request.key,
       preferredSpecificationID: primary.id)
 
     #expect(
@@ -1364,8 +1439,9 @@ import Testing
       chartTestRecommendations(from: analysis).dropFirst().first)
 
     _ = loader.resolveLoadedRecommendation(
+      for: request.key,
       preferredSpecificationID: recommendation.id)
-    await loader.prepareResolvedRecommendation()
+    await loader.prepareResolvedRecommendation(for: request.key)
 
     #expect(loader.preparationFailed(for: recommendation.id))
   }
@@ -1379,21 +1455,25 @@ import Testing
       prepareChart: { analysis, recommendationID in
         try await gate.prepare(analysis, recommendationID: recommendationID)
       })
-    _ = await loader.analyze(
-      chartTestRequest(resultFingerprint: "superseded-preparation"),
-      preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let request = chartTestRequest(
+      resultFingerprint: "superseded-preparation")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendations = chartTestRecommendations(from: analysis)
     let primary = try #require(recommendations.first)
     let alternative = try #require(recommendations.dropFirst().first)
 
     _ = loader.resolveLoadedRecommendation(
+      for: request.key,
       preferredSpecificationID: alternative.id)
-    let first = Task { await loader.prepareResolvedRecommendation() }
+    let first = Task {
+      await loader.prepareResolvedRecommendation(for: request.key)
+    }
     await gate.waitUntilFirstPreparationStarts()
     _ = loader.resolveLoadedRecommendation(
+      for: request.key,
       preferredSpecificationID: primary.id)
-    await loader.prepareResolvedRecommendation()
+    await loader.prepareResolvedRecommendation(for: request.key)
     #expect(
       loader.matchingPreparedChart(for: primary.id)?.recommendation.id
         == primary.id)
@@ -1417,13 +1497,14 @@ import Testing
       })
     let request = chartTestRequest(resultFingerprint: "retry-preparation")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendations = chartTestRecommendations(from: analysis)
     let alternative = try #require(recommendations.dropFirst().first)
 
     _ = loader.resolveLoadedRecommendation(
+      for: request.key,
       preferredSpecificationID: alternative.id)
-    await loader.prepareResolvedRecommendation()
+    await loader.prepareResolvedRecommendation(for: request.key)
     let failedKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
     #expect(loader.preparationFailed(for: alternative.id))
@@ -1453,16 +1534,19 @@ import Testing
       prepareChart: { analysis, recommendationID in
         try await gate.prepare(analysis, recommendationID: recommendationID)
       })
-    _ = await loader.analyze(
-      chartTestRequest(resultFingerprint: "retry-suspended-preparation"),
-      preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis)
+    let request = chartTestRequest(
+      resultFingerprint: "retry-suspended-preparation")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis(for: request.key))
     let recommendation = try #require(
       chartTestRecommendations(from: analysis).dropFirst().first)
 
     _ = loader.resolveLoadedRecommendation(
+      for: request.key,
       preferredSpecificationID: recommendation.id)
-    let suspended = Task { await loader.prepareResolvedRecommendation() }
+    let suspended = Task {
+      await loader.prepareResolvedRecommendation(for: request.key)
+    }
     await gate.waitUntilFirstPreparationStarts()
 
     loader.retryPreparation()

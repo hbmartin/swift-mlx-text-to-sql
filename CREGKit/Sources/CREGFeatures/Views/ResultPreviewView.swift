@@ -187,7 +187,7 @@ struct ResultPreviewView: View {
         id: chart.preparationTaskKey(
           recommendationID: selected?.id)
       ) {
-        await chart.prepareResolvedRecommendation()
+        await chart.prepareResolvedRecommendation(for: chartRequest.key)
       }
     }
   }
