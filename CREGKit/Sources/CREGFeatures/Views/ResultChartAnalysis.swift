@@ -359,6 +359,7 @@ final class ResultChartLoader {
       analysis: AutoChartAnalysis<Int>,
       defaultReason: AutoChartRecommendationResolution.DefaultReason?)
     case unavailable
+    case failed(details: String)
   }
 
   private struct LoadedAnalysis {
@@ -366,7 +367,12 @@ final class ResultChartLoader {
     let value: AutoChartAnalysis<Int>
   }
 
+  private struct FailedAnalysis {
+    let key: Request.Key
+  }
+
   private var loadedAnalysis: LoadedAnalysis?
+  private var failedAnalysis: FailedAnalysis?
   var analysis: AutoChartAnalysis<Int>? {
     loadedAnalysis?.value
   }
@@ -385,10 +391,14 @@ final class ResultChartLoader {
   /// Explicit retries re-key SwiftUI's preparation task even when the analysis
   /// and recommendation are unchanged.
   private var preparationAttempt = 0
+  /// Explicit retries re-key SwiftUI's analysis task without changing the
+  /// request or pin that determine the analysis result.
+  private var analysisAttempt = 0
   /// Identity of the analysis this loader currently owns. It prevents both a
   /// superseded analysis and a preparation suspended on its predecessor from
   /// committing after a newer request has taken ownership of the loader.
   private var analysisGeneration = 0
+
   init(
     client: CREGChartAnalysisClient,
     warmStart request: Request?,
@@ -422,19 +432,22 @@ final class ResultChartLoader {
     applyResolution(of: cached, preferred: preferredSpecificationID)
   }
 
-  /// Analyzes (or reuses the warm-started analysis) and resolves the
-  /// preferred specification. Returns nil when analysis failed or was
-  /// cancelled; the caller applies its own policy to the resolution.
+  /// Analyzes (or reuses the warm-started analysis) and resolves the preferred
+  /// specification. Returns nil when cancelled or superseded; analyzer failures
+  /// remain explicit so the caller can record and offer a retry.
   func analyze(
     _ request: Request,
     preferredSpecificationID: AutoChartRecommendationID?
   ) async -> Resolution? {
+    guard !Task.isCancelled else { return nil }
     if let loadedAnalysis, loadedAnalysis.key == request.key {
+      failedAnalysis = nil
       return applyResolution(
         of: loadedAnalysis.value,
         preferred: preferredSpecificationID)
     }
 
+    failedAnalysis = nil
     failedPreparationRecommendationID = nil
     resolvedRecommendationID = nil
     resolvedRecommendation = nil
@@ -450,13 +463,24 @@ final class ResultChartLoader {
       return applyResolution(
         of: loaded,
         preferred: preferredSpecificationID)
-    } catch {
+    } catch is CancellationError {
       return nil
+    } catch {
+      guard !Task.isCancelled, requestGeneration == analysisGeneration else {
+        return nil
+      }
+      let details = DiagnosticDetails.describe(error)
+      failedAnalysis = FailedAnalysis(key: request.key)
+      return .failed(details: details)
     }
   }
 
   func hasLoadedAnalysis(for key: Request.Key) -> Bool {
     loadedAnalysis?.key == key
+  }
+
+  func analysisFailed(for key: Request.Key) -> Bool {
+    failedAnalysis?.key == key
   }
 
   /// Re-resolves the loaded immutable analysis and synchronizes every piece of
@@ -473,14 +497,16 @@ final class ResultChartLoader {
   /// all recommendation-owned loader state. Rejecting IDs outside the loaded
   /// recommendation set keeps picker input from silently defaulting.
   func selectLoadedRecommendation(
-    _ recommendationID: AutoChartRecommendationID
+    _ recommendationID: AutoChartRecommendationID,
+    for requestKey: Request.Key
   ) -> Bool {
-    guard let analysis,
-      case .charts(let recommendations) = analysis.outcome,
+    guard let loadedAnalysis, loadedAnalysis.key == requestKey,
+      case .charts(let recommendations) = loadedAnalysis.value.outcome,
       let recommendation = recommendations.first(where: {
         $0.id == recommendationID
       })
     else { return false }
+    let analysis = loadedAnalysis.value
 
     _ = applyResolvedRecommendation(
       recommendation,
@@ -554,6 +580,27 @@ final class ResultChartLoader {
       analysisGeneration: analysisGeneration,
       recommendationID: recommendationID,
       attempt: preparationAttempt)
+  }
+
+  /// Identity used by both chart surfaces for their analysis task. The key
+  /// keeps mode projection and explicit retry identity inside the loader rather
+  /// than requiring SwiftUI call sites to reproduce either invariant.
+  func analysisTaskKey(
+    requestKey: Request.Key,
+    preference: ResultPresentationPreference?
+  ) -> ResultPresentationAnalysisTaskKey {
+    ResultPresentationAnalysisTaskKey(
+      chartRequest: requestKey,
+      preference: preference,
+      attempt: analysisAttempt)
+  }
+
+  /// Clears a current analysis failure and advances the SwiftUI task identity.
+  /// A stale surface cannot retry a failure belonging to a replacement request.
+  func retryAnalysis(for requestKey: Request.Key) {
+    guard failedAnalysis?.key == requestKey else { return }
+    failedAnalysis = nil
+    analysisAttempt += 1
   }
 
   /// Clears the visible failure, invalidates suspended preparation, and

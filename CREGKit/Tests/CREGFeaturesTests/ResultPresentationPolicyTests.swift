@@ -1,7 +1,6 @@
 import AutoTableCharts
 import ComposableArchitecture
 import Foundation
-import SwiftUI
 import Testing
 
 @testable import CREGEngine
@@ -139,20 +138,22 @@ import Testing
 
     let chartKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preferredSpecificationID: chartPreference.specificationID)
+      preference: chartPreference)
     let tableKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preferredSpecificationID: tablePreference.specificationID)
+      preference: tablePreference)
     let selectionKey = ResultPresentationAnalysisTaskKey(
       chartRequest: request.key,
-      preferredSpecificationID: chartTestRecommendationID(
-        "bar|category|value"))
+      preference: ResultPresentationPreference(
+        mode: .chart,
+        specificationID: chartTestRecommendationID(
+          "bar|category|value")))
     let replacementRequestKey = ResultPresentationAnalysisTaskKey(
       chartRequest: chartTestRequest(
         resultFingerprint: "replacement-preview-result",
         dataIdentity: "same-preview-message"
       ).key,
-      preferredSpecificationID: chartPreference.specificationID)
+      preference: chartPreference)
 
     #expect(chartKey == tableKey)
     #expect(chartKey != selectionKey)
@@ -227,13 +228,15 @@ import Testing
       state.effectivePreference(
         authoritativePreference: stale,
         requestKey: requestKey) == resolved)
-    handleResultPresentationModeSelection(
+    resultPresentationModeSelectionTransition(
       .table,
-      state: stateBox.binding,
+      state: stateBox.value,
       authoritativePreference: stale,
       requestKey: requestKey,
-      preparationFailed: false,
-      retryPreparation: {
+      chartFailed: false
+    ).commit(
+      setState: { stateBox.value = $0 },
+      retryChart: {
         Issue.record("A normal mode change must not retry preparation.")
       },
       persistPreference: { updated in
@@ -265,13 +268,15 @@ import Testing
     var persistedPreference: ResultPresentationPreference?
 
     #expect(state == expectedState)
-    handleResultPresentationModeSelection(
+    resultPresentationModeSelectionTransition(
       .table,
-      state: stateBox.binding,
+      state: stateBox.value,
       authoritativePreference: nil,
       requestKey: requestKey,
-      preparationFailed: false,
-      retryPreparation: {
+      chartFailed: false
+    ).commit(
+      setState: { stateBox.value = $0 },
+      retryChart: {
         Issue.record("A normal mode change must not retry preparation.")
       },
       persistPreference: { persistedPreference = $0 })
@@ -322,13 +327,15 @@ import Testing
       state.effectivePreference(
         authoritativePreference: authoritativeTable,
         requestKey: requestKey) == expected)
-    handleResultPresentationModeSelection(
+    resultPresentationModeSelectionTransition(
       .chart,
-      state: stateBox.binding,
+      state: stateBox.value,
       authoritativePreference: authoritativeTable,
       requestKey: requestKey,
-      preparationFailed: false,
-      retryPreparation: {
+      chartFailed: false
+    ).commit(
+      setState: { stateBox.value = $0 },
+      retryChart: {
         Issue.record("A normal mode change must not retry preparation.")
       },
       persistPreference: { persistedPreference = $0 })
@@ -338,6 +345,53 @@ import Testing
       stateBox.value.effectivePreference(
         authoritativePreference: authoritativeTable,
         requestKey: requestKey) == expectedSelection)
+  }
+
+  @Test func retryTransitionCommitsBeforeRetryAndPersistence() {
+    let specificationID = chartTestRecommendationID("retry|bar|category|value")
+    let authoritative = ResultPresentationPreference(
+      mode: .table,
+      specificationID: specificationID)
+    let requestKey = chartTestRequest(
+      resultFingerprint: "commit-before-retry"
+    ).key
+    let stateBox = ResultPresentationStateBox(
+      ResultPresentationState(
+        preference: authoritative,
+        requestKey: requestKey))
+    let expected = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: specificationID)
+    var events: [String] = []
+
+    resultPresentationModeSelectionTransition(
+      .chart,
+      state: stateBox.value,
+      authoritativePreference: authoritative,
+      requestKey: requestKey,
+      chartFailed: true
+    ).commit(
+      setState: {
+        stateBox.value = $0
+        events.append("commit")
+      },
+      retryChart: {
+        #expect(
+          stateBox.value.effectivePreference(
+            authoritativePreference: authoritative,
+            requestKey: requestKey) == expected)
+        events.append("retry")
+      },
+      persistPreference: { updated in
+        #expect(updated == expected)
+        #expect(
+          stateBox.value.effectivePreference(
+            authoritativePreference: authoritative,
+            requestKey: requestKey) == expected)
+        events.append("persist")
+      })
+
+    #expect(events == ["commit", "retry", "persist"])
   }
 
   @Test func replacementRequestRejectsAStalledPreferenceSynchronously() {
@@ -448,6 +502,49 @@ import Testing
 
 @MainActor
 @Suite struct ResultViewerAnalysisTests {
+  @Test func analyzerFailureRecordsADiagnosticAndRemainsRetryable() async {
+    let attempts = FailingFirstChartAnalysis()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      analyzeChart: { request in
+        try await attempts.analyze(request)
+      })
+    let diagnostics = DiagnosticEventRecorder()
+    let request = chartTestRequest(
+      resultFingerprint: "diagnosed-analysis-failure")
+
+    let failed = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, updated in .migrated(updated) },
+      diagnostics: diagnostics.client)
+
+    #expect(failed == nil)
+    #expect(loader.analysisFailed(for: request.key))
+    #expect(diagnostics.events.count == 1)
+    #expect(diagnostics.events.first?.level == .error)
+    #expect(diagnostics.events.first?.category == .presentation)
+    #expect(diagnostics.events.first?.code == "chart_analysis_failed")
+    #expect(diagnostics.events.first?.details != nil)
+
+    loader.retryAnalysis(for: request.key)
+    let retried = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, updated in .migrated(updated) },
+      diagnostics: diagnostics.client)
+
+    guard case .resolved? = retried else {
+      Issue.record("The explicit analysis retry should resolve a chart.")
+      return
+    }
+    #expect(!loader.analysisFailed(for: request.key))
+    #expect(diagnostics.events.count == 1)
+  }
+
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(client: client, warmStart: nil)
@@ -1002,15 +1099,29 @@ import Testing
       })
     let request = chartTestRequest(
       resultFingerprint: "retry-after-analysis-failure")
+    let failedTaskKey = loader.analysisTaskKey(
+      requestKey: request.key,
+      preference: nil)
 
     let failed = await loader.analyze(
       request,
       preferredSpecificationID: nil)
+    guard case .failed? = failed else {
+      Issue.record("A real analyzer error should remain distinct from cancellation.")
+      return
+    }
+    #expect(loader.analysisFailed(for: request.key))
+
+    loader.retryAnalysis(for: request.key)
+    let retryTaskKey = loader.analysisTaskKey(
+      requestKey: request.key,
+      preference: nil)
     let retried = await loader.analyze(
       request,
       preferredSpecificationID: nil)
 
-    #expect(failed == nil)
+    #expect(failedTaskKey != retryTaskKey)
+    #expect(!loader.analysisFailed(for: request.key))
     guard case .resolved? = retried else {
       Issue.record("A retry should start fresh after an analysis failure.")
       return
@@ -1029,6 +1140,30 @@ import Testing
     _ = await loader.analyze(loadedRequest, preferredSpecificationID: nil)
     #expect(loader.hasLoadedAnalysis(for: loadedRequest.key))
     #expect(!loader.hasLoadedAnalysis(for: otherRequest.key))
+  }
+
+  @Test func cancelledWarmAnalysisCannotChangeTheResolvedRecommendation() async throws {
+    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let request = chartTestRequest(
+      resultFingerprint: "cancelled-warm-analysis")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis)
+    let recommendations = chartTestRecommendations(from: analysis)
+    let original = try #require(recommendations.first)
+    let alternative = try #require(recommendations.dropFirst().first)
+
+    let cancelled = Task {
+      while !Task.isCancelled {
+        await Task.yield()
+      }
+      return await loader.analyze(
+        request,
+        preferredSpecificationID: alternative.id)
+    }
+    cancelled.cancel()
+
+    #expect(await cancelled.value == nil)
+    #expect(loader.resolvedRecommendation?.id == original.id)
   }
 
   @Test func requestKeysKeepStructuredComponentsDistinct() {
@@ -1065,7 +1200,7 @@ import Testing
     let recommendations = chartTestRecommendations(from: analysis)
     let alternative = try #require(recommendations.dropFirst().first)
 
-    #expect(loader.selectLoadedRecommendation(alternative.id))
+    #expect(loader.selectLoadedRecommendation(alternative.id, for: request.key))
     await loader.prepareResolvedRecommendation()
     let preparationKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
@@ -1093,7 +1228,27 @@ import Testing
     let selectedBefore = try #require(loader.resolvedRecommendation?.id)
     let unknownID = chartTestRecommendationID("unknown|category|value")
 
-    #expect(!loader.selectLoadedRecommendation(unknownID))
+    #expect(!loader.selectLoadedRecommendation(unknownID, for: request.key))
+    #expect(loader.resolvedRecommendation?.id == selectedBefore)
+  }
+
+  @Test func loadedRecommendationSelectionRejectsAReplacementRequest() async throws {
+    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loadedRequest = chartTestRequest(
+      resultFingerprint: "stale-recommendation-loaded")
+    let replacementRequest = chartTestRequest(
+      resultFingerprint: "stale-recommendation-replacement")
+    _ = await loader.analyze(loadedRequest, preferredSpecificationID: nil)
+    let selectedBefore = try #require(loader.resolvedRecommendation?.id)
+    let analysis = try #require(loader.analysis)
+    let alternative = try #require(
+      chartTestRecommendations(from: analysis)
+        .dropFirst().first)
+
+    #expect(
+      !loader.selectLoadedRecommendation(
+        alternative.id,
+        for: replacementRequest.key))
     #expect(loader.resolvedRecommendation?.id == selectedBefore)
   }
 
@@ -1358,12 +1513,6 @@ private final class ResultPresentationStateBox {
 
   init(_ value: ResultPresentationState) {
     self.value = value
-  }
-
-  var binding: Binding<ResultPresentationState> {
-    Binding(
-      get: { self.value },
-      set: { self.value = $0 })
   }
 }
 

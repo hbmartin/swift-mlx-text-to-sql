@@ -14,9 +14,9 @@ private struct ResultPresentationLifecycleModifier: ViewModifier {
   let didApplyAnalysis: @MainActor (ResultPresentationAnalysisUpdate) -> Void
 
   private var analysisTaskKey: ResultPresentationAnalysisTaskKey {
-    ResultPresentationAnalysisTaskKey(
-      chartRequest: request.key,
-      preferredSpecificationID: authoritativePreference?.specificationID)
+    chart.analysisTaskKey(
+      requestKey: request.key,
+      preference: authoritativePreference)
   }
 
   func body(content: Content) -> some View {

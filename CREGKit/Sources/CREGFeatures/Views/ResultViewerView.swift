@@ -206,6 +206,14 @@ struct ResultViewerView: View {
     chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
+  var selectedAnalysisFailed: Bool {
+    chart.analysisFailed(for: chartRequest.key)
+  }
+
+  var selectedChartFailed: Bool {
+    selectedAnalysisFailed || selectedPreparationFailed
+  }
+
   var requestedMode: ResultPresentationPreference.Mode {
     presentationState.requestedMode(
       authoritativePreference: preference,
@@ -282,7 +290,7 @@ struct ResultViewerView: View {
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
-        if !chartRecommendations.isEmpty {
+        if !chartRecommendations.isEmpty || selectedAnalysisFailed {
           // Requested-mode persistence rides the binding's setter. Analysis
           // migrations use their separate compare-and-set callback below.
           Picker(
@@ -304,7 +312,7 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-view-mode")
         }
 
-        if selectedPreparationFailed,
+        if selectedChartFailed,
           requestedMode == .chart
         {
           ResultChartRecoveryControls(
@@ -426,14 +434,24 @@ struct ResultViewerView: View {
   }
 
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
-    handleResultPresentationModeSelection(
+    resultPresentationModeSelectionTransition(
       selectedMode,
-      state: $presentationState,
+      state: presentationState,
       authoritativePreference: preference,
       requestKey: chartRequest.key,
-      preparationFailed: selectedPreparationFailed,
-      retryPreparation: chart.retryPreparation,
+      chartFailed: selectedChartFailed
+    ).commit(
+      setState: { presentationState = $0 },
+      retryChart: retryFailedChart,
       persistPreference: persistPreference)
+  }
+
+  private func retryFailedChart() {
+    if selectedAnalysisFailed {
+      chart.retryAnalysis(for: chartRequest.key)
+    } else {
+      chart.retryPreparation()
+    }
   }
 
   func applyUserPreference(_ updated: ResultPresentationPreference) {

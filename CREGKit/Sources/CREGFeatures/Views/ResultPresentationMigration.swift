@@ -1,7 +1,6 @@
 import AutoTableCharts
 import ComposableArchitecture
 import Foundation
-import SwiftUI
 
 enum ResultPresentationMigrationOutcome: Equatable {
   case migrated(ResultPresentationPreference)
@@ -23,19 +22,22 @@ enum ResultPresentationPreferenceReconciliation: Equatable {
   case messageMissing
 }
 
-/// Inputs that can change which recommendation an existing analysis resolves.
-/// Presentation mode is deliberately excluded: switching Chart/Table does not
-/// require cancelling or repeating chart analysis.
+/// Identity of one SwiftUI analysis task. Presentation mode is deliberately
+/// projected out because switching Chart/Table does not repeat analysis;
+/// explicit retries advance `attempt` without changing result identity.
 struct ResultPresentationAnalysisTaskKey: Hashable {
   private var chartRequest: ResultChartLoader.Request.Key
   private var preferredSpecificationID: AutoChartRecommendationID?
+  private var attempt: Int
 
   init(
     chartRequest: ResultChartLoader.Request.Key,
-    preferredSpecificationID: AutoChartRecommendationID?
+    preference: ResultPresentationPreference?,
+    attempt: Int = 0
   ) {
     self.chartRequest = chartRequest
-    self.preferredSpecificationID = preferredSpecificationID
+    self.preferredSpecificationID = preference?.specificationID
+    self.attempt = attempt
   }
 }
 
@@ -199,17 +201,57 @@ struct ResultPresentationState: Equatable {
   }
 }
 
-@MainActor
-func handleResultPresentationModeSelection(
+struct ResultPresentationModeSelectionTransition {
+  fileprivate enum Effect {
+    case none
+    case persist(ResultPresentationPreference)
+    case retry
+    case retryAndPersist(ResultPresentationPreference)
+  }
+
+  private let state: ResultPresentationState
+  private let effect: Effect
+
+  fileprivate init(
+    state: ResultPresentationState,
+    effect: Effect
+  ) {
+    self.state = state
+    self.effect = effect
+  }
+
+  /// Commits local presentation state before exposing any retry or persistence
+  /// effect. Keeping effects private makes that ordering part of this type's API
+  /// rather than a convention repeated by SwiftUI call sites.
+  @MainActor
+  func commit(
+    setState: (ResultPresentationState) -> Void,
+    retryChart: () -> Void,
+    persistPreference: (ResultPresentationPreference) -> Void
+  ) {
+    setState(state)
+    switch effect {
+    case .none:
+      break
+    case .persist(let updated):
+      persistPreference(updated)
+    case .retry:
+      retryChart()
+    case .retryAndPersist(let updated):
+      retryChart()
+      persistPreference(updated)
+    }
+  }
+}
+
+func resultPresentationModeSelectionTransition(
   _ selectedMode: ResultPresentationPreference.Mode,
-  state: Binding<ResultPresentationState>,
+  state: ResultPresentationState,
   authoritativePreference: ResultPresentationPreference?,
   requestKey: ResultChartLoader.Request.Key,
-  preparationFailed: Bool,
-  retryPreparation: () -> Void,
-  persistPreference: (ResultPresentationPreference) -> Void
-) {
-  var updatedState = state.wrappedValue
+  chartFailed: Bool
+) -> ResultPresentationModeSelectionTransition {
+  var updatedState = state
   let currentPreference = updatedState.effectivePreference(
     authoritativePreference: authoritativePreference,
     requestKey: requestKey)
@@ -217,7 +259,7 @@ func handleResultPresentationModeSelection(
     selectedMode,
     requestedMode: currentPreference?.mode ?? .chart,
     preserving: currentPreference?.specificationID,
-    preparationFailed: preparationFailed
+    preparationFailed: chartFailed
   )
 
   switch intent {
@@ -225,30 +267,32 @@ func handleResultPresentationModeSelection(
     updatedState.synchronize(
       with: authoritativePreference,
       requestKey: requestKey)
-    state.wrappedValue = updatedState
+    return ResultPresentationModeSelectionTransition(
+      state: updatedState,
+      effect: .none)
   case .persist(let updated):
     updatedState.applyUserPreference(
       updated,
       authoritativePreference: authoritativePreference,
       requestKey: requestKey)
-    state.wrappedValue = updatedState
-    persistPreference(updated)
-  case .retryChart(let updated):
-    if let updated {
-      updatedState.applyUserPreference(
-        updated,
-        authoritativePreference: authoritativePreference,
-        requestKey: requestKey)
-    } else {
-      updatedState.synchronize(
-        with: authoritativePreference,
-        requestKey: requestKey)
-    }
-    state.wrappedValue = updatedState
-    retryPreparation()
-    if let updated {
-      persistPreference(updated)
-    }
+    return ResultPresentationModeSelectionTransition(
+      state: updatedState,
+      effect: .persist(updated))
+  case .retryChart(nil):
+    updatedState.synchronize(
+      with: authoritativePreference,
+      requestKey: requestKey)
+    return ResultPresentationModeSelectionTransition(
+      state: updatedState,
+      effect: .retry)
+  case .retryChart(.some(let updated)):
+    updatedState.applyUserPreference(
+      updated,
+      authoritativePreference: authoritativePreference,
+      requestKey: requestKey)
+    return ResultPresentationModeSelectionTransition(
+      state: updatedState,
+      effect: .retryAndPersist(updated))
   }
 }
 
@@ -354,10 +398,13 @@ func analyzeResultPresentation(
   migratePreference: ResultPresentationMigrationHandler,
   diagnostics: DiagnosticsClient
 ) async -> ResultPresentationAnalysisUpdate? {
-  switch await chart.analyze(
+  guard !Task.isCancelled else { return nil }
+  let resolution = await chart.analyze(
     request,
     preferredSpecificationID: preference?.specificationID
-  ) {
+  )
+  guard !Task.isCancelled else { return nil }
+  switch resolution {
   case .resolved(let recommendation, _, let defaultReason)?:
     var resolvedRecommendation = recommendation
     var resolvedDefaultReason = defaultReason
@@ -366,6 +413,7 @@ func analyzeResultPresentation(
     var attemptedPreferences: Set<ResultPresentationPreference> = []
 
     while true {
+      guard !Task.isCancelled else { return nil }
       guard
         let previous = authoritativePreference,
         let migrated = ResultViewerLogic.migratedPreference(
@@ -419,12 +467,24 @@ func analyzeResultPresentation(
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: reconciliation)
+      case .failed?:
+        assertionFailure("A loaded analysis cannot become an analyzer failure.")
+        return nil
       case nil:
         return nil
       }
     }
   case .unavailable?:
     return .unavailable
+  case .failed(let details)?:
+    diagnostics.record(
+      DiagnosticEvent(
+        level: .error,
+        category: .presentation,
+        code: "chart_analysis_failed",
+        summary: "Chart analysis failed and can be retried.",
+        details: details))
+    return nil
   case nil:
     return nil
   }

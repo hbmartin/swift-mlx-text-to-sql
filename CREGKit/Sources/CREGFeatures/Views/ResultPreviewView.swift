@@ -80,6 +80,14 @@ struct ResultPreviewView: View {
     chart.preparationFailed(for: selectedRecommendation?.id)
   }
 
+  private var selectedAnalysisFailed: Bool {
+    chart.analysisFailed(for: chartRequest.key)
+  }
+
+  private var selectedChartFailed: Bool {
+    selectedAnalysisFailed || selectedPreparationFailed
+  }
+
   private var requestedMode: ResultPresentationPreference.Mode {
     presentationState.requestedMode(
       authoritativePreference: preference,
@@ -96,11 +104,11 @@ struct ResultPreviewView: View {
       let selected = selectedRecommendation
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
-        if selected != nil {
+        if selected != nil || selectedAnalysisFailed {
           Picker(
             "Result preview",
             selection: Binding(
-              get: { effectiveMode(hasChart: true) },
+              get: { effectiveMode(hasChart: selected != nil) },
               set: { selectMode($0) })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -112,7 +120,7 @@ struct ResultPreviewView: View {
           .accessibilityIdentifier("result-preview-mode")
         }
 
-        if selectedPreparationFailed,
+        if selectedChartFailed,
           requestedMode == .chart
         {
           ResultChartRecoveryControls(
@@ -213,14 +221,24 @@ struct ResultPreviewView: View {
   }
 
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
-    handleResultPresentationModeSelection(
+    resultPresentationModeSelectionTransition(
       selectedMode,
-      state: $presentationState,
+      state: presentationState,
       authoritativePreference: preference,
       requestKey: chartRequest.key,
-      preparationFailed: selectedPreparationFailed,
-      retryPreparation: chart.retryPreparation,
+      chartFailed: selectedChartFailed
+    ).commit(
+      setState: { presentationState = $0 },
+      retryChart: retryFailedChart,
       persistPreference: setPreference)
+  }
+
+  private func retryFailedChart() {
+    if selectedAnalysisFailed {
+      chart.retryAnalysis(for: chartRequest.key)
+    } else {
+      chart.retryPreparation()
+    }
   }
 
   private var tablePreview: some View {
