@@ -332,11 +332,12 @@ enum ResultPresentationAnalysisUpdate: Equatable {
     specificationID: AutoChartRecommendationID,
     preference: ResultPresentationPreferenceReconciliation)
   case unavailable
+  case failed
 
   var preferenceReconciliation: ResultPresentationPreferenceReconciliation {
     switch self {
     case .resolved(_, let preference): preference
-    case .unavailable: .unchanged
+    case .unavailable, .failed: .unchanged
     }
   }
 
@@ -347,7 +348,7 @@ enum ResultPresentationAnalysisUpdate: Equatable {
     switch self {
     case .resolved(let specificationID, _):
       return selectionSpecificationID != specificationID.specificationID
-    case .unavailable:
+    case .unavailable, .failed:
       return true
     }
   }
@@ -478,15 +479,27 @@ func analyzeResultPresentation(
     }
   case .unavailable?:
     return .unavailable
-  case .failed(let details)?:
-    diagnostics.record(
-      DiagnosticEvent(
-        level: .error,
-        category: .presentation,
-        code: "chart_analysis_failed",
-        summary: "Chart analysis failed and can be retried.",
-        details: details))
-    return nil
+  case .failed(let failure)?:
+    switch failure.retryability {
+    case .retryable:
+      diagnostics.record(
+        DiagnosticEvent(
+          level: .error,
+          category: .presentation,
+          code: "chart_analysis_failed",
+          summary: "Chart analysis failed and can be retried.",
+          details: failure.details))
+      return .failed
+    case .terminal:
+      diagnostics.record(
+        DiagnosticEvent(
+          level: .error,
+          category: .presentation,
+          code: "chart_analysis_invalid_dataset",
+          summary: "Chart analysis failed because the result data was invalid.",
+          details: failure.details))
+      return .unavailable
+    }
   case nil:
     return nil
   }
