@@ -27,6 +27,7 @@ private struct ResultPresentationLifecycleModifier: ViewModifier {
           requestKey: request.key)
       }
       .onChange(of: request.key) { _, updatedRequestKey in
+        chart.synchronizeRequest(updatedRequestKey)
         presentationState.synchronize(
           with: authoritativePreference,
           requestKey: updatedRequestKey)
