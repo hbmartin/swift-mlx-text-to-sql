@@ -399,7 +399,8 @@ func analyzeResultPresentation(
   _ chart: ResultChartLoader,
   request: ResultChartLoader.Request,
   preference: ResultPresentationPreference?,
-  migratePreference: ResultPresentationMigrationHandler
+  migratePreference: ResultPresentationMigrationHandler,
+  diagnostics: DiagnosticsClient
 ) async -> ResultPresentationAnalysisUpdate? {
   chart.synchronizeRequest(request.key)
   guard !Task.isCancelled else { return nil }
@@ -429,7 +430,7 @@ func analyzeResultPresentation(
           preference: reconciliation)
       }
       guard attemptedPreferences.insert(previous).inserted else {
-        chart.recordPreferenceReconciliationStalled()
+        recordChartPreferenceReconciliationStalled(diagnostics: diagnostics)
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: .stalled(migrated))
@@ -437,7 +438,9 @@ func analyzeResultPresentation(
 
       switch migratePreference(previous, migrated) {
       case .migrated(let retainedPreference):
-        chart.recordPreferenceMigration(resolvedDefaultReason)
+        recordChartPreferenceMigration(
+          resolvedDefaultReason,
+          diagnostics: diagnostics)
         authoritativePreference = retainedPreference
         reconciliation = .retained(retainedPreference)
       case .retained(let retainedPreference):
@@ -478,5 +481,41 @@ func analyzeResultPresentation(
     return .failed(failure)
   case nil:
     return nil
+  }
+}
+
+private func recordChartPreferenceReconciliationStalled(
+  diagnostics: DiagnosticsClient
+) {
+  diagnostics.record(
+    DiagnosticEvent(
+      level: .error,
+      category: .presentation,
+      code: "chart_preference_reconciliation_stalled",
+      summary: "Chart preference reconciliation made no progress."))
+}
+
+private func recordChartPreferenceMigration(
+  _ reason: AutoChartRecommendationResolution.DefaultReason?,
+  diagnostics: DiagnosticsClient
+) {
+  guard let reason else { return }
+  switch reason {
+  case .noPersistedPreference:
+    return
+  case .policyVersionChanged(let previous, let current):
+    diagnostics.info(
+      category: .presentation,
+      code: "chart_recommendation_policy_changed",
+      summary: "A stored chart pin used an obsolete recommendation policy.",
+      context: [
+        "previous_policy": String(previous),
+        "current_policy": String(current),
+      ])
+  case .specificationUnavailable:
+    diagnostics.info(
+      category: .presentation,
+      code: "chart_specification_unavailable",
+      summary: "A stored chart pin was unavailable and the default chart was selected.")
   }
 }

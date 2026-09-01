@@ -5,7 +5,7 @@ rules:
     languages: [swift]
     patterns:
       - pattern: |
-          init(..., diagnostics: DiagnosticsClient = .noop, ...) {
+          init(..., diagnostics: DiagnosticsClient = $DEFAULT, ...) {
             ...
           }
       - pattern-either:
