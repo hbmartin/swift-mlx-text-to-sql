@@ -512,7 +512,7 @@ import Testing
 
 @MainActor
 @Suite struct ResultViewerAnalysisTests {
-  @Test func analyzerFailureRecordsADiagnosticAndRemainsRetryable() async {
+  @Test func analyzerFailureRecordsOnceAndRemainsRetryable() async {
     let attempts = FailingFirstChartAnalysis()
     let loader = ResultChartLoader(
       client: .testValue,
@@ -545,6 +545,20 @@ import Testing
     #expect(diagnostics.events.first?.category == .presentation)
     #expect(diagnostics.events.first?.code == "chart_analysis_failed")
     #expect(diagnostics.events.first?.details != nil)
+
+    let retained = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, updated in .migrated(updated) },
+      diagnostics: diagnostics.client)
+    guard case .failed(let retainedFailure)? = retained else {
+      Issue.record("A retained analyzer failure should remain explicit.")
+      return
+    }
+    #expect(retainedFailure == failure)
+    #expect(await attempts.count == 1)
+    #expect(diagnostics.events.count == 1)
 
     #expect(
       loader.retryFailure(for: request.key, recommendationID: nil))
@@ -611,7 +625,7 @@ import Testing
     let repeated = await loader.analyze(
       request,
       preferredSpecificationID: nil)
-    guard case .failed(let repeatedFailure)? = repeated else {
+    guard case .failed(let repeatedFailure, _)? = repeated else {
       Issue.record("The retained terminal failure should be returned again.")
       return
     }
@@ -865,7 +879,10 @@ import Testing
     #expect(loader.resolvedRecommendation(for: request.key)?.id == alternative.id)
     #expect(loader.matchingPreparedChart(for: primary.id) == nil)
     #expect(loader.matchingPreparedChart(for: alternative.id) == nil)
-    #expect(!loader.preparationFailed(for: alternative.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: alternative.id) == nil)
     #expect(diagnostics.events.isEmpty)
   }
 
@@ -1196,11 +1213,13 @@ import Testing
       request,
       preferredSpecificationID: nil)
 
-    guard case .failed(_)? = resolution else {
+    guard case .failed(_, _)? = resolution else {
       Issue.record("A live caller must retain a retryable analyzer failure.")
       return
     }
-    #expect(loader.analysisRetryAvailable(for: request.key))
+    #expect(
+      loader.failure(for: request.key, recommendationID: nil)?.retryability
+        == .retryable)
     #expect(loader.analysis(for: request.key) == nil)
   }
 
@@ -1246,11 +1265,13 @@ import Testing
     let failed = await loader.analyze(
       request,
       preferredSpecificationID: nil)
-    guard case .failed(_)? = failed else {
+    guard case .failed(_, _)? = failed else {
       Issue.record("A real analyzer error should remain distinct from cancellation.")
       return
     }
-    #expect(loader.analysisRetryAvailable(for: request.key))
+    #expect(
+      loader.failure(for: request.key, recommendationID: nil)?.retryability
+        == .retryable)
 
     loader.retryAnalysis(for: request.key)
     let retryTaskKey = loader.analysisTaskKey(
@@ -1261,7 +1282,7 @@ import Testing
       preferredSpecificationID: nil)
 
     #expect(failedTaskKey != retryTaskKey)
-    #expect(!loader.analysisRetryAvailable(for: request.key))
+    #expect(loader.failure(for: request.key, recommendationID: nil) == nil)
     guard case .resolved? = retried else {
       Issue.record("A retry should start fresh after an analysis failure.")
       return
@@ -1286,7 +1307,10 @@ import Testing
     _ = await loader.analyze(
       failedRequest,
       preferredSpecificationID: nil)
-    #expect(loader.analysisRetryAvailable(for: failedRequest.key))
+    #expect(
+      loader.failure(
+        for: failedRequest.key,
+        recommendationID: nil)?.retryability == .retryable)
     #expect(await invocations.count == 1)
 
     let cancelledReplacement = Task { @MainActor in
@@ -1303,7 +1327,10 @@ import Testing
     #expect(await invocations.count == 1)
     loader.synchronizeRequest(failedRequest.key)
 
-    #expect(!loader.analysisRetryAvailable(for: failedRequest.key))
+    #expect(
+      loader.failure(
+        for: failedRequest.key,
+        recommendationID: nil) == nil)
   }
 
   @Test func selectionGateAcceptsOnlyTheCurrentlyLoadedRequest() async {
@@ -1323,12 +1350,11 @@ import Testing
     #expect(loader.resolvedRecommendation(for: otherRequest.key) == nil)
   }
 
-  @Test func replacementRequestCannotResolveOrPrepareStaleAnalysis() async throws {
+  @Test func mismatchedPreparationRequestCannotClearTheActiveFailure() async throws {
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
       prepareChart: { _, _ in
-        Issue.record("A replacement request must not prepare stale analysis.")
         throw PreferenceSaveTestError.failed
       })
     let loadedRequest = chartTestRequest(
@@ -1340,6 +1366,13 @@ import Testing
     let alternative = try #require(
       chartTestRecommendations(from: analysis).dropFirst().first)
 
+    #expect(
+      loader.selectLoadedRecommendation(
+        alternative.id,
+        for: loadedRequest.key))
+    let activeFailure = try #require(
+      await loader.prepareResolvedRecommendation(for: loadedRequest.key))
+
     guard
       case nil = loader.resolveLoadedRecommendation(
         for: replacementRequest.key,
@@ -1350,7 +1383,10 @@ import Testing
     }
     await loader.prepareResolvedRecommendation(for: replacementRequest.key)
 
-    #expect(!loader.preparationFailed(for: alternative.id))
+    #expect(
+      loader.failure(
+        for: loadedRequest.key,
+        recommendationID: alternative.id) == activeFailure)
   }
 
   @Test func cancelledWarmAnalysisCannotChangeTheResolvedRecommendation() async throws {
@@ -1508,8 +1544,14 @@ import Testing
       preferredSpecificationID: alternative.id)
     await loader.prepareResolvedRecommendation(for: request.key)
     #expect(loader.matchingPreparedChart(for: alternative.id) == nil)
-    #expect(loader.preparationFailed(for: alternative.id))
-    #expect(!loader.preparationFailed(for: primary.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: alternative.id)?.stage == .preparation)
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: primary.id) == nil)
 
     _ = loader.resolveLoadedRecommendation(
       for: request.key,
@@ -1518,10 +1560,14 @@ import Testing
     #expect(
       loader.matchingPreparedChart(for: primary.id)?.recommendation.id
         == primary.id)
-    #expect(!loader.preparationFailed(for: primary.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: primary.id) == nil)
   }
 
   @Test func cancellationErrorFromLivePreparationRemainsRetryable() async throws {
+    let diagnostics = DiagnosticEventRecorder()
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
@@ -1536,13 +1582,21 @@ import Testing
     _ = loader.resolveLoadedRecommendation(
       for: request.key,
       preferredSpecificationID: recommendation.id)
-    await loader.prepareResolvedRecommendation(for: request.key)
+    let failure = try #require(
+      await loader.prepareResolvedRecommendation(for: request.key))
+    recordChartFailureDiagnostic(failure, diagnostics: diagnostics.client)
 
-    #expect(loader.preparationFailed(for: recommendation.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: recommendation.id)?.retryability == .retryable)
+    #expect(diagnostics.events.count == 1)
+    #expect(diagnostics.events.first?.code == "chart_preparation_failed")
   }
 
   @Test func deterministicPreparationFailureIsTerminalAndCannotRetry() async throws {
     let invocations = ChartAnalysisInvocationCounter()
+    let diagnostics = DiagnosticEventRecorder()
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
@@ -1561,7 +1615,11 @@ import Testing
       for: request.key,
       preferredSpecificationID: recommendation.id)
 
-    await loader.prepareResolvedRecommendation(for: request.key)
+    let committedFailure = try #require(
+      await loader.prepareResolvedRecommendation(for: request.key))
+    recordChartFailureDiagnostic(
+      committedFailure,
+      diagnostics: diagnostics.client)
 
     let failure = try #require(
       loader.failure(
@@ -1572,6 +1630,14 @@ import Testing
     #expect(failure.stage == .preparation)
     #expect(failure.kind == .invalidSpecification)
     #expect(failure.retryability == .terminal)
+    #expect(failure == committedFailure)
+    #expect(diagnostics.events.count == 1)
+    #expect(
+      diagnostics.events.first?.code
+        == "chart_preparation_invalid_specification")
+    #expect(
+      diagnostics.events.first?.summary
+        == "Chart preparation failed because the chart specification was invalid.")
     #expect(
       !loader.retryFailure(
         for: request.key,
@@ -1580,8 +1646,11 @@ import Testing
       loader.preparationTaskKey(recommendationID: recommendation.id)
         == failedKey)
 
-    await loader.prepareResolvedRecommendation(for: request.key)
+    let retainedFailure = await loader.prepareResolvedRecommendation(
+      for: request.key)
+    #expect(retainedFailure == nil)
     #expect(await invocations.count == 1)
+    #expect(diagnostics.events.count == 1)
   }
 
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
@@ -1615,14 +1684,20 @@ import Testing
     #expect(
       loader.matchingPreparedChart(for: primary.id)?.recommendation.id
         == primary.id)
-    #expect(!loader.preparationFailed(for: primary.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: primary.id) == nil)
 
     await gate.releaseFirstPreparation()
     await first.value
     #expect(
       loader.matchingPreparedChart(for: primary.id)?.recommendation.id
         == primary.id)
-    #expect(!loader.preparationFailed(for: primary.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: primary.id) == nil)
   }
 
   @Test func explicitRetryClearsFailureAndRekeysTheRecommendation() async throws {
@@ -1645,12 +1720,18 @@ import Testing
     await loader.prepareResolvedRecommendation(for: request.key)
     let failedKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
-    #expect(loader.preparationFailed(for: alternative.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: alternative.id) != nil)
 
     _ = await loader.analyze(
       request,
       preferredSpecificationID: alternative.id)
-    #expect(loader.preparationFailed(for: alternative.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: alternative.id) != nil)
     #expect(
       loader.preparationTaskKey(recommendationID: alternative.id) == failedKey)
 
@@ -1661,7 +1742,10 @@ import Testing
     let retryKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
 
-    #expect(!loader.preparationFailed(for: alternative.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: alternative.id) == nil)
     #expect(failedKey != retryKey)
   }
 
@@ -1691,11 +1775,17 @@ import Testing
     await gate.waitUntilFirstPreparationStarts()
 
     loader.retryPreparation()
-    #expect(!loader.preparationFailed(for: recommendation.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: recommendation.id) == nil)
 
     await gate.releaseFirstPreparation()
     await suspended.value
-    #expect(!loader.preparationFailed(for: recommendation.id))
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: recommendation.id) == nil)
   }
 
   @Test func firstCallGateRemembersReleaseBeforePause() async {

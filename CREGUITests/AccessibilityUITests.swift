@@ -86,6 +86,32 @@ final class AccessibilityUITests: XCTestCase {
     }
   }
 
+  func testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget() {
+    for size in ["large", "ax5"] {
+      let app = launch(
+        scenario: "result-chart-terminal-recovery",
+        dynamicType: size)
+      assertAccessibleControl("Keep Table", in: app)
+      XCTAssertFalse(app.descendants(matching: .any)["Retry Chart"].exists)
+
+      XCTAssertTrue(app.staticTexts["No recovery action"].waitForExistence(timeout: 5))
+      app.descendants(matching: .any)["Keep Table"]
+        .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        .tap()
+      XCTAssertTrue(app.staticTexts["Keep Table selected"].waitForExistence(timeout: 5))
+
+      if size == "ax5" {
+        let status = app.staticTexts["Chart unavailable"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertLessThan(
+          status.frame.midX,
+          app.frame.midX,
+          "The terminal accessibility stack should remain leading-aligned")
+      }
+      app.terminate()
+    }
+  }
+
   func testHighestRiskScreensAtAX5Landscape() throws {
     XCUIDevice.shared.orientation = .landscapeLeft
 

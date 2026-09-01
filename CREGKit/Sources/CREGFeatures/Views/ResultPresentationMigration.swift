@@ -473,7 +473,7 @@ func analyzeResultPresentation(
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: reconciliation)
-      case .failed(_)?:
+      case .failed(_, _)?:
         assertionFailure("A loaded analysis cannot become an analyzer failure.")
         return nil
       case nil:
@@ -482,48 +482,57 @@ func analyzeResultPresentation(
     }
   case .unavailable?:
     return .unavailable
-  case .failed(let failure)?:
-    switch failure.retryability {
-    case .retryable:
-      diagnostics.record(
-        DiagnosticEvent(
-          level: .error,
-          category: .presentation,
-          code: "chart_analysis_failed",
-          summary: "Chart analysis failed and can be retried.",
-          details: failure.details))
-      return .failed(failure)
-    case .terminal:
-      let diagnostic =
-        switch failure.kind {
-        case .invalidDataset:
-          (
-            code: "chart_analysis_invalid_dataset",
-            summary: "Chart analysis failed because the result data was invalid."
-          )
-        case .invalidSpecification:
-          (
-            code: "chart_analysis_invalid_specification",
-            summary: "Chart analysis produced an invalid chart specification."
-          )
-        case .transient:
-          (
-            code: "chart_analysis_terminal_failure",
-            summary: "Chart analysis failed and cannot be retried."
-          )
-        }
-      diagnostics.record(
-        DiagnosticEvent(
-          level: .error,
-          category: .presentation,
-          code: diagnostic.code,
-          summary: diagnostic.summary,
-          details: failure.details))
-      return .failed(failure)
+  case .failed(let failure, let disposition)?:
+    if disposition == .committed {
+      recordChartFailureDiagnostic(failure, diagnostics: diagnostics)
     }
+    return .failed(failure)
   case nil:
     return nil
   }
+}
+
+/// Records one newly committed chart failure with wording and identity scoped
+/// to the operation that failed. Callers deliberately omit retained failures so
+/// SwiftUI task restarts cannot duplicate the original diagnostic event.
+func recordChartFailureDiagnostic(
+  _ failure: ResultChartLoader.Failure,
+  diagnostics: DiagnosticsClient
+) {
+  let diagnostic: (code: String, summary: String) =
+    switch (failure.stage, failure.kind) {
+    case (.analysis, .invalidDataset):
+      (
+        "chart_analysis_invalid_dataset",
+        "Chart analysis failed because the result data was invalid.")
+    case (.analysis, .invalidSpecification):
+      (
+        "chart_analysis_invalid_specification",
+        "Chart analysis produced an invalid chart specification.")
+    case (.analysis, .transient):
+      (
+        "chart_analysis_failed",
+        "Chart analysis failed and can be retried.")
+    case (.preparation, .invalidDataset):
+      (
+        "chart_preparation_invalid_dataset",
+        "Chart preparation failed because the result data was invalid.")
+    case (.preparation, .invalidSpecification):
+      (
+        "chart_preparation_invalid_specification",
+        "Chart preparation failed because the chart specification was invalid.")
+    case (.preparation, .transient):
+      (
+        "chart_preparation_failed",
+        "Chart preparation failed and can be retried.")
+    }
+  diagnostics.record(
+    DiagnosticEvent(
+      level: .error,
+      category: .presentation,
+      code: diagnostic.code,
+      summary: diagnostic.summary,
+      details: failure.details))
 }
 
 private func recordChartPreferenceMigration(

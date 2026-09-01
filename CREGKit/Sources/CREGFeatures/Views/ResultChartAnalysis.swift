@@ -325,21 +325,21 @@ final class ResultChartLoaderOwner {
       AutoChartRecommendationID?
     ) -> ResultChartLoader
 
-  private let makeLoader: MakeLoader
+  private enum Source {
+    case client(CREGChartAnalysisClient)
+    case factory(MakeLoader)
+  }
+
+  private let source: Source
   private var storedLoader: ResultChartLoader?
   private var storedRequestKey: ResultChartLoader.Request.Key?
 
   init(client: CREGChartAnalysisClient) {
-    self.makeLoader = { request, preferredSpecificationID in
-      ResultChartLoader(
-        client: client,
-        warmStart: request,
-        preferredSpecificationID: preferredSpecificationID)
-    }
+    source = .client(client)
   }
 
   init(makeLoader: @escaping MakeLoader) {
-    self.makeLoader = makeLoader
+    source = .factory(makeLoader)
   }
 
   /// The first retained view value for a request supplies its authoritative
@@ -352,7 +352,16 @@ final class ResultChartLoaderOwner {
     if storedRequestKey == request.key, let storedLoader {
       return storedLoader
     }
-    let loader = makeLoader(request, preferredSpecificationID)
+    let loader =
+      switch source {
+      case .client(let client):
+        ResultChartLoader(
+          client: client,
+          warmStart: request,
+          preferredSpecificationID: preferredSpecificationID)
+      case .factory(let makeLoader):
+        makeLoader(request, preferredSpecificationID)
+      }
     storedLoader = loader
     storedRequestKey = request.key
     return loader
@@ -422,7 +431,15 @@ final class ResultChartLoader {
     let stage: Stage
     let kind: Kind
     let details: String
-    let retryability: Retryability
+
+    var retryability: Retryability {
+      switch kind {
+      case .invalidDataset, .invalidSpecification:
+        .terminal
+      case .transient:
+        .retryable
+      }
+    }
 
     init(_ error: any Error, stage: Stage) {
       self.stage = stage
@@ -433,15 +450,17 @@ final class ResultChartLoader {
       // retry that cannot change the outcome.
       if error is AutoChartDatasetError {
         kind = .invalidDataset
-        retryability = .terminal
       } else if error is AutoChartPreparationError {
         kind = .invalidSpecification
-        retryability = .terminal
       } else {
         kind = .transient
-        retryability = .retryable
       }
     }
+  }
+
+  enum FailureDisposition: Equatable, Sendable {
+    case committed
+    case retained
   }
 
   enum Resolution {
@@ -450,7 +469,7 @@ final class ResultChartLoader {
       analysis: AutoChartAnalysis<Int>,
       defaultReason: AutoChartRecommendationResolution.DefaultReason?)
     case unavailable
-    case failed(Failure)
+    case failed(Failure, disposition: FailureDisposition)
   }
 
   private struct LoadedAnalysis {
@@ -480,8 +499,8 @@ final class ResultChartLoader {
   /// prepare. A resolution change supersedes preparation still suspended for
   /// the previous recommendation, even when the analysis itself is reused.
   private var resolvedRecommendationID: AutoChartRecommendationID?
-  /// Every call supersedes earlier preparation calls, including calls for a
-  /// different recommendation in the same analysis generation.
+  /// Every started attempt supersedes earlier preparation calls, including
+  /// calls for a different recommendation in the same analysis generation.
   private var preparationGeneration = 0
   /// Explicit retries re-key SwiftUI's preparation task even when the analysis
   /// and recommendation are unchanged.
@@ -538,10 +557,9 @@ final class ResultChartLoader {
     synchronizeRequest(request.key)
     guard !Task.isCancelled else { return nil }
     if let failedAnalysis, failedAnalysis.key == request.key {
-      return .failed(failedAnalysis.failure)
+      return .failed(failedAnalysis.failure, disposition: .retained)
     }
     if let loadedAnalysis, loadedAnalysis.key == request.key {
-      failedAnalysis = nil
       return applyResolution(
         of: loadedAnalysis.value,
         preferred: preferredSpecificationID)
@@ -559,7 +577,6 @@ final class ResultChartLoader {
       let loaded = try await analyzeChart(request)
       try Task.checkCancellation()
       guard requestGeneration == analysisGeneration else { return nil }
-      failedAnalysis = nil
       loadedAnalysis = LoadedAnalysis(key: request.key, value: loaded)
       return applyResolution(
         of: loaded,
@@ -570,7 +587,7 @@ final class ResultChartLoader {
       }
       let failure = Failure(error, stage: .analysis)
       failedAnalysis = FailedAnalysis(key: request.key, failure: failure)
-      return .failed(failure)
+      return .failed(failure, disposition: .committed)
     }
   }
 
@@ -602,17 +619,10 @@ final class ResultChartLoader {
     guard loadedAnalysis(for: requestKey) != nil,
       let recommendationID,
       currentRecommendation?.id == recommendationID,
-      failedPreparation?.recommendationID == recommendationID
+      let failedPreparation,
+      failedPreparation.recommendationID == recommendationID
     else { return nil }
-    return failedPreparation?.failure
-  }
-
-  /// Whether the current request owns a retryable analyzer failure. `false`
-  /// also covers pending, successful, unavailable, terminal, and superseded
-  /// work.
-  func analysisRetryAvailable(for key: Request.Key) -> Bool {
-    failedAnalysis?.key == key
-      && failedAnalysis?.failure.retryability == .retryable
+    return failedPreparation.failure
   }
 
   /// Re-resolves the loaded immutable analysis and synchronizes every piece of
@@ -662,34 +672,33 @@ final class ResultChartLoader {
     return preparedChart
   }
 
-  func preparationFailed(
-    for recommendationID: AutoChartRecommendationID?
-  ) -> Bool {
-    guard let recommendationID else { return false }
-    return failedPreparation?.recommendationID == recommendationID
-  }
-
   /// Prepares the selected recommendation's chart, reusing the analysis's
-  /// primary chart when it matches. Only the latest invocation may commit;
-  /// cancellation is cooperative and therefore cannot be the commit guard.
-  func prepareResolvedRecommendation(for requestKey: Request.Key) async {
+  /// primary chart when it matches. Every started attempt supersedes earlier
+  /// preparation calls; a retained failure suppresses incidental task restarts
+  /// until an explicit retry clears it. Returns only a newly committed failure
+  /// so its caller can emit one diagnostic for that failed attempt.
+  @discardableResult
+  func prepareResolvedRecommendation(
+    for requestKey: Request.Key
+  ) async -> Failure? {
+    guard activeRequestKey == requestKey else { return nil }
     guard let chartAnalysis = loadedAnalysis(for: requestKey)?.value,
       let recommendation = currentRecommendation
     else {
       preparationGeneration += 1
       failedPreparation = nil
       preparedChart = nil
-      return
+      return nil
     }
     guard failedPreparation?.recommendationID != recommendation.id else {
-      return
+      return nil
     }
     preparationGeneration += 1
     let preparation = preparationGeneration
     failedPreparation = nil
     if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
       preparedChart = chartAnalysis.primaryChart
-      return
+      return nil
     }
     preparedChart = nil
     let requestAnalysisGeneration = analysisGeneration
@@ -698,17 +707,20 @@ final class ResultChartLoader {
       guard requestAnalysisGeneration == analysisGeneration,
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
-      else { return }
+      else { return nil }
       preparedChart = prepared
+      return nil
     } catch {
       guard !Task.isCancelled,
         requestAnalysisGeneration == analysisGeneration,
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
-      else { return }
+      else { return nil }
+      let failure = Failure(error, stage: .preparation)
       failedPreparation = FailedPreparation(
         recommendationID: recommendation.id,
-        failure: Failure(error, stage: .preparation))
+        failure: failure)
+      return failure
     }
   }
 

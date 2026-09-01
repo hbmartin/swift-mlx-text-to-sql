@@ -17,6 +17,7 @@ import Testing
         "result-explorer",
         "result-chart-preparation",
         "result-chart-recovery",
+        "result-chart-terminal-recovery",
         "transient-banners",
       ]
 
