@@ -473,7 +473,7 @@ func analyzeResultPresentation(
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: reconciliation)
-      case .failed(_, _)?:
+      case .failed(_)?:
         assertionFailure("A loaded analysis cannot become an analyzer failure.")
         return nil
       case nil:
@@ -482,19 +482,15 @@ func analyzeResultPresentation(
     }
   case .unavailable?:
     return .unavailable
-  case .failed(let failure, let disposition)?:
-    if disposition == .committed {
-      recordChartFailureDiagnostic(failure, diagnostics: diagnostics)
-    }
+  case .failed(let failure)?:
     return .failed(failure)
   case nil:
     return nil
   }
 }
 
-/// Records one newly committed chart failure with wording and identity scoped
-/// to the operation that failed. Callers deliberately omit retained failures so
-/// SwiftUI task restarts cannot duplicate the original diagnostic event.
+/// Records one chart failure with wording scoped to the operation that failed.
+/// `ResultChartLoader` owns commit-time deduplication before calling this helper.
 func recordChartFailureDiagnostic(
   _ failure: ResultChartLoader.Failure,
   diagnostics: DiagnosticsClient
@@ -504,27 +500,33 @@ func recordChartFailureDiagnostic(
     case (.analysis, .invalidDataset):
       (
         "chart_analysis_invalid_dataset",
-        "Chart analysis failed because the result data was invalid.")
+        "Chart analysis failed because the result data was invalid."
+      )
     case (.analysis, .invalidSpecification):
       (
         "chart_analysis_invalid_specification",
-        "Chart analysis produced an invalid chart specification.")
+        "Chart analysis produced an invalid chart specification."
+      )
     case (.analysis, .transient):
       (
         "chart_analysis_failed",
-        "Chart analysis failed and can be retried.")
+        "Chart analysis failed and can be retried."
+      )
     case (.preparation, .invalidDataset):
       (
         "chart_preparation_invalid_dataset",
-        "Chart preparation failed because the result data was invalid.")
+        "Chart preparation failed because the result data was invalid."
+      )
     case (.preparation, .invalidSpecification):
       (
         "chart_preparation_invalid_specification",
-        "Chart preparation failed because the chart specification was invalid.")
+        "Chart preparation failed because the chart specification was invalid."
+      )
     case (.preparation, .transient):
       (
         "chart_preparation_failed",
-        "Chart preparation failed and can be retried.")
+        "Chart preparation failed and can be retried."
+      )
     }
   diagnostics.record(
     DiagnosticEvent(

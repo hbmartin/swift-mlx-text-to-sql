@@ -10,11 +10,13 @@ final class DiagnosticEventRecorder: @unchecked Sendable {
   private var storage: [DiagnosticEvent] = []
 
   var client: DiagnosticsClient {
-    DiagnosticsClient { [self] event in
-      lock.lock()
-      storage.append(event)
-      lock.unlock()
-    }
+    DiagnosticsClient { [self] event in record(event) }
+  }
+
+  func record(_ event: DiagnosticEvent) {
+    lock.lock()
+    storage.append(event)
+    lock.unlock()
   }
 
   var events: [DiagnosticEvent] {

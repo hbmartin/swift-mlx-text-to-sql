@@ -158,7 +158,8 @@ struct ResultViewerView: View {
       })
     self._chartOwner = State(
       initialValue: ResultChartLoaderOwner(
-        client: _chartAnalysis.wrappedValue))
+        client: _chartAnalysis.wrappedValue,
+        diagnostics: _diagnostics.wrappedValue))
   }
 
   var chart: ResultChartLoader {
@@ -435,11 +436,7 @@ struct ResultViewerView: View {
     ) {
       // Analysis reconciliation and chart-type changes own exact-mark
       // selection policy; preparing the chosen chart does not mutate it.
-      if let failure = await chart.prepareResolvedRecommendation(
-        for: chartRequest.key)
-      {
-        recordChartFailureDiagnostic(failure, diagnostics: diagnostics)
-      }
+      await chart.prepareResolvedRecommendation(for: chartRequest.key)
     }
   }
 

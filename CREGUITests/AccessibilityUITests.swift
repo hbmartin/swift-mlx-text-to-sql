@@ -96,9 +96,14 @@ final class AccessibilityUITests: XCTestCase {
 
       XCTAssertTrue(app.staticTexts["No recovery action"].waitForExistence(timeout: 5))
       app.descendants(matching: .any)["Keep Table"]
-        .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
         .tap()
       XCTAssertTrue(app.staticTexts["Keep Table selected"].waitForExistence(timeout: 5))
+      app.descendants(matching: .any)["Keep Table"]
+        .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95))
+        .tap()
+      XCTAssertTrue(
+        app.staticTexts["Keep Table selected again"].waitForExistence(timeout: 5))
 
       if size == "ax5" {
         let status = app.staticTexts["Chart unavailable"]

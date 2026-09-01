@@ -57,7 +57,8 @@ struct ResultPreviewView: View {
     self.chartRequest = request
     self._chartOwner = State(
       initialValue: ResultChartLoaderOwner(
-        client: _chartAnalysis.wrappedValue))
+        client: _chartAnalysis.wrappedValue,
+        diagnostics: _diagnostics.wrappedValue))
     self._presentationState = State(
       initialValue: ResultPresentationState(
         preference: preference,
@@ -189,11 +190,7 @@ struct ResultPreviewView: View {
         id: chart.preparationTaskKey(
           recommendationID: selected?.id)
       ) {
-        if let failure = await chart.prepareResolvedRecommendation(
-          for: chartRequest.key)
-        {
-          recordChartFailureDiagnostic(failure, diagnostics: diagnostics)
-        }
+        await chart.prepareResolvedRecommendation(for: chartRequest.key)
       }
     }
   }

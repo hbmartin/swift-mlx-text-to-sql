@@ -187,12 +187,18 @@ import SwiftUI
   private struct ResultChartRecoveryAccessibilityHarness: View {
     let retryAvailable: Bool
     @State private var actionFeedback = "No recovery action"
+    @State private var keepTableSelectionCount = 0
 
     var body: some View {
       VStack(spacing: 8) {
         ResultChartRecoveryControls(
           spacing: 12,
-          keepTable: { actionFeedback = "Keep Table selected" },
+          keepTable: {
+            keepTableSelectionCount += 1
+            actionFeedback =
+              keepTableSelectionCount == 1
+              ? "Keep Table selected" : "Keep Table selected again"
+          },
           retryChart:
             retryAvailable
             ? { actionFeedback = "Retry Chart selected" } : nil

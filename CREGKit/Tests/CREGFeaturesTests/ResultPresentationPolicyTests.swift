@@ -514,13 +514,14 @@ import Testing
 @Suite struct ResultViewerAnalysisTests {
   @Test func analyzerFailureRecordsOnceAndRemainsRetryable() async {
     let attempts = FailingFirstChartAnalysis()
+    let diagnostics = DiagnosticEventRecorder()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: diagnostics.client,
       warmStart: nil,
       analyzeChart: { request in
         try await attempts.analyze(request)
       })
-    let diagnostics = DiagnosticEventRecorder()
     let request = chartTestRequest(
       resultFingerprint: "diagnosed-analysis-failure")
 
@@ -577,10 +578,94 @@ import Testing
     #expect(diagnostics.events.count == 1)
   }
 
-  @Test func invalidDatasetFailureRemainsTerminalWithoutOfferingRetry() async {
-    let invocations = ChartAnalysisInvocationCounter()
+  @Test func committedAnalyzerFailureRecordsBeforeCallerCancellation() async {
+    let gate = FirstCallGate()
+    let recorder = DiagnosticEventRecorder()
+    let cancellation = TestTaskCancellationHandle()
+    let diagnostics = DiagnosticsClient { event in
+      recorder.record(event)
+      cancellation.cancel()
+    }
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: diagnostics,
+      warmStart: nil,
+      analyzeChart: { _ in
+        _ = await gate.pauseIfFirstCall()
+        throw PreferenceSaveTestError.failed
+      })
+    let request = chartTestRequest(
+      resultFingerprint: "cancelled-after-analysis-commit")
+    let analysis = Task {
+      await analyzeResultPresentation(
+        loader,
+        request: request,
+        preference: nil,
+        migratePreference: { _, updated in .migrated(updated) },
+        diagnostics: diagnostics)
+    }
+    cancellation.install { analysis.cancel() }
+    await gate.waitUntilFirstCallStarts()
+
+    await gate.releaseFirstCall()
+
+    #expect(await analysis.value == nil)
+    #expect(loader.failure(for: request.key, recommendationID: nil) != nil)
+    #expect(recorder.events.count == 1)
+
+    let retained = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, updated in .migrated(updated) },
+      diagnostics: diagnostics)
+    guard case .failed? = retained else {
+      Issue.record("The committed failure should remain visible after cancellation.")
+      return
+    }
+    #expect(recorder.events.count == 1)
+  }
+
+  @Test func recreatedLoadersShareAnalyzerFailureDiagnosticsUntilRetry() async {
+    let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
+    let invocations = ChartAnalysisInvocationCounter()
+    let analyze: ResultChartLoader.AnalyzeChart = { _ in
+      await invocations.record()
+      throw PreferenceSaveTestError.failed
+    }
+    let first = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+    let recreated = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+    let request = chartTestRequest(
+      resultFingerprint: "shared-analysis-failure-diagnostic")
+
+    _ = await first.analyze(request, preferredSpecificationID: nil)
+    _ = await recreated.analyze(request, preferredSpecificationID: nil)
+
+    #expect(await invocations.count == 2)
+    #expect(diagnostics.events.count == 1)
+
+    #expect(first.retryFailure(for: request.key, recommendationID: nil))
+    _ = await first.analyze(request, preferredSpecificationID: nil)
+
+    #expect(await invocations.count == 3)
+    #expect(diagnostics.events.count == 2)
+  }
+
+  @Test func invalidDatasetFailureRemainsTerminalWithoutOfferingRetry() async {
+    let invocations = ChartAnalysisInvocationCounter()
+    let diagnostics = DiagnosticEventRecorder()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      diagnostics: diagnostics.client,
       warmStart: nil,
       analyzeChart: { _ in
         await invocations.record()
@@ -588,7 +673,6 @@ import Testing
           code: .duplicateColumnID,
           identifier: "duplicate-column")
       })
-    let diagnostics = DiagnosticEventRecorder()
     let request = chartTestRequest(
       resultFingerprint: "terminal-analysis-failure")
     let taskKey = loader.analysisTaskKey(
@@ -622,15 +706,19 @@ import Testing
       loader.analysisTaskKey(requestKey: request.key, preference: nil)
         == taskKey)
 
-    let repeated = await loader.analyze(
-      request,
-      preferredSpecificationID: nil)
-    guard case .failed(let repeatedFailure, _)? = repeated else {
+    let repeated = await analyzeResultPresentation(
+      loader,
+      request: request,
+      preference: nil,
+      migratePreference: { _, updated in .migrated(updated) },
+      diagnostics: diagnostics.client)
+    guard case .failed(let repeatedFailure)? = repeated else {
       Issue.record("The retained terminal failure should be returned again.")
       return
     }
     #expect(repeatedFailure == failure)
     #expect(await invocations.count == 1)
+    #expect(diagnostics.events.count == 1)
   }
 
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
@@ -1213,7 +1301,7 @@ import Testing
       request,
       preferredSpecificationID: nil)
 
-    guard case .failed(_, _)? = resolution else {
+    guard case .failed(_)? = resolution else {
       Issue.record("A live caller must retain a retryable analyzer failure.")
       return
     }
@@ -1265,7 +1353,7 @@ import Testing
     let failed = await loader.analyze(
       request,
       preferredSpecificationID: nil)
-    guard case .failed(_, _)? = failed else {
+    guard case .failed(_)? = failed else {
       Issue.record("A real analyzer error should remain distinct from cancellation.")
       return
     }
@@ -1351,10 +1439,12 @@ import Testing
   }
 
   @Test func mismatchedPreparationRequestCannotClearTheActiveFailure() async throws {
+    let invocations = ChartAnalysisInvocationCounter()
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
       prepareChart: { _, _ in
+        await invocations.record()
         throw PreferenceSaveTestError.failed
       })
     let loadedRequest = chartTestRequest(
@@ -1370,8 +1460,11 @@ import Testing
       loader.selectLoadedRecommendation(
         alternative.id,
         for: loadedRequest.key))
+    await loader.prepareResolvedRecommendation(for: loadedRequest.key)
     let activeFailure = try #require(
-      await loader.prepareResolvedRecommendation(for: loadedRequest.key))
+      loader.failure(
+        for: loadedRequest.key,
+        recommendationID: alternative.id))
 
     guard
       case nil = loader.resolveLoadedRecommendation(
@@ -1387,6 +1480,7 @@ import Testing
       loader.failure(
         for: loadedRequest.key,
         recommendationID: alternative.id) == activeFailure)
+    #expect(await invocations.count == 1)
   }
 
   @Test func cancelledWarmAnalysisCannotChangeTheResolvedRecommendation() async throws {
@@ -1570,6 +1664,7 @@ import Testing
     let diagnostics = DiagnosticEventRecorder()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: diagnostics.client,
       warmStart: nil,
       prepareChart: { _, _ in throw CancellationError() })
     let request = chartTestRequest(
@@ -1582,9 +1677,7 @@ import Testing
     _ = loader.resolveLoadedRecommendation(
       for: request.key,
       preferredSpecificationID: recommendation.id)
-    let failure = try #require(
-      await loader.prepareResolvedRecommendation(for: request.key))
-    recordChartFailureDiagnostic(failure, diagnostics: diagnostics.client)
+    await loader.prepareResolvedRecommendation(for: request.key)
 
     #expect(
       loader.failure(
@@ -1599,6 +1692,7 @@ import Testing
     let diagnostics = DiagnosticEventRecorder()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: diagnostics.client,
       warmStart: nil,
       prepareChart: { _, recommendationID in
         await invocations.record()
@@ -1615,11 +1709,7 @@ import Testing
       for: request.key,
       preferredSpecificationID: recommendation.id)
 
-    let committedFailure = try #require(
-      await loader.prepareResolvedRecommendation(for: request.key))
-    recordChartFailureDiagnostic(
-      committedFailure,
-      diagnostics: diagnostics.client)
+    await loader.prepareResolvedRecommendation(for: request.key)
 
     let failure = try #require(
       loader.failure(
@@ -1630,7 +1720,6 @@ import Testing
     #expect(failure.stage == .preparation)
     #expect(failure.kind == .invalidSpecification)
     #expect(failure.retryability == .terminal)
-    #expect(failure == committedFailure)
     #expect(diagnostics.events.count == 1)
     #expect(
       diagnostics.events.first?.code
@@ -1646,11 +1735,56 @@ import Testing
       loader.preparationTaskKey(recommendationID: recommendation.id)
         == failedKey)
 
-    let retainedFailure = await loader.prepareResolvedRecommendation(
-      for: request.key)
-    #expect(retainedFailure == nil)
+    await loader.prepareResolvedRecommendation(for: request.key)
     #expect(await invocations.count == 1)
     #expect(diagnostics.events.count == 1)
+  }
+
+  @Test func independentLoadersSharePreparationDiagnosticsUntilRetry() async throws {
+    let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
+    let invocations = ChartAnalysisInvocationCounter()
+    let prepare: ResultChartLoader.PrepareChart = { _, _ in
+      await invocations.record()
+      throw PreferenceSaveTestError.failed
+    }
+    let first = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      prepareChart: prepare)
+    let viewer = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      prepareChart: prepare)
+    let request = chartTestRequest(
+      resultFingerprint: "shared-preparation-failure-diagnostic")
+
+    for loader in [first, viewer] {
+      _ = await loader.analyze(request, preferredSpecificationID: nil)
+      let analysis = try #require(loader.analysis(for: request.key))
+      let recommendation = try #require(
+        chartTestRecommendations(from: analysis).dropFirst().first)
+      _ = loader.resolveLoadedRecommendation(
+        for: request.key,
+        preferredSpecificationID: recommendation.id)
+      await loader.prepareResolvedRecommendation(for: request.key)
+    }
+
+    #expect(await invocations.count == 2)
+    #expect(diagnostics.events.count == 1)
+
+    let recommendation = try #require(
+      first.resolvedRecommendation(for: request.key))
+    #expect(
+      first.retryFailure(
+        for: request.key,
+        recommendationID: recommendation.id))
+    await first.prepareResolvedRecommendation(for: request.key)
+
+    #expect(await invocations.count == 3)
+    #expect(diagnostics.events.count == 2)
   }
 
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
@@ -1944,6 +2078,24 @@ private actor ChartAnalysisInvocationCounter {
 
   func record() {
     count += 1
+  }
+}
+
+private final class TestTaskCancellationHandle: @unchecked Sendable {
+  private let lock = NSLock()
+  private var cancelTask: (@Sendable () -> Void)?
+
+  func install(_ cancelTask: @escaping @Sendable () -> Void) {
+    lock.lock()
+    self.cancelTask = cancelTask
+    lock.unlock()
+  }
+
+  func cancel() {
+    lock.lock()
+    let cancelTask = cancelTask
+    lock.unlock()
+    cancelTask?()
   }
 }
 
