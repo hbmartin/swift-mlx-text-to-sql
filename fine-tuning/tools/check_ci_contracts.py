@@ -91,6 +91,10 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testMalformedConfigurationRendersInvalidConfigurationScreen",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testChartPreparationHasDistinctIdentityInProductionPresentation",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testChartRecoveryControlsOwnFullLeadingTouchTargets",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
 TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"

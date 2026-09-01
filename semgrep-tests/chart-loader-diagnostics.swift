@@ -1,5 +1,6 @@
 struct DiagnosticsClient {
   static let noop = DiagnosticsClient()
+  static let silentSink = DiagnosticsClient()
 }
 
 final class ResultChartLoader {
@@ -9,7 +10,7 @@ final class ResultChartLoader {
 
 final class ResultChartLoaderOwner {
   // ruleid: creg-chart-loaders-require-explicit-diagnostics
-  init(client: Int, diagnostics: DiagnosticsClient = .noop) {}
+  init(client: Int, diagnostics: DiagnosticsClient = .silentSink) {}
 }
 
 final class ExplicitResultChartLoader {
