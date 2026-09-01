@@ -435,7 +435,11 @@ struct ResultViewerView: View {
     ) {
       // Analysis reconciliation and chart-type changes own exact-mark
       // selection policy; preparing the chosen chart does not mutate it.
-      await chart.prepareResolvedRecommendation(for: chartRequest.key)
+      if let failure = await chart.prepareResolvedRecommendation(
+        for: chartRequest.key)
+      {
+        recordChartFailureDiagnostic(failure, diagnostics: diagnostics)
+      }
     }
   }
 

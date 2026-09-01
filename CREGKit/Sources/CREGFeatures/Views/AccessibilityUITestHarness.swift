@@ -16,6 +16,7 @@ import SwiftUI
       case resultExplorer = "result-explorer"
       case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
+      case resultChartTerminalRecovery = "result-chart-terminal-recovery"
       case transientBanners = "transient-banners"
     }
 
@@ -118,7 +119,10 @@ import SwiftUI
           question: StarterQueryID.portfolioValueByFundV1.question)
 
       case .resultChartRecovery:
-        ResultChartRecoveryAccessibilityHarness()
+        ResultChartRecoveryAccessibilityHarness(retryAvailable: true)
+
+      case .resultChartTerminalRecovery:
+        ResultChartRecoveryAccessibilityHarness(retryAvailable: false)
 
       case .resultChartPreparation:
         ResultChartPreparationAccessibilityHarness()
@@ -181,6 +185,7 @@ import SwiftUI
 
   @MainActor
   private struct ResultChartRecoveryAccessibilityHarness: View {
+    let retryAvailable: Bool
     @State private var actionFeedback = "No recovery action"
 
     var body: some View {
@@ -188,7 +193,9 @@ import SwiftUI
         ResultChartRecoveryControls(
           spacing: 12,
           keepTable: { actionFeedback = "Keep Table selected" },
-          retryChart: { actionFeedback = "Retry Chart selected" }
+          retryChart:
+            retryAvailable
+            ? { actionFeedback = "Retry Chart selected" } : nil
         )
         .padding(.horizontal)
         .accessibilityIdentifier("result-chart-recovery")

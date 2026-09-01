@@ -133,4 +133,11 @@ import SwiftUI
     .frame(width: 402)
     .environment(\.dynamicTypeSize, .accessibility3)
 }
+
+#Preview("Result Chart Terminal Recovery — Accessibility") {
+  ResultChartRecoveryControls(spacing: 12, keepTable: {}, retryChart: nil)
+    .padding()
+    .frame(width: 402)
+    .environment(\.dynamicTypeSize, .accessibility3)
+}
 #endif
