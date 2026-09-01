@@ -22,6 +22,7 @@ struct CREGChartAnalysisClient: Sendable {
 
   let analyzer: AutoChartAnalyzer
   let snapshots: ChartAnalysisSnapshotStore
+  fileprivate let failureDiagnostics = ChartFailureDiagnosticStore()
 
   init(
     analyzer: AutoChartAnalyzer,
@@ -82,6 +83,7 @@ struct CREGChartAnalysisClient: Sendable {
 
   func removeAll() async {
     snapshots.removeAll()
+    failureDiagnostics.removeAll()
     await analyzer.removeAll()
   }
 
@@ -130,6 +132,81 @@ struct CREGChartAnalysisClient: Sendable {
     }
     cost += (analysis.primaryChart?.marks.count ?? 0) * 384
     return cost
+  }
+}
+
+/// A bounded process-local ledger of chart failures already emitted to
+/// diagnostics. The client is shared by independently owned preview/viewer
+/// loaders and by replacement loaders created when SwiftUI recycles a row, so
+/// this is the narrowest owner that can distinguish an incidental repeat from
+/// an explicit retry.
+private final class ChartFailureDiagnosticStore: @unchecked Sendable {
+  struct Identity: Hashable, Sendable {
+    private var requestDigest: Int
+    private var recommendationDigest: Int?
+    private var stage: ResultChartLoader.Failure.Stage
+    private var kind: ResultChartLoader.Failure.Kind
+    private var detailsDigest: Int
+
+    init(
+      requestKey: ResultChartLoader.Request.Key,
+      recommendationID: AutoChartRecommendationID?,
+      failure: ResultChartLoader.Failure
+    ) {
+      requestDigest = Self.digest(requestKey)
+      recommendationDigest = recommendationID.map(Self.digest)
+      stage = failure.stage
+      kind = failure.kind
+      detailsDigest = Self.digest(failure.details)
+    }
+
+    /// The ledger never retains questions, SQL, recommendation identifiers, or
+    /// diagnostic details. Swift's process-seeded hash is sufficient because
+    /// deduplication is deliberately process-local.
+    private static func digest<Value: Hashable>(_ value: Value) -> Int {
+      var hasher = Hasher()
+      hasher.combine(value)
+      return hasher.finalize()
+    }
+  }
+
+  private static let capacity = 512
+  private let lock = NSLock()
+  private var recorded: Set<Identity> = []
+  private var recency: [Identity] = []
+
+  /// Claims a logical failure for one recorder. Repeated claims refresh its
+  /// recency so actively recycled rows are not the first entries evicted.
+  func claim(_ identity: Identity) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    if recorded.contains(identity) {
+      recency.removeAll { $0 == identity }
+      recency.append(identity)
+      return false
+    }
+    if recorded.count == Self.capacity, let oldest = recency.first {
+      recency.removeFirst()
+      recorded.remove(oldest)
+    }
+    recorded.insert(identity)
+    recency.append(identity)
+    return true
+  }
+
+  /// An explicit retry starts a new diagnostic attempt for this exact failure.
+  func release(_ identity: Identity) {
+    lock.lock()
+    defer { lock.unlock() }
+    recorded.remove(identity)
+    recency.removeAll { $0 == identity }
+  }
+
+  func removeAll() {
+    lock.lock()
+    defer { lock.unlock() }
+    recorded.removeAll()
+    recency.removeAll()
   }
 }
 
@@ -326,7 +403,7 @@ final class ResultChartLoaderOwner {
     ) -> ResultChartLoader
 
   private enum Source {
-    case client(CREGChartAnalysisClient)
+    case client(CREGChartAnalysisClient, DiagnosticsClient)
     case factory(MakeLoader)
   }
 
@@ -334,8 +411,11 @@ final class ResultChartLoaderOwner {
   private var storedLoader: ResultChartLoader?
   private var storedRequestKey: ResultChartLoader.Request.Key?
 
-  init(client: CREGChartAnalysisClient) {
-    source = .client(client)
+  init(
+    client: CREGChartAnalysisClient,
+    diagnostics: DiagnosticsClient = .noop
+  ) {
+    source = .client(client, diagnostics)
   }
 
   init(makeLoader: @escaping MakeLoader) {
@@ -354,9 +434,10 @@ final class ResultChartLoaderOwner {
     }
     let loader =
       switch source {
-      case .client(let client):
+      case .client(let client, let diagnostics):
         ResultChartLoader(
           client: client,
+          diagnostics: diagnostics,
           warmStart: request,
           preferredSpecificationID: preferredSpecificationID)
       case .factory(let makeLoader):
@@ -411,19 +492,19 @@ final class ResultChartLoader {
     }
   }
 
-  struct Failure: Equatable, Sendable {
-    enum Kind: Equatable, Sendable {
+  struct Failure: Hashable, Sendable {
+    enum Kind: Hashable, Sendable {
       case invalidDataset
       case invalidSpecification
       case transient
     }
 
-    enum Stage: Equatable, Sendable {
+    enum Stage: Hashable, Sendable {
       case analysis
       case preparation
     }
 
-    enum Retryability: Equatable, Sendable {
+    enum Retryability: Hashable, Sendable {
       case retryable
       case terminal
     }
@@ -458,18 +539,13 @@ final class ResultChartLoader {
     }
   }
 
-  enum FailureDisposition: Equatable, Sendable {
-    case committed
-    case retained
-  }
-
   enum Resolution {
     case resolved(
       AutoChartRecommendation,
       analysis: AutoChartAnalysis<Int>,
       defaultReason: AutoChartRecommendationResolution.DefaultReason?)
     case unavailable
-    case failed(Failure, disposition: FailureDisposition)
+    case failed(Failure)
   }
 
   private struct LoadedAnalysis {
@@ -495,6 +571,8 @@ final class ResultChartLoader {
   private var failedPreparation: FailedPreparation?
   private let analyzeChart: AnalyzeChart
   private let prepareChart: PrepareChart
+  private let diagnostics: DiagnosticsClient
+  private let failureDiagnostics: ChartFailureDiagnosticStore
   /// The recommendation the loader most recently resolved or was asked to
   /// prepare. A resolution change supersedes preparation still suspended for
   /// the previous recommendation, even when the analysis itself is reused.
@@ -515,12 +593,15 @@ final class ResultChartLoader {
 
   init(
     client: CREGChartAnalysisClient,
+    diagnostics: DiagnosticsClient = .noop,
     warmStart request: Request?,
     preferredSpecificationID: AutoChartRecommendationID? = nil,
     analyzeChart: AnalyzeChart? = nil,
     prepareChart: PrepareChart? = nil
   ) {
     activeRequestKey = request?.key
+    self.diagnostics = diagnostics
+    failureDiagnostics = client.failureDiagnostics
     self.analyzeChart =
       analyzeChart ?? { request in
         try await client.analyze(
@@ -557,7 +638,7 @@ final class ResultChartLoader {
     synchronizeRequest(request.key)
     guard !Task.isCancelled else { return nil }
     if let failedAnalysis, failedAnalysis.key == request.key {
-      return .failed(failedAnalysis.failure, disposition: .retained)
+      return .failed(failedAnalysis.failure)
     }
     if let loadedAnalysis, loadedAnalysis.key == request.key {
       return applyResolution(
@@ -587,7 +668,11 @@ final class ResultChartLoader {
       }
       let failure = Failure(error, stage: .analysis)
       failedAnalysis = FailedAnalysis(key: request.key, failure: failure)
-      return .failed(failure, disposition: .committed)
+      recordFailureIfNeeded(
+        failure,
+        requestKey: request.key,
+        recommendationID: nil)
+      return .failed(failure)
     }
   }
 
@@ -675,30 +760,29 @@ final class ResultChartLoader {
   /// Prepares the selected recommendation's chart, reusing the analysis's
   /// primary chart when it matches. Every started attempt supersedes earlier
   /// preparation calls; a retained failure suppresses incidental task restarts
-  /// until an explicit retry clears it. Returns only a newly committed failure
-  /// so its caller can emit one diagnostic for that failed attempt.
-  @discardableResult
+  /// until an explicit retry clears it. Failure diagnostics are committed here
+  /// so caller cancellation cannot separate state mutation from telemetry.
   func prepareResolvedRecommendation(
     for requestKey: Request.Key
-  ) async -> Failure? {
-    guard activeRequestKey == requestKey else { return nil }
+  ) async {
+    guard activeRequestKey == requestKey else { return }
     guard let chartAnalysis = loadedAnalysis(for: requestKey)?.value,
       let recommendation = currentRecommendation
     else {
       preparationGeneration += 1
       failedPreparation = nil
       preparedChart = nil
-      return nil
+      return
     }
     guard failedPreparation?.recommendationID != recommendation.id else {
-      return nil
+      return
     }
     preparationGeneration += 1
     let preparation = preparationGeneration
     failedPreparation = nil
     if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
       preparedChart = chartAnalysis.primaryChart
-      return nil
+      return
     }
     preparedChart = nil
     let requestAnalysisGeneration = analysisGeneration
@@ -707,20 +791,22 @@ final class ResultChartLoader {
       guard requestAnalysisGeneration == analysisGeneration,
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
-      else { return nil }
+      else { return }
       preparedChart = prepared
-      return nil
     } catch {
       guard !Task.isCancelled,
         requestAnalysisGeneration == analysisGeneration,
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
-      else { return nil }
+      else { return }
       let failure = Failure(error, stage: .preparation)
       failedPreparation = FailedPreparation(
         recommendationID: recommendation.id,
         failure: failure)
-      return failure
+      recordFailureIfNeeded(
+        failure,
+        requestKey: requestKey,
+        recommendationID: recommendation.id)
     }
   }
 
@@ -770,9 +856,14 @@ final class ResultChartLoader {
   /// task identity.
   /// A stale surface cannot retry a failure belonging to a replacement request.
   func retryAnalysis(for requestKey: Request.Key) {
-    guard failedAnalysis?.key == requestKey,
-      failedAnalysis?.failure.retryability == .retryable
+    guard let activeFailure = failedAnalysis,
+      activeFailure.key == requestKey,
+      activeFailure.failure.retryability == .retryable
     else { return }
+    releaseFailureDiagnostic(
+      activeFailure.failure,
+      requestKey: requestKey,
+      recommendationID: nil)
     failedAnalysis = nil
     analysisAttempt += 1
   }
@@ -780,6 +871,12 @@ final class ResultChartLoader {
   /// Clears the visible failure, invalidates suspended preparation, and
   /// advances the task identity so SwiftUI starts a fresh attempt.
   func retryPreparation() {
+    if let failedPreparation, let activeRequestKey {
+      releaseFailureDiagnostic(
+        failedPreparation.failure,
+        requestKey: activeRequestKey,
+        recommendationID: failedPreparation.recommendationID)
+    }
     failedPreparation = nil
     preparationGeneration += 1
     preparationAttempt += 1
@@ -858,6 +955,31 @@ final class ResultChartLoader {
   private func loadedAnalysis(for key: Request.Key) -> LoadedAnalysis? {
     guard let loadedAnalysis, loadedAnalysis.key == key else { return nil }
     return loadedAnalysis
+  }
+
+  private func recordFailureIfNeeded(
+    _ failure: Failure,
+    requestKey: Request.Key,
+    recommendationID: AutoChartRecommendationID?
+  ) {
+    let identity = ChartFailureDiagnosticStore.Identity(
+      requestKey: requestKey,
+      recommendationID: recommendationID,
+      failure: failure)
+    guard failureDiagnostics.claim(identity) else { return }
+    recordChartFailureDiagnostic(failure, diagnostics: diagnostics)
+  }
+
+  private func releaseFailureDiagnostic(
+    _ failure: Failure,
+    requestKey: Request.Key,
+    recommendationID: AutoChartRecommendationID?
+  ) {
+    failureDiagnostics.release(
+      ChartFailureDiagnosticStore.Identity(
+        requestKey: requestKey,
+        recommendationID: recommendationID,
+        failure: failure))
   }
 }
 
