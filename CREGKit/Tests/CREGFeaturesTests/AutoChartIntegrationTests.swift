@@ -666,6 +666,76 @@ import Testing
   }
 
   @MainActor
+  @Test func retainedOwnerWarmStartsAReplacementRequestAndPreferredChart()
+    async throws
+  {
+    let client = CREGChartAnalysisClient(
+      analyzer: AutoChartAnalyzer(configuration: .uncached))
+    let dataIdentity = "replacement-owner-message"
+    let sql = StarterQueryID.portfolioValueByFundV1.sql
+    let question = StarterQueryID.portfolioValueByFundV1.question
+    let firstRequest = ResultChartLoader.Request(
+      result: PreviewFixtures.fundValueResult,
+      sql: sql,
+      question: question,
+      resultFingerprint: "replacement-owner-first",
+      dataIdentity: dataIdentity)
+    _ = try await client.analyze(
+      result: firstRequest.result,
+      sql: sql,
+      question: question,
+      resultFingerprint: firstRequest.resultFingerprint,
+      dataIdentity: dataIdentity)
+    let owner = ResultChartLoaderOwner(client: client)
+    let firstLoader = owner.loader(
+      warmStart: firstRequest,
+      preferredSpecificationID: nil)
+    #expect(firstLoader.analysis(for: firstRequest.key) != nil)
+    let firstPreparationKey = firstLoader.preparationTaskKey(
+      recommendationID: nil)
+
+    let replacementResult = QueryResult(
+      columns: firstRequest.result.columns,
+      rows: [
+        [.text("Meridian Core Fund I"), .real(430_000_000)],
+        [.text("Meridian Value-Add II"), .real(275_000_000)],
+        [.text("Harborline Opportunistic"), .real(160_000_000)],
+        [.text("Coastal Core-Plus III"), .real(105_000_000)],
+      ])
+    let replacementRequest = ResultChartLoader.Request(
+      result: replacementResult,
+      sql: sql,
+      question: question,
+      resultFingerprint: "replacement-owner-second",
+      dataIdentity: dataIdentity)
+    let replacementAnalysis = try await client.analyze(
+      result: replacementResult,
+      sql: sql,
+      question: question,
+      resultFingerprint: replacementRequest.resultFingerprint,
+      dataIdentity: dataIdentity)
+    let preferred = try #require(
+      chartTestRecommendations(from: replacementAnalysis).dropFirst().first)
+    let statisticsBeforeReplacement = client.snapshotStatistics
+
+    let replacementLoader = owner.loader(
+      warmStart: replacementRequest,
+      preferredSpecificationID: preferred.id)
+
+    #expect(firstLoader !== replacementLoader)
+    #expect(
+      firstPreparationKey
+        != replacementLoader.preparationTaskKey(recommendationID: nil))
+    #expect(replacementLoader.analysis(for: replacementRequest.key) != nil)
+    #expect(
+      replacementLoader.resolvedRecommendation(for: replacementRequest.key)?.id
+        == preferred.id)
+    #expect(
+      client.snapshotStatistics.hits
+        == statisticsBeforeReplacement.hits + 1)
+  }
+
+  @MainActor
   @Test func warmStartRequiresMatchingTitleWhenGoalIsUnchanged() async throws {
     let client = CREGChartAnalysisClient(
       analyzer: AutoChartAnalyzer(configuration: .uncached))

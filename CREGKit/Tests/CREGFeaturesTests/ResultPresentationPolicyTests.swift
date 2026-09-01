@@ -19,7 +19,7 @@ import Testing
       .table,
       requestedMode: .chart,
       preserving: specificationID,
-      preparationFailed: true)
+      retryAvailable: true)
     guard case .persist(let changed) = intent else {
       Issue.record("Keeping the visible fallback must persist Table.")
       return
@@ -34,7 +34,16 @@ import Testing
         .chart,
         requestedMode: .chart,
         preserving: chartTestRecommendationID("policy|line|date|value"),
-        preparationFailed: true) == .retryChart(nil))
+        retryAvailable: true) == .retryChart(nil))
+  }
+
+  @Test func terminalFailureDoesNotProduceARetryIntent() {
+    #expect(
+      ResultViewerLogic.modeSelectionIntent(
+        .chart,
+        requestedMode: .chart,
+        preserving: chartTestRecommendationID("policy|terminal|chart"),
+        retryAvailable: false) == .none)
   }
 
   @Test func automaticModeSelectionDoesNotPinTheResolvedChart() {
@@ -42,7 +51,7 @@ import Testing
       .table,
       requestedMode: .chart,
       preserving: nil,
-      preparationFailed: false)
+      retryAvailable: false)
 
     #expect(
       intent
@@ -60,7 +69,7 @@ import Testing
         .chart,
         requestedMode: .table,
         preserving: specificationID,
-        preparationFailed: true)
+        retryAvailable: true)
         == .retryChart(
           ResultPresentationPreference(
             mode: .chart,
@@ -233,7 +242,7 @@ import Testing
       state: stateBox.value,
       authoritativePreference: stale,
       requestKey: requestKey,
-      chartFailed: false
+      chartRetryAvailable: false
     ).commit(
       setState: { stateBox.value = $0 },
       retryChart: {
@@ -273,7 +282,7 @@ import Testing
       state: stateBox.value,
       authoritativePreference: nil,
       requestKey: requestKey,
-      chartFailed: false
+      chartRetryAvailable: false
     ).commit(
       setState: { stateBox.value = $0 },
       retryChart: {
@@ -332,7 +341,7 @@ import Testing
       state: stateBox.value,
       authoritativePreference: authoritativeTable,
       requestKey: requestKey,
-      chartFailed: false
+      chartRetryAvailable: false
     ).commit(
       setState: { stateBox.value = $0 },
       retryChart: {
@@ -369,7 +378,7 @@ import Testing
       state: stateBox.value,
       authoritativePreference: authoritative,
       requestKey: requestKey,
-      chartFailed: true
+      chartRetryAvailable: true
     ).commit(
       setState: {
         stateBox.value = $0
@@ -522,15 +531,23 @@ import Testing
       migratePreference: { _, updated in .migrated(updated) },
       diagnostics: diagnostics.client)
 
-    #expect(failed == .failed)
-    #expect(loader.analysisRetryAvailable(for: request.key))
+    guard case .failed(let failure)? = failed else {
+      Issue.record("The analyzer failure should remain explicit.")
+      return
+    }
+    #expect(failure.stage == .analysis)
+    #expect(failure.kind == .transient)
+    #expect(failure.retryability == .retryable)
+    #expect(
+      loader.failure(for: request.key, recommendationID: nil) == failure)
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.level == .error)
     #expect(diagnostics.events.first?.category == .presentation)
     #expect(diagnostics.events.first?.code == "chart_analysis_failed")
     #expect(diagnostics.events.first?.details != nil)
 
-    loader.retryAnalysis(for: request.key)
+    #expect(
+      loader.retryFailure(for: request.key, recommendationID: nil))
     let retried = await analyzeResultPresentation(
       loader,
       request: request,
@@ -542,15 +559,17 @@ import Testing
       Issue.record("The explicit analysis retry should resolve a chart.")
       return
     }
-    #expect(!loader.analysisRetryAvailable(for: request.key))
+    #expect(loader.failure(for: request.key, recommendationID: nil) == nil)
     #expect(diagnostics.events.count == 1)
   }
 
-  @Test func invalidDatasetFailureFallsBackWithoutOfferingRetry() async {
+  @Test func invalidDatasetFailureRemainsTerminalWithoutOfferingRetry() async {
+    let invocations = ChartAnalysisInvocationCounter()
     let loader = ResultChartLoader(
       client: .testValue,
       warmStart: nil,
       analyzeChart: { _ in
+        await invocations.record()
         throw AutoChartDatasetError(
           code: .duplicateColumnID,
           identifier: "duplicate-column")
@@ -569,17 +588,35 @@ import Testing
       migratePreference: { _, updated in .migrated(updated) },
       diagnostics: diagnostics.client)
 
-    #expect(update == .unavailable)
-    #expect(!loader.analysisRetryAvailable(for: request.key))
+    guard case .failed(let failure)? = update else {
+      Issue.record("The terminal failure must remain distinct from unavailable.")
+      return
+    }
+    #expect(failure.stage == .analysis)
+    #expect(failure.kind == .invalidDataset)
+    #expect(failure.retryability == .terminal)
+    #expect(
+      loader.failure(for: request.key, recommendationID: nil) == failure)
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.level == .error)
     #expect(
       diagnostics.events.first?.code == "chart_analysis_invalid_dataset")
 
-    loader.retryAnalysis(for: request.key)
+    #expect(
+      !loader.retryFailure(for: request.key, recommendationID: nil))
     #expect(
       loader.analysisTaskKey(requestKey: request.key, preference: nil)
         == taskKey)
+
+    let repeated = await loader.analyze(
+      request,
+      preferredSpecificationID: nil)
+    guard case .failed(let repeatedFailure)? = repeated else {
+      Issue.record("The retained terminal failure should be returned again.")
+      return
+    }
+    #expect(repeatedFailure == failure)
+    #expect(await invocations.count == 1)
   }
 
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
@@ -673,7 +710,10 @@ import Testing
   }
 
   @Test func failedAnalysisInvalidatesExactMarkSelection() {
-    let update = ResultPresentationAnalysisUpdate.failed
+    let update = ResultPresentationAnalysisUpdate.failed(
+      ResultChartLoader.Failure(
+        PreferenceSaveTestError.failed,
+        stage: .analysis))
     let selection = AutoChartSelection<Int>(
       sourceRowIDs: [0],
       family: .bar,
@@ -1059,19 +1099,43 @@ import Testing
 
 @MainActor
 @Suite struct ResultChartLoaderSupersessionTests {
-  @Test func loaderOwnerReusesItsResolvedLoader() {
-    let owner = ResultChartLoaderOwner(client: .testValue)
-    let first = owner.loader(
-      warmStart: chartTestRequest(
-        resultFingerprint: "deferred-loader-owner"),
-      preferredSpecificationID: nil)
+  @Test func loaderOwnerDefersForwardsAndReplacesByRequest() {
+    var constructions:
+      [(
+        key: ResultChartLoader.Request.Key,
+        preferredSpecificationID: AutoChartRecommendationID?
+      )] = []
+    let owner = ResultChartLoaderOwner { request, preferredSpecificationID in
+      constructions.append((request.key, preferredSpecificationID))
+      return ResultChartLoader(client: .testValue, warmStart: nil)
+    }
+    let firstRequest = chartTestRequest(
+      resultFingerprint: "deferred-loader-owner")
+    let firstPreferred = chartTestRecommendationID("preferred-first-loader")
+    let replacementRequest = chartTestRequest(
+      resultFingerprint: "replacement-loader-owner")
+    let replacementPreferred = chartTestRecommendationID(
+      "preferred-replacement-loader")
 
+    #expect(constructions.isEmpty)
+    let first = owner.loader(
+      warmStart: firstRequest,
+      preferredSpecificationID: firstPreferred)
     let reused = owner.loader(
-      warmStart: chartTestRequest(
-        resultFingerprint: "ignored-after-loader-construction"),
-      preferredSpecificationID: nil)
+      warmStart: firstRequest,
+      preferredSpecificationID: replacementPreferred)
+    let replacement = owner.loader(
+      warmStart: replacementRequest,
+      preferredSpecificationID: replacementPreferred)
 
     #expect(first === reused)
+    #expect(first !== replacement)
+    #expect(constructions.count == 2)
+    #expect(constructions[0].key == firstRequest.key)
+    #expect(constructions[0].preferredSpecificationID == firstPreferred)
+    #expect(constructions[1].key == replacementRequest.key)
+    #expect(
+      constructions[1].preferredSpecificationID == replacementPreferred)
   }
 
   @Test func supersededAnalysisCannotReplaceANewerResult() async throws {
@@ -1132,7 +1196,7 @@ import Testing
       request,
       preferredSpecificationID: nil)
 
-    guard case .failed? = resolution else {
+    guard case .failed(_)? = resolution else {
       Issue.record("A live caller must retain a retryable analyzer failure.")
       return
     }
@@ -1182,7 +1246,7 @@ import Testing
     let failed = await loader.analyze(
       request,
       preferredSpecificationID: nil)
-    guard case .failed? = failed else {
+    guard case .failed(_)? = failed else {
       Issue.record("A real analyzer error should remain distinct from cancellation.")
       return
     }
@@ -1477,6 +1541,49 @@ import Testing
     #expect(loader.preparationFailed(for: recommendation.id))
   }
 
+  @Test func deterministicPreparationFailureIsTerminalAndCannotRetry() async throws {
+    let invocations = ChartAnalysisInvocationCounter()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      warmStart: nil,
+      prepareChart: { _, recommendationID in
+        await invocations.record()
+        throw AutoChartPreparationError.recommendationUnavailable(
+          recommendationID)
+      })
+    let request = chartTestRequest(
+      resultFingerprint: "terminal-preparation-failure")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis(for: request.key))
+    let recommendation = try #require(
+      chartTestRecommendations(from: analysis).dropFirst().first)
+    _ = loader.resolveLoadedRecommendation(
+      for: request.key,
+      preferredSpecificationID: recommendation.id)
+
+    await loader.prepareResolvedRecommendation(for: request.key)
+
+    let failure = try #require(
+      loader.failure(
+        for: request.key,
+        recommendationID: recommendation.id))
+    let failedKey = loader.preparationTaskKey(
+      recommendationID: recommendation.id)
+    #expect(failure.stage == .preparation)
+    #expect(failure.kind == .invalidSpecification)
+    #expect(failure.retryability == .terminal)
+    #expect(
+      !loader.retryFailure(
+        for: request.key,
+        recommendationID: recommendation.id))
+    #expect(
+      loader.preparationTaskKey(recommendationID: recommendation.id)
+        == failedKey)
+
+    await loader.prepareResolvedRecommendation(for: request.key)
+    #expect(await invocations.count == 1)
+  }
+
   @Test func supersededRecommendationCannotFailAfterNewerSuccess() async throws {
     let client = CREGChartAnalysisClient.testValue
     let gate = SupersededChartPreparationGate()
@@ -1547,7 +1654,10 @@ import Testing
     #expect(
       loader.preparationTaskKey(recommendationID: alternative.id) == failedKey)
 
-    loader.retryPreparation()
+    #expect(
+      loader.retryFailure(
+        for: request.key,
+        recommendationID: alternative.id))
     let retryKey = loader.preparationTaskKey(
       recommendationID: alternative.id)
 
