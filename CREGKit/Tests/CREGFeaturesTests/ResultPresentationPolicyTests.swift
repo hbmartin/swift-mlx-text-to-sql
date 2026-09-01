@@ -170,7 +170,8 @@ import Testing
   }
 
   @Test func changedPreferenceReresolvesTheReusedPreviewAnalysis() async throws {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: .noop, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "reused-preview-result",
       dataIdentity: "reused-preview-message")
@@ -178,8 +179,7 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, updated in .migrated(updated) },
-      diagnostics: .noop)
+      migratePreference: { _, updated in .migrated(updated) })
     let analysis = try #require(loader.analysis(for: request.key))
     let alternative = try #require(
       chartTestRecommendations(from: analysis).dropFirst().first)
@@ -194,8 +194,7 @@ import Testing
       migratePreference: { _, _ in
         Issue.record("An exact changed preference must not migrate.")
         return .retained(changedPreference)
-      },
-      diagnostics: .noop)
+      })
 
     guard case .resolved(let resolvedID, _)? = update else {
       Issue.record("The changed preference should resolve a chart.")
@@ -465,6 +464,7 @@ import Testing
   @Test func leaseListingPreviewUsesAResolvableSelectionSpecification() async throws {
     let loader = ResultChartLoader(
       client: CREGChartAnalysisClient.testValue,
+      diagnostics: .noop,
       warmStart: nil)
     let request = chartTestRequest(
       result: PreviewFixtures.leaseListingResult,
@@ -483,7 +483,8 @@ import Testing
 
   @Test func automaticPreferenceAnalyzesAChartOnAColdLoader() async throws {
     let client = CREGChartAnalysisClient.testValue
-    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: client, diagnostics: .noop, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "automatic-preview-cold-loader",
       dataIdentity: "automatic-preview-message")
@@ -496,8 +497,7 @@ import Testing
       migratePreference: { _, updated in
         migrationCalled = true
         return .migrated(updated)
-      },
-      diagnostics: .noop)
+      })
 
     let analysis = try #require(loader.analysis(for: request.key))
     switch analysis.resolve(nil) {
@@ -529,8 +529,7 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, updated in .migrated(updated) },
-      diagnostics: diagnostics.client)
+      migratePreference: { _, updated in .migrated(updated) })
 
     guard case .failed(let failure)? = failed else {
       Issue.record("The analyzer failure should remain explicit.")
@@ -551,8 +550,7 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, updated in .migrated(updated) },
-      diagnostics: diagnostics.client)
+      migratePreference: { _, updated in .migrated(updated) })
     guard case .failed(let retainedFailure)? = retained else {
       Issue.record("A retained analyzer failure should remain explicit.")
       return
@@ -567,8 +565,7 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, updated in .migrated(updated) },
-      diagnostics: diagnostics.client)
+      migratePreference: { _, updated in .migrated(updated) })
 
     guard case .resolved? = retried else {
       Issue.record("The explicit analysis retry should resolve a chart.")
@@ -580,12 +577,11 @@ import Testing
 
   @Test func committedAnalyzerFailureRecordsBeforeCallerCancellation() async {
     let gate = FirstCallGate()
-    let recorder = DiagnosticEventRecorder()
     let cancellation = TestTaskCancellationHandle()
-    let diagnostics = DiagnosticsClient { event in
-      recorder.record(event)
+    let recorder = DiagnosticEventRecorder { _ in
       cancellation.cancel()
     }
+    let diagnostics = recorder.client
     let loader = ResultChartLoader(
       client: .testValue,
       diagnostics: diagnostics,
@@ -601,8 +597,7 @@ import Testing
         loader,
         request: request,
         preference: nil,
-        migratePreference: { _, updated in .migrated(updated) },
-        diagnostics: diagnostics)
+        migratePreference: { _, updated in .migrated(updated) })
     }
     cancellation.install { analysis.cancel() }
     await gate.waitUntilFirstCallStarts()
@@ -617,8 +612,7 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, updated in .migrated(updated) },
-      diagnostics: diagnostics)
+      migratePreference: { _, updated in .migrated(updated) })
     guard case .failed? = retained else {
       Issue.record("The committed failure should remain visible after cancellation.")
       return
@@ -626,7 +620,7 @@ import Testing
     #expect(recorder.events.count == 1)
   }
 
-  @Test func recreatedLoadersShareAnalyzerFailureDiagnosticsUntilRetry() async {
+  @Test func recreatedLoadersShareDiagnosticsUntilEveryOwnerReleases() async {
     let client = CREGChartAnalysisClient.testValue
     let diagnostics = DiagnosticEventRecorder()
     let invocations = ChartAnalysisInvocationCounter()
@@ -657,6 +651,129 @@ import Testing
     _ = await first.analyze(request, preferredSpecificationID: nil)
 
     #expect(await invocations.count == 3)
+    #expect(diagnostics.events.count == 1)
+
+    let replacement = chartTestRequest(
+      resultFingerprint: "shared-diagnostic-replacement")
+    first.synchronizeRequest(replacement.key)
+    recreated.synchronizeRequest(replacement.key)
+    _ = await first.analyze(request, preferredSpecificationID: nil)
+
+    #expect(await invocations.count == 4)
+    #expect(diagnostics.events.count == 2)
+  }
+
+  @Test func changingFailureDetailsKeepOneLogicalDiagnosticIdentity() async {
+    let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
+    let first = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: { _ in throw DiagnosticsTestError.failed("first occurrence") })
+    let recreated = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: { _ in throw DiagnosticsTestError.failed("second occurrence") })
+    let request = chartTestRequest(
+      resultFingerprint: "stable-analysis-failure-diagnostic")
+
+    _ = await first.analyze(request, preferredSpecificationID: nil)
+    _ = await recreated.analyze(request, preferredSpecificationID: nil)
+
+    #expect(diagnostics.events.count == 1)
+    #expect(diagnostics.events.first?.details?.contains("first occurrence") == true)
+  }
+
+  @Test func returningToARequestStartsANewFailureDiagnosticEpisode() async {
+    let diagnostics = DiagnosticEventRecorder()
+    let invocations = ChartAnalysisInvocationCounter()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: { _ in
+        await invocations.record()
+        throw PreferenceSaveTestError.failed
+      })
+    let first = chartTestRequest(resultFingerprint: "diagnostic-request-a")
+    let replacement = chartTestRequest(resultFingerprint: "diagnostic-request-b")
+
+    _ = await loader.analyze(first, preferredSpecificationID: nil)
+    _ = await loader.analyze(replacement, preferredSpecificationID: nil)
+    _ = await loader.analyze(first, preferredSpecificationID: nil)
+
+    #expect(await invocations.count == 3)
+    #expect(diagnostics.events.count == 3)
+  }
+
+  @Test func staleSurfaceRetryCannotReleaseANewerDiagnosticEpisode() async {
+    let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
+    let analyze: ResultChartLoader.AnalyzeChart = { _ in
+      throw PreferenceSaveTestError.failed
+    }
+    let first = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+    let stale = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+    let recreated = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+    let request = chartTestRequest(
+      resultFingerprint: "stale-diagnostic-release")
+
+    _ = await first.analyze(request, preferredSpecificationID: nil)
+    _ = await stale.analyze(request, preferredSpecificationID: nil)
+    #expect(diagnostics.events.count == 1)
+
+    #expect(first.retryFailure(for: request.key, recommendationID: nil))
+    _ = await first.analyze(request, preferredSpecificationID: nil)
+    #expect(diagnostics.events.count == 1)
+
+    #expect(stale.retryFailure(for: request.key, recommendationID: nil))
+    _ = await recreated.analyze(request, preferredSpecificationID: nil)
+
+    #expect(diagnostics.events.count == 1)
+  }
+
+  @Test func recycledLoaderReleasesItsFailureDiagnosticClaim() async {
+    let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
+    let analyze: ResultChartLoader.AnalyzeChart = { _ in
+      throw PreferenceSaveTestError.failed
+    }
+    let request = chartTestRequest(
+      resultFingerprint: "recycled-diagnostic-loader")
+    weak var releasedLoader: ResultChartLoader?
+
+    do {
+      let loader = ResultChartLoader(
+        client: client,
+        diagnostics: diagnostics.client,
+        warmStart: nil,
+        analyzeChart: analyze)
+      releasedLoader = loader
+      _ = await loader.analyze(request, preferredSpecificationID: nil)
+    }
+
+    #expect(releasedLoader == nil)
+    let recreated = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+    _ = await recreated.analyze(request, preferredSpecificationID: nil)
+
     #expect(diagnostics.events.count == 2)
   }
 
@@ -683,8 +800,7 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, updated in .migrated(updated) },
-      diagnostics: diagnostics.client)
+      migratePreference: { _, updated in .migrated(updated) })
 
     guard case .failed(let failure)? = update else {
       Issue.record("The terminal failure must remain distinct from unavailable.")
@@ -710,8 +826,7 @@ import Testing
       loader,
       request: request,
       preference: nil,
-      migratePreference: { _, updated in .migrated(updated) },
-      diagnostics: diagnostics.client)
+      migratePreference: { _, updated in .migrated(updated) })
     guard case .failed(let repeatedFailure)? = repeated else {
       Issue.record("The retained terminal failure should be returned again.")
       return
@@ -723,8 +838,9 @@ import Testing
 
   @Test func obsoletePolicyClearsPinInsteadOfPersistingTheDefault() async throws {
     let client = CREGChartAnalysisClient.testValue
-    let loader = ResultChartLoader(client: client, warmStart: nil)
     let diagnostics = DiagnosticEventRecorder()
+    let loader = ResultChartLoader(
+      client: client, diagnostics: diagnostics.client, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "viewer-obsolete-policy",
       dataIdentity: "viewer-obsolete-policy-message")
@@ -744,8 +860,7 @@ import Testing
         #expect(receivedPrevious == previous)
         proposedMigration = updated
         return .migrated(updated)
-      },
-      diagnostics: diagnostics.client)
+      })
 
     guard case .resolved(let resolvedID, _)? = update else {
       Issue.record("The chartable fixture should resolve a viewer chart.")
@@ -894,8 +1009,9 @@ import Testing
 
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() async throws {
     let client = CREGChartAnalysisClient.testValue
-    let loader = ResultChartLoader(client: client, warmStart: nil)
     let diagnostics = DiagnosticEventRecorder()
+    let loader = ResultChartLoader(
+      client: client, diagnostics: diagnostics.client, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "viewer-migration-compare-and-set",
       dataIdentity: "viewer-migration-message")
@@ -915,8 +1031,7 @@ import Testing
         #expect(receivedPrevious == previous)
         proposedMigration = updated
         return .retained(authoritative)
-      },
-      diagnostics: diagnostics.client)
+      })
 
     guard
       case .resolved(
@@ -935,8 +1050,9 @@ import Testing
   }
 
   @Test func retainedPreferenceReresolvesLoaderOwnedState() async throws {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
     let diagnostics = DiagnosticEventRecorder()
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: diagnostics.client, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "viewer-loader-owned-resolution",
       dataIdentity: "viewer-loader-owned-message")
@@ -956,8 +1072,7 @@ import Testing
       loader,
       request: request,
       preference: previous,
-      migratePreference: { _, _ in .retained(authoritative) },
-      diagnostics: diagnostics.client)
+      migratePreference: { _, _ in .retained(authoritative) })
 
     guard case .resolved(let resolvedID, _)? = update else {
       Issue.record("The retained preference should resolve a chart.")
@@ -976,8 +1091,9 @@ import Testing
 
   @Test func rejectedMigrationReconcilesAnAuthoritativeObsoletePin() async throws {
     let client = CREGChartAnalysisClient.testValue
-    let loader = ResultChartLoader(client: client, warmStart: nil)
     let diagnostics = DiagnosticEventRecorder()
+    let loader = ResultChartLoader(
+      client: client, diagnostics: diagnostics.client, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "viewer-authoritative-obsolete-policy",
       dataIdentity: "viewer-authoritative-obsolete-policy-message")
@@ -1005,8 +1121,7 @@ import Testing
         return attempts.count == 1
           ? .retained(authoritative)
           : .migrated(updated)
-      },
-      diagnostics: diagnostics.client)
+      })
 
     guard
       case .resolved(
@@ -1042,8 +1157,9 @@ import Testing
 
   @Test func repeatedAnalysisRecordsOnlyTheCommittedMigration() async throws {
     let client = CREGChartAnalysisClient.testValue
-    let loader = ResultChartLoader(client: client, warmStart: nil)
     let diagnostics = DiagnosticEventRecorder()
+    let loader = ResultChartLoader(
+      client: client, diagnostics: diagnostics.client, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "viewer-repeated-obsolete-policy",
       dataIdentity: "viewer-repeated-obsolete-policy-message")
@@ -1066,14 +1182,12 @@ import Testing
       loader,
       request: request,
       preference: previous,
-      migratePreference: migration,
-      diagnostics: diagnostics.client)
+      migratePreference: migration)
     _ = await analyzeResultPresentation(
       loader,
       request: request,
       preference: previous,
-      migratePreference: migration,
-      diagnostics: diagnostics.client)
+      migratePreference: migration)
 
     #expect(diagnostics.events.count == 1)
     #expect(diagnostics.events.first?.category == .presentation)
@@ -1081,8 +1195,9 @@ import Testing
   }
 
   @Test func retainedPreviousPreferenceTerminatesReconciliation() async throws {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
     let diagnostics = DiagnosticEventRecorder()
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: diagnostics.client, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "viewer-retained-previous-preference",
       dataIdentity: "viewer-retained-previous-message")
@@ -1098,8 +1213,7 @@ import Testing
       migratePreference: { receivedPrevious, _ in
         attempts += 1
         return .retained(receivedPrevious)
-      },
-      diagnostics: diagnostics.client)
+      })
 
     guard
       case .resolved(
@@ -1212,7 +1326,8 @@ import Testing
       )] = []
     let owner = ResultChartLoaderOwner { request, preferredSpecificationID in
       constructions.append((request.key, preferredSpecificationID))
-      return ResultChartLoader(client: .testValue, warmStart: nil)
+      return ResultChartLoader(
+        client: .testValue, diagnostics: .noop, warmStart: nil)
     }
     let firstRequest = chartTestRequest(
       resultFingerprint: "deferred-loader-owner")
@@ -1247,6 +1362,7 @@ import Testing
     let gate = SupersededChartAnalysisGate()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: .noop,
       warmStart: nil,
       analyzeChart: { request in
         try await gate.analyze(request)
@@ -1292,6 +1408,7 @@ import Testing
   @Test func cancellationErrorFromLiveAnalysisRemainsRetryable() async {
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: .noop,
       warmStart: nil,
       analyzeChart: { _ in throw CancellationError() })
     let request = chartTestRequest(
@@ -1315,6 +1432,7 @@ import Testing
     let probe = ChartAnalysisCancellationProbe()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: .noop,
       warmStart: nil,
       analyzeChart: { _ in
         try await probe.waitUntilCancelled()
@@ -1340,6 +1458,7 @@ import Testing
     let attempts = FailingFirstChartAnalysis()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: .noop,
       warmStart: nil,
       analyzeChart: { request in
         try await attempts.analyze(request)
@@ -1382,6 +1501,7 @@ import Testing
     let invocations = ChartAnalysisInvocationCounter()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: .noop,
       warmStart: nil,
       analyzeChart: { _ in
         await invocations.record()
@@ -1406,8 +1526,7 @@ import Testing
         loader,
         request: replacementRequest,
         preference: nil,
-        migratePreference: { _, updated in .migrated(updated) },
-        diagnostics: .noop)
+        migratePreference: { _, updated in .migrated(updated) })
     }
     cancelledReplacement.cancel()
 
@@ -1422,7 +1541,8 @@ import Testing
   }
 
   @Test func selectionGateAcceptsOnlyTheCurrentlyLoadedRequest() async {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: .noop, warmStart: nil)
     let loadedRequest = chartTestRequest(
       resultFingerprint: "selection-gate-loaded")
     let otherRequest = chartTestRequest(
@@ -1442,6 +1562,7 @@ import Testing
     let invocations = ChartAnalysisInvocationCounter()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: .noop,
       warmStart: nil,
       prepareChart: { _, _ in
         await invocations.record()
@@ -1484,7 +1605,8 @@ import Testing
   }
 
   @Test func cancelledWarmAnalysisCannotChangeTheResolvedRecommendation() async throws {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: .noop, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "cancelled-warm-analysis")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
@@ -1533,7 +1655,8 @@ import Testing
 
   @Test func reusedAnalysisPreservesItsMatchingPreparedChart() async throws {
     let client = CREGChartAnalysisClient.testValue
-    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: client, diagnostics: .noop, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "reused-analysis-preparation")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
@@ -1562,7 +1685,8 @@ import Testing
   }
 
   @Test func loadedRecommendationSelectionRejectsAnUnknownID() async throws {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: .noop, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "invalid-loaded-recommendation-selection")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
@@ -1575,7 +1699,8 @@ import Testing
   }
 
   @Test func loadedRecommendationSelectionRejectsAReplacementRequest() async throws {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: .noop, warmStart: nil)
     let loadedRequest = chartTestRequest(
       resultFingerprint: "stale-recommendation-loaded")
     let replacementRequest = chartTestRequest(
@@ -1598,7 +1723,8 @@ import Testing
   }
 
   @Test func preparedChartIsExposedOnlyForItsRecommendation() async throws {
-    let loader = ResultChartLoader(client: .testValue, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: .testValue, diagnostics: .noop, warmStart: nil)
     let request = chartTestRequest(
       resultFingerprint: "matching-prepared-chart")
     _ = await loader.analyze(request, preferredSpecificationID: nil)
@@ -1619,8 +1745,10 @@ import Testing
     async throws
   {
     let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
     let loader = ResultChartLoader(
       client: client,
+      diagnostics: diagnostics.client,
       warmStart: nil,
       prepareChart: { _, _ in
         throw PreferenceSaveTestError.failed
@@ -1658,6 +1786,13 @@ import Testing
       loader.failure(
         for: request.key,
         recommendationID: primary.id) == nil)
+
+    _ = loader.resolveLoadedRecommendation(
+      for: request.key,
+      preferredSpecificationID: alternative.id)
+    await loader.prepareResolvedRecommendation(for: request.key)
+
+    #expect(diagnostics.events.count == 2)
   }
 
   @Test func cancellationErrorFromLivePreparationRemainsRetryable() async throws {
@@ -1740,7 +1875,7 @@ import Testing
     #expect(diagnostics.events.count == 1)
   }
 
-  @Test func independentLoadersSharePreparationDiagnosticsUntilRetry() async throws {
+  @Test func independentLoadersSharePreparationDiagnosticsUntilEveryRelease() async throws {
     let client = CREGChartAnalysisClient.testValue
     let diagnostics = DiagnosticEventRecorder()
     let invocations = ChartAnalysisInvocationCounter()
@@ -1784,6 +1919,21 @@ import Testing
     await first.prepareResolvedRecommendation(for: request.key)
 
     #expect(await invocations.count == 3)
+    #expect(diagnostics.events.count == 1)
+
+    let analysis = try #require(first.analysis(for: request.key))
+    let primary = try #require(chartTestRecommendations(from: analysis).first)
+    for loader in [first, viewer] {
+      _ = loader.resolveLoadedRecommendation(
+        for: request.key,
+        preferredSpecificationID: primary.id)
+    }
+    _ = first.resolveLoadedRecommendation(
+      for: request.key,
+      preferredSpecificationID: recommendation.id)
+    await first.prepareResolvedRecommendation(for: request.key)
+
+    #expect(await invocations.count == 4)
     #expect(diagnostics.events.count == 2)
   }
 
@@ -1792,6 +1942,7 @@ import Testing
     let gate = SupersededChartPreparationGate()
     let loader = ResultChartLoader(
       client: client,
+      diagnostics: .noop,
       warmStart: nil,
       prepareChart: { analysis, recommendationID in
         try await gate.prepare(analysis, recommendationID: recommendationID)
@@ -1838,6 +1989,7 @@ import Testing
     let client = CREGChartAnalysisClient.testValue
     let loader = ResultChartLoader(
       client: client,
+      diagnostics: .noop,
       warmStart: nil,
       prepareChart: { _, _ in
         throw PreferenceSaveTestError.failed
@@ -1889,6 +2041,7 @@ import Testing
     let gate = SupersededChartPreparationGate()
     let loader = ResultChartLoader(
       client: .testValue,
+      diagnostics: .noop,
       warmStart: nil,
       prepareChart: { analysis, recommendationID in
         try await gate.prepare(analysis, recommendationID: recommendationID)

@@ -686,7 +686,7 @@ import Testing
       question: question,
       resultFingerprint: firstRequest.resultFingerprint,
       dataIdentity: dataIdentity)
-    let owner = ResultChartLoaderOwner(client: client)
+    let owner = ResultChartLoaderOwner(client: client, diagnostics: .noop)
     let firstLoader = owner.loader(
       warmStart: firstRequest,
       preferredSpecificationID: nil)
@@ -783,6 +783,7 @@ import Testing
       dataIdentity: dataIdentity)
     let loader = ResultChartLoader(
       client: client,
+      diagnostics: .noop,
       warmStart: replacementRequest)
     #expect(loader.analysis(for: replacementRequest.key) == nil)
 
@@ -843,7 +844,8 @@ import Testing
       ])
     let sql = StarterQueryID.portfolioValueByFundV1.sql
     let question = StarterQueryID.portfolioValueByFundV1.question
-    let loader = ResultChartLoader(client: client, warmStart: nil)
+    let loader = ResultChartLoader(
+      client: client, diagnostics: .noop, warmStart: nil)
 
     let firstRequest = chartTestRequest(
       result: firstResult,
@@ -898,7 +900,8 @@ import Testing
       sourceRowIDs: [0, 2],
       family: .bar,
       specificationID: AutoChartSpecification.bar(
-        category: "fund", measure: "value").id,
+        category: "fund", measure: "value"
+      ).id,
       markID: "selected")
     let view = ResultViewerView(
       result: result,

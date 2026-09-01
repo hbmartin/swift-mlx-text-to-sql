@@ -399,8 +399,7 @@ func analyzeResultPresentation(
   _ chart: ResultChartLoader,
   request: ResultChartLoader.Request,
   preference: ResultPresentationPreference?,
-  migratePreference: ResultPresentationMigrationHandler,
-  diagnostics: DiagnosticsClient
+  migratePreference: ResultPresentationMigrationHandler
 ) async -> ResultPresentationAnalysisUpdate? {
   chart.synchronizeRequest(request.key)
   guard !Task.isCancelled else { return nil }
@@ -430,12 +429,7 @@ func analyzeResultPresentation(
           preference: reconciliation)
       }
       guard attemptedPreferences.insert(previous).inserted else {
-        diagnostics.record(
-          DiagnosticEvent(
-            level: .error,
-            category: .presentation,
-            code: "chart_preference_reconciliation_stalled",
-            summary: "Chart preference reconciliation made no progress."))
+        chart.recordPreferenceReconciliationStalled()
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: .stalled(migrated))
@@ -443,9 +437,7 @@ func analyzeResultPresentation(
 
       switch migratePreference(previous, migrated) {
       case .migrated(let retainedPreference):
-        recordChartPreferenceMigration(
-          resolvedDefaultReason,
-          diagnostics: diagnostics)
+        chart.recordPreferenceMigration(resolvedDefaultReason)
         authoritativePreference = retainedPreference
         reconciliation = .retained(retainedPreference)
       case .retained(let retainedPreference):
@@ -486,78 +478,5 @@ func analyzeResultPresentation(
     return .failed(failure)
   case nil:
     return nil
-  }
-}
-
-/// Records one chart failure with wording scoped to the operation that failed.
-/// `ResultChartLoader` owns commit-time deduplication before calling this helper.
-func recordChartFailureDiagnostic(
-  _ failure: ResultChartLoader.Failure,
-  diagnostics: DiagnosticsClient
-) {
-  let diagnostic: (code: String, summary: String) =
-    switch (failure.stage, failure.kind) {
-    case (.analysis, .invalidDataset):
-      (
-        "chart_analysis_invalid_dataset",
-        "Chart analysis failed because the result data was invalid."
-      )
-    case (.analysis, .invalidSpecification):
-      (
-        "chart_analysis_invalid_specification",
-        "Chart analysis produced an invalid chart specification."
-      )
-    case (.analysis, .transient):
-      (
-        "chart_analysis_failed",
-        "Chart analysis failed and can be retried."
-      )
-    case (.preparation, .invalidDataset):
-      (
-        "chart_preparation_invalid_dataset",
-        "Chart preparation failed because the result data was invalid."
-      )
-    case (.preparation, .invalidSpecification):
-      (
-        "chart_preparation_invalid_specification",
-        "Chart preparation failed because the chart specification was invalid."
-      )
-    case (.preparation, .transient):
-      (
-        "chart_preparation_failed",
-        "Chart preparation failed and can be retried."
-      )
-    }
-  diagnostics.record(
-    DiagnosticEvent(
-      level: .error,
-      category: .presentation,
-      code: diagnostic.code,
-      summary: diagnostic.summary,
-      details: failure.details))
-}
-
-private func recordChartPreferenceMigration(
-  _ reason: AutoChartRecommendationResolution.DefaultReason?,
-  diagnostics: DiagnosticsClient
-) {
-  guard let reason else { return }
-  switch reason {
-  case .noPersistedPreference:
-    return
-  case .policyVersionChanged(let previous, let current):
-    diagnostics.info(
-      category: .presentation,
-      code: "chart_recommendation_policy_changed",
-      summary: "A stored chart pin used an obsolete recommendation policy.",
-      context: [
-        "previous_policy": String(previous),
-        "current_policy": String(current),
-      ])
-  case .specificationUnavailable:
-    diagnostics.info(
-      category: .presentation,
-      code: "chart_specification_unavailable",
-      summary: "A stored chart pin was unavailable and the default chart was selected.")
   }
 }

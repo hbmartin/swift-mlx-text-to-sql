@@ -89,6 +89,7 @@ jobs:
             -only-testing:CREGUITests/AccessibilityUITests/testHighestRiskScreensAtAX5Landscape \
             -only-testing:CREGUITests/AccessibilityUITests/testMalformedConfigurationRendersInvalidConfigurationScreen \
             -only-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation \
+            -only-testing:CREGUITests/AccessibilityUITests/testChartRecoveryControlsOwnFullLeadingTouchTargets \
             -only-testing:CREGUITests/AccessibilityUITests/testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget \
             CREG_ACCESSIBILITY_HARNESS_BUILD=YES
 

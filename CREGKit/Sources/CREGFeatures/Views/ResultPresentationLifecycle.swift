@@ -8,7 +8,6 @@ private struct ResultPresentationLifecycleModifier: ViewModifier {
   let request: ResultChartLoader.Request
   let authoritativePreference: ResultPresentationPreference?
   let migratePreference: ResultPresentationMigrationHandler
-  let diagnostics: DiagnosticsClient
   @Binding var presentationState: ResultPresentationState
   let willAnalyze: @MainActor () -> Void
   let didApplyAnalysis: @MainActor (ResultPresentationAnalysisUpdate) -> Void
@@ -43,8 +42,7 @@ private struct ResultPresentationLifecycleModifier: ViewModifier {
             chart,
             request: request,
             preference: authoritativePreference,
-            migratePreference: migratePreference,
-            diagnostics: diagnostics)
+            migratePreference: migratePreference)
         else { return }
         guard
           presentationState.apply(
@@ -63,7 +61,6 @@ extension View {
     authoritativePreference: ResultPresentationPreference?,
     presentationState: Binding<ResultPresentationState>,
     migratePreference: @escaping ResultPresentationMigrationHandler,
-    diagnostics: DiagnosticsClient,
     willAnalyze: @escaping @MainActor () -> Void = {},
     didApplyAnalysis:
       @escaping @MainActor (
@@ -76,7 +73,6 @@ extension View {
         request: request,
         authoritativePreference: authoritativePreference,
         migratePreference: migratePreference,
-        diagnostics: diagnostics,
         presentationState: presentationState,
         willAnalyze: willAnalyze,
         didApplyAnalysis: didApplyAnalysis))

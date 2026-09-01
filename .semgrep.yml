@@ -1,4 +1,22 @@
 rules:
+  - id: creg-chart-loaders-require-explicit-diagnostics
+    message: Require chart loaders and owners to choose their diagnostics sink explicitly.
+    severity: ERROR
+    languages: [swift]
+    patterns:
+      - pattern: |
+          init(..., diagnostics: DiagnosticsClient = .noop, ...) {
+            ...
+          }
+      - pattern-either:
+          - pattern-inside: |
+              class ResultChartLoader {
+                ...
+              }
+          - pattern-inside: |
+              class ResultChartLoaderOwner {
+                ...
+              }
   - id: creg-typed-diagnostic-classification
     message: Classify pipeline failures by typed error or validation issue, not text markers.
     severity: ERROR
