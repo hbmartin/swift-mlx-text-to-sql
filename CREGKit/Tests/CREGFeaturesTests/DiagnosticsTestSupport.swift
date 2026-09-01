@@ -8,15 +8,21 @@ import Testing
 final class DiagnosticEventRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var storage: [DiagnosticEvent] = []
+  private let didRecord: @Sendable (DiagnosticEvent) -> Void
 
-  var client: DiagnosticsClient {
-    DiagnosticsClient { [self] event in record(event) }
+  init(
+    didRecord: @escaping @Sendable (DiagnosticEvent) -> Void = { _ in }
+  ) {
+    self.didRecord = didRecord
   }
 
-  func record(_ event: DiagnosticEvent) {
-    lock.lock()
-    storage.append(event)
-    lock.unlock()
+  var client: DiagnosticsClient {
+    DiagnosticsClient { [self] event in
+      lock.lock()
+      storage.append(event)
+      lock.unlock()
+      didRecord(event)
+    }
   }
 
   var events: [DiagnosticEvent] {
