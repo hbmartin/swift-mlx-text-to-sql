@@ -249,7 +249,7 @@ func resultPresentationModeSelectionTransition(
   state: ResultPresentationState,
   authoritativePreference: ResultPresentationPreference?,
   requestKey: ResultChartLoader.Request.Key,
-  chartFailed: Bool
+  chartRetryAvailable: Bool
 ) -> ResultPresentationModeSelectionTransition {
   var updatedState = state
   let currentPreference = updatedState.effectivePreference(
@@ -259,7 +259,7 @@ func resultPresentationModeSelectionTransition(
     selectedMode,
     requestedMode: currentPreference?.mode ?? .chart,
     preserving: currentPreference?.specificationID,
-    preparationFailed: chartFailed
+    retryAvailable: chartRetryAvailable
   )
 
   switch intent {
@@ -332,12 +332,15 @@ enum ResultPresentationAnalysisUpdate: Equatable {
     specificationID: AutoChartRecommendationID,
     preference: ResultPresentationPreferenceReconciliation)
   case unavailable
-  case failed
+  /// Analysis failed with an explicit recovery policy. Unlike `unavailable`,
+  /// which represents a successfully analyzed chartless result, terminal
+  /// failures remain visible here even though neither offers a retry.
+  case failed(ResultChartLoader.Failure)
 
   var preferenceReconciliation: ResultPresentationPreferenceReconciliation {
     switch self {
     case .resolved(_, let preference): preference
-    case .unavailable, .failed: .unchanged
+    case .unavailable, .failed(_): .unchanged
     }
   }
 
@@ -348,7 +351,7 @@ enum ResultPresentationAnalysisUpdate: Equatable {
     switch self {
     case .resolved(let specificationID, _):
       return selectionSpecificationID != specificationID.specificationID
-    case .unavailable, .failed:
+    case .unavailable, .failed(_):
       return true
     }
   }
@@ -470,7 +473,7 @@ func analyzeResultPresentation(
         return .resolved(
           specificationID: resolvedRecommendation.id,
           preference: reconciliation)
-      case .failed?:
+      case .failed(_)?:
         assertionFailure("A loaded analysis cannot become an analyzer failure.")
         return nil
       case nil:
@@ -489,16 +492,34 @@ func analyzeResultPresentation(
           code: "chart_analysis_failed",
           summary: "Chart analysis failed and can be retried.",
           details: failure.details))
-      return .failed
+      return .failed(failure)
     case .terminal:
+      let diagnostic =
+        switch failure.kind {
+        case .invalidDataset:
+          (
+            code: "chart_analysis_invalid_dataset",
+            summary: "Chart analysis failed because the result data was invalid."
+          )
+        case .invalidSpecification:
+          (
+            code: "chart_analysis_invalid_specification",
+            summary: "Chart analysis produced an invalid chart specification."
+          )
+        case .transient:
+          (
+            code: "chart_analysis_terminal_failure",
+            summary: "Chart analysis failed and cannot be retried."
+          )
+        }
       diagnostics.record(
         DiagnosticEvent(
           level: .error,
           category: .presentation,
-          code: "chart_analysis_invalid_dataset",
-          summary: "Chart analysis failed because the result data was invalid.",
+          code: diagnostic.code,
+          summary: diagnostic.summary,
           details: failure.details))
-      return .unavailable
+      return .failed(failure)
     }
   case nil:
     return nil

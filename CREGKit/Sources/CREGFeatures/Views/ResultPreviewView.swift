@@ -80,16 +80,10 @@ struct ResultPreviewView: View {
     chart.resolvedRecommendation(for: chartRequest.key)
   }
 
-  private var selectedPreparationFailed: Bool {
-    chart.preparationFailed(for: selectedRecommendation?.id)
-  }
-
-  private var selectedAnalysisRetryAvailable: Bool {
-    chart.analysisRetryAvailable(for: chartRequest.key)
-  }
-
-  private var selectedChartFailed: Bool {
-    selectedAnalysisRetryAvailable || selectedPreparationFailed
+  private var selectedChartFailure: ResultChartLoader.Failure? {
+    chart.failure(
+      for: chartRequest.key,
+      recommendationID: selectedRecommendation?.id)
   }
 
   private var requestedMode: ResultPresentationPreference.Mode {
@@ -108,7 +102,9 @@ struct ResultPreviewView: View {
       let selected = selectedRecommendation
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
-        if selected != nil || selectedAnalysisRetryAvailable {
+        if selected != nil
+          || selectedChartFailure?.retryability == .retryable
+        {
           Picker(
             "Result preview",
             selection: Binding(
@@ -124,13 +120,15 @@ struct ResultPreviewView: View {
           .accessibilityIdentifier("result-preview-mode")
         }
 
-        if selectedChartFailed,
+        if let selectedChartFailure,
           requestedMode == .chart
         {
           ResultChartRecoveryControls(
             spacing: 10,
             keepTable: { selectMode(.table) },
-            retryChart: { selectMode(.chart) }
+            retryChart:
+              selectedChartFailure.retryability == .retryable
+              ? { selectMode(.chart) } : nil
           )
           .accessibilityIdentifier("result-preview-chart-recovery")
         }
@@ -221,7 +219,7 @@ struct ResultPreviewView: View {
     ResultViewerLogic.effectivePresentationMode(
       requestedMode: requestedMode,
       hasChart: hasChart,
-      preparationFailed: selectedPreparationFailed)
+      preparationFailed: selectedChartFailure?.stage == .preparation)
   }
 
   private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
@@ -230,7 +228,7 @@ struct ResultPreviewView: View {
       state: presentationState,
       authoritativePreference: preference,
       requestKey: chartRequest.key,
-      chartFailed: selectedChartFailed
+      chartRetryAvailable: selectedChartFailure?.retryability == .retryable
     ).commit(
       setState: { presentationState = $0 },
       retryChart: retryFailedChart,
@@ -238,11 +236,9 @@ struct ResultPreviewView: View {
   }
 
   private func retryFailedChart() {
-    if selectedAnalysisRetryAvailable {
-      chart.retryAnalysis(for: chartRequest.key)
-    } else {
-      chart.retryPreparation()
-    }
+    chart.retryFailure(
+      for: chartRequest.key,
+      recommendationID: selectedRecommendation?.id)
   }
 
   private var tablePreview: some View {

@@ -206,16 +206,14 @@ struct ResultViewerView: View {
     chart.resolvedRecommendation(for: chartRequest.key)
   }
 
+  var selectedChartFailure: ResultChartLoader.Failure? {
+    chart.failure(
+      for: chartRequest.key,
+      recommendationID: selectedRecommendation?.id)
+  }
+
   var selectedPreparationFailed: Bool {
-    chart.preparationFailed(for: selectedRecommendation?.id)
-  }
-
-  var selectedAnalysisRetryAvailable: Bool {
-    chart.analysisRetryAvailable(for: chartRequest.key)
-  }
-
-  var selectedChartFailed: Bool {
-    selectedAnalysisRetryAvailable || selectedPreparationFailed
+    selectedChartFailure?.stage == .preparation
   }
 
   var requestedMode: ResultPresentationPreference.Mode {
@@ -294,7 +292,9 @@ struct ResultViewerView: View {
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
-        if !chartRecommendations.isEmpty || selectedAnalysisRetryAvailable {
+        if !chartRecommendations.isEmpty
+          || selectedChartFailure?.retryability == .retryable
+        {
           // Requested-mode persistence rides the binding's setter. Analysis
           // migrations use their separate compare-and-set callback below.
           Picker(
@@ -316,13 +316,15 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-view-mode")
         }
 
-        if selectedChartFailed,
+        if let selectedChartFailure,
           requestedMode == .chart
         {
           ResultChartRecoveryControls(
             spacing: 12,
             keepTable: { selectMode(.table) },
-            retryChart: { selectMode(.chart) }
+            retryChart:
+              selectedChartFailure.retryability == .retryable
+              ? { selectMode(.chart) } : nil
           )
           .padding(.horizontal)
           .padding(.bottom, 8)
@@ -443,7 +445,7 @@ struct ResultViewerView: View {
       state: presentationState,
       authoritativePreference: preference,
       requestKey: chartRequest.key,
-      chartFailed: selectedChartFailed
+      chartRetryAvailable: selectedChartFailure?.retryability == .retryable
     ).commit(
       setState: { presentationState = $0 },
       retryChart: retryFailedChart,
@@ -451,11 +453,9 @@ struct ResultViewerView: View {
   }
 
   private func retryFailedChart() {
-    if selectedAnalysisRetryAvailable {
-      chart.retryAnalysis(for: chartRequest.key)
-    } else {
-      chart.retryPreparation()
-    }
+    chart.retryFailure(
+      for: chartRequest.key,
+      recommendationID: selectedRecommendation?.id)
   }
 
   func applyUserPreference(_ updated: ResultPresentationPreference) {

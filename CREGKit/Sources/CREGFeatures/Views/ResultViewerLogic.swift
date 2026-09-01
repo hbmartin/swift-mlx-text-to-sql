@@ -166,9 +166,9 @@ public enum ResultViewerLogic {
     _ selectedMode: ResultPresentationPreference.Mode,
     requestedMode: ResultPresentationPreference.Mode,
     preserving specificationID: AutoChartRecommendationID?,
-    preparationFailed: Bool
+    retryAvailable: Bool
   ) -> ModeSelectionIntent {
-    if selectedMode == .chart, preparationFailed {
+    if selectedMode == .chart, retryAvailable {
       let updated =
         selectedMode == requestedMode
         ? nil
