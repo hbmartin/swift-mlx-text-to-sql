@@ -83,7 +83,6 @@ struct CREGChartAnalysisClient: Sendable {
 
   func removeAll() async {
     snapshots.removeAll()
-    failureDiagnostics.removeAll()
     await analyzer.removeAll()
   }
 
@@ -262,12 +261,6 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
       return
     }
     recorded.removeValue(forKey: identity)
-  }
-
-  func removeAll() {
-    lock.lock()
-    defer { lock.unlock() }
-    recorded.removeAll()
   }
 }
 
@@ -553,7 +546,7 @@ final class ResultChartLoader {
     }
   }
 
-  struct Failure: Hashable, Sendable {
+  struct Failure: Equatable, Sendable {
     enum Kind: Hashable, Sendable {
       case invalidDataset
       case invalidSpecification
@@ -565,7 +558,7 @@ final class ResultChartLoader {
       case preparation
     }
 
-    enum Retryability: Hashable, Sendable {
+    enum Retryability: Equatable, Sendable {
       case retryable
       case terminal
     }
@@ -638,8 +631,8 @@ final class ResultChartLoader {
     let diagnosticClaim: ChartFailureDiagnosticStore.Claim
   }
 
-  private struct PreparationFailureEpisodeKey: Hashable {
-    let requestKey: Request.Key
+  private struct PreparationFailureRetryKey: Equatable {
+    let analysisGeneration: Int
     let recommendationID: AutoChartRecommendationID
   }
 
@@ -666,16 +659,14 @@ final class ResultChartLoader {
   /// Explicit retries re-key SwiftUI's analysis task without changing the
   /// request or pin that determine the analysis result.
   private var analysisAttempt = 0
-  /// The next committed analyzer failure belongs to a user-initiated retry or
-  /// a loader-owned return to a replaced request, not the episode still visible
-  /// on another surface.
+  /// The next committed analyzer failure belongs to a user-initiated retry, not
+  /// the episode that may still be visible on another surface.
   private var nextAnalysisFailureStartsNewEpisode = false
-  /// Failures explicitly cleared by this loader start a fresh diagnostic
-  /// episode if that exact request and recommendation fails again. Keeping the
-  /// identity here avoids treating an unrelated first-time selection as a
-  /// retry, while retaining re-armed identities across intervening selections.
-  private var preparationFailuresStartingNewEpisode:
-    Set<PreparationFailureEpisodeKey> = []
+  /// One explicitly retried preparation may start a fresh diagnostic episode.
+  /// Loader-local generations avoid retaining the request's SQL or question and
+  /// prevent an abandoned retry intent from applying to a replacement request.
+  private var nextPreparationFailureStartsNewEpisode:
+    PreparationFailureRetryKey?
   /// Identity of the analysis this loader currently owns. It prevents both a
   /// superseded analysis and a preparation suspended on its predecessor from
   /// committing after a newer request has taken ownership of the loader.
@@ -878,14 +869,16 @@ final class ResultChartLoader {
     }
     preparationGeneration += 1
     let preparation = preparationGeneration
-    let failureEpisodeKey = PreparationFailureEpisodeKey(
-      requestKey: requestKey,
+    let failureRetryKey = PreparationFailureRetryKey(
+      analysisGeneration: analysisGeneration,
       recommendationID: recommendation.id)
     let startsNewDiagnosticEpisode =
-      preparationFailuresStartingNewEpisode.contains(failureEpisodeKey)
-    clearFailedPreparation(rearmingEpisode: true)
+      nextPreparationFailureStartsNewEpisode == failureRetryKey
+    clearFailedPreparation()
     if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
-      preparationFailuresStartingNewEpisode.remove(failureEpisodeKey)
+      if startsNewDiagnosticEpisode {
+        nextPreparationFailureStartsNewEpisode = nil
+      }
       preparedChart = chartAnalysis.primaryChart
       return
     }
@@ -897,7 +890,9 @@ final class ResultChartLoader {
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
       else { return }
-      preparationFailuresStartingNewEpisode.remove(failureEpisodeKey)
+      if startsNewDiagnosticEpisode {
+        nextPreparationFailureStartsNewEpisode = nil
+      }
       preparedChart = prepared
     } catch {
       guard !Task.isCancelled,
@@ -906,7 +901,9 @@ final class ResultChartLoader {
         resolvedRecommendationID == recommendation.id
       else { return }
       let failure = Failure(error, stage: .preparation)
-      preparationFailuresStartingNewEpisode.remove(failureEpisodeKey)
+      if startsNewDiagnosticEpisode {
+        nextPreparationFailureStartsNewEpisode = nil
+      }
       commitFailureDiagnostic(
         failure,
         requestKey: requestKey,
@@ -952,13 +949,11 @@ final class ResultChartLoader {
   /// reaches the analyzer.
   func synchronizeRequest(_ requestKey: Request.Key) {
     guard activeRequestKey != requestKey else { return }
-    let replacesExistingRequest = activeRequestKey != nil
     clearFailedAnalysis()
-    clearFailedPreparation(rearmingEpisode: true)
+    clearFailedPreparation()
     activeRequestKey = requestKey
-    if replacesExistingRequest {
-      nextAnalysisFailureStartsNewEpisode = true
-    }
+    nextAnalysisFailureStartsNewEpisode = false
+    nextPreparationFailureStartsNewEpisode = nil
     resolvedRecommendationID = nil
     currentRecommendation = nil
     loadedAnalysis = nil
@@ -983,7 +978,12 @@ final class ResultChartLoader {
   /// Clears the visible failure, invalidates suspended preparation, and
   /// advances the task identity so SwiftUI starts a fresh attempt.
   func retryPreparation() {
-    clearFailedPreparation(rearmingEpisode: true)
+    if let failedPreparation {
+      nextPreparationFailureStartsNewEpisode = PreparationFailureRetryKey(
+        analysisGeneration: analysisGeneration,
+        recommendationID: failedPreparation.recommendationID)
+    }
+    clearFailedPreparation()
     preparationGeneration += 1
     preparationAttempt += 1
   }
@@ -1031,7 +1031,7 @@ final class ResultChartLoader {
       resolvedRecommendationID = nil
       currentRecommendation = nil
       preparedChart = nil
-      clearFailedPreparation(rearmingEpisode: true)
+      clearFailedPreparation()
       return .unavailable
     }
   }
@@ -1043,7 +1043,7 @@ final class ResultChartLoader {
   ) -> Resolution {
     if resolvedRecommendationID != recommendation.id {
       preparationGeneration += 1
-      clearFailedPreparation(rearmingEpisode: true)
+      clearFailedPreparation()
     }
     resolvedRecommendationID = recommendation.id
     currentRecommendation = recommendation
@@ -1061,6 +1061,39 @@ final class ResultChartLoader {
   private func loadedAnalysis(for key: Request.Key) -> LoadedAnalysis? {
     guard let loadedAnalysis, loadedAnalysis.key == key else { return nil }
     return loadedAnalysis
+  }
+
+  func recordPreferenceReconciliationStalled() {
+    diagnostics.record(
+      DiagnosticEvent(
+        level: .error,
+        category: .presentation,
+        code: "chart_preference_reconciliation_stalled",
+        summary: "Chart preference reconciliation made no progress."))
+  }
+
+  func recordPreferenceMigration(
+    _ reason: AutoChartRecommendationResolution.DefaultReason?
+  ) {
+    guard let reason else { return }
+    switch reason {
+    case .noPersistedPreference:
+      return
+    case .policyVersionChanged(let previous, let current):
+      diagnostics.info(
+        category: .presentation,
+        code: "chart_recommendation_policy_changed",
+        summary: "A stored chart pin used an obsolete recommendation policy.",
+        context: [
+          "previous_policy": String(previous),
+          "current_policy": String(current),
+        ])
+    case .specificationUnavailable:
+      diagnostics.info(
+        category: .presentation,
+        code: "chart_specification_unavailable",
+        summary: "A stored chart pin was unavailable and the default chart was selected.")
+    }
   }
 
   /// Claims, commits, and records one failure without exposing a manually
@@ -1129,16 +1162,7 @@ final class ResultChartLoader {
     failedAnalysis = nil
   }
 
-  private func clearFailedPreparation(rearmingEpisode: Bool = false) {
-    if rearmingEpisode,
-      let failedPreparation,
-      let activeRequestKey
-    {
-      preparationFailuresStartingNewEpisode.insert(
-        PreparationFailureEpisodeKey(
-          requestKey: activeRequestKey,
-          recommendationID: failedPreparation.recommendationID))
-    }
+  private func clearFailedPreparation() {
     failedPreparation = nil
   }
 }

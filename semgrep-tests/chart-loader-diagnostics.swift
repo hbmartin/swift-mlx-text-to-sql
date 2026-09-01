@@ -6,16 +6,17 @@ struct DiagnosticsClient {
 final class ResultChartLoader {
   // ruleid: creg-chart-loaders-require-explicit-diagnostics
   init(client: Int, diagnostics: DiagnosticsClient = .noop, warmStart: Bool) {}
+
+  // ok: creg-chart-loaders-require-explicit-diagnostics
+  init(client: String, diagnostics: DiagnosticsClient, warmStart: Bool) {}
 }
 
 final class ResultChartLoaderOwner {
   // ruleid: creg-chart-loaders-require-explicit-diagnostics
   init(client: Int, diagnostics: DiagnosticsClient = .silentSink) {}
-}
 
-final class ExplicitResultChartLoader {
   // ok: creg-chart-loaders-require-explicit-diagnostics
-  init(client: Int, diagnostics: DiagnosticsClient, warmStart: Bool) {}
+  init(client: String, diagnostics: DiagnosticsClient) {}
 }
 
 final class UnrelatedLoader {
