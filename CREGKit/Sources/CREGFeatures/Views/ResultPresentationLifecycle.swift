@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import SwiftUI
 
 /// Keeps the inline preview and full-screen viewer on one authoritative
@@ -8,6 +9,7 @@ private struct ResultPresentationLifecycleModifier: ViewModifier {
   let request: ResultChartLoader.Request
   let authoritativePreference: ResultPresentationPreference?
   let migratePreference: ResultPresentationMigrationHandler
+  @Dependency(\.diagnostics) private var diagnostics
   @Binding var presentationState: ResultPresentationState
   let willAnalyze: @MainActor () -> Void
   let didApplyAnalysis: @MainActor (ResultPresentationAnalysisUpdate) -> Void
@@ -42,7 +44,8 @@ private struct ResultPresentationLifecycleModifier: ViewModifier {
             chart,
             request: request,
             preference: authoritativePreference,
-            migratePreference: migratePreference)
+            migratePreference: migratePreference,
+            diagnostics: diagnostics)
         else { return }
         guard
           presentationState.apply(

@@ -81,11 +81,6 @@ struct CREGChartAnalysisClient: Sendable {
     await analyzer.trim(to: .minimum)
   }
 
-  func removeAll() async {
-    snapshots.removeAll()
-    await analyzer.removeAll()
-  }
-
   var cacheStatistics: AutoChartCacheStatistics {
     get async { await analyzer.cacheStatistics }
   }
@@ -199,8 +194,8 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
   }
 
   private struct Entry {
-    var episode: UInt64
-    var claimTokens: Set<UInt64>
+    var currentEpisode: UInt64
+    var claimTokensByEpisode: [UInt64: Set<UInt64>]
   }
 
   private let lock = NSLock()
@@ -209,9 +204,10 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
   private var nextClaimToken: UInt64 = 0
 
   /// Claims a logical failure episode. Incidental repeats join the current
-  /// episode, while an explicit retry replaces it even if another surface still
-  /// displays the preceding failure. Claims from the replaced episode become
-  /// harmlessly stale and cannot release the new one.
+  /// episode, while an explicit retry becomes current even if another surface
+  /// still displays the preceding failure. Every live episode remains tracked,
+  /// so releasing the retried surface falls back to an older live episode
+  /// instead of making an identical failure recordable again.
   func claim(
     _ identity: Identity,
     startsNewEpisode: Bool
@@ -221,19 +217,25 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
     nextClaimToken &+= 1
     let token = nextClaimToken
     if var entry = recorded[identity], !startsNewEpisode {
-      entry.claimTokens.insert(token)
+      entry.claimTokensByEpisode[entry.currentEpisode, default: []]
+        .insert(token)
       recorded[identity] = entry
       return ClaimResult(
         claim: Claim(
           store: self,
           identity: identity,
-          episode: entry.episode,
+          episode: entry.currentEpisode,
           token: token),
         shouldRecord: false)
     }
     nextEpisode &+= 1
     let episode = nextEpisode
-    recorded[identity] = Entry(episode: episode, claimTokens: [token])
+    var entry =
+      recorded[identity]
+      ?? Entry(currentEpisode: episode, claimTokensByEpisode: [:])
+    entry.currentEpisode = episode
+    entry.claimTokensByEpisode[episode] = [token]
+    recorded[identity] = entry
     return ClaimResult(
       claim: Claim(
         store: self,
@@ -251,16 +253,26 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     guard var entry = recorded[identity],
-      entry.episode == episode,
-      entry.claimTokens.remove(token) != nil
+      var claimTokens = entry.claimTokensByEpisode[episode],
+      claimTokens.remove(token) != nil
     else {
       return
     }
-    guard entry.claimTokens.isEmpty else {
-      recorded[identity] = entry
+    if claimTokens.isEmpty {
+      entry.claimTokensByEpisode.removeValue(forKey: episode)
+    } else {
+      entry.claimTokensByEpisode[episode] = claimTokens
+    }
+    guard !entry.claimTokensByEpisode.isEmpty else {
+      recorded.removeValue(forKey: identity)
       return
     }
-    recorded.removeValue(forKey: identity)
+    if entry.claimTokensByEpisode[entry.currentEpisode] == nil,
+      let newestLiveEpisode = entry.claimTokensByEpisode.keys.max()
+    {
+      entry.currentEpisode = newestLiveEpisode
+    }
+    recorded[identity] = entry
   }
 }
 
@@ -663,10 +675,9 @@ final class ResultChartLoader {
   /// the episode that may still be visible on another surface.
   private var nextAnalysisFailureStartsNewEpisode = false
   /// One explicitly retried preparation may start a fresh diagnostic episode.
-  /// Loader-local generations avoid retaining the request's SQL or question and
-  /// prevent an abandoned retry intent from applying to a replacement request.
-  private var nextPreparationFailureStartsNewEpisode:
-    PreparationFailureRetryKey?
+  /// Loader-local generations avoid retaining the request's SQL or question;
+  /// changing recommendations or requests abandons an unstarted retry intent.
+  private var nextPreparationFailureStartsNewEpisode: PreparationFailureRetryKey?
   /// Identity of the analysis this loader currently owns. It prevents both a
   /// superseded analysis and a preparation suspended on its predecessor from
   /// committing after a newer request has taken ownership of the loader.
@@ -860,6 +871,7 @@ final class ResultChartLoader {
       let recommendation = currentRecommendation
     else {
       preparationGeneration += 1
+      nextPreparationFailureStartsNewEpisode = nil
       clearFailedPreparation()
       preparedChart = nil
       return
@@ -869,30 +881,27 @@ final class ResultChartLoader {
     }
     preparationGeneration += 1
     let preparation = preparationGeneration
+    let requestAnalysisGeneration = analysisGeneration
     let failureRetryKey = PreparationFailureRetryKey(
-      analysisGeneration: analysisGeneration,
+      analysisGeneration: requestAnalysisGeneration,
       recommendationID: recommendation.id)
     let startsNewDiagnosticEpisode =
       nextPreparationFailureStartsNewEpisode == failureRetryKey
+    if startsNewDiagnosticEpisode {
+      nextPreparationFailureStartsNewEpisode = nil
+    }
     clearFailedPreparation()
     if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
-      if startsNewDiagnosticEpisode {
-        nextPreparationFailureStartsNewEpisode = nil
-      }
       preparedChart = chartAnalysis.primaryChart
       return
     }
     preparedChart = nil
-    let requestAnalysisGeneration = analysisGeneration
     do {
       let prepared = try await prepareChart(chartAnalysis, recommendation.id)
       guard requestAnalysisGeneration == analysisGeneration,
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
       else { return }
-      if startsNewDiagnosticEpisode {
-        nextPreparationFailureStartsNewEpisode = nil
-      }
       preparedChart = prepared
     } catch {
       guard !Task.isCancelled,
@@ -901,9 +910,6 @@ final class ResultChartLoader {
         resolvedRecommendationID == recommendation.id
       else { return }
       let failure = Failure(error, stage: .preparation)
-      if startsNewDiagnosticEpisode {
-        nextPreparationFailureStartsNewEpisode = nil
-      }
       commitFailureDiagnostic(
         failure,
         requestKey: requestKey,
@@ -962,32 +968,6 @@ final class ResultChartLoader {
     preparationGeneration += 1
   }
 
-  /// Clears the current retryable analysis failure and advances the SwiftUI
-  /// task identity.
-  /// A stale surface cannot retry a failure belonging to a replacement request.
-  func retryAnalysis(for requestKey: Request.Key) {
-    guard let activeFailure = failedAnalysis,
-      activeFailure.key == requestKey,
-      activeFailure.failure.retryability == .retryable
-    else { return }
-    clearFailedAnalysis()
-    nextAnalysisFailureStartsNewEpisode = true
-    analysisAttempt += 1
-  }
-
-  /// Clears the visible failure, invalidates suspended preparation, and
-  /// advances the task identity so SwiftUI starts a fresh attempt.
-  func retryPreparation() {
-    if let failedPreparation {
-      nextPreparationFailureStartsNewEpisode = PreparationFailureRetryKey(
-        analysisGeneration: analysisGeneration,
-        recommendationID: failedPreparation.recommendationID)
-    }
-    clearFailedPreparation()
-    preparationGeneration += 1
-    preparationAttempt += 1
-  }
-
   /// Retries the current failure only when its typed policy permits it. Views
   /// use this single operation instead of reproducing analysis/preparation
   /// branching and accidentally exposing retries for terminal failures.
@@ -1004,9 +984,17 @@ final class ResultChartLoader {
     else { return false }
     switch failure.stage {
     case .analysis:
-      retryAnalysis(for: requestKey)
+      clearFailedAnalysis()
+      nextAnalysisFailureStartsNewEpisode = true
+      analysisAttempt += 1
     case .preparation:
-      retryPreparation()
+      guard let failedPreparation else { return false }
+      nextPreparationFailureStartsNewEpisode = PreparationFailureRetryKey(
+        analysisGeneration: analysisGeneration,
+        recommendationID: failedPreparation.recommendationID)
+      clearFailedPreparation()
+      preparationGeneration += 1
+      preparationAttempt += 1
     }
     return true
   }
@@ -1031,6 +1019,7 @@ final class ResultChartLoader {
       resolvedRecommendationID = nil
       currentRecommendation = nil
       preparedChart = nil
+      nextPreparationFailureStartsNewEpisode = nil
       clearFailedPreparation()
       return .unavailable
     }
@@ -1043,6 +1032,7 @@ final class ResultChartLoader {
   ) -> Resolution {
     if resolvedRecommendationID != recommendation.id {
       preparationGeneration += 1
+      nextPreparationFailureStartsNewEpisode = nil
       clearFailedPreparation()
     }
     resolvedRecommendationID = recommendation.id
@@ -1061,39 +1051,6 @@ final class ResultChartLoader {
   private func loadedAnalysis(for key: Request.Key) -> LoadedAnalysis? {
     guard let loadedAnalysis, loadedAnalysis.key == key else { return nil }
     return loadedAnalysis
-  }
-
-  func recordPreferenceReconciliationStalled() {
-    diagnostics.record(
-      DiagnosticEvent(
-        level: .error,
-        category: .presentation,
-        code: "chart_preference_reconciliation_stalled",
-        summary: "Chart preference reconciliation made no progress."))
-  }
-
-  func recordPreferenceMigration(
-    _ reason: AutoChartRecommendationResolution.DefaultReason?
-  ) {
-    guard let reason else { return }
-    switch reason {
-    case .noPersistedPreference:
-      return
-    case .policyVersionChanged(let previous, let current):
-      diagnostics.info(
-        category: .presentation,
-        code: "chart_recommendation_policy_changed",
-        summary: "A stored chart pin used an obsolete recommendation policy.",
-        context: [
-          "previous_policy": String(previous),
-          "current_policy": String(current),
-        ])
-    case .specificationUnavailable:
-      diagnostics.info(
-        category: .presentation,
-        code: "chart_specification_unavailable",
-        summary: "A stored chart pin was unavailable and the default chart was selected.")
-    }
   }
 
   /// Claims, commits, and records one failure without exposing a manually

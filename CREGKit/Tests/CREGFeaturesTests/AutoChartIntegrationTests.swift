@@ -845,7 +845,10 @@ import Testing
     let sql = StarterQueryID.portfolioValueByFundV1.sql
     let question = StarterQueryID.portfolioValueByFundV1.question
     let loader = ResultChartLoader(
-      client: client, diagnostics: .noop, warmStart: nil)
+      client: client,
+      diagnostics: .noop,
+      warmStart: nil,
+      prepareChart: { _, _ in throw PreferenceSaveTestError.failed })
 
     let firstRequest = chartTestRequest(
       result: firstResult,
@@ -876,7 +879,19 @@ import Testing
     let alternativeID = try #require(recommendations.dropFirst().first?.id)
     let alternativeKey = loader.preparationTaskKey(
       recommendationID: alternativeID)
-    loader.retryPreparation()
+    #expect(
+      loader.selectLoadedRecommendation(
+        alternativeID,
+        for: secondRequest.key))
+    await loader.prepareResolvedRecommendation(for: secondRequest.key)
+    #expect(
+      loader.failure(
+        for: secondRequest.key,
+        recommendationID: alternativeID)?.retryability == .retryable)
+    #expect(
+      loader.retryFailure(
+        for: secondRequest.key,
+        recommendationID: alternativeID))
     let retryKey = loader.preparationTaskKey(
       recommendationID: alternativeID)
 
