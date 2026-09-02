@@ -15,8 +15,9 @@ let package = Package(
   dependencies: [
     // Recommendation behavior is part of CREG's persisted presentation
     // contract. This pin must carry policy v11: CREG preserves the user's
-    // table/chart mode while clearing older chart-type pins, and tests both
-    // the exact policy and the affected box-plot recommendation fixtures.
+    // table/chart mode while clearing older chart-type pins. Integration tests
+    // pin that policy, the affected box-plot fixtures, and CREG's selection
+    // formatting and accessibility contract with the package renderer.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
       revision: "abd5058b98a22a5c2a231e02b468afe0e5952df4"),

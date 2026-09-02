@@ -890,6 +890,7 @@ final class ResultChartLoader {
     for requestKey: Request.Key
   ) async {
     guard activeRequestKey == requestKey else { return }
+    guard !Task.isCancelled else { return }
     guard let chartAnalysis = loadedAnalysis(for: requestKey)?.value,
       let recommendation = currentRecommendation
     else {
@@ -912,28 +913,23 @@ final class ResultChartLoader {
       nextPreparationFailureStartsNewEpisode == failureRetryKey
     clearFailedPreparation()
     let outcome: PreparationOutcome
-    if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
-      guard let primaryChart = chartAnalysis.primaryChart else { return }
+    if let primaryChart = chartAnalysis.primaryChart,
+      primaryChart.recommendation.id == recommendation.id
+    {
       outcome = .prepared(primaryChart)
     } else {
-      preparedChart = nil
       do {
         let prepared = try await prepareChart(chartAnalysis, recommendation.id)
-        guard !Task.isCancelled,
-          requestAnalysisGeneration == analysisGeneration,
-          preparation == preparationGeneration,
-          resolvedRecommendationID == recommendation.id
-        else { return }
         outcome = .prepared(prepared)
       } catch {
-        guard !Task.isCancelled,
-          requestAnalysisGeneration == analysisGeneration,
-          preparation == preparationGeneration,
-          resolvedRecommendationID == recommendation.id
-        else { return }
         outcome = .failed(Failure(error, stage: .preparation))
       }
     }
+    guard !Task.isCancelled,
+      requestAnalysisGeneration == analysisGeneration,
+      preparation == preparationGeneration,
+      resolvedRecommendationID == recommendation.id
+    else { return }
     if startsNewDiagnosticEpisode {
       nextPreparationFailureStartsNewEpisode = nil
     }
@@ -941,6 +937,7 @@ final class ResultChartLoader {
     case .prepared(let prepared):
       preparedChart = prepared
     case .failed(let failure):
+      preparedChart = nil
       commitFailureDiagnostic(
         failure,
         requestKey: requestKey,

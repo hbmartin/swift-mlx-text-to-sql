@@ -1510,12 +1510,12 @@ import Testing
   }
 
   @Test func loaderOwnerForwardsItsDiagnosticsToFactory() async {
-    let diagnostics = DiagnosticEventRecorder()
-    let owner = ResultChartLoaderOwner(diagnostics: diagnostics.client) {
-      _, _, diagnostics in
+    let recorder = DiagnosticEventRecorder()
+    let owner = ResultChartLoaderOwner(diagnostics: recorder.client) {
+      _, _, diagnosticsClient in
       ResultChartLoader(
         client: .testValue,
-        diagnostics: diagnostics,
+        diagnostics: diagnosticsClient,
         warmStart: nil,
         analyzeChart: { _ in throw PreferenceSaveTestError.failed })
     }
@@ -1527,7 +1527,7 @@ import Testing
 
     _ = await loader.analyze(request, preferredSpecificationID: nil)
 
-    #expect(diagnostics.events.count == 1)
+    #expect(recorder.events.count == 1)
   }
 
   @Test func supersededAnalysisCannotReplaceANewerResult() async throws {
@@ -2104,10 +2104,8 @@ import Testing
     let invocations = ChartAnalysisInvocationCounter()
     let cancellation = TaskCancellationProbe()
     let prepare: ResultChartLoader.PrepareChart = { _, _ in
-      let invocation = await invocations.record()
-      if invocation == 3 {
-        try await cancellation.waitUntilCancelled()
-      }
+      await invocations.record()
+      try await cancellation.waitUntilCancelledIfArmed()
       throw PreferenceSaveTestError.failed
     }
     let first = ResultChartLoader(
@@ -2141,6 +2139,7 @@ import Testing
       first.retryFailure(
         for: request.key,
         recommendationID: recommendation.id))
+    await cancellation.armNextWait()
     let cancelledRetry = Task {
       await first.prepareResolvedRecommendation(for: request.key)
     }
@@ -2160,6 +2159,55 @@ import Testing
     #expect(diagnostics.events.count == 2)
   }
 
+  @Test func alreadyCancelledPreparationDoesNotInvokeOrConsumeRetryIntent()
+    async throws
+  {
+    let diagnostics = DiagnosticEventRecorder()
+    let invocations = ChartAnalysisInvocationCounter()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      prepareChart: { _, _ in
+        await invocations.record()
+        throw PreferenceSaveTestError.failed
+      })
+    let request = chartTestRequest(
+      resultFingerprint: "already-cancelled-preparation-retry")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis(for: request.key))
+    let recommendation = try #require(
+      chartTestRecommendations(from: analysis).dropFirst().first)
+    _ = loader.resolveLoadedRecommendation(
+      for: request.key,
+      preferredSpecificationID: recommendation.id)
+    await loader.prepareResolvedRecommendation(for: request.key)
+    #expect(
+      loader.retryFailure(
+        for: request.key,
+        recommendationID: recommendation.id))
+
+    let cancelledPreparation = Task {
+      while !Task.isCancelled {
+        await Task.yield()
+      }
+      await loader.prepareResolvedRecommendation(for: request.key)
+    }
+    cancelledPreparation.cancel()
+    await cancelledPreparation.value
+
+    #expect(await invocations.count == 1)
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: recommendation.id) == nil)
+
+    await loader.prepareResolvedRecommendation(for: request.key)
+
+    #expect(await invocations.count == 2)
+    #expect(diagnostics.events.count == 2)
+  }
+
   @Test func cancelledSuccessfulPreparationRetryPreservesItsDiagnosticEpisodeIntent()
     async throws
   {
@@ -2167,10 +2215,10 @@ import Testing
     let diagnostics = DiagnosticEventRecorder()
     let invocations = ChartAnalysisInvocationCounter()
     let cancellation = TaskCancellationProbe()
-    let prepare: ResultChartLoader.PrepareChart = { analysis, recommendationID in
-      let invocation = await invocations.record()
-      if invocation == 3 {
-        let prepared = try await analysis.prepare(recommendationID)
+    let successfulPreparation = OneShotPreparedChart()
+    let prepare: ResultChartLoader.PrepareChart = { _, _ in
+      await invocations.record()
+      if let prepared = await successfulPreparation.take() {
         await cancellation.waitUntilCancellationIsObserved()
         return prepared
       }
@@ -2207,6 +2255,9 @@ import Testing
       first.retryFailure(
         for: request.key,
         recommendationID: recommendation.id))
+    let analysis = try #require(first.analysis(for: request.key))
+    let prepared = try await analysis.prepare(recommendation.id)
+    await successfulPreparation.arm(with: prepared)
     let cancelledRetry = Task {
       await first.prepareResolvedRecommendation(for: request.key)
     }
@@ -2221,6 +2272,53 @@ import Testing
 
     #expect(await invocations.count == 4)
     #expect(diagnostics.events.count == 2)
+  }
+
+  @Test func cancelledSuccessfulRepreparationPreservesAnExistingChart()
+    async throws
+  {
+    let cancellation = TaskCancellationProbe()
+    let successfulPreparation = OneShotPreparedChart()
+    let loader = ResultChartLoader(
+      client: .testValue,
+      diagnostics: .noop,
+      warmStart: nil,
+      prepareChart: { analysis, recommendationID in
+        if let prepared = await successfulPreparation.take() {
+          await cancellation.waitUntilCancellationIsObserved()
+          return prepared
+        }
+        return try await analysis.prepare(recommendationID)
+      })
+    let request = chartTestRequest(
+      resultFingerprint: "cancelled-successful-repreparation")
+    _ = await loader.analyze(request, preferredSpecificationID: nil)
+    let analysis = try #require(loader.analysis(for: request.key))
+    let recommendation = try #require(
+      chartTestRecommendations(from: analysis).dropFirst().first)
+    _ = loader.resolveLoadedRecommendation(
+      for: request.key,
+      preferredSpecificationID: recommendation.id)
+    await loader.prepareResolvedRecommendation(for: request.key)
+    let existing = try #require(
+      loader.matchingPreparedChart(for: recommendation.id))
+    await successfulPreparation.arm(with: existing)
+
+    let cancelledPreparation = Task {
+      await loader.prepareResolvedRecommendation(for: request.key)
+    }
+    await cancellation.waitUntilStarted()
+    cancelledPreparation.cancel()
+    await cancelledPreparation.value
+
+    #expect(await cancellation.cancellationWasObserved)
+    #expect(
+      loader.matchingPreparedChart(for: recommendation.id)?.marks
+        == existing.marks)
+    #expect(
+      loader.failure(
+        for: request.key,
+        recommendationID: recommendation.id) == nil)
   }
 
   @Test func recommendationRoundTripJoinsAnotherSurfaceFailureEpisode()
@@ -2588,9 +2686,22 @@ private final class ResultPresentationStateBox {
 
 private actor TaskCancellationProbe {
   private var didStart = false
+  private var nextWaitIsArmed = false
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
   private var cancellationContinuation: CheckedContinuation<Void, Never>?
   private(set) var cancellationWasObserved = false
+
+  func armNextWait() {
+    precondition(!nextWaitIsArmed)
+    nextWaitIsArmed = true
+  }
+
+  func waitUntilCancelledIfArmed() async throws {
+    guard nextWaitIsArmed else { return }
+    nextWaitIsArmed = false
+    await waitUntilCancellationIsObserved()
+    try Task.checkCancellation()
+  }
 
   func waitUntilCancelled() async throws {
     await waitUntilCancellationIsObserved()
@@ -2629,6 +2740,20 @@ private actor TaskCancellationProbe {
     cancellationWasObserved = true
     cancellationContinuation?.resume()
     cancellationContinuation = nil
+  }
+}
+
+private actor OneShotPreparedChart {
+  private var preparedChart: AutoChartPreparedChart<Int>?
+
+  func arm(with preparedChart: AutoChartPreparedChart<Int>) {
+    precondition(self.preparedChart == nil)
+    self.preparedChart = preparedChart
+  }
+
+  func take() -> AutoChartPreparedChart<Int>? {
+    defer { preparedChart = nil }
+    return preparedChart
   }
 }
 
