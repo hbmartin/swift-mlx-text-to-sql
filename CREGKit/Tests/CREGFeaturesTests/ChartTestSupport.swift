@@ -1,5 +1,6 @@
 import AutoTableCharts
 import Foundation
+import Testing
 
 @testable import CREGEngine
 @testable import CREGFeatures
@@ -48,6 +49,48 @@ func chartTestRecommendations(
   case .charts(let recommendations): recommendations
   case .tableFallback: []
   }
+}
+
+/// Two loaders sharing one analysis client, standing in for the inline preview
+/// and the full-screen viewer of the same result.
+@MainActor
+func chartTestLoaderPair(
+  client: CREGChartAnalysisClient,
+  diagnostics: DiagnosticsClient,
+  prepareChart: ResultChartLoader.PrepareChart? = nil
+) -> (first: ResultChartLoader, viewer: ResultChartLoader) {
+  let first = ResultChartLoader(
+    client: client,
+    diagnostics: diagnostics,
+    warmStart: nil,
+    prepareChart: prepareChart)
+  let viewer = ResultChartLoader(
+    client: client,
+    diagnostics: diagnostics,
+    warmStart: nil,
+    prepareChart: prepareChart)
+  return (first, viewer)
+}
+
+/// Analyzes `request`, resolves the fixture's first non-primary recommendation
+/// (the one whose chart must be prepared rather than reused from the analysis),
+/// and runs one preparation for it, as either chart surface does before a user
+/// can act on the result. Returns that recommendation.
+@MainActor
+@discardableResult
+func chartTestPrepareAlternativeRecommendation(
+  on loader: ResultChartLoader,
+  request: ResultChartLoader.Request
+) async throws -> AutoChartRecommendation {
+  _ = await loader.analyze(request, preferredSpecificationID: nil)
+  let analysis = try #require(loader.analysis(for: request.key))
+  let alternative = try #require(
+    chartTestRecommendations(from: analysis).dropFirst().first)
+  _ = loader.resolveLoadedRecommendation(
+    for: request.key,
+    preferredSpecificationID: alternative.id)
+  await loader.prepareResolvedRecommendation(for: request.key)
+  return alternative
 }
 
 enum PreferenceSaveTestError: Error, Sendable {

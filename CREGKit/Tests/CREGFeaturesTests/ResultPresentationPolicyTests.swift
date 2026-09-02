@@ -2057,28 +2057,16 @@ import Testing
       await invocations.record()
       throw PreferenceSaveTestError.failed
     }
-    let first = ResultChartLoader(
+    let (first, viewer) = chartTestLoaderPair(
       client: client,
       diagnostics: diagnostics.client,
-      warmStart: nil,
-      prepareChart: prepare)
-    let viewer = ResultChartLoader(
-      client: client,
-      diagnostics: diagnostics.client,
-      warmStart: nil,
       prepareChart: prepare)
     let request = chartTestRequest(
       resultFingerprint: "shared-preparation-failure-diagnostic")
 
     for loader in [first, viewer] {
-      _ = await loader.analyze(request, preferredSpecificationID: nil)
-      let analysis = try #require(loader.analysis(for: request.key))
-      let recommendation = try #require(
-        chartTestRecommendations(from: analysis).dropFirst().first)
-      _ = loader.resolveLoadedRecommendation(
-        for: request.key,
-        preferredSpecificationID: recommendation.id)
-      await loader.prepareResolvedRecommendation(for: request.key)
+      try await chartTestPrepareAlternativeRecommendation(
+        on: loader, request: request)
     }
 
     #expect(await invocations.count == 2)
@@ -2086,7 +2074,7 @@ import Testing
 
     let recommendation = try #require(
       first.resolvedRecommendation(for: request.key))
-    #expect(
+    try #require(
       first.retryFailure(
         for: request.key,
         recommendationID: recommendation.id))
@@ -2109,34 +2097,22 @@ import Testing
       try await cancellation.waitUntilCancelledIfArmed()
       throw PreferenceSaveTestError.failed
     }
-    let first = ResultChartLoader(
+    let (first, viewer) = chartTestLoaderPair(
       client: client,
       diagnostics: diagnostics.client,
-      warmStart: nil,
-      prepareChart: prepare)
-    let viewer = ResultChartLoader(
-      client: client,
-      diagnostics: diagnostics.client,
-      warmStart: nil,
       prepareChart: prepare)
     let request = chartTestRequest(
       resultFingerprint: "cancelled-preparation-retry-diagnostic")
 
     for loader in [first, viewer] {
-      _ = await loader.analyze(request, preferredSpecificationID: nil)
-      let analysis = try #require(loader.analysis(for: request.key))
-      let recommendation = try #require(
-        chartTestRecommendations(from: analysis).dropFirst().first)
-      _ = loader.resolveLoadedRecommendation(
-        for: request.key,
-        preferredSpecificationID: recommendation.id)
-      await loader.prepareResolvedRecommendation(for: request.key)
+      try await chartTestPrepareAlternativeRecommendation(
+        on: loader, request: request)
     }
     #expect(diagnostics.events.count == 1)
 
     let recommendation = try #require(
       first.resolvedRecommendation(for: request.key))
-    #expect(
+    try #require(
       first.retryFailure(
         for: request.key,
         recommendationID: recommendation.id))
@@ -2170,35 +2146,23 @@ import Testing
       await invocations.record()
       throw PreferenceSaveTestError.failed
     }
-    let first = ResultChartLoader(
+    let (first, viewer) = chartTestLoaderPair(
       client: client,
       diagnostics: diagnostics.client,
-      warmStart: nil,
-      prepareChart: prepare)
-    let viewer = ResultChartLoader(
-      client: client,
-      diagnostics: diagnostics.client,
-      warmStart: nil,
       prepareChart: prepare)
     let request = chartTestRequest(
       resultFingerprint: "already-cancelled-preparation-retry")
 
     for loader in [first, viewer] {
-      _ = await loader.analyze(request, preferredSpecificationID: nil)
-      let analysis = try #require(loader.analysis(for: request.key))
-      let recommendation = try #require(
-        chartTestRecommendations(from: analysis).dropFirst().first)
-      _ = loader.resolveLoadedRecommendation(
-        for: request.key,
-        preferredSpecificationID: recommendation.id)
-      await loader.prepareResolvedRecommendation(for: request.key)
+      try await chartTestPrepareAlternativeRecommendation(
+        on: loader, request: request)
     }
     #expect(await invocations.count == 2)
     #expect(diagnostics.events.count == 1)
 
     let recommendation = try #require(
       first.resolvedRecommendation(for: request.key))
-    #expect(
+    try #require(
       first.retryFailure(
         for: request.key,
         recommendationID: recommendation.id))
@@ -2245,34 +2209,22 @@ import Testing
       }
       throw PreferenceSaveTestError.failed
     }
-    let first = ResultChartLoader(
+    let (first, viewer) = chartTestLoaderPair(
       client: client,
       diagnostics: diagnostics.client,
-      warmStart: nil,
-      prepareChart: prepare)
-    let viewer = ResultChartLoader(
-      client: client,
-      diagnostics: diagnostics.client,
-      warmStart: nil,
       prepareChart: prepare)
     let request = chartTestRequest(
       resultFingerprint: "cancelled-successful-preparation-retry-diagnostic")
 
     for loader in [first, viewer] {
-      _ = await loader.analyze(request, preferredSpecificationID: nil)
-      let analysis = try #require(loader.analysis(for: request.key))
-      let recommendation = try #require(
-        chartTestRecommendations(from: analysis).dropFirst().first)
-      _ = loader.resolveLoadedRecommendation(
-        for: request.key,
-        preferredSpecificationID: recommendation.id)
-      await loader.prepareResolvedRecommendation(for: request.key)
+      try await chartTestPrepareAlternativeRecommendation(
+        on: loader, request: request)
     }
     #expect(diagnostics.events.count == 1)
 
     let recommendation = try #require(
       first.resolvedRecommendation(for: request.key))
-    #expect(
+    try #require(
       first.retryFailure(
         for: request.key,
         recommendationID: recommendation.id))
@@ -2296,62 +2248,7 @@ import Testing
     #expect(diagnostics.events.count == 2)
   }
 
-  @Test func cancelledSuccessfulRepreparationPreservesAnExistingChart()
-    async throws
-  {
-    let cancellation = TaskCancellationProbe()
-    let successfulPreparation = OneShotPreparedChart()
-    let loader = ResultChartLoader(
-      client: .testValue,
-      diagnostics: .noop,
-      warmStart: nil,
-      prepareChart: { analysis, recommendationID in
-        if let prepared = await successfulPreparation.take() {
-          try await cancellation.waitUntilCancellationIsObserved()
-          return prepared
-        }
-        return try await analysis.prepare(recommendationID)
-      })
-    let request = chartTestRequest(
-      resultFingerprint: "cancelled-successful-repreparation")
-    _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis(for: request.key))
-    let recommendations = chartTestRecommendations(from: analysis)
-    let recommendation = try #require(recommendations.dropFirst().first)
-    let otherRecommendation = try #require(
-      recommendations.first(where: { $0.id != recommendation.id }))
-    _ = loader.resolveLoadedRecommendation(
-      for: request.key,
-      preferredSpecificationID: recommendation.id)
-    await loader.prepareResolvedRecommendation(for: request.key)
-    let existing = try #require(
-      loader.matchingPreparedChart(for: recommendation.id))
-    let cancelledResult = try await analysis.prepare(otherRecommendation.id)
-    #expect(cancelledResult.recommendation.id != recommendation.id)
-    try await successfulPreparation.arm(with: cancelledResult)
-    try await cancellation.armNextWait()
-
-    let cancelledPreparation = Task {
-      await loader.prepareResolvedRecommendation(for: request.key)
-    }
-    await cancellation.waitUntilStarted()
-    cancelledPreparation.cancel()
-    await cancelledPreparation.value
-
-    #expect(await cancellation.cancellationWasObserved)
-    #expect(
-      loader.matchingPreparedChart(for: recommendation.id)?.marks
-        == existing.marks)
-    #expect(
-      loader.matchingPreparedChart(
-        for: cancelledResult.recommendation.id) == nil)
-    #expect(
-      loader.failure(
-        for: request.key,
-        recommendationID: recommendation.id) == nil)
-  }
-
-  @Test func transientRepreparationFailurePreservesAnExistingChart()
+  @Test func incidentalRestartSkipsPreparationWhileAMatchingChartIsHeld()
     async throws
   {
     let diagnostics = DiagnosticEventRecorder()
@@ -2361,28 +2258,21 @@ import Testing
       diagnostics: diagnostics.client,
       warmStart: nil,
       prepareChart: { analysis, recommendationID in
-        let invocation = await invocations.record()
-        if invocation == 2 {
-          throw PreferenceSaveTestError.failed
-        }
+        await invocations.record()
         return try await analysis.prepare(recommendationID)
       })
     let request = chartTestRequest(
-      resultFingerprint: "failed-repreparation-preserves-chart")
-    _ = await loader.analyze(request, preferredSpecificationID: nil)
-    let analysis = try #require(loader.analysis(for: request.key))
-    let recommendation = try #require(
-      chartTestRecommendations(from: analysis).dropFirst().first)
-    _ = loader.resolveLoadedRecommendation(
-      for: request.key,
-      preferredSpecificationID: recommendation.id)
-    await loader.prepareResolvedRecommendation(for: request.key)
+      resultFingerprint: "incidental-restart-skips-preparation")
+    let recommendation = try await chartTestPrepareAlternativeRecommendation(
+      on: loader, request: request)
     let existing = try #require(
       loader.matchingPreparedChart(for: recommendation.id))
 
+    // SwiftUI restarts `.task(id:)` with an unchanged key whenever the surface
+    // reappears; the held chart must neither be rebuilt nor replaced.
     await loader.prepareResolvedRecommendation(for: request.key)
 
-    #expect(await invocations.count == 2)
+    #expect(await invocations.count == 1)
     #expect(
       loader.matchingPreparedChart(for: recommendation.id)?.marks
         == existing.marks)
@@ -2403,28 +2293,16 @@ import Testing
       await invocations.record()
       throw PreferenceSaveTestError.failed
     }
-    let first = ResultChartLoader(
+    let (first, viewer) = chartTestLoaderPair(
       client: client,
       diagnostics: diagnostics.client,
-      warmStart: nil,
-      prepareChart: prepare)
-    let viewer = ResultChartLoader(
-      client: client,
-      diagnostics: diagnostics.client,
-      warmStart: nil,
       prepareChart: prepare)
     let request = chartTestRequest(
       resultFingerprint: "shared-preparation-selection-round-trip")
 
     for loader in [first, viewer] {
-      _ = await loader.analyze(request, preferredSpecificationID: nil)
-      let analysis = try #require(loader.analysis(for: request.key))
-      let alternative = try #require(
-        chartTestRecommendations(from: analysis).dropFirst().first)
-      _ = loader.resolveLoadedRecommendation(
-        for: request.key,
-        preferredSpecificationID: alternative.id)
-      await loader.prepareResolvedRecommendation(for: request.key)
+      try await chartTestPrepareAlternativeRecommendation(
+        on: loader, request: request)
     }
 
     #expect(await invocations.count == 2)
@@ -2458,28 +2336,16 @@ import Testing
       await invocations.record()
       throw PreferenceSaveTestError.failed
     }
-    let first = ResultChartLoader(
+    let (first, viewer) = chartTestLoaderPair(
       client: client,
       diagnostics: diagnostics.client,
-      warmStart: nil,
-      prepareChart: prepare)
-    let viewer = ResultChartLoader(
-      client: client,
-      diagnostics: diagnostics.client,
-      warmStart: nil,
       prepareChart: prepare)
     let request = chartTestRequest(
       resultFingerprint: "abandoned-preparation-retry")
 
     for loader in [first, viewer] {
-      _ = await loader.analyze(request, preferredSpecificationID: nil)
-      let analysis = try #require(loader.analysis(for: request.key))
-      let alternative = try #require(
-        chartTestRecommendations(from: analysis).dropFirst().first)
-      _ = loader.resolveLoadedRecommendation(
-        for: request.key,
-        preferredSpecificationID: alternative.id)
-      await loader.prepareResolvedRecommendation(for: request.key)
+      try await chartTestPrepareAlternativeRecommendation(
+        on: loader, request: request)
     }
     #expect(diagnostics.events.count == 1)
 
@@ -2487,7 +2353,7 @@ import Testing
     let recommendations = chartTestRecommendations(from: analysis)
     let primary = try #require(recommendations.first)
     let alternative = try #require(recommendations.dropFirst().first)
-    #expect(
+    try #require(
       first.retryFailure(
         for: request.key,
         recommendationID: alternative.id))
@@ -2761,60 +2627,54 @@ private enum AsyncTestGateError: Error, Sendable {
   case notArmed
 }
 
+/// Parks an injected operation until the test cancels its task. The gate moves
+/// through one lifecycle (idle, armed, waiting, cancelled) and is re-armed per
+/// wait. An unarmed wait is a harness misuse: it throws and releases
+/// `waitUntilStarted()` so the test fails on its expectations instead of
+/// hanging on a continuation nothing resumes.
 private actor TaskCancellationProbe {
-  private var didStart = false
-  private var nextWaitIsArmed = false
-  private var isWaiting = false
+  private enum Phase {
+    case idle
+    case armed
+    case waiting
+    case cancelled
+    case misused
+  }
+
+  private var phase = Phase.idle
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
   private var cancellationContinuation: CheckedContinuation<Void, Never>?
-  private(set) var cancellationWasObserved = false
+
+  var cancellationWasObserved: Bool { phase == .cancelled }
 
   func armNextWait() throws {
-    guard !nextWaitIsArmed, !isWaiting,
-      cancellationContinuation == nil, startWaiters.isEmpty
-    else {
+    guard phase != .armed, phase != .waiting, startWaiters.isEmpty else {
       throw AsyncTestGateError.alreadyActive
     }
-    didStart = false
-    cancellationWasObserved = false
-    nextWaitIsArmed = true
+    phase = .armed
   }
 
   func waitUntilCancelledIfArmed() async throws {
-    guard nextWaitIsArmed else { return }
+    guard phase == .armed else { return }
     try await waitUntilCancelled()
   }
 
   func waitUntilCancelled() async throws {
-    try beginWait()
-    await waitUntilCancellationIsObservedImpl()
+    try await waitUntilCancellationIsObserved()
     try Task.checkCancellation()
   }
 
   func waitUntilCancellationIsObserved() async throws {
-    try beginWait()
-    await waitUntilCancellationIsObservedImpl()
-  }
-
-  private func beginWait() throws {
-    guard nextWaitIsArmed, !isWaiting else {
+    guard phase == .armed else {
+      phase = .misused
+      resumeStartWaiters()
       throw AsyncTestGateError.notArmed
     }
-    nextWaitIsArmed = false
-    isWaiting = true
-  }
-
-  private func waitUntilCancellationIsObservedImpl() async {
-    didStart = true
-    let waiters = startWaiters
-    startWaiters.removeAll()
-    for waiter in waiters {
-      waiter.resume()
-    }
-
+    phase = .waiting
+    resumeStartWaiters()
     await withTaskCancellationHandler {
       await withCheckedContinuation { continuation in
-        if cancellationWasObserved {
+        if phase == .cancelled {
           continuation.resume()
         } else {
           cancellationContinuation = continuation
@@ -2826,15 +2686,22 @@ private actor TaskCancellationProbe {
   }
 
   func waitUntilStarted() async {
-    guard !didStart else { return }
+    guard phase == .idle || phase == .armed else { return }
     await withCheckedContinuation { continuation in
       startWaiters.append(continuation)
     }
   }
 
+  private func resumeStartWaiters() {
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
+  }
+
   private func observeCancellation() {
-    cancellationWasObserved = true
-    isWaiting = false
+    phase = .cancelled
     cancellationContinuation?.resume()
     cancellationContinuation = nil
   }

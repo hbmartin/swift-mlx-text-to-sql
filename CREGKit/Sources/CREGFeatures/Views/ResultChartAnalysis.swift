@@ -871,8 +871,8 @@ final class ResultChartLoader {
 
   /// SwiftUI can observe a new selection before its preparation task runs.
   /// Never expose a prepared chart belonging to the preceding recommendation
-  /// during that interval. A matching chart remains usable while an incidental
-  /// same-recommendation preparation is suspended, cancelled, or fails.
+  /// during that interval. A matching chart stays exposed across incidental
+  /// same-recommendation task restarts, which skip preparation entirely.
   func matchingPreparedChart(
     for recommendationID: AutoChartRecommendationID
   ) -> AutoChartPreparedChart<Int>? {
@@ -884,11 +884,11 @@ final class ResultChartLoader {
 
   /// Prepares the selected recommendation's chart, reusing the analysis's
   /// primary chart when it matches. Every started attempt supersedes earlier
-  /// preparation calls; a retained failure suppresses incidental task restarts
-  /// until an explicit retry clears it. Failure diagnostics are committed here
-  /// so caller cancellation cannot separate state mutation from telemetry. A
-  /// redundant failure never replaces an already prepared matching chart with
-  /// recovery state.
+  /// preparation calls. A retained failure or an already prepared matching
+  /// chart suppresses incidental task restarts, so SwiftUI re-running the task
+  /// for a visible chart neither repeats the work nor replaces the chart with
+  /// recovery state. Failure diagnostics are committed here so caller
+  /// cancellation cannot separate state mutation from telemetry.
   func prepareResolvedRecommendation(
     for requestKey: Request.Key
   ) async {
@@ -903,9 +903,9 @@ final class ResultChartLoader {
       preparedChart = nil
       return
     }
-    guard failedPreparation?.recommendationID != recommendation.id else {
-      return
-    }
+    guard failedPreparation?.recommendationID != recommendation.id,
+      matchingPreparedChart(for: recommendation.id) == nil
+    else { return }
     preparationGeneration += 1
     let preparation = preparationGeneration
     let requestAnalysisGeneration = analysisGeneration
@@ -940,9 +940,6 @@ final class ResultChartLoader {
     case .prepared(let prepared):
       preparedChart = prepared
     case .failed(let failure):
-      guard preparedChart?.recommendation.id != recommendation.id else {
-        return
-      }
       preparedChart = nil
       commitFailureDiagnostic(
         failure,
