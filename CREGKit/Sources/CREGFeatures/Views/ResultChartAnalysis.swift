@@ -871,7 +871,8 @@ final class ResultChartLoader {
 
   /// SwiftUI can observe a new selection before its preparation task runs.
   /// Never expose a prepared chart belonging to the preceding recommendation
-  /// during that interval.
+  /// during that interval. A matching chart remains usable while an incidental
+  /// same-recommendation preparation is suspended, cancelled, or fails.
   func matchingPreparedChart(
     for recommendationID: AutoChartRecommendationID
   ) -> AutoChartPreparedChart<Int>? {
@@ -885,7 +886,9 @@ final class ResultChartLoader {
   /// primary chart when it matches. Every started attempt supersedes earlier
   /// preparation calls; a retained failure suppresses incidental task restarts
   /// until an explicit retry clears it. Failure diagnostics are committed here
-  /// so caller cancellation cannot separate state mutation from telemetry.
+  /// so caller cancellation cannot separate state mutation from telemetry. A
+  /// redundant failure never replaces an already prepared matching chart with
+  /// recovery state.
   func prepareResolvedRecommendation(
     for requestKey: Request.Key
   ) async {
@@ -937,6 +940,9 @@ final class ResultChartLoader {
     case .prepared(let prepared):
       preparedChart = prepared
     case .failed(let failure):
+      guard preparedChart?.recommendation.id != recommendation.id else {
+        return
+      }
       preparedChart = nil
       commitFailureDiagnostic(
         failure,

@@ -140,13 +140,28 @@ import Testing
         context: .axisTick) == "25%")
   }
 
-  @Test func dependencyUpgradePreservesSelectionFormattingAndAccessibilityContract() {
-    let fundID = AutoChartColumnID(rawValue: "fund")
-    let valueID = AutoChartColumnID(rawValue: "current-market-value")
-    let columns = [
-      AutoChartColumn(id: fundID, name: "fund"),
-      AutoChartColumn(id: valueID, name: "current_market_value"),
-    ]
+  @Test func dependencyUpgradePreservesSelectionFormattingAndAccessibilityContract()
+    throws
+  {
+    let input = try CREGChartAdapter.analysisInput(
+      result: QueryResult(
+        columns: ["fund", "current_market_value"],
+        rows: [
+          [.text("Core"), .integer(2)],
+          [.text("Core"), .null],
+        ]),
+      sql:
+        "SELECT fund, SUM(current_market_value) AS current_market_value FROM properties GROUP BY fund",
+      question: "What is each fund worth?")
+    let columns = input.dataset.chartColumns
+    let fundID = try #require(columns.first?.id)
+    let valueID = try #require(columns.dropFirst().first?.id)
+
+    #expect(fundID == CREGChartAdapter.columnID(index: 0, name: "fund"))
+    #expect(
+      valueID
+        == CREGChartAdapter.columnID(
+          index: 1, name: "current_market_value"))
     let selection = AutoChartSelection<Int>(
       sourceRowIDs: [0, 1],
       dimensions: [
