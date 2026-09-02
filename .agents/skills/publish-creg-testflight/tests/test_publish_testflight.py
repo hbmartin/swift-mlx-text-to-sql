@@ -233,6 +233,28 @@ class TargetBuildSettingTests(unittest.TestCase):
     def test_real_project_passes_the_production_source_contract(self) -> None:
         publisher.verify_source_contract(REPO_ROOT)
 
+    def test_plutil_resolution_uses_the_first_executable_reviewed_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unavailable = root / "unavailable-plutil"
+            unavailable.write_text("not executable")
+            available = root / "available-plutil"
+            available.write_text("executable")
+            available.chmod(0o700)
+
+            resolved = publisher.resolve_plutil((unavailable, available))
+
+        self.assertEqual(resolved, available)
+
+    def test_plutil_resolution_reports_every_reviewed_path(self) -> None:
+        candidates = (Path("/missing/system/plutil"), Path("/missing/swift/plutil"))
+
+        with self.assertRaisesRegex(
+            publisher.ReleaseError,
+            "/missing/system/plutil, /missing/swift/plutil",
+        ):
+            publisher.resolve_plutil(candidates)
+
     def test_missing_project_raises_a_release_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(
@@ -254,6 +276,9 @@ class TargetBuildSettingTests(unittest.TestCase):
             )
 
             with (
+                patch.object(
+                    publisher, "resolve_plutil", return_value=Path("/toolchain/plutil")
+                ),
                 patch.object(publisher, "run_command", return_value=completed),
                 self.assertRaisesRegex(
                     publisher.ReleaseError, "Unexpected character at line 1"
@@ -274,11 +299,17 @@ class TargetBuildSettingTests(unittest.TestCase):
                 stderr="",
             )
 
-            with patch.object(
-                publisher, "run_command", return_value=completed
-            ) as run_command:
+            with (
+                patch.object(
+                    publisher, "resolve_plutil", return_value=Path("/toolchain/plutil")
+                ),
+                patch.object(
+                    publisher, "run_command", return_value=completed
+                ) as run_command,
+            ):
                 publisher.load_xcode_project(repo)
 
+            self.assertEqual(run_command.call_args.args[0][0], "/toolchain/plutil")
             self.assertTrue(run_command.call_args.kwargs["preserve_stdout"])
 
     def test_machine_readable_stdout_is_not_sanitized_before_parsing(self) -> None:

@@ -35,6 +35,10 @@ INSPECTOR = Path("fine-tuning/tools/inspect_release_bundle.py")
 SCHEME_FILE = Path("CREG.xcodeproj/xcshareddata/xcschemes/CREG.xcscheme")
 INFO_PLIST = Path("CREG/Info.plist")
 PROJECT_FILE = Path("CREG.xcodeproj/project.pbxproj")
+PLUTIL_CANDIDATES = (
+    Path("/usr/bin/plutil"),
+    Path("/usr/share/swift/usr/bin/plutil"),
+)
 MATERIALIZE_MODEL_SHELL_SCRIPT = (
     '/bin/zsh "$SRCROOT/tools/materialize_bundled_model.sh"\n'
 )
@@ -180,12 +184,22 @@ def require_directory(path: Path, description: str) -> None:
         raise ReleaseError(f"Missing {description}: {path}")
 
 
+def resolve_plutil(candidates: Sequence[Path] = PLUTIL_CANDIDATES) -> Path:
+    """Return the first executable parser from reviewed system locations."""
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise ReleaseError(f"Missing property-list parser; checked: {checked}")
+
+
 def load_xcode_project(repo: Path) -> dict[str, Any]:
     project_path = repo / PROJECT_FILE
     require_file(project_path, "Xcode project file")
+    plutil = resolve_plutil()
     completed = run_command(
         [
-            "/usr/bin/plutil",
+            str(plutil),
             "-convert",
             "json",
             "-o",
