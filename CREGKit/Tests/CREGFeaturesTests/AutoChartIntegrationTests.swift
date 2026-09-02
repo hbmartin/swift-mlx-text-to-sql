@@ -140,6 +140,37 @@ import Testing
         context: .axisTick) == "25%")
   }
 
+  @Test func dependencyUpgradePreservesSelectionFormattingAndAccessibilityContract() {
+    let fundID = AutoChartColumnID(rawValue: "fund")
+    let valueID = AutoChartColumnID(rawValue: "current-market-value")
+    let columns = [
+      AutoChartColumn(id: fundID, name: "fund"),
+      AutoChartColumn(id: valueID, name: "current_market_value"),
+    ]
+    let selection = AutoChartSelection<Int>(
+      sourceRowIDs: [0, 1],
+      dimensions: [
+        AutoChartSelectedDimension(columnID: fundID, value: .text("Core"))
+      ],
+      measure: AutoChartSelectedMeasure(
+        columnID: valueID,
+        aggregation: .sum,
+        value: .scalar(.integer(2))),
+      family: .bar,
+      specificationID: AutoChartSpecificationID(
+        rawValue: "creg-dependency-upgrade-contract"),
+      markID: "core")
+
+    let presentation = selection.presentation(
+      columns: columns,
+      formatters: CREGChartAdapter.formatters,
+      textResolver: CREGChartAdapter.textResolver)
+
+    #expect(presentation.label == "Core")
+    #expect(presentation.valueDescription == "$2")
+    #expect(presentation.accessibilityDescription == "Core, $2")
+  }
+
   @Test func chartDiagnosticsUseCREGReviewedCopy() {
     let upstream = AutoChartMessage(
       category: .diagnostic,
