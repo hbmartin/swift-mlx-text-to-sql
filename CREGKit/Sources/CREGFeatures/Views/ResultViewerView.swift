@@ -413,6 +413,7 @@ struct ResultViewerView: View {
       authoritativePreference: preference,
       presentationState: $presentationState,
       migratePreference: migratePreference,
+      diagnostics: chartOwner.diagnostics,
       willAnalyze: {
         if chartSelectionState?.isStale(
           comparedTo: resultFingerprint) == true

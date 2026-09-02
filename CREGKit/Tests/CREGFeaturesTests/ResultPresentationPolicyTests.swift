@@ -774,6 +774,7 @@ import Testing
 
     #expect(stale.retryFailure(for: request.key, recommendationID: nil))
     _ = await recreated.analyze(request, preferredSpecificationID: nil)
+    withExtendedLifetime(first) {}
 
     #expect(diagnostics.events.count == 2)
   }
@@ -848,6 +849,33 @@ import Testing
     _ = await recreated.analyze(request, preferredSpecificationID: nil)
 
     #expect(diagnostics.events.count == 2)
+  }
+
+  @Test func cacheTrimPreservesLiveFailureDiagnosticClaims() async {
+    let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
+    let analyze: ResultChartLoader.AnalyzeChart = { _ in
+      throw PreferenceSaveTestError.failed
+    }
+    let request = chartTestRequest(
+      resultFingerprint: "diagnostic-claim-survives-cache-trim")
+    let first = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+    let recreated = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      analyzeChart: analyze)
+
+    _ = await first.analyze(request, preferredSpecificationID: nil)
+    await client.trimToMinimum()
+    _ = await recreated.analyze(request, preferredSpecificationID: nil)
+    withExtendedLifetime(first) {}
+
+    #expect(diagnostics.events.count == 1)
   }
 
   @Test func liveDiagnosticClaimsAreNeverCapacityEvicted() async {
@@ -1446,7 +1474,8 @@ import Testing
         key: ResultChartLoader.Request.Key,
         preferredSpecificationID: AutoChartRecommendationID?
       )] = []
-    let owner = ResultChartLoaderOwner { request, preferredSpecificationID in
+    let owner = ResultChartLoaderOwner(diagnostics: .noop) {
+      request, preferredSpecificationID in
       constructions.append((request.key, preferredSpecificationID))
       return ResultChartLoader(
         client: .testValue, diagnostics: .noop, warmStart: nil)
@@ -1551,7 +1580,7 @@ import Testing
   }
 
   @Test func cancellingAnalysisCancelsTheInjectedOperation() async {
-    let probe = ChartAnalysisCancellationProbe()
+    let probe = TaskCancellationProbe()
     let loader = ResultChartLoader(
       client: .testValue,
       diagnostics: .noop,
@@ -2046,6 +2075,70 @@ import Testing
     #expect(diagnostics.events.count == 2)
   }
 
+  @Test func cancelledPreparationRetryPreservesItsDiagnosticEpisodeIntent()
+    async throws
+  {
+    let client = CREGChartAnalysisClient.testValue
+    let diagnostics = DiagnosticEventRecorder()
+    let invocations = ChartAnalysisInvocationCounter()
+    let cancellation = TaskCancellationProbe()
+    let prepare: ResultChartLoader.PrepareChart = { _, _ in
+      await invocations.record()
+      if await invocations.count == 3 {
+        try await cancellation.waitUntilCancelled()
+      }
+      throw PreferenceSaveTestError.failed
+    }
+    let first = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      prepareChart: prepare)
+    let viewer = ResultChartLoader(
+      client: client,
+      diagnostics: diagnostics.client,
+      warmStart: nil,
+      prepareChart: prepare)
+    let request = chartTestRequest(
+      resultFingerprint: "cancelled-preparation-retry-diagnostic")
+
+    for loader in [first, viewer] {
+      _ = await loader.analyze(request, preferredSpecificationID: nil)
+      let analysis = try #require(loader.analysis(for: request.key))
+      let recommendation = try #require(
+        chartTestRecommendations(from: analysis).dropFirst().first)
+      _ = loader.resolveLoadedRecommendation(
+        for: request.key,
+        preferredSpecificationID: recommendation.id)
+      await loader.prepareResolvedRecommendation(for: request.key)
+    }
+    #expect(diagnostics.events.count == 1)
+
+    let recommendation = try #require(
+      first.resolvedRecommendation(for: request.key))
+    #expect(
+      first.retryFailure(
+        for: request.key,
+        recommendationID: recommendation.id))
+    let cancelledRetry = Task {
+      await first.prepareResolvedRecommendation(for: request.key)
+    }
+    await cancellation.waitUntilStarted()
+    cancelledRetry.cancel()
+    await cancelledRetry.value
+    #expect(await cancellation.cancellationWasObserved)
+    #expect(
+      first.failure(
+        for: request.key,
+        recommendationID: recommendation.id) == nil)
+
+    await first.prepareResolvedRecommendation(for: request.key)
+    withExtendedLifetime(viewer) {}
+
+    #expect(await invocations.count == 4)
+    #expect(diagnostics.events.count == 2)
+  }
+
   @Test func recommendationRoundTripJoinsAnotherSurfaceFailureEpisode()
     async throws
   {
@@ -2409,7 +2502,7 @@ private final class ResultPresentationStateBox {
   }
 }
 
-private actor ChartAnalysisCancellationProbe {
+private actor TaskCancellationProbe {
   private var didStart = false
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
   private var cancellationContinuation: CheckedContinuation<Void, Never>?

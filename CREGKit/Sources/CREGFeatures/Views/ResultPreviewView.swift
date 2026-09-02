@@ -183,7 +183,8 @@ struct ResultPreviewView: View {
         request: chartRequest,
         authoritativePreference: preference,
         presentationState: $presentationState,
-        migratePreference: migratePreference
+        migratePreference: migratePreference,
+        diagnostics: chartOwner.diagnostics
       )
       .task(
         id: chart.preparationTaskKey(

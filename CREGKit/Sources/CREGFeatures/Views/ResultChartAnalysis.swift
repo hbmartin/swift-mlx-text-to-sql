@@ -206,8 +206,8 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
   /// Claims a logical failure episode. Incidental repeats join the current
   /// episode, while an explicit retry becomes current even if another surface
   /// still displays the preceding failure. Every live episode remains tracked,
-  /// so releasing the retried surface falls back to an older live episode
-  /// instead of making an identical failure recordable again.
+  /// so releasing the retried surface falls back to the newest remaining live
+  /// episode instead of making an identical failure recordable again.
   func claim(
     _ identity: Identity,
     startsNewEpisode: Bool
@@ -230,12 +230,12 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
     }
     nextEpisode &+= 1
     let episode = nextEpisode
-    var entry =
-      recorded[identity]
-      ?? Entry(currentEpisode: episode, claimTokensByEpisode: [:])
-    entry.currentEpisode = episode
-    entry.claimTokensByEpisode[episode] = [token]
-    recorded[identity] = entry
+    var claimTokensByEpisode =
+      recorded[identity]?.claimTokensByEpisode ?? [:]
+    claimTokensByEpisode[episode] = [token]
+    recorded[identity] = Entry(
+      currentEpisode: episode,
+      claimTokensByEpisode: claimTokensByEpisode)
     return ClaimResult(
       claim: Claim(
         store: self,
@@ -469,11 +469,12 @@ final class ResultChartLoaderOwner {
     ) -> ResultChartLoader
 
   private enum Source {
-    case client(CREGChartAnalysisClient, DiagnosticsClient)
+    case client(CREGChartAnalysisClient)
     case factory(MakeLoader)
   }
 
   private let source: Source
+  let diagnostics: DiagnosticsClient
   private var storedLoader: ResultChartLoader?
   private var storedRequestKey: ResultChartLoader.Request.Key?
 
@@ -481,11 +482,16 @@ final class ResultChartLoaderOwner {
     client: CREGChartAnalysisClient,
     diagnostics: DiagnosticsClient
   ) {
-    source = .client(client, diagnostics)
+    source = .client(client)
+    self.diagnostics = diagnostics
   }
 
-  init(makeLoader: @escaping MakeLoader) {
+  init(
+    diagnostics: DiagnosticsClient,
+    makeLoader: @escaping MakeLoader
+  ) {
     source = .factory(makeLoader)
+    self.diagnostics = diagnostics
   }
 
   /// The first retained view value for a request supplies its authoritative
@@ -500,7 +506,7 @@ final class ResultChartLoaderOwner {
     }
     let loader =
       switch source {
-      case .client(let client, let diagnostics):
+      case .client(let client):
         ResultChartLoader(
           client: client,
           diagnostics: diagnostics,
@@ -641,6 +647,20 @@ final class ResultChartLoader {
     let recommendationID: AutoChartRecommendationID
     let failure: Failure
     let diagnosticClaim: ChartFailureDiagnosticStore.Claim
+  }
+
+  private enum OwnedFailure {
+    case analysis(FailedAnalysis)
+    case preparation(FailedPreparation)
+
+    var failure: Failure {
+      switch self {
+      case .analysis(let failedAnalysis):
+        failedAnalysis.failure
+      case .preparation(let failedPreparation):
+        failedPreparation.failure
+      }
+    }
   }
 
   private struct PreparationFailureRetryKey: Equatable {
@@ -799,16 +819,10 @@ final class ResultChartLoader {
     for requestKey: Request.Key,
     recommendationID: AutoChartRecommendationID?
   ) -> Failure? {
-    if let failedAnalysis, failedAnalysis.key == requestKey {
-      return failedAnalysis.failure
-    }
-    guard loadedAnalysis(for: requestKey) != nil,
-      let recommendationID,
-      currentRecommendation?.id == recommendationID,
-      let failedPreparation,
-      failedPreparation.recommendationID == recommendationID
-    else { return nil }
-    return failedPreparation.failure
+    ownedFailure(
+      for: requestKey,
+      recommendationID: recommendationID
+    )?.failure
   }
 
   /// Re-resolves the loaded immutable analysis and synchronizes every piece of
@@ -887,11 +901,11 @@ final class ResultChartLoader {
       recommendationID: recommendation.id)
     let startsNewDiagnosticEpisode =
       nextPreparationFailureStartsNewEpisode == failureRetryKey
-    if startsNewDiagnosticEpisode {
-      nextPreparationFailureStartsNewEpisode = nil
-    }
     clearFailedPreparation()
     if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
+      if startsNewDiagnosticEpisode {
+        nextPreparationFailureStartsNewEpisode = nil
+      }
       preparedChart = chartAnalysis.primaryChart
       return
     }
@@ -902,6 +916,9 @@ final class ResultChartLoader {
         preparation == preparationGeneration,
         resolvedRecommendationID == recommendation.id
       else { return }
+      if startsNewDiagnosticEpisode {
+        nextPreparationFailureStartsNewEpisode = nil
+      }
       preparedChart = prepared
     } catch {
       guard !Task.isCancelled,
@@ -910,6 +927,9 @@ final class ResultChartLoader {
         resolvedRecommendationID == recommendation.id
       else { return }
       let failure = Failure(error, stage: .preparation)
+      if startsNewDiagnosticEpisode {
+        nextPreparationFailureStartsNewEpisode = nil
+      }
       commitFailureDiagnostic(
         failure,
         requestKey: requestKey,
@@ -977,18 +997,17 @@ final class ResultChartLoader {
     recommendationID: AutoChartRecommendationID?
   ) -> Bool {
     guard
-      let failure = failure(
+      let ownedFailure = ownedFailure(
         for: requestKey,
         recommendationID: recommendationID),
-      failure.retryability == .retryable
+      ownedFailure.failure.retryability == .retryable
     else { return false }
-    switch failure.stage {
+    switch ownedFailure {
     case .analysis:
       clearFailedAnalysis()
       nextAnalysisFailureStartsNewEpisode = true
       analysisAttempt += 1
-    case .preparation:
-      guard let failedPreparation else { return false }
+    case .preparation(let failedPreparation):
       nextPreparationFailureStartsNewEpisode = PreparationFailureRetryKey(
         analysisGeneration: analysisGeneration,
         recommendationID: failedPreparation.recommendationID)
@@ -1051,6 +1070,22 @@ final class ResultChartLoader {
   private func loadedAnalysis(for key: Request.Key) -> LoadedAnalysis? {
     guard let loadedAnalysis, loadedAnalysis.key == key else { return nil }
     return loadedAnalysis
+  }
+
+  private func ownedFailure(
+    for requestKey: Request.Key,
+    recommendationID: AutoChartRecommendationID?
+  ) -> OwnedFailure? {
+    if let failedAnalysis, failedAnalysis.key == requestKey {
+      return .analysis(failedAnalysis)
+    }
+    guard loadedAnalysis(for: requestKey) != nil,
+      let recommendationID,
+      currentRecommendation?.id == recommendationID,
+      let failedPreparation,
+      failedPreparation.recommendationID == recommendationID
+    else { return nil }
+    return .preparation(failedPreparation)
   }
 
   /// Claims, commits, and records one failure without exposing a manually
