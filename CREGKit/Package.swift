@@ -19,7 +19,7 @@ let package = Package(
     // the exact policy and the affected box-plot recommendation fixtures.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "a8bc0000f60589a5bd214191ad89cb0855e8abcf"),
+      revision: "abd5058b98a22a5c2a231e02b468afe0e5952df4"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
