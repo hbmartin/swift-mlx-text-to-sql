@@ -460,12 +460,16 @@ struct ResultChartPreparationTaskKey: Equatable {
 /// The retained loader is keyed to its request so a replacement result can
 /// synchronously adopt its own snapshot instead of inheriting an earlier
 /// loader that has already consumed its one construction-time warm start.
+/// Dependency clients are captured for this retained owner's lifetime; a view
+/// that installs new overrides must also establish a new owner identity so the
+/// loader and its lifecycle telemetry continue to use the same clients.
 @MainActor
 final class ResultChartLoaderOwner {
   typealias MakeLoader =
     @MainActor (
       ResultChartLoader.Request,
-      AutoChartRecommendationID?
+      AutoChartRecommendationID?,
+      DiagnosticsClient
     ) -> ResultChartLoader
 
   private enum Source {
@@ -513,7 +517,7 @@ final class ResultChartLoaderOwner {
           warmStart: request,
           preferredSpecificationID: preferredSpecificationID)
       case .factory(let makeLoader):
-        makeLoader(request, preferredSpecificationID)
+        makeLoader(request, preferredSpecificationID, diagnostics)
       }
     storedLoader = loader
     storedRequestKey = request.key
@@ -666,6 +670,11 @@ final class ResultChartLoader {
   private struct PreparationFailureRetryKey: Equatable {
     let analysisGeneration: Int
     let recommendationID: AutoChartRecommendationID
+  }
+
+  private enum PreparationOutcome {
+    case prepared(AutoChartPreparedChart<Int>)
+    case failed(Failure)
   }
 
   private var loadedAnalysis: LoadedAnalysis?
@@ -902,34 +911,36 @@ final class ResultChartLoader {
     let startsNewDiagnosticEpisode =
       nextPreparationFailureStartsNewEpisode == failureRetryKey
     clearFailedPreparation()
+    let outcome: PreparationOutcome
     if chartAnalysis.primaryChart?.recommendation.id == recommendation.id {
-      if startsNewDiagnosticEpisode {
-        nextPreparationFailureStartsNewEpisode = nil
+      guard let primaryChart = chartAnalysis.primaryChart else { return }
+      outcome = .prepared(primaryChart)
+    } else {
+      preparedChart = nil
+      do {
+        let prepared = try await prepareChart(chartAnalysis, recommendation.id)
+        guard !Task.isCancelled,
+          requestAnalysisGeneration == analysisGeneration,
+          preparation == preparationGeneration,
+          resolvedRecommendationID == recommendation.id
+        else { return }
+        outcome = .prepared(prepared)
+      } catch {
+        guard !Task.isCancelled,
+          requestAnalysisGeneration == analysisGeneration,
+          preparation == preparationGeneration,
+          resolvedRecommendationID == recommendation.id
+        else { return }
+        outcome = .failed(Failure(error, stage: .preparation))
       }
-      preparedChart = chartAnalysis.primaryChart
-      return
     }
-    preparedChart = nil
-    do {
-      let prepared = try await prepareChart(chartAnalysis, recommendation.id)
-      guard requestAnalysisGeneration == analysisGeneration,
-        preparation == preparationGeneration,
-        resolvedRecommendationID == recommendation.id
-      else { return }
-      if startsNewDiagnosticEpisode {
-        nextPreparationFailureStartsNewEpisode = nil
-      }
+    if startsNewDiagnosticEpisode {
+      nextPreparationFailureStartsNewEpisode = nil
+    }
+    switch outcome {
+    case .prepared(let prepared):
       preparedChart = prepared
-    } catch {
-      guard !Task.isCancelled,
-        requestAnalysisGeneration == analysisGeneration,
-        preparation == preparationGeneration,
-        resolvedRecommendationID == recommendation.id
-      else { return }
-      let failure = Failure(error, stage: .preparation)
-      if startsNewDiagnosticEpisode {
-        nextPreparationFailureStartsNewEpisode = nil
-      }
+    case .failed(let failure):
       commitFailureDiagnostic(
         failure,
         requestKey: requestKey,
