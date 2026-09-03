@@ -20,7 +20,7 @@ let package = Package(
     // formatting and accessibility contract with the package presentation API.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "abd5058b98a22a5c2a231e02b468afe0e5952df4"),
+      revision: "84379a1f22c64fcf433d898c0f6e16cf5a86a738"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
