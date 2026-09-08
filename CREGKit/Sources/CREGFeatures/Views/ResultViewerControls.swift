@@ -154,18 +154,16 @@ extension ResultViewerView {
           get: { selectedRecommendation?.id },
           set: { id in
             guard id != selectedRecommendation?.id else { return }
-            guard let id,
-              chart.selectLoadedRecommendation(id, for: chartRequest.key)
-            else { return }
+            guard let id else { return }
             clearChartSelection()
             let updated = ResultViewerLogic.chartTypeSelectionPreference(
               specificationID: id)
             applyUserPreference(updated)
           })
       ) {
-        ForEach(chartRecommendations) { recommendation in
-          Text(recommendation.specification.family.displayName)
-            .tag(Optional(recommendation.id))
+        ForEach(chartPickerOptions) { option in
+          Text(option.label)
+            .tag(Optional(option.id))
         }
       }
     } label: {

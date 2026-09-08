@@ -1,4 +1,5 @@
 import AutoTableCharts
+import AutoTableChartsUI
 import CREGEngine
 import ComposableArchitecture
 import Foundation

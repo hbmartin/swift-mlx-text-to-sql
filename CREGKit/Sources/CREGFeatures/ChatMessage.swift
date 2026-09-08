@@ -2,18 +2,34 @@ import AutoTableCharts
 import CREGEngine
 import Foundation
 
-public struct ResultPresentationPreference: Equatable, Hashable, Sendable, Codable {
-  public enum Mode: String, Equatable, Hashable, Sendable, Codable {
-    case chart
-    case table
+public typealias ResultPresentationPreference = AutoChartPreference
+
+public enum ResultPresentationMode: String, Equatable, Hashable, Sendable, Codable {
+  case chart
+  case table
+}
+
+extension AutoChartPreference {
+  public init(
+    mode: ResultPresentationMode,
+    specificationID: AutoChartRecommendationID? = nil
+  ) {
+    switch mode {
+    case .table:
+      self = .table
+    case .chart:
+      self = specificationID.map { .chart(.specific($0)) } ?? .chart(.recommended)
+    }
   }
 
-  public var mode: Mode
-  public var specificationID: AutoChartRecommendationID?
+  public var mode: ResultPresentationMode {
+    if case .table = self { return .table }
+    return .chart
+  }
 
-  public init(mode: Mode, specificationID: AutoChartRecommendationID? = nil) {
-    self.mode = mode
-    self.specificationID = specificationID
+  public var specificationID: AutoChartRecommendationID? {
+    guard case .chart(.specific(let id)) = self else { return nil }
+    return id
   }
 }
 
@@ -52,14 +68,13 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
   public var traceSteps: [String]
   public var createdAt: Date
   public var devInfo: TurnTelemetry?
-  /// Per-result display choice. Nil is the backward-compatible automatic
-  /// default: chart when a safe recommendation exists, otherwise table.
-  public var resultPresentation: ResultPresentationPreference?
+  /// Per-result v3 display choice. Missing and legacy payloads reset to automatic.
+  public var resultPresentation: AutoChartPreference
 
   public init(
     id: UUID, role: Role, body: Body, traceSteps: [String] = [],
     createdAt: Date, devInfo: TurnTelemetry? = nil,
-    resultPresentation: ResultPresentationPreference? = nil
+    resultPresentation: AutoChartPreference? = nil
   ) {
     self.id = id
     self.role = role
@@ -68,7 +83,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     self.traceSteps = traceSteps
     self.createdAt = createdAt
     self.devInfo = devInfo
-    self.resultPresentation = resultPresentation
+    self.resultPresentation = resultPresentation ?? .automatic
   }
 
   enum CodingKeys: String, CodingKey {
@@ -97,8 +112,9 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     createdAt = try values.decode(Date.self, forKey: .createdAt)
     devInfo = try? values.decodeIfPresent(
       TurnTelemetry.self, forKey: .devInfo)
-    resultPresentation = try? values.decodeIfPresent(
-      ResultPresentationPreference.self, forKey: .resultPresentation)
+    resultPresentation =
+      (try? values.decode(AutoChartPreference.self, forKey: .resultPresentation))
+      ?? .automatic
   }
 
   private static func fingerprint(for body: Body) -> String? {

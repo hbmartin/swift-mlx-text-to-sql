@@ -17,7 +17,7 @@ extension ResultViewerView {
   }
 
   func table(
-    displayRows: [[SQLValue]],
+    displayRows: [ResultViewerLogic.DisplayRow],
     widths: [CGFloat]
   ) -> some View {
     ZStack(alignment: .top) {
@@ -27,7 +27,7 @@ extension ResultViewerView {
           Divider()
           ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 0) {
-              ForEach(Array(displayRows.enumerated()), id: \.offset) { entry in
+              ForEach(Array(displayRows.enumerated()), id: \.element.id) { entry in
                 rowView(
                   entry.element,
                   displayIndex: entry.offset,
@@ -101,23 +101,24 @@ extension ResultViewerView {
   }
 
   func rowView(
-    _ row: [SQLValue],
+    _ row: ResultViewerLogic.DisplayRow,
     displayIndex: Int,
     widths: [CGFloat]
   ) -> some View {
-    let rowIsSelected = selectedCell?.row == displayIndex
+    let rowIsSelected = selectedCell?.row == row.sourceRowID
     return HStack(alignment: .top, spacing: 0) {
       ForEach(result.columns.indices, id: \.self) { index in
-        let value: SQLValue = index < row.count ? row[index] : .null
+        let value: SQLValue = index < row.values.count ? row.values[index] : .null
         let column = result.columns[index]
         let displayed = ResultViewerLogic.displayedCopyValue(
           value, column: column)
         let raw = ResultViewerLogic.rawCopyValue(value)
-        let selection = ResultCellSelection(row: displayIndex, column: index)
+        let selection = ResultCellSelection(row: row.sourceRowID, column: index)
         let isSelected = selectedCell == selection
 
         Button {
           selectedCell = isSelected ? nil : selection
+          selectTableRow(isSelected ? nil : row.sourceRowID)
         } label: {
           Text(displayed)
             .font(textSize.cellFont)
@@ -144,7 +145,7 @@ extension ResultViewerView {
         }
         .buttonStyle(.plain)
         .contextMenu {
-          cellCopyActions(displayed: displayed, raw: raw, row: row)
+          cellCopyActions(displayed: displayed, raw: raw, row: row.values)
         }
         .accessibilityLabel(
           "Row \(displayIndex + 1), \(column), \(displayed)"
@@ -156,7 +157,7 @@ extension ResultViewerView {
         }
         .accessibilityAction(named: "Copy row as CSV") {
           copy(
-            ResultViewerLogic.csvRowString(row),
+            ResultViewerLogic.csvRowString(row.values),
             confirmation: "Row copied")
         }
       }

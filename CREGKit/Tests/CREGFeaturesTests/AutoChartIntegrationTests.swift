@@ -1,4 +1,5 @@
 import AutoTableCharts
+import AutoTableChartsUI
 import CREGData
 import ComposableArchitecture
 import Foundation
@@ -64,9 +65,9 @@ import Testing
     #expect(
       input.dataset.chartRows[0]
         .chartValue(for: input.dataset.chartColumns[2].id).dateValue != nil)
-    #expect(input.dataset.chartDataKey?.identity == "conversation-result")
+    #expect(input.dataset.chartDataKey.identity == "conversation-result")
     #expect(
-      input.dataset.chartDataKey?.revision
+      input.dataset.chartDataKey.trustedRevision
         == CREGChartAdapter.dataKeyRevision(resultFingerprint: fingerprint, sql: sql))
     #expect(input.context.goal == .range)
   }
@@ -343,613 +344,64 @@ import Testing
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
     // A bump invalidates persisted chart-type pins. Keep this exact assertion
     // separate from the version-agnostic migration behavior test.
-    #expect(AutoTableCharts.recommendationPolicyVersion == 11)
-  }
-}
-
-@Suite struct CREGChartAnalysisClientTests {
-  @Test func liveConfigurationUsesTheAppOwnedBudget() {
-    let configuration = CREGChartAnalysisClient.configuration
-    #expect(configuration.tables.maximumEntries == 8)
-    #expect(configuration.analyses.maximumEntries == 64)
-    #expect(configuration.preparedCharts.maximumEntries == 16)
-    // Literal pins, not the subtraction the source performs: the 32 MiB
-    // app-wide contract and its split are the regression surface here.
-    #expect(
-      CREGChartAnalysisClient.maximumRetainedCost == 32 * 1_024 * 1_024)
-    #expect(
-      CREGChartAnalysisClient.snapshotMaximumRetainedCost == 8 * 1_024 * 1_024)
-    #expect(configuration.maximumRetainedCost == 24 * 1_024 * 1_024)
+    #expect(AutoTableCharts.recommendationPolicyVersion == 12)
   }
 
-  @Test func primaryIsEagerAndAlternativePreparationIsExplicit() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached))
-    let analysis = try await client.analyze(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question)
-    let recommendations = chartTestRecommendations(from: analysis)
-
-    let primary = try #require(analysis.primaryChart)
-    #expect(primary.recommendation.id == recommendations.first?.id)
-    #expect(!primary.marks.isEmpty)
-    if recommendations.count > 1 {
-      let alternative = try await analysis.prepare(recommendations[1].id)
-      #expect(alternative.recommendation.id == recommendations[1].id)
-      #expect(alternative.recommendation.id != primary.recommendation.id)
-    }
-  }
-
-  @Test func oneRenderableCategoryPlusNullKeepsHistogramPrimary() async throws {
-    let analysis = try await CREGChartAnalysisClient.testValue.analyze(
+  @MainActor
+  @Test func previewAndViewerSessionsWarmReuseOneCREGPackageCache() async throws {
+    let cache = AutoChartCache(configuration: CREGChartAnalysisClient.configuration)
+    let client = CREGChartAnalysisClient(cache: cache)
+    let input = try CREGChartAdapter.analysisInput(
       result: QueryResult(
-        columns: ["segment", "value"],
+        columns: ["property_type", "market_value"],
         rows: [
-          [.text("Core"), .real(10)],
-          [.text("Core"), .real(12)],
-          [.null, .real(20)],
-          [.null, .real(22)],
+          [.text("Office"), .real(20_000_000)],
+          [.text("Retail"), .real(12_000_000)],
         ]),
-      sql: "SELECT segment, value FROM observations",
-      question: "Show the distribution of value")
-    let recommendations = chartTestRecommendations(from: analysis)
+      sql: "SELECT property_type, market_value FROM properties",
+      question: "Compare market value by property type",
+      resultFingerprint: "result-v3",
+      dataIdentity: "message-v3")
 
-    #expect(analysis.primaryChart?.recommendation.specification.family == .histogram)
-    #expect(
-      !recommendations.contains {
-        $0.specification.family == .boxPlot
-          && $0.specification.encoding.x != nil
-      })
-  }
+    let preview = client.makeSession()
+    let viewer = client.makeSession()
+    preview.load(input.request, preference: .automatic)
+    let previewAnalysis = try await readyAnalysis(from: preview)
 
-  @Test func twoRenderableCategoriesStillOfferGroupedBoxPlot() async throws {
-    let analysis = try await CREGChartAnalysisClient.testValue.analyze(
-      result: QueryResult(
-        columns: ["segment", "value"],
-        rows: [
-          [.text("Core"), .real(10)],
-          [.text("Core"), .real(12)],
-          [.text("Value-Add"), .real(20)],
-          [.text("Value-Add"), .real(22)],
-          [.null, .real(30)],
-        ]),
-      sql: "SELECT segment, value FROM observations",
-      question: "Show the distribution of value")
-    let primary = try #require(analysis.primaryChart)
+    viewer.load(input.request, preference: .automatic)
+    let viewerAnalysis = try await readyAnalysis(from: viewer)
 
-    #expect(primary.recommendation.specification.family == .boxPlot)
-    #expect(primary.recommendation.specification.encoding.x != nil)
-    #expect(
-      primary.diagnostics.contains {
-        $0.messageValue.code == .boxPlotMissingCategoryGroup
-      })
-  }
-
-  @Test func blobBearingHintedCategoryCannotGateAGroupedBoxPlot() async throws {
-    let analysis = try await CREGChartAnalysisClient.testValue.analyze(
-      result: QueryResult(
-        columns: ["is_segment", "value"],
-        rows: [
-          [.integer(0), .real(10)],
-          [.integer(0), .real(12)],
-          [.integer(1), .real(20)],
-          [.integer(1), .real(22)],
-          [.blob(Data([0x01])), .real(24)],
-          [.null, .real(26)],
-        ]),
-      sql: "SELECT is_segment, value FROM observations",
-      question: "Show the distribution of value")
-    let categoryID = CREGChartAdapter.columnID(index: 0, name: "is_segment")
-    let primary = try #require(analysis.primaryChart)
-
-    #expect(primary.recommendation.specification.family == .histogram)
-    #expect(
-      !chartTestRecommendations(from: analysis).contains {
-        $0.specification.family == .boxPlot
-          && $0.specification.encoding.x == categoryID
-      })
-  }
-
-  @Test func keyedAnalysisReusesScopedStateAndTrimKeepsHeldValuesUsable() async throws {
-    let analyzer = AutoChartAnalyzer(
-      configuration: AutoChartAnalyzerConfiguration(
-        tables: .init(maximumEntries: 8),
-        analyses: .init(maximumEntries: 8),
-        preparedCharts: .init(maximumEntries: 8),
-        maximumRetainedCost: 8 * 1_024 * 1_024))
-    let client = CREGChartAnalysisClient(analyzer: analyzer)
-    let first = try await client.analyze(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question,
-      resultFingerprint: "stable-result",
-      dataIdentity: "message-1")
-    let second = try await client.analyze(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question,
-      resultFingerprint: "stable-result",
-      dataIdentity: "message-1")
-
-    #expect(first.primaryChart?.recommendation.id == second.primaryChart?.recommendation.id)
-    let heldPrimary = try #require(first.primaryChart)
-    let beforeTrim = await client.cacheStatistics
-    #expect(beforeTrim.analyses.hits >= 1)
-    #expect(beforeTrim.analyses.entries == 1)
-    #expect(client.snapshotStatistics.entries == 1)
-
-    await client.trimToMinimum()
-    let afterTrim = await client.cacheStatistics
-    #expect(afterTrim.tables.entries == 0)
-    #expect(afterTrim.analyses.entries == 0)
-    #expect(afterTrim.preparedCharts.entries == 0)
-    #expect(client.snapshotStatistics.entries == 0)
-    #expect(client.snapshotStatistics.retainedCost == 0)
-    #expect(!heldPrimary.marks.isEmpty)
-  }
-
-  @Test func snapshotLRUEnforcesByteBudgetRevisionAndTrim() async throws {
-    let uncached = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
-    let analysis = try await uncached.analyze(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question)
-    let snapshots = ChartAnalysisSnapshotStore(
-      capacity: 3, maximumRetainedCost: 100)
-    let contextKey = ChartAnalysisSnapshotContextKey(question: nil)
-
-    snapshots.store(
-      analysis, identity: "first", revision: "r1", contextKey: contextKey,
-      retainedCost: 60)
-    snapshots.store(
-      analysis, identity: "second", revision: "r1", contextKey: contextKey,
-      retainedCost: 60)
-
-    #expect(
-      snapshots.analysis(
-        identity: "first", revision: "r1", contextKey: contextKey) == nil)
-    #expect(
-      snapshots.analysis(
-        identity: "second", revision: "stale", contextKey: contextKey) == nil)
-    #expect(
-      snapshots.analysis(
-        identity: "second", revision: "r1", contextKey: contextKey) != nil)
-    #expect(snapshots.statistics.entries == 1)
-    #expect(snapshots.statistics.retainedCost == 60)
-    #expect(snapshots.statistics.evictions == 1)
-
-    // A same-identity, same-revision store is a recency refresh, never a
-    // replacement: the retained cost must not change.
-    snapshots.store(
-      analysis, identity: "second", revision: "r1", contextKey: contextKey,
-      retainedCost: 999)
-    #expect(snapshots.statistics.entries == 1)
-    #expect(snapshots.statistics.retainedCost == 60)
-
-    // A snapshot larger than the whole budget still warm-starts — large
-    // results are where re-analysis hurts most — evicting everything else
-    // and remaining as the sole resident.
-    snapshots.store(
-      analysis, identity: "oversized", revision: "r1", contextKey: contextKey,
-      retainedCost: 101)
-    #expect(snapshots.statistics.entries == 1)
-    #expect(snapshots.statistics.retainedCost == 101)
-    #expect(
-      snapshots.analysis(
-        identity: "oversized", revision: "r1", contextKey: contextKey) != nil)
-    #expect(snapshots.statistics.evictions == 2)
-
-    // Memory-pressure trims clear everything but are not LRU evictions.
-    snapshots.trimToMinimum()
-    #expect(snapshots.statistics.entries == 0)
-    #expect(snapshots.statistics.retainedCost == 0)
-    #expect(snapshots.statistics.evictions == 2)
-  }
-
-  @Test func contextReplacementUpdatesCostAndMismatchPreservesCurrentSnapshot() async throws {
-    let uncached = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
-    let analysis = try await uncached.analyze(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: StarterQueryID.portfolioValueByFundV1.question)
-    let snapshots = ChartAnalysisSnapshotStore(
-      capacity: 2, maximumRetainedCost: 1_000)
-    let original = ChartAnalysisSnapshotContextKey(question: "Original title")
-    let replacement = ChartAnalysisSnapshotContextKey(question: "Replacement title")
-
-    snapshots.store(
-      analysis, identity: "message", revision: "r1", contextKey: original,
-      retainedCost: 40)
-    snapshots.store(
-      analysis, identity: "message", revision: "r1", contextKey: replacement,
-      retainedCost: 70)
-
-    #expect(snapshots.statistics.entries == 1)
-    #expect(snapshots.statistics.retainedCost == 70)
-    #expect(
-      snapshots.analysis(
-        identity: "message", revision: "r1", contextKey: original) == nil)
-    #expect(
-      snapshots.analysis(
-        identity: "message", revision: "r1", contextKey: replacement) != nil)
-    #expect(snapshots.statistics.entries == 1)
-    #expect(snapshots.statistics.retainedCost == 70)
-    #expect(snapshots.statistics.evictions == 0)
-  }
-
-  @Test func defaultTestDependencyNeverWarmStartsAcrossRequests() async throws {
-    let client = CREGChartAnalysisClient.testValue
-    let sql = StarterQueryID.portfolioValueByFundV1.sql
-    _ = try await client.analyze(
-      result: PreviewFixtures.fundValueResult,
-      sql: sql,
-      question: StarterQueryID.portfolioValueByFundV1.question,
-      resultFingerprint: "test-result",
-      dataIdentity: "shared-test-identity")
-
-    #expect(
-      client.cachedAnalysis(
-        resultFingerprint: "test-result",
-        sql: sql,
-        question: StarterQueryID.portfolioValueByFundV1.question,
-        dataIdentity: "shared-test-identity") == nil)
-    #expect(client.snapshotStatistics.entries == 0)
-    #expect(client.snapshotStatistics.retainedCost == 0)
+    #expect(preview !== viewer)
+    #expect(previewAnalysis.id == viewerAnalysis.id)
+    #expect(client.cachedAnalysis(for: input.request)?.id == previewAnalysis.id)
   }
 
   @MainActor
-  @Test func discardedChartViewValuesDoNotProbeWarmStartSnapshots() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached))
-    let messageID = UUID()
-    let result = PreviewFixtures.fundValueResult
-    let sql = StarterQueryID.portfolioValueByFundV1.sql
-    let question = StarterQueryID.portfolioValueByFundV1.question
-    let resultFingerprint = "deferred-chart-view-loader"
-    _ = try await client.analyze(
-      result: result,
-      sql: sql,
-      question: question,
-      resultFingerprint: resultFingerprint,
-      dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
-    let statisticsBeforeViewConstruction = client.snapshotStatistics
-
-    withDependencies {
-      $0.chartAnalysis = client
-    } operation: {
-      _ = ResultPreviewView(
-        messageID: messageID,
-        resultFingerprint: resultFingerprint,
-        result: result,
-        sql: sql,
-        question: question,
-        preference: nil,
-        setPreference: { _ in },
-        migratePreference: { _, updated in .migrated(updated) },
-        open: {})
-      _ = ResultViewerView(
-        result: result,
-        runtimeMode: .evaluated,
-        textSize: .constant(.standard),
-        messageID: messageID,
-        resultFingerprint: resultFingerprint,
-        sql: sql,
-        question: question,
-        migratePreference: { _, updated in .migrated(updated) })
+  private func readyAnalysis(
+    from session: AutoChartSession<Int>
+  ) async throws -> AutoChartAnalysis<Int> {
+    for _ in 0..<200 {
+      switch session.state {
+      case .ready(let analysis, _), .fallback(let analysis, _):
+        return analysis
+      case .failed(let failure):
+        throw failure
+      case .idle, .analyzing, .preparing:
+        try await Task.sleep(for: .milliseconds(5))
+      }
     }
-
-    #expect(client.snapshotStatistics == statisticsBeforeViewConstruction)
-  }
-
-  @MainActor
-  @Test func retainedChartViewsWarmStartSnapshotsWhenRendered() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached))
-    let messageID = UUID()
-    let result = PreviewFixtures.fundValueResult
-    let sql = StarterQueryID.portfolioValueByFundV1.sql
-    let question = StarterQueryID.portfolioValueByFundV1.question
-    let resultFingerprint = "rendered-chart-view-loader"
-    _ = try await client.analyze(
-      result: result,
-      sql: sql,
-      question: question,
-      resultFingerprint: resultFingerprint,
-      dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
-    let statisticsBeforeRendering = client.snapshotStatistics
-
-    withDependencies {
-      $0.chartAnalysis = client
-    } operation: {
-      let preview = ResultPreviewView(
-        messageID: messageID,
-        resultFingerprint: resultFingerprint,
-        result: result,
-        sql: sql,
-        question: question,
-        preference: nil,
-        setPreference: { _ in },
-        migratePreference: { _, updated in .migrated(updated) },
-        open: {}
-      )
-      .frame(width: 400, height: 320)
-      #expect(client.snapshotStatistics == statisticsBeforeRendering)
-      let previewRenderer = ImageRenderer(content: preview)
-      #expect(previewRenderer.cgImage != nil)
-    }
-    #expect(
-      client.snapshotStatistics.hits
-        == statisticsBeforeRendering.hits + 1)
-    let statisticsBeforeViewerConstruction = client.snapshotStatistics
-
-    withDependencies {
-      $0.chartAnalysis = client
-    } operation: {
-      let viewer = ResultViewerView(
-        result: result,
-        runtimeMode: .evaluated,
-        textSize: .constant(.standard),
-        messageID: messageID,
-        resultFingerprint: resultFingerprint,
-        sql: sql,
-        question: question,
-        migratePreference: { _, updated in .migrated(updated) }
-      )
-      .frame(width: 400, height: 800)
-      #expect(
-        client.snapshotStatistics == statisticsBeforeViewerConstruction)
-      let viewerRenderer = ImageRenderer(content: viewer)
-      #expect(viewerRenderer.cgImage != nil)
-    }
-    #expect(
-      client.snapshotStatistics.hits
-        == statisticsBeforeRendering.hits + 2)
-  }
-
-  @MainActor
-  @Test func retainedOwnerWarmStartsAReplacementRequestAndPreferredChart()
-    async throws
-  {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached))
-    let dataIdentity = "replacement-owner-message"
-    let sql = StarterQueryID.portfolioValueByFundV1.sql
-    let question = StarterQueryID.portfolioValueByFundV1.question
-    let firstRequest = ResultChartLoader.Request(
-      result: PreviewFixtures.fundValueResult,
-      sql: sql,
-      question: question,
-      resultFingerprint: "replacement-owner-first",
-      dataIdentity: dataIdentity)
-    _ = try await client.analyze(
-      result: firstRequest.result,
-      sql: sql,
-      question: question,
-      resultFingerprint: firstRequest.resultFingerprint,
-      dataIdentity: dataIdentity)
-    let owner = ResultChartLoaderOwner(client: client, diagnostics: .noop)
-    let firstLoader = owner.loader(
-      warmStart: firstRequest,
-      preferredSpecificationID: nil)
-    #expect(firstLoader.analysis(for: firstRequest.key) != nil)
-    let firstPreparationKey = firstLoader.preparationTaskKey(
-      recommendationID: nil)
-
-    let replacementResult = QueryResult(
-      columns: firstRequest.result.columns,
-      rows: [
-        [.text("Meridian Core Fund I"), .real(430_000_000)],
-        [.text("Meridian Value-Add II"), .real(275_000_000)],
-        [.text("Harborline Opportunistic"), .real(160_000_000)],
-        [.text("Coastal Core-Plus III"), .real(105_000_000)],
-      ])
-    let replacementRequest = ResultChartLoader.Request(
-      result: replacementResult,
-      sql: sql,
-      question: question,
-      resultFingerprint: "replacement-owner-second",
-      dataIdentity: dataIdentity)
-    let replacementAnalysis = try await client.analyze(
-      result: replacementResult,
-      sql: sql,
-      question: question,
-      resultFingerprint: replacementRequest.resultFingerprint,
-      dataIdentity: dataIdentity)
-    let preferred = try #require(
-      chartTestRecommendations(from: replacementAnalysis).dropFirst().first)
-    let statisticsBeforeReplacement = client.snapshotStatistics
-
-    let replacementLoader = owner.loader(
-      warmStart: replacementRequest,
-      preferredSpecificationID: preferred.id)
-
-    #expect(firstLoader !== replacementLoader)
-    #expect(
-      firstPreparationKey
-        != replacementLoader.preparationTaskKey(recommendationID: nil))
-    #expect(replacementLoader.analysis(for: replacementRequest.key) != nil)
-    #expect(
-      replacementLoader.resolvedRecommendation(for: replacementRequest.key)?.id
-        == preferred.id)
-    #expect(
-      client.snapshotStatistics.hits
-        == statisticsBeforeReplacement.hits + 1)
-  }
-
-  @MainActor
-  @Test func warmStartRequiresMatchingTitleWhenGoalIsUnchanged() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached))
-    let result = PreviewFixtures.fundValueResult
-    let sql = StarterQueryID.portfolioValueByFundV1.sql
-    let originalQuestion = "Rank portfolio value"
-    let replacementQuestion = "Rank portfolio value across funds"
-    let resultFingerprint = "context-sensitive-result"
-    let dataIdentity = "context-sensitive-message"
-    let originalContext = CREGChartAdapter.analysisContext(
-      question: originalQuestion, sql: sql)
-    let replacementContext = CREGChartAdapter.analysisContext(
-      question: replacementQuestion, sql: sql)
-
-    #expect(originalContext.goal == replacementContext.goal)
-    #expect(originalContext.title != replacementContext.title)
-
-    let original = try await client.analyze(
-      result: result,
-      sql: sql,
-      question: originalQuestion,
-      resultFingerprint: resultFingerprint,
-      dataIdentity: dataIdentity)
-    #expect(
-      original.primaryChart?.recommendation.specification.title
-        == originalQuestion)
-    #expect(
-      client.cachedAnalysis(
-        resultFingerprint: resultFingerprint,
-        sql: sql,
-        question: originalQuestion,
-        dataIdentity: dataIdentity) != nil)
-    #expect(
-      client.cachedAnalysis(
-        resultFingerprint: resultFingerprint,
-        sql: sql,
-        question: replacementQuestion,
-        dataIdentity: dataIdentity) == nil)
-
-    let replacementRequest = ResultChartLoader.Request(
-      result: result,
-      sql: sql,
-      question: replacementQuestion,
-      resultFingerprint: resultFingerprint,
-      dataIdentity: dataIdentity)
-    let loader = ResultChartLoader(
-      client: client,
-      diagnostics: .noop,
-      warmStart: replacementRequest)
-    #expect(loader.analysis(for: replacementRequest.key) == nil)
-
-    _ = await loader.analyze(
-      replacementRequest,
-      preferredSpecificationID: nil)
-
-    #expect(
-      loader.analysis(for: replacementRequest.key)?.primaryChart?.recommendation
-        .specification.title
-        == replacementQuestion)
-    #expect(
-      client.cachedAnalysis(
-        resultFingerprint: resultFingerprint,
-        sql: sql,
-        question: originalQuestion,
-        dataIdentity: dataIdentity) == nil)
-    #expect(
-      client.cachedAnalysis(
-        resultFingerprint: resultFingerprint,
-        sql: sql,
-        question: replacementQuestion,
-        dataIdentity: dataIdentity) != nil)
-  }
-
-  @Test func analyzersAreIsolatedAndTestsNeedNoGlobalSerialization() async throws {
-    let first = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .standard))
-    let second = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .standard))
-    _ = try await first.analyze(
-      result: PreviewFixtures.fundValueResult,
-      sql: StarterQueryID.portfolioValueByFundV1.sql,
-      question: nil)
-
-    let firstStatistics = await first.cacheStatistics
-    let secondStatistics = await second.cacheStatistics
-    #expect(firstStatistics.analyses.entries == 1)
-    #expect(secondStatistics.analyses.entries == 0)
-  }
-
-  /// Two result revisions can resolve to the same chart specification. The
-  /// preparation task must still restart for the replacement analysis, while
-  /// selecting an alternative or explicitly retrying re-keys the same analysis.
-  @MainActor
-  @Test func preparationTaskIdentityIncludesAnalysisRecommendationAndRetry() async throws {
-    let client = CREGChartAnalysisClient(
-      analyzer: AutoChartAnalyzer(configuration: .uncached),
-      snapshots: .uncached)
-    let firstResult = PreviewFixtures.fundValueResult
-    let secondResult = QueryResult(
-      columns: firstResult.columns,
-      rows: [
-        [.text("Meridian Core Fund I"), .real(430_000_000)],
-        [.text("Meridian Value-Add II"), .real(275_000_000)],
-        [.text("Harborline Opportunistic"), .real(160_000_000)],
-        [.text("Coastal Core-Plus III"), .real(105_000_000)],
-      ])
-    let sql = StarterQueryID.portfolioValueByFundV1.sql
-    let question = StarterQueryID.portfolioValueByFundV1.question
-    let loader = ResultChartLoader(
-      client: client,
-      diagnostics: .noop,
-      warmStart: nil,
-      prepareChart: { _, _ in throw PreferenceSaveTestError.failed })
-
-    let firstRequest = chartTestRequest(
-      result: firstResult,
-      sql: sql,
-      question: question,
-      resultFingerprint: "first-revision",
-      dataIdentity: "message-1")
-    _ = await loader.analyze(firstRequest, preferredSpecificationID: nil)
-    let firstRecommendationID = try #require(
-      loader.analysis(for: firstRequest.key)?.primaryChart?.recommendation.id)
-    let firstKey = loader.preparationTaskKey(
-      recommendationID: firstRecommendationID)
-
-    let secondRequest = chartTestRequest(
-      result: secondResult,
-      sql: sql,
-      question: question,
-      resultFingerprint: "second-revision",
-      dataIdentity: "message-1")
-    _ = await loader.analyze(secondRequest, preferredSpecificationID: nil)
-    let secondRecommendationID = try #require(
-      loader.analysis(for: secondRequest.key)?.primaryChart?.recommendation.id)
-    try #require(firstRecommendationID == secondRecommendationID)
-    let replacementKey = loader.preparationTaskKey(
-      recommendationID: secondRecommendationID)
-    let recommendations = chartTestRecommendations(
-      from: try #require(loader.analysis(for: secondRequest.key)))
-    let alternativeID = try #require(recommendations.dropFirst().first?.id)
-    let alternativeKey = loader.preparationTaskKey(
-      recommendationID: alternativeID)
-    #expect(
-      loader.selectLoadedRecommendation(
-        alternativeID,
-        for: secondRequest.key))
-    await loader.prepareResolvedRecommendation(for: secondRequest.key)
-    #expect(
-      loader.failure(
-        for: secondRequest.key,
-        recommendationID: alternativeID)?.retryability == .retryable)
-    #expect(
-      loader.retryFailure(
-        for: secondRequest.key,
-        recommendationID: alternativeID))
-    let retryKey = loader.preparationTaskKey(
-      recommendationID: alternativeID)
-
-    #expect(firstKey != replacementKey)
-    #expect(replacementKey != alternativeKey)
-    #expect(alternativeKey != retryKey)
+    throw AutoChartFailure(
+      stage: .presentationPreparation,
+      kind: .transient,
+      isRetryable: true,
+      diagnosticID: "CREG.test.sessionTimeout",
+      message: "The chart session did not settle during the test.")
   }
 }
 
 @MainActor
 @Suite struct CREGSemanticSelectionTests {
-  @Test func viewerFiltersDirectlyWithIntegerSourceRowIDs() {
+  @Test func viewerPreservesAndFiltersIntegerSourceRowIDsThroughSearchAndSort() {
     let result = QueryResult(
       columns: ["fund", "value"],
       rows: [
@@ -957,37 +409,99 @@ import Testing
         [.text("B"), .real(20)],
         [.text("C"), .real(30)],
       ])
-    let selection = AutoChartSelection<Int>(
-      sourceRowIDs: [0, 2],
-      family: .bar,
-      specificationID: AutoChartSpecification.bar(
-        category: "fund", measure: "value"
-      ).id,
-      markID: "selected")
-    let view = ResultViewerView(
+    let rows = ResultViewerLogic.identifiedDisplayRows(
       result: result,
-      runtimeMode: .evaluated,
-      textSize: .constant(.standard),
-      initialChartSelection: selection)
+      sourceRowIDs: [0, 2],
+      sort: .init(column: 1, ascending: false),
+      searchText: "a c")
 
-    #expect(view.filteredResult.rows == [result.rows[0], result.rows[2]])
+    #expect(rows.isEmpty)
+
+    let sorted = ResultViewerLogic.identifiedDisplayRows(
+      result: result,
+      sourceRowIDs: [0, 2],
+      sort: .init(column: 1, ascending: false),
+      searchText: "")
+    #expect(sorted.map(\.sourceRowID) == [2, 0])
+    #expect(sorted.map(\.values) == [result.rows[2], result.rows[0]])
+  }
+
+  @Test func tableRowsDeriveHighlightsAndChartSelectionsUnionBeforeSearchAndSort()
+    async throws
+  {
+    let result = QueryResult(
+      columns: ["property_type", "market_value"],
+      rows: [
+        [.text("Office"), .real(10)],
+        [.text("Retail"), .real(20)],
+        [.text("Industrial"), .real(30)],
+      ])
+    let input = try CREGChartAdapter.analysisInput(
+      result: result,
+      sql: "SELECT property_type, market_value FROM properties",
+      question: "Compare market value by property type")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      input.request, preparation: .primary)
+    let chart = try #require(analysis.primaryChart)
+
+    let tableHighlight = chart.selections(for: [1], analysisID: analysis.id)
+    #expect(tableHighlight.belongs(to: analysis))
+    #expect(tableHighlight.belongs(to: chart))
+    #expect(tableHighlight.unionedSourceRows.contains(1))
+
+    let chartSelection = chart.selections(for: [0, 2], analysisID: analysis.id)
+    let filtered = ResultViewerLogic.identifiedDisplayRows(
+      result: result,
+      sourceRowIDs: chartSelection.unionedSourceRows,
+      sort: .init(column: 1, ascending: false),
+      searchText: "")
+    #expect(filtered.map(\.sourceRowID) == [2, 0])
+  }
+
+  @Test func chartFailureDiagnosticsRetainPackageEpisodeProvenance() throws {
+    let recorder = DiagnosticEventRecorder()
+    let failure = AutoChartFailure(
+      stage: .chartPreparation,
+      kind: .invalidSpecification,
+      isRetryable: false,
+      diagnosticID: "ATC.chartPreparation.invalidSpecification",
+      message: "The chart specification is invalid.")
+    recordChartFailure(failure, diagnostics: recorder.client)
+
+    let event = try #require(recorder.events.first)
+    #expect(event.code == failure.diagnosticID)
+    #expect(event.context["stage"] == failure.stage.rawValue)
+    #expect(event.context["kind"] == failure.kind.rawValue)
+    #expect(
+      event.context["episode_id"]
+        == failure.episodeID.uuidString.lowercased()
+          .replacingOccurrences(of: "-", with: ""))
   }
 }
 
 @MainActor
 @Suite struct ResultPresentationPersistenceTests {
-  @Test func legacyLengthPrefixedRecommendationIDDecodesAndReencodesTyped() throws {
-    let legacy = Data(
-      #"{"mode":"chart","specificationID":"1:2|3:bar"}"#.utf8)
-    let preference = try JSONDecoder().decode(
-      ResultPresentationPreference.self, from: legacy)
+  @Test func legacyPreferenceResetsToAutomaticAndReencodesAsV3() throws {
+    let message = chartTestAnswerMessage()
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(message))
+        as? [String: Any])
+    object["resultPresentation"] = [
+      "mode": "chart", "specificationID": "1:2|3:bar",
+    ]
 
-    #expect(preference.specificationID?.policyVersion == 2)
-    #expect(preference.specificationID?.specificationID.rawValue == "3:bar")
-    let encoded = try JSONEncoder().encode(preference)
-    let object = try #require(
-      JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-    #expect(object["specificationID"] is [String: Any])
+    let decoded = try JSONDecoder().decode(
+      ChatMessage.self,
+      from: JSONSerialization.data(withJSONObject: object))
+    #expect(decoded.resultPresentation == .automatic)
+
+    let reencoded = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded))
+        as? [String: Any])
+    let preference = try #require(
+      reencoded["resultPresentation"] as? [String: Any])
+    #expect(preference["mode"] == nil)
+    #expect(preference["automatic"] != nil)
   }
 
   @Test func legacyMessageWithoutPreferenceDecodesAsAutomatic() throws {
@@ -999,7 +513,7 @@ import Testing
     let legacyData = try JSONSerialization.data(withJSONObject: object)
 
     let decoded = try JSONDecoder().decode(ChatMessage.self, from: legacyData)
-    #expect(decoded.resultPresentation == nil)
+    #expect(decoded.resultPresentation == .automatic)
   }
 
   @Test func preferenceRoundTripsAndSurvivesPreparedFinalization() throws {
