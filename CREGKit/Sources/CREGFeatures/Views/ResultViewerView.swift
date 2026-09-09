@@ -16,11 +16,11 @@ struct ResultViewerView: View {
   let preference: ResultPresentationPreference?
   let persistPreference: (ResultPresentationPreference) -> Void
   let migratePreference: ResultPresentationMigrationHandler
-  let chartRequest: AutoChartRequest<Int>
+  let chartInputIdentity: CREGChartInputIdentity
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Dependency(\.diagnostics) private var diagnostics
   @Binding var textSize: ResultTableTextSize
-  @State var session: AutoChartSession<Int>
+  @StateObject private var chartOwner: CREGChartSessionOwner
   @State private var initialChartSourceRows: Set<Int>?
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
@@ -132,23 +132,32 @@ struct ResultViewerView: View {
     self._selectedCell = State(initialValue: initialSelection)
     self._initialChartSourceRows = State(
       initialValue: initialChartSelection?.sourceRowIDs)
-    let input = try! CREGChartAdapter.analysisInput(
-      result: result,
-      sql: sql,
-      question: question,
+    let inputIdentity = CREGChartInputIdentity(
       resultFingerprint: fingerprint,
-      dataIdentity: dataIdentity)
-    self.chartRequest = input.request
-    self._session = State(initialValue: _chartAnalysis.wrappedValue.makeSession())
+      dataIdentity: dataIdentity,
+      sql: sql,
+      question: question)
+    let chartAnalysis = _chartAnalysis.wrappedValue
+    self.chartInputIdentity = inputIdentity
+    self._chartOwner = StateObject(
+      wrappedValue: CREGChartSessionOwner(
+        client: chartAnalysis,
+        inputIdentity: inputIdentity,
+        result: result))
+  }
+
+  var session: AutoChartSession<Int> {
+    chartOwner.session
   }
 
   var analysis: AutoChartAnalysis<Int>? {
-    switch session.state {
+    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
+    return switch session.state {
     case .preparing(let analysis, _), .ready(let analysis, _),
       .fallback(let analysis, _):
       analysis
     case .idle, .analyzing, .failed:
-      nil
+      chartOwner.request.flatMap { chartAnalysis.cachedAnalysis(for: $0) }
     }
   }
 
@@ -163,12 +172,16 @@ struct ResultViewerView: View {
   }
 
   var selectedRecommendation: AutoChartRecommendation? {
-    analysis?.preferenceResolution?.recommendation
+    guard let analysis else { return nil }
+    return analysis.resolve(
+      (preference ?? .automatic).packagePreference
+    ).recommendation
   }
 
   var selectedChartFailure: AutoChartFailure? {
-    guard case .failed(let failure) = session.state else { return nil }
-    return failure
+    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
+    if case .failed(let failure) = session.state { return failure }
+    return chartOwner.requestFailure
   }
 
   var selectedPreparationFailed: Bool {
@@ -187,7 +200,8 @@ struct ResultViewerView: View {
   }
 
   var selectedSourceRows: Set<Int>? {
-    session.selection.isEmpty ? nil : session.selection.unionedSourceRows
+    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
+    return session.selection.isEmpty ? nil : session.selection.unionedSourceRows
   }
 
   var filteredResult: QueryResult {
@@ -201,7 +215,16 @@ struct ResultViewerView: View {
       elapsedMicroseconds: result.elapsedMicroseconds)
   }
 
-  var chartSelection: AutoChartSelection<Int>? { session.selection.first }
+  var chartSelection: AutoChartSelection<Int>? {
+    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
+    return session.selection.first
+  }
+
+  var migrationSuggestion: ResultPresentationMigrationSuggestion? {
+    resultPresentationMigrationSuggestion(
+      analysis: analysis,
+      preference: preference ?? .automatic)
+  }
 
   func clearChartSelection() { session.selection.removeAll() }
 
@@ -211,7 +234,6 @@ struct ResultViewerView: View {
       clearChartSelection()
       return
     }
-    initialChartSourceRows = [sourceRowID]
     guard let analysis, case .ready(_, let presented?) = session.state else {
       clearChartSelection()
       return
@@ -256,6 +278,7 @@ struct ResultViewerView: View {
   }
 
   var body: some View {
+    @Bindable var session = chartOwner.session
     NavigationStack {
       VStack(spacing: 0) {
         if !chartRecommendations.isEmpty || selectedChartFailure?.isRetryable == true {
@@ -345,29 +368,42 @@ struct ResultViewerView: View {
         }
       }
     }
-    .task(id: chartRequest.id) {
-      session.load(
-        chartRequest,
-        preference: preference ?? .automatic,
-        preparation: .preferredOrPrimary,
-        presentationContext: .init(identity: "creg-v3"),
-        formatters: CREGChartAdapter.formatters,
-        textResolver: CREGChartAdapter.textResolver)
+    .task(id: chartInputIdentity) {
+      if chartOwner.inputIdentity != chartInputIdentity {
+        initialChartSourceRows = nil
+        selectedCell = nil
+      }
+      chartOwner.load(
+        result: result,
+        inputIdentity: chartInputIdentity,
+        preference: (preference ?? .automatic).packagePreference)
     }
     .onChange(of: preference) { _, updated in
-      session.setPreference(updated ?? .automatic)
+      let packagePreference = (updated ?? .automatic).packagePreference
+      if session.preference != packagePreference {
+        session.setPreference(packagePreference)
+      }
     }
-    .onChange(of: searchText) { _, _ in selectedCell = nil }
-    .onChange(of: sort) { _, _ in selectedCell = nil }
-    .onChange(of: chartSelection) { _, _ in selectedCell = nil }
-    .onChange(of: selectedChartFailure?.episodeID) { _, episodeID in
-      guard let failure = selectedChartFailure, episodeID != nil else { return }
-      recordChartFailure(failure, diagnostics: diagnostics)
+    .onChange(of: chartSelection) { _, _ in
+      guard let selectedCell, let selectedSourceRows,
+        !selectedSourceRows.contains(selectedCell.row)
+      else { return }
+      self.selectedCell = nil
     }
-    .onChange(of: analysis?.preferenceResolution?.replacementPreference) {
-      _, replacement in
-      guard let replacement else { return }
-      _ = migratePreference(preference ?? .automatic, replacement)
+    .task(id: selectedChartFailure?.episodeID) {
+      guard let failure = selectedChartFailure else { return }
+      recordChartFailure(
+        failure,
+        chartAnalysis: chartAnalysis,
+        diagnostics: diagnostics)
+    }
+    .task(id: migrationSuggestion) {
+      guard let migrationSuggestion, let analysis else { return }
+      applyResultPresentationMigration(
+        migrationSuggestion,
+        analysis: analysis,
+        session: session,
+        migratePreference: migratePreference)
     }
     .onChange(of: presentedPreparedChartID) { _, _ in
       guard let rows = initialChartSourceRows,
@@ -381,17 +417,20 @@ struct ResultViewerView: View {
   }
 
   private var presentedPreparedChartID: AutoChartPreparedChartID? {
+    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
     guard case .ready(_, let presented?) = session.state else { return nil }
     return presented.preparedChart.id
   }
 
   private func selectMode(_ mode: ResultPresentationMode) {
-    let updated: AutoChartPreference = mode == .table ? .table : .chart(.recommended)
+    let updated = (preference ?? .automatic).selectingMode(mode)
     applyUserPreference(updated)
   }
 
   func applyUserPreference(_ updated: ResultPresentationPreference) {
-    session.setPreference(updated)
+    if session.preference != updated.packagePreference {
+      session.setPreference(updated.packagePreference)
+    }
     persistPreference(updated)
   }
 }

@@ -18,10 +18,10 @@ struct ResultPreviewView: View {
   let open: () -> Void
 
   static let previewRowLimit = 4
-  let chartRequest: AutoChartRequest<Int>
+  let chartInputIdentity: CREGChartInputIdentity
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Dependency(\.diagnostics) private var diagnostics
-  @State private var session: AutoChartSession<Int>
+  @StateObject private var chartOwner: CREGChartSessionOwner
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
   @State private var pinchHapticTrigger = 0
@@ -48,37 +48,63 @@ struct ResultPreviewView: View {
     self.setPreference = setPreference
     self.migratePreference = migratePreference
     self.open = open
-    let input = try! CREGChartAdapter.analysisInput(
-      result: result,
-      sql: sql,
-      question: question,
+    let inputIdentity = CREGChartInputIdentity(
       resultFingerprint: resultFingerprint,
-      dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
-    self.chartRequest = input.request
-    self._session = State(initialValue: _chartAnalysis.wrappedValue.makeSession())
+      dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID),
+      sql: sql,
+      question: question)
+    let chartAnalysis = _chartAnalysis.wrappedValue
+    self.chartInputIdentity = inputIdentity
+    self._chartOwner = StateObject(
+      wrappedValue: CREGChartSessionOwner(
+        client: chartAnalysis,
+        inputIdentity: inputIdentity,
+        result: result))
+  }
+
+  private var session: AutoChartSession<Int> {
+    chartOwner.session
   }
 
   private var analysis: AutoChartAnalysis<Int>? {
-    switch session.state {
+    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
+    return switch session.state {
     case .preparing(let analysis, _), .ready(let analysis, _),
       .fallback(let analysis, _):
       analysis
     case .idle, .analyzing, .failed:
-      nil
+      chartOwner.request.flatMap { chartAnalysis.cachedAnalysis(for: $0) }
     }
   }
 
+  private var preferenceResolution: AutoChartPreferenceResolution? {
+    guard let analysis else { return nil }
+    return analysis.resolve((preference ?? .automatic).packagePreference)
+  }
+
   private var selectedRecommendation: AutoChartRecommendation? {
-    analysis?.preferenceResolution?.recommendation
+    preferenceResolution?.recommendation
   }
 
   private var failure: AutoChartFailure? {
-    guard case .failed(let failure) = session.state else { return nil }
-    return failure
+    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
+    if case .failed(let failure) = session.state { return failure }
+    return chartOwner.requestFailure
   }
 
   private var requestedMode: ResultPresentationMode {
     (preference ?? .automatic).mode
+  }
+
+  private var hasChartOptions: Bool {
+    guard let analysis, case .charts(let catalog) = analysis.outcome else { return false }
+    return !catalog.cataloged.isEmpty
+  }
+
+  private var migrationSuggestion: ResultPresentationMigrationSuggestion? {
+    resultPresentationMigrationSuggestion(
+      analysis: analysis,
+      preference: preference ?? .automatic)
   }
 
   private var renderedScale: CGFloat {
@@ -95,7 +121,7 @@ struct ResultPreviewView: View {
       let selected = selectedRecommendation
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
-        if selected != nil || failure?.isRetryable == true {
+        if hasChartOptions || failure?.isRetryable == true {
           Picker(
             "Result preview",
             selection: Binding(
@@ -156,26 +182,32 @@ struct ResultPreviewView: View {
           "Result \(mode == .chart ? "chart" : "table"), \(ResultViewerLogic.rowCountLabel(for: result))")
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
-      .task(id: chartRequest.id) {
-        session.load(
-          chartRequest,
-          preference: preference ?? .automatic,
-          preparation: .preferredOrPrimary,
-          presentationContext: .init(identity: "creg-v3"),
-          formatters: CREGChartAdapter.formatters,
-          textResolver: CREGChartAdapter.textResolver)
+      .task(id: chartInputIdentity) {
+        chartOwner.load(
+          result: result,
+          inputIdentity: chartInputIdentity,
+          preference: (preference ?? .automatic).packagePreference)
       }
       .onChange(of: preference) { _, updated in
-        session.setPreference(updated ?? .automatic)
+        let packagePreference = (updated ?? .automatic).packagePreference
+        if session.preference != packagePreference {
+          session.setPreference(packagePreference)
+        }
       }
-      .onChange(of: failure?.episodeID) { _, episodeID in
-        guard let failure, episodeID != nil else { return }
-        recordChartFailure(failure, diagnostics: diagnostics)
+      .task(id: failure?.episodeID) {
+        guard let failure else { return }
+        recordChartFailure(
+          failure,
+          chartAnalysis: chartAnalysis,
+          diagnostics: diagnostics)
       }
-      .onChange(of: analysis?.preferenceResolution?.replacementPreference) {
-        _, replacement in
-        guard let replacement else { return }
-        _ = migratePreference(preference ?? .automatic, replacement)
+      .task(id: migrationSuggestion) {
+        guard let migrationSuggestion, let analysis else { return }
+        applyResultPresentationMigration(
+          migrationSuggestion,
+          analysis: analysis,
+          session: session,
+          migratePreference: migratePreference)
       }
     }
   }
@@ -206,8 +238,10 @@ struct ResultPreviewView: View {
   }
 
   private func selectMode(_ mode: ResultPresentationMode) {
-    let updated: AutoChartPreference = mode == .table ? .table : .chart(.recommended)
-    session.setPreference(updated)
+    let updated = (preference ?? .automatic).selectingMode(mode)
+    if session.preference != updated.packagePreference {
+      session.setPreference(updated.packagePreference)
+    }
     setPreference(updated)
   }
 

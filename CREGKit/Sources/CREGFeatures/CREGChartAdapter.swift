@@ -2,12 +2,6 @@ import AutoTableCharts
 import CREGEngine
 import Foundation
 
-struct CREGChartAnalysisInput: Sendable {
-  var dataset: AutoChartDataset<Int>
-  var context: AutoChartContext
-  var request: AutoChartRequest<Int>
-}
-
 enum CREGChartAdapter {
   /// The one chart-data identity for a transcript message, shared by the
   /// inline preview and the full-screen viewer so analyzer caching keys off
@@ -16,13 +10,32 @@ enum CREGChartAdapter {
     "CREG.Result.v3:\(messageID.uuidString.lowercased())"
   }
 
-  static func analysisInput(
+  static func analysisRequest(
     result: QueryResult,
     sql: String,
     question: String?,
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
-  ) throws -> CREGChartAnalysisInput {
+  ) throws -> AutoChartRequest<Int> {
+    let dataset = try analysisDataset(
+      result: result,
+      sql: sql,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: dataIdentity)
+    return try AutoChartRequest(
+      table: dataset,
+      context: analysisContext(question: question, sql: sql))
+  }
+
+  /// Exposed internally so adapter tests can verify CREG's row normalization,
+  /// semantic hints, and stable data identity without retaining a duplicate
+  /// dataset alongside every production request.
+  static func analysisDataset(
+    result: QueryResult,
+    sql: String,
+    resultFingerprint: String? = nil,
+    dataIdentity: String? = nil
+  ) throws -> AutoChartDataset<Int> {
     let projections = alignedProjections(
       sql, columnCount: result.columns.count)
     let columns = result.columns.enumerated().map { index, name in
@@ -58,11 +71,7 @@ enum CREGChartAdapter {
       key: .trusted(
         identity: dataIdentity ?? "CREG.Result.v3:\(fingerprint)",
         revision: dataKeyRevision(resultFingerprint: fingerprint, sql: sql)))
-    let context = analysisContext(question: question, sql: sql)
-    return CREGChartAnalysisInput(
-      dataset: dataset,
-      context: context,
-      request: try AutoChartRequest(table: dataset, context: context))
+    return dataset
   }
 
   static func analysisContext(

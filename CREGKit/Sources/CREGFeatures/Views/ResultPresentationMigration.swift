@@ -1,4 +1,5 @@
 import AutoTableCharts
+import AutoTableChartsUI
 import ComposableArchitecture
 import Foundation
 
@@ -13,6 +14,61 @@ enum ResultPresentationMigrationOutcome: Equatable {
 typealias ResultPresentationMigrationHandler = (
   ResultPresentationPreference, ResultPresentationPreference
 ) -> ResultPresentationMigrationOutcome
+
+struct ResultPresentationMigrationSuggestion: Hashable {
+  var analysisID: AutoChartAnalysisID
+  var previous: ResultPresentationPreference
+  var updated: ResultPresentationPreference
+}
+
+func resultPresentationMigrationSuggestion(
+  analysis: AutoChartAnalysis<Int>?,
+  preference: ResultPresentationPreference
+) -> ResultPresentationMigrationSuggestion? {
+  guard let analysis else { return nil }
+  let resolution = analysis.resolve(preference.packagePreference)
+  guard let replacement = resolution.replacementPreference else { return nil }
+  return ResultPresentationMigrationSuggestion(
+    analysisID: analysis.id,
+    previous: preference,
+    updated: preference.applyingPackageReplacement(replacement))
+}
+
+/// Reconciles compare-and-set rejection immediately. A retained authoritative
+/// preference can resolve to the same package replacement, so observing only
+/// `replacementPreference` would never schedule another attempt.
+@MainActor
+func applyResultPresentationMigration(
+  _ suggestion: ResultPresentationMigrationSuggestion,
+  analysis: AutoChartAnalysis<Int>,
+  session: AutoChartSession<Int>,
+  migratePreference: ResultPresentationMigrationHandler
+) {
+  var previous = suggestion.previous
+  var updated = suggestion.updated
+  var visited: Set<ResultPresentationPreference> = []
+
+  while visited.insert(previous).inserted {
+    switch migratePreference(previous, updated) {
+    case .migrated(let stored):
+      if session.preference != stored.packagePreference {
+        session.setPreference(stored.packagePreference)
+      }
+      return
+    case .retained(let authoritative):
+      guard authoritative != previous else { return }
+      if session.preference != authoritative.packagePreference {
+        session.setPreference(authoritative.packagePreference)
+      }
+      let resolution = analysis.resolve(authoritative.packagePreference)
+      guard let replacement = resolution.replacementPreference else { return }
+      previous = authoritative
+      updated = authoritative.applyingPackageReplacement(replacement)
+    case .messageMissing:
+      return
+    }
+  }
+}
 
 /// Legacy helper retained only for pure table-filter tests; live views use the
 /// package selection set directly.

@@ -2,34 +2,135 @@ import AutoTableCharts
 import CREGEngine
 import Foundation
 
-public typealias ResultPresentationPreference = AutoChartPreference
-
 public enum ResultPresentationMode: String, Equatable, Hashable, Sendable, Codable {
   case chart
   case table
 }
 
-extension AutoChartPreference {
+/// CREG's persisted presentation choice. Unlike the package preference, this
+/// keeps the last explicit chart type while Table is active so a Table → Chart
+/// round trip restores the user's choice. It also preserves the distinction
+/// between automatic presentation and an explicit recommended-chart choice.
+public struct ResultPresentationPreference: Equatable, Hashable, Sendable, Codable {
+  private enum Selection: String, Equatable, Hashable, Sendable {
+    case automatic
+    case chart
+    case table
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case mode
+    case specificationID
+    case automatic
+  }
+
+  private var selection: Selection
+  public var specificationID: AutoChartRecommendationID?
+
+  private init(
+    selection: Selection,
+    specificationID: AutoChartRecommendationID?
+  ) {
+    self.selection = selection
+    self.specificationID = specificationID
+  }
+
+  public static let automatic = Self(
+    selection: .automatic,
+    specificationID: nil)
+  public static let table = Self(mode: .table)
+
+  public static func chart(
+    _ chart: AutoChartPreference.Chart
+  ) -> Self {
+    switch chart {
+    case .recommended:
+      Self(mode: .chart)
+    case .specific(let id):
+      Self(mode: .chart, specificationID: id)
+    }
+  }
+
   public init(
     mode: ResultPresentationMode,
     specificationID: AutoChartRecommendationID? = nil
   ) {
-    switch mode {
-    case .table:
-      self = .table
-    case .chart:
-      self = specificationID.map { .chart(.specific($0)) } ?? .chart(.recommended)
-    }
+    self.selection = mode == .table ? .table : .chart
+    self.specificationID = specificationID
   }
 
   public var mode: ResultPresentationMode {
-    if case .table = self { return .table }
-    return .chart
+    selection == .table ? .table : .chart
   }
 
-  public var specificationID: AutoChartRecommendationID? {
-    guard case .chart(.specific(let id)) = self else { return nil }
-    return id
+  var packagePreference: AutoChartPreference {
+    switch selection {
+    case .automatic:
+      .automatic
+    case .table:
+      .table
+    case .chart:
+      specificationID.map { .chart(.specific($0)) } ?? .chart(.recommended)
+    }
+  }
+
+  func selectingMode(_ mode: ResultPresentationMode) -> Self {
+    Self(mode: mode, specificationID: specificationID)
+  }
+
+  func selectingChart(_ id: AutoChartRecommendationID) -> Self {
+    Self(mode: .chart, specificationID: id)
+  }
+
+  func applyingPackageReplacement(
+    _ replacement: AutoChartPreference
+  ) -> Self {
+    switch replacement {
+    case .automatic:
+      .automatic
+    case .table:
+      selectingMode(.table)
+    case .chart(let chart):
+      .chart(chart)
+    }
+  }
+
+  public init(from decoder: Decoder) throws {
+    if let values = try? decoder.container(keyedBy: CodingKeys.self),
+      values.contains(.mode)
+    {
+      let mode = try values.decode(ResultPresentationMode.self, forKey: .mode)
+      let specificationID = try values.decodeIfPresent(
+        AutoChartRecommendationID.self,
+        forKey: .specificationID)
+      if try values.decodeIfPresent(Bool.self, forKey: .automatic) == true {
+        self = .automatic
+      } else {
+        self.init(mode: mode, specificationID: specificationID)
+      }
+      return
+    }
+
+    // The first v3 integration briefly persisted AutoChartPreference's
+    // synthesized enum representation. Accept it as an input format even
+    // though CREG now writes its stable host-owned representation.
+    switch try AutoChartPreference(from: decoder) {
+    case .automatic:
+      self = .automatic
+    case .table:
+      self = .table
+    case .chart(let chart):
+      self = .chart(chart)
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(mode, forKey: .mode)
+    try values.encodeIfPresent(specificationID, forKey: .specificationID)
+    if selection == .automatic {
+      try values.encode(true, forKey: .automatic)
+    }
   }
 }
 
@@ -68,13 +169,14 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
   public var traceSteps: [String]
   public var createdAt: Date
   public var devInfo: TurnTelemetry?
-  /// Per-result v3 display choice. Missing and legacy payloads reset to automatic.
-  public var resultPresentation: AutoChartPreference
+  /// Per-result display choice. Missing payloads use automatic presentation;
+  /// legacy and current explicit choices retain their mode and chart type.
+  public var resultPresentation: ResultPresentationPreference
 
   public init(
     id: UUID, role: Role, body: Body, traceSteps: [String] = [],
     createdAt: Date, devInfo: TurnTelemetry? = nil,
-    resultPresentation: AutoChartPreference? = nil
+    resultPresentation: ResultPresentationPreference? = nil
   ) {
     self.id = id
     self.role = role
@@ -113,7 +215,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     devInfo = try? values.decodeIfPresent(
       TurnTelemetry.self, forKey: .devInfo)
     resultPresentation =
-      (try? values.decode(AutoChartPreference.self, forKey: .resultPresentation))
+      (try? values.decode(ResultPresentationPreference.self, forKey: .resultPresentation))
       ?? .automatic
   }
 

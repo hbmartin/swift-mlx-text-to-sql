@@ -283,6 +283,7 @@ extension ResultViewerView {
   var clearSelectionButton: some View {
     Button {
       selectedCell = nil
+      selectTableRow(nil)
     } label: {
       Image(systemName: "xmark")
         .cregIconButtonTarget()
