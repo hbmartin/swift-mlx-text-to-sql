@@ -216,28 +216,6 @@ public enum ResultViewerLogic {
       specificationID: specificationID)
   }
 
-  /// Migrates a stored chart ID when analysis resolves it to a current
-  /// recommendation. A policy bump invalidates the obsolete explicit pin but
-  /// does not misrepresent the newly defaulted chart as a user selection.
-  /// An automatic nil preference remains automatic.
-  static func migratedPreference(
-    _ preference: ResultPresentationPreference?,
-    resolvedSpecificationID: AutoChartRecommendationID
-  ) -> ResultPresentationPreference? {
-    guard let preference, let storedID = preference.specificationID else {
-      return nil
-    }
-    if storedID.policyVersion != resolvedSpecificationID.policyVersion {
-      return ResultPresentationPreference(
-        mode: preference.mode,
-        specificationID: nil)
-    }
-    guard storedID != resolvedSpecificationID else { return nil }
-    return ResultPresentationPreference(
-      mode: preference.mode,
-      specificationID: resolvedSpecificationID)
-  }
-
   /// Pinch arming uses hysteresis so tiny reversals around the activation
   /// threshold do not flicker the visual or haptic feedback.
   public static func pinchIsArmed(

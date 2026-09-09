@@ -38,7 +38,7 @@ import Testing
         in: "SUM(value) OVER (PARTITION BY fund_id)") == nil)
   }
 
-  @Test func analysisInputUsesOffsetIDsTypedSemanticsAndStableDataKey() throws {
+  @Test func analysisDatasetUsesOffsetIDsTypedSemanticsAndStableDataKey() throws {
     let result = QueryResult(
       columns: ["loan_id", "current_balance", "maturity_date"],
       rows: [
@@ -47,29 +47,31 @@ import Testing
       ])
     let fingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
     let sql = "SELECT loan_id, SUM(current_balance), MAX(maturity_date) FROM loans"
-    let input = try CREGChartAdapter.analysisInput(
+    let dataset = try CREGChartAdapter.analysisDataset(
       result: result,
       sql: sql,
-      question: "What matures next?",
       resultFingerprint: fingerprint,
       dataIdentity: "conversation-result")
 
-    #expect(input.dataset.chartRows.map(\.chartRowID) == [0, 1])
-    #expect(input.dataset.chartColumns[0].hints.semanticType == .identifier)
+    #expect(dataset.chartRows.map(\.chartRowID) == [0, 1])
+    #expect(dataset.chartColumns[0].hints.semanticType == .identifier)
     #expect(
-      input.dataset.chartColumns[1].hints.measureSemantics
+      dataset.chartColumns[1].hints.measureSemantics
         == AutoChartMeasureSemantics(
           source: .aggregated(.sum), rollup: .additive,
           preferredTransform: .sum))
-    #expect(input.dataset.chartColumns[2].hints.semanticType == .temporal)
+    #expect(dataset.chartColumns[2].hints.semanticType == .temporal)
     #expect(
-      input.dataset.chartRows[0]
-        .chartValue(for: input.dataset.chartColumns[2].id).dateValue != nil)
-    #expect(input.dataset.chartDataKey.identity == "conversation-result")
+      dataset.chartRows[0]
+        .chartValue(for: dataset.chartColumns[2].id).dateValue != nil)
+    #expect(dataset.chartDataKey.identity == "conversation-result")
     #expect(
-      input.dataset.chartDataKey.trustedRevision
+      dataset.chartDataKey.trustedRevision
         == CREGChartAdapter.dataKeyRevision(resultFingerprint: fingerprint, sql: sql))
-    #expect(input.context.goal == .range)
+    #expect(
+      CREGChartAdapter.analysisContext(
+        question: "What matures next?",
+        sql: sql).goal == .range)
   }
 
   /// A ragged row (a prepared result decoded from history written by an
@@ -84,17 +86,16 @@ import Testing
         [.text("Value-Add"), .real(1_000), .text("spurious extra cell")],
       ])
 
-    let input = try CREGChartAdapter.analysisInput(
+    let dataset = try CREGChartAdapter.analysisDataset(
       result: result,
-      sql: "SELECT fund, current_market_value FROM properties",
-      question: nil)
+      sql: "SELECT fund, current_market_value FROM properties")
 
-    #expect(input.dataset.chartRows.count == 2)
-    let valueColumn = input.dataset.chartColumns[1].id
+    #expect(dataset.chartRows.count == 2)
+    let valueColumn = dataset.chartColumns[1].id
     #expect(
-      input.dataset.chartRows[0].chartValue(for: valueColumn) == .null)
+      dataset.chartRows[0].chartValue(for: valueColumn) == .null)
     #expect(
-      input.dataset.chartRows[1].chartValue(for: valueColumn)
+      dataset.chartRows[1].chartValue(for: valueColumn)
         == .double(1_000))
   }
 
@@ -144,7 +145,7 @@ import Testing
   @Test func dependencyUpgradePreservesSelectionFormattingAndAccessibilityContract()
     throws
   {
-    let input = try CREGChartAdapter.analysisInput(
+    let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["fund", "current_market_value"],
         rows: [
@@ -152,9 +153,8 @@ import Testing
           [.text("Core"), .null],
         ]),
       sql:
-        "SELECT fund, SUM(current_market_value) AS current_market_value FROM properties GROUP BY fund",
-      question: "What is each fund worth?")
-    let columns = input.dataset.chartColumns
+        "SELECT fund, SUM(current_market_value) AS current_market_value FROM properties GROUP BY fund")
+    let columns = dataset.chartColumns
     let fundID = try #require(columns.first?.id)
     let valueID = try #require(columns.dropFirst().first?.id)
 
@@ -220,7 +220,7 @@ import Testing
   }
 
   @Test func blobBearingColumnsAreNotForcedIntoCategorySemantics() throws {
-    let input = try CREGChartAdapter.analysisInput(
+    let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["is_segment", "value"],
         rows: [
@@ -228,15 +228,14 @@ import Testing
           [.blob(Data([0x01])), .real(20)],
           [.null, .real(30)],
         ]),
-      sql: "SELECT is_segment, value FROM observations",
-      question: "Show the distribution")
+      sql: "SELECT is_segment, value FROM observations")
 
-    #expect(input.dataset.chartColumns[0].hints.semanticType == nil)
-    #expect(input.dataset.chartColumns[0].hints.role == nil)
+    #expect(dataset.chartColumns[0].hints.semanticType == nil)
+    #expect(dataset.chartColumns[0].hints.role == nil)
   }
 
   @Test func blobDoesNotEraseOtherwiseValidTemporalSemantics() throws {
-    let input = try CREGChartAdapter.analysisInput(
+    let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["maturity_date"],
         rows: [
@@ -246,19 +245,18 @@ import Testing
           [.text("2027-04-01")],
           [.blob(Data([0x01]))],
         ]),
-      sql: "SELECT maturity_date FROM loans",
-      question: "Show maturities over time")
-    let column = input.dataset.chartColumns[0]
+      sql: "SELECT maturity_date FROM loans")
+    let column = dataset.chartColumns[0]
 
     #expect(column.hints.semanticType == .temporal)
-    #expect(input.dataset.chartRows[0].chartValue(for: column.id).dateValue != nil)
+    #expect(dataset.chartRows[0].chartValue(for: column.id).dateValue != nil)
     #expect(
-      input.dataset.chartRows[4].chartValue(for: column.id)
+      dataset.chartRows[4].chartValue(for: column.id)
         == .binary(Data([0x01])))
   }
 
   @Test func temporalSemanticsAllowTheExactValidityThreshold() throws {
-    let input = try CREGChartAdapter.analysisInput(
+    let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["maturity_date"],
         rows: [
@@ -268,14 +266,13 @@ import Testing
           [.text("2027-04-01")],
           [.text("not-a-date")],
         ]),
-      sql: "SELECT maturity_date FROM loans",
-      question: "Show maturities over time")
+      sql: "SELECT maturity_date FROM loans")
 
-    #expect(input.dataset.chartColumns[0].hints.semanticType == .temporal)
+    #expect(dataset.chartColumns[0].hints.semanticType == .temporal)
   }
 
   @Test func mostlyBlobColumnsDoNotAcquireTemporalSemantics() throws {
-    let input = try CREGChartAdapter.analysisInput(
+    let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["maturity_date"],
         rows: [
@@ -290,15 +287,14 @@ import Testing
           [.blob(Data([0x07]))],
           [.blob(Data([0x08]))],
         ]),
-      sql: "SELECT maturity_date FROM loans",
-      question: "Show maturities over time")
+      sql: "SELECT maturity_date FROM loans")
 
-    #expect(input.dataset.chartColumns[0].hints.semanticType == nil)
+    #expect(dataset.chartColumns[0].hints.semanticType == nil)
   }
 
   @Test func malformedScalarsStillPreventTemporalSemantics() throws {
     for malformed in [SQLValue.text("not-a-date"), .integer(20_270_101)] {
-      let input = try CREGChartAdapter.analysisInput(
+      let dataset = try CREGChartAdapter.analysisDataset(
         result: QueryResult(
           columns: ["maturity_date"],
           rows: [
@@ -307,10 +303,9 @@ import Testing
             [malformed],
             [.blob(Data([0x01]))],
           ]),
-        sql: "SELECT maturity_date FROM loans",
-        question: "Show maturities over time")
+        sql: "SELECT maturity_date FROM loans")
 
-      #expect(input.dataset.chartColumns[0].hints.semanticType == nil)
+      #expect(dataset.chartColumns[0].hints.semanticType == nil)
     }
   }
 
@@ -351,7 +346,7 @@ import Testing
   @Test func previewAndViewerSessionsWarmReuseOneCREGPackageCache() async throws {
     let cache = AutoChartCache(configuration: CREGChartAnalysisClient.configuration)
     let client = CREGChartAnalysisClient(cache: cache)
-    let input = try CREGChartAdapter.analysisInput(
+    let request = try CREGChartAdapter.analysisRequest(
       result: QueryResult(
         columns: ["property_type", "market_value"],
         rows: [
@@ -365,15 +360,15 @@ import Testing
 
     let preview = client.makeSession()
     let viewer = client.makeSession()
-    preview.load(input.request, preference: .automatic)
+    preview.load(request, preference: .automatic)
     let previewAnalysis = try await readyAnalysis(from: preview)
 
-    viewer.load(input.request, preference: .automatic)
+    viewer.load(request, preference: .automatic)
     let viewerAnalysis = try await readyAnalysis(from: viewer)
 
     #expect(preview !== viewer)
     #expect(previewAnalysis.id == viewerAnalysis.id)
-    #expect(client.cachedAnalysis(for: input.request)?.id == previewAnalysis.id)
+    #expect(client.cachedAnalysis(for: request)?.id == previewAnalysis.id)
   }
 
   @MainActor
@@ -436,12 +431,12 @@ import Testing
         [.text("Retail"), .real(20)],
         [.text("Industrial"), .real(30)],
       ])
-    let input = try CREGChartAdapter.analysisInput(
+    let request = try CREGChartAdapter.analysisRequest(
       result: result,
       sql: "SELECT property_type, market_value FROM properties",
       question: "Compare market value by property type")
     let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
-      input.request, preparation: .primary)
+      request, preparation: .primary)
     let chart = try #require(analysis.primaryChart)
 
     let tableHighlight = chart.selections(for: [1], analysisID: analysis.id)
@@ -460,15 +455,24 @@ import Testing
 
   @Test func chartFailureDiagnosticsRetainPackageEpisodeProvenance() throws {
     let recorder = DiagnosticEventRecorder()
+    let client = CREGChartAnalysisClient.testValue
     let failure = AutoChartFailure(
       stage: .chartPreparation,
       kind: .invalidSpecification,
       isRetryable: false,
       diagnosticID: "ATC.chartPreparation.invalidSpecification",
       message: "The chart specification is invalid.")
-    recordChartFailure(failure, diagnostics: recorder.client)
+    recordChartFailure(
+      failure,
+      chartAnalysis: client,
+      diagnostics: recorder.client)
+    recordChartFailure(
+      failure,
+      chartAnalysis: client,
+      diagnostics: recorder.client)
 
     let event = try #require(recorder.events.first)
+    #expect(recorder.events.count == 1)
     #expect(event.code == failure.diagnosticID)
     #expect(event.context["stage"] == failure.stage.rawValue)
     #expect(event.context["kind"] == failure.kind.rawValue)
@@ -481,7 +485,7 @@ import Testing
 
 @MainActor
 @Suite struct ResultPresentationPersistenceTests {
-  @Test func legacyPreferenceResetsToAutomaticAndReencodesAsV3() throws {
+  @Test func legacyPreferenceRetainsItsModeAndChartType() throws {
     let message = chartTestAnswerMessage()
     var object = try #require(
       JSONSerialization.jsonObject(with: JSONEncoder().encode(message))
@@ -493,15 +497,19 @@ import Testing
     let decoded = try JSONDecoder().decode(
       ChatMessage.self,
       from: JSONSerialization.data(withJSONObject: object))
-    #expect(decoded.resultPresentation == .automatic)
+    #expect(decoded.resultPresentation.mode == .chart)
+    #expect(decoded.resultPresentation.specificationID?.policyVersion == 2)
+    #expect(
+      decoded.resultPresentation.specificationID?.specificationID.rawValue
+        == "3:bar")
 
     let reencoded = try #require(
       JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded))
         as? [String: Any])
     let preference = try #require(
       reencoded["resultPresentation"] as? [String: Any])
-    #expect(preference["mode"] == nil)
-    #expect(preference["automatic"] != nil)
+    #expect(preference["mode"] as? String == "chart")
+    #expect(preference["specificationID"] != nil)
   }
 
   @Test func legacyMessageWithoutPreferenceDecodesAsAutomatic() throws {
@@ -514,6 +522,44 @@ import Testing
 
     let decoded = try JSONDecoder().decode(ChatMessage.self, from: legacyData)
     #expect(decoded.resultPresentation == .automatic)
+  }
+
+  @Test func legacyTablePreferenceDoesNotBecomeAutomaticChart() throws {
+    let message = chartTestAnswerMessage()
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(message))
+        as? [String: Any])
+    object["resultPresentation"] = ["mode": "table"]
+
+    let decoded = try JSONDecoder().decode(
+      ChatMessage.self,
+      from: JSONSerialization.data(withJSONObject: object))
+
+    #expect(decoded.resultPresentation == .table)
+    #expect(decoded.resultPresentation.packagePreference == .table)
+  }
+
+  @Test func tableRoundTripRetainsTheLastExplicitChartType() {
+    let id = chartTestRecommendationID("policy|line|date|value")
+    let chart = ResultPresentationPreference.chart(.specific(id))
+
+    let table = chart.selectingMode(.table)
+    let restored = table.selectingMode(.chart)
+
+    #expect(table.mode == .table)
+    #expect(table.specificationID == id)
+    #expect(table.packagePreference == .table)
+    #expect(restored == chart)
+    #expect(restored.packagePreference == .chart(.specific(id)))
+  }
+
+  @Test func firstV3PackagePreferencePayloadStillDecodes() throws {
+    let packagePreference = AutoChartPreference.chart(.recommended)
+    let decoded = try JSONDecoder().decode(
+      ResultPresentationPreference.self,
+      from: JSONEncoder().encode(packagePreference))
+
+    #expect(decoded == .chart(.recommended))
   }
 
   @Test func preferenceRoundTripsAndSurvivesPreparedFinalization() throws {
@@ -934,6 +980,123 @@ import Testing
         sqlFingerprint: PreparedFollowUpIntegrity.fingerprint(sql: sql),
         resultFingerprint: PreparedFollowUpIntegrity.fingerprint(result: result)),
       createdAt: Date(timeIntervalSince1970: 2))
+  }
+}
+
+@MainActor
+@Suite struct ResultPresentationMigrationHandlerTests {
+  @Test func acceptedMigrationReturnsTheStoredPreference() {
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|stale"))
+    let updated = ResultPresentationPreference.chart(.recommended)
+    var message = chartTestAnswerMessage()
+    message.resultPresentation = previous
+    var state = ChatFeature.State(conversationID: UUID())
+    state.messages.append(message)
+    let store = migrationStore(state: state)
+
+    let outcome = resultPresentationMigrationHandler(
+      store: store,
+      messageID: message.id
+    )(previous, updated)
+
+    #expect(outcome == .migrated(updated))
+    #expect(store.messages[id: message.id]?.resultPresentation == updated)
+  }
+
+  @Test func rejectedMigrationReturnsTheAuthoritativePreference() {
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|stale"))
+    let updated = ResultPresentationPreference.chart(.recommended)
+    let message = chartTestAnswerMessage()
+    var state = ChatFeature.State(conversationID: UUID())
+    state.messages.append(message)
+    let store = migrationStore(state: state)
+
+    let outcome = resultPresentationMigrationHandler(
+      store: store,
+      messageID: message.id
+    )(previous, updated)
+
+    #expect(outcome == .retained(.automatic))
+    #expect(store.messages[id: message.id]?.resultPresentation == .automatic)
+  }
+
+  @Test func missingMessageRemainsDistinctFromRetainedAutomatic() {
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("policy|stale"))
+    let store = migrationStore(
+      state: ChatFeature.State(conversationID: UUID()))
+
+    let outcome = resultPresentationMigrationHandler(
+      store: store,
+      messageID: UUID()
+    )(previous, .chart(.recommended))
+
+    #expect(outcome == .messageMissing)
+  }
+
+  @Test func retainedStalePreferenceWithSameReplacementIsReconciled() async throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [
+        [.text("A"), .real(10)],
+        [.text("B"), .real(20)],
+      ])
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("missing-first"))
+    let authoritative = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("missing-second"))
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request,
+      preference: previous.packagePreference,
+      preparation: .none)
+    #expect(
+      resultPresentationMigrationSuggestion(
+        analysis: analysis,
+        preference: previous.selectingMode(.table)) == nil)
+    let suggestion = try #require(
+      resultPresentationMigrationSuggestion(
+        analysis: analysis,
+        preference: previous))
+    let session = AutoChartSession<Int>(cache: AutoChartCache())
+    var attempts: [(ResultPresentationPreference, ResultPresentationPreference)] = []
+
+    applyResultPresentationMigration(
+      suggestion,
+      analysis: analysis,
+      session: session
+    ) { receivedPrevious, updated in
+      attempts.append((receivedPrevious, updated))
+      return attempts.count == 1
+        ? .retained(authoritative)
+        : .migrated(updated)
+    }
+
+    #expect(attempts.count == 2)
+    #expect(attempts[0].0 == previous)
+    #expect(attempts[1].0 == authoritative)
+    #expect(attempts[1].1 == .chart(.recommended))
+    #expect(session.preference == .chart(.recommended))
+  }
+
+  private func migrationStore(
+    state: ChatFeature.State
+  ) -> StoreOf<ChatFeature> {
+    Store(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
+      $0.historyClient = .noop()
+    }
   }
 }
 

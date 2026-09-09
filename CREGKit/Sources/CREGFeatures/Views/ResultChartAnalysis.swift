@@ -1,6 +1,7 @@
 import AutoTableCharts
 import AutoTableChartsUI
 import CREGEngine
+import Combine
 import ComposableArchitecture
 import Foundation
 
@@ -17,37 +18,16 @@ struct CREGChartAnalysisClient: Sendable {
     cache: AutoChartCache(configuration: configuration))
 
   let cache: AutoChartCache
-  let analyzer: AutoChartAnalyzer
+  private let failureDiagnostics: ChartFailureDiagnosticStore
 
   init(cache: AutoChartCache) {
     self.cache = cache
-    self.analyzer = AutoChartAnalyzer(cache: cache)
+    self.failureDiagnostics = ChartFailureDiagnosticStore()
   }
 
   @MainActor
   func makeSession() -> AutoChartSession<Int> {
     AutoChartSession(cache: cache)
-  }
-
-  func analyze(
-    result: QueryResult,
-    sql: String,
-    question: String?,
-    resultFingerprint: String? = nil,
-    dataIdentity: String? = nil,
-    preference: AutoChartPreference = .automatic,
-    preparation: AutoChartPreparationStrategy = .preferredOrPrimary
-  ) async throws -> AutoChartAnalysis<Int> {
-    let input = try CREGChartAdapter.analysisInput(
-      result: result,
-      sql: sql,
-      question: question,
-      resultFingerprint: resultFingerprint,
-      dataIdentity: dataIdentity)
-    return try await analyzer.analyze(
-      input.request,
-      preference: preference,
-      preparation: preparation)
   }
 
   func cachedAnalysis(
@@ -56,12 +36,118 @@ struct CREGChartAnalysisClient: Sendable {
     cache.completedAnalysis(for: request.id)
   }
 
+  func shouldRecordFailure(_ failure: AutoChartFailure) -> Bool {
+    failureDiagnostics.insert(failure.episodeID)
+  }
+
   func trimToMinimum() async {
     await cache.trim(to: .minimum)
   }
 
   var cacheStatistics: AutoChartCacheStatistics {
     get async { await cache.statistics() }
+  }
+}
+
+/// Stable, inexpensive identity for one view-owned chart request. SwiftUI can
+/// use this as a task key without rebuilding the full chart dataset.
+struct CREGChartInputIdentity: Hashable, Sendable {
+  var resultFingerprint: String
+  var dataIdentity: String?
+  var sql: String
+  var question: String?
+}
+
+/// Lazily retained by `StateObject`, so the package request and actor-backed
+/// session are constructed once for a SwiftUI view identity rather than once
+/// for every transient View value.
+@MainActor
+final class CREGChartSessionOwner: ObservableObject {
+  let session: AutoChartSession<Int>
+  @Published private(set) var inputIdentity: CREGChartInputIdentity
+  @Published private(set) var request: AutoChartRequest<Int>?
+  @Published private(set) var requestFailure: AutoChartFailure?
+
+  init(
+    client: CREGChartAnalysisClient,
+    inputIdentity: CREGChartInputIdentity,
+    result: QueryResult
+  ) {
+    self.session = client.makeSession()
+    self.inputIdentity = inputIdentity
+    let setup = Self.makeRequest(result: result, inputIdentity: inputIdentity)
+    self.request = setup.request
+    self.requestFailure = setup.failure
+  }
+
+  func load(
+    result: QueryResult,
+    inputIdentity: CREGChartInputIdentity,
+    preference: AutoChartPreference
+  ) {
+    if inputIdentity != self.inputIdentity {
+      session.cancel()
+      session.selection.removeAll()
+      let setup = Self.makeRequest(result: result, inputIdentity: inputIdentity)
+      self.request = setup.request
+      self.requestFailure = setup.failure
+      self.inputIdentity = inputIdentity
+    }
+    guard let request else { return }
+    session.load(
+      request,
+      preference: preference,
+      preparation: .preferredOrPrimary,
+      presentationContext: .init(identity: "creg-v3"),
+      formatters: CREGChartAdapter.formatters,
+      textResolver: CREGChartAdapter.textResolver)
+  }
+
+  private static func makeRequest(
+    result: QueryResult,
+    inputIdentity: CREGChartInputIdentity
+  ) -> (request: AutoChartRequest<Int>?, failure: AutoChartFailure?) {
+    do {
+      let request = try CREGChartAdapter.analysisRequest(
+        result: result,
+        sql: inputIdentity.sql,
+        question: inputIdentity.question,
+        resultFingerprint: inputIdentity.resultFingerprint,
+        dataIdentity: inputIdentity.dataIdentity)
+      return (request, nil)
+    } catch {
+      let kind: AutoChartFailureKind =
+        error is AutoChartDatasetError ? .invalidData : .internalFailure
+      return (
+        nil,
+        AutoChartFailure(
+          stage: .materialization,
+          kind: kind,
+          isRetryable: false,
+          diagnosticID: "ATC.materialization.\(kind.rawValue)",
+          message: String(describing: error)))
+    }
+  }
+}
+
+/// A bounded process-local ledger. The package intentionally shares an episode
+/// ID across sessions for the same failure; CREG records that episode once even
+/// when preview and viewer surfaces observe it independently.
+private final class ChartFailureDiagnosticStore: @unchecked Sendable {
+  private static let maximumEntries = 1_024
+  private let lock = NSLock()
+  private var episodeIDs: Set<UUID> = []
+  private var insertionOrder: [UUID] = []
+
+  func insert(_ episodeID: UUID) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard episodeIDs.insert(episodeID).inserted else { return false }
+    insertionOrder.append(episodeID)
+    if insertionOrder.count > Self.maximumEntries {
+      episodeIDs.remove(insertionOrder.removeFirst())
+    }
+    return true
   }
 }
 
@@ -81,8 +167,10 @@ extension DependencyValues {
 
 func recordChartFailure(
   _ failure: AutoChartFailure,
+  chartAnalysis: CREGChartAnalysisClient,
   diagnostics: DiagnosticsClient
 ) {
+  guard chartAnalysis.shouldRecordFailure(failure) else { return }
   diagnostics.record(
     DiagnosticEvent(
       level: .error,
