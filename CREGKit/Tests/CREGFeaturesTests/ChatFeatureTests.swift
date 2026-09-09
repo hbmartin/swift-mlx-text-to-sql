@@ -926,7 +926,7 @@ private func awaitArmedFMWatch(
     var history = HistoryClient.noop()
     history.persistTerminalTurn = { _, message, _, _ in
       if case .answer = message.body {
-        writes.record(message.resultPresentation?.mode.rawValue ?? "nil")
+        writes.record(message.resultPresentation.mode.rawValue)
       }
     }
     let store = TestStore(initialState: state) {
@@ -1009,7 +1009,7 @@ private func awaitArmedFMWatch(
     let writes = CallRecorder()
     var history = HistoryClient.noop()
     history.persistTerminalTurn = { _, message, _, _ in
-      writes.record(message.resultPresentation?.mode.rawValue ?? "nil")
+      writes.record(message.resultPresentation.mode.rawValue)
     }
     let store = TestStore(initialState: state) {
       AppFeature()

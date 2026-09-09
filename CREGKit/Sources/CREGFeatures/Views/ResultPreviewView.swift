@@ -1,10 +1,11 @@
 import AutoTableCharts
+import AutoTableChartsUI
 import CREGEngine
 import ComposableArchitecture
 import SwiftUI
 
-/// The four-row Result Preview shown inline in the transcript; tapping it
-/// opens the full-screen Result Viewer.
+/// The four-row result preview. It owns a session independent from the viewer,
+/// while both sessions share the package cache supplied by the dependency.
 struct ResultPreviewView: View {
   let messageID: UUID
   let resultFingerprint: String
@@ -17,11 +18,10 @@ struct ResultPreviewView: View {
   let open: () -> Void
 
   static let previewRowLimit = 4
-  let chartRequest: ResultChartLoader.Request
+  let chartRequest: AutoChartRequest<Int>
   @Dependency(\.chartAnalysis) private var chartAnalysis
   @Dependency(\.diagnostics) private var diagnostics
-  @State private var chartOwner: ResultChartLoaderOwner
-  @State private var presentationState: ResultPresentationState
+  @State private var session: AutoChartSession<Int>
   @State private var pinchMagnification: CGFloat = 1
   @State private var pinchIsArmed = false
   @State private var pinchHapticTrigger = 0
@@ -48,49 +48,41 @@ struct ResultPreviewView: View {
     self.setPreference = setPreference
     self.migratePreference = migratePreference
     self.open = open
-    let request = ResultChartLoader.Request(
+    let input = try! CREGChartAdapter.analysisInput(
       result: result,
       sql: sql,
       question: question,
       resultFingerprint: resultFingerprint,
       dataIdentity: CREGChartAdapter.resultDataIdentity(messageID: messageID))
-    self.chartRequest = request
-    self._chartOwner = State(
-      initialValue: ResultChartLoaderOwner(
-        client: _chartAnalysis.wrappedValue,
-        diagnostics: _diagnostics.wrappedValue))
-    self._presentationState = State(
-      initialValue: ResultPresentationState(
-        preference: preference,
-        requestKey: request.key))
+    self.chartRequest = input.request
+    self._session = State(initialValue: _chartAnalysis.wrappedValue.makeSession())
   }
 
-  private var chart: ResultChartLoader {
-    chartOwner.loader(
-      warmStart: chartRequest,
-      preferredSpecificationID: preference?.specificationID)
-  }
-
-  private var renderedScale: CGFloat {
-    reduceMotion
-      ? 1
-      : ResultViewerLogic.previewScale(for: pinchMagnification)
+  private var analysis: AutoChartAnalysis<Int>? {
+    switch session.state {
+    case .preparing(let analysis, _), .ready(let analysis, _),
+      .fallback(let analysis, _):
+      analysis
+    case .idle, .analyzing, .failed:
+      nil
+    }
   }
 
   private var selectedRecommendation: AutoChartRecommendation? {
-    chart.resolvedRecommendation(for: chartRequest.key)
+    analysis?.preferenceResolution?.recommendation
   }
 
-  private var selectedChartFailure: ResultChartLoader.Failure? {
-    chart.failure(
-      for: chartRequest.key,
-      recommendationID: selectedRecommendation?.id)
+  private var failure: AutoChartFailure? {
+    guard case .failed(let failure) = session.state else { return nil }
+    return failure
   }
 
-  private var requestedMode: ResultPresentationPreference.Mode {
-    presentationState.requestedMode(
-      authoritativePreference: preference,
-      requestKey: chartRequest.key)
+  private var requestedMode: ResultPresentationMode {
+    (preference ?? .automatic).mode
+  }
+
+  private var renderedScale: CGFloat {
+    reduceMotion ? 1 : ResultViewerLogic.previewScale(for: pinchMagnification)
   }
 
   var body: some View {
@@ -103,9 +95,7 @@ struct ResultPreviewView: View {
       let selected = selectedRecommendation
       let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
-        if selected != nil
-          || selectedChartFailure?.retryability == .retryable
-        {
+        if selected != nil || failure?.isRetryable == true {
           Picker(
             "Result preview",
             selection: Binding(
@@ -113,25 +103,20 @@ struct ResultPreviewView: View {
               set: { selectMode($0) })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
-              .tag(ResultPresentationPreference.Mode.chart)
+              .tag(ResultPresentationMode.chart)
             Label("Table", systemImage: "tablecells")
-              .tag(ResultPresentationPreference.Mode.table)
+              .tag(ResultPresentationMode.table)
           }
           .pickerStyle(.segmented)
           .accessibilityIdentifier("result-preview-mode")
         }
 
-        if let selectedChartFailure,
-          requestedMode == .chart
-        {
+        if let failure, requestedMode == .chart {
           ResultChartRecoveryControls(
             spacing: 10,
             keepTable: { selectMode(.table) },
-            retryChart:
-              selectedChartFailure.retryability == .retryable
-              ? { selectMode(.chart) } : nil
-          )
-          .accessibilityIdentifier("result-preview-chart-recovery")
+            retryChart: failure.isRetryable ? { session.retry() } : nil)
+            .accessibilityIdentifier("result-preview-chart-recovery")
         }
 
         Button(action: open) {
@@ -148,23 +133,17 @@ struct ResultPreviewView: View {
               Spacer(minLength: 0)
               Label(
                 pinchIsArmed ? "Release to expand" : "Explore result",
-                systemImage: "arrow.up.left.and.arrow.down.right"
-              )
-              .font(.caption2.weight(.medium))
-              .foregroundStyle(CREGBrand.blue)
-              .contentTransition(.symbolEffect(.replace))
+                systemImage: "arrow.up.left.and.arrow.down.right")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(CREGBrand.blue)
+                .contentTransition(.symbolEffect(.replace))
             }
           }
           .padding(10)
-          .background(
-            .quaternary.opacity(0.5),
-            in: RoundedRectangle(cornerRadius: 12)
-          )
+          .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
           .overlay {
             RoundedRectangle(cornerRadius: 12)
-              .stroke(
-                CREGBrand.blue.opacity(pinchIsArmed ? 0.85 : 0),
-                lineWidth: 2)
+              .stroke(CREGBrand.blue.opacity(pinchIsArmed ? 0.85 : 0), lineWidth: 2)
           }
           .contentShape(Rectangle())
         }
@@ -174,72 +153,62 @@ struct ResultPreviewView: View {
         .sensoryFeedback(.selection, trigger: pinchHapticTrigger)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-          "Result \(mode == .chart ? "chart" : "table"), \(ResultViewerLogic.rowCountLabel(for: result))"
-        )
+          "Result \(mode == .chart ? "chart" : "table"), \(ResultViewerLogic.rowCountLabel(for: result))")
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
-      .resultPresentationLifecycle(
-        chart: chart,
-        request: chartRequest,
-        authoritativePreference: preference,
-        presentationState: $presentationState,
-        migratePreference: migratePreference,
-        diagnostics: chartOwner.diagnostics
-      )
-      .task(
-        id: chart.preparationTaskKey(
-          recommendationID: selected?.id)
-      ) {
-        await chart.prepareResolvedRecommendation(for: chartRequest.key)
+      .task(id: chartRequest.id) {
+        session.load(
+          chartRequest,
+          preference: preference ?? .automatic,
+          preparation: .preferredOrPrimary,
+          presentationContext: .init(identity: "creg-v3"),
+          formatters: CREGChartAdapter.formatters,
+          textResolver: CREGChartAdapter.textResolver)
+      }
+      .onChange(of: preference) { _, updated in
+        session.setPreference(updated ?? .automatic)
+      }
+      .onChange(of: failure?.episodeID) { _, episodeID in
+        guard let failure, episodeID != nil else { return }
+        recordChartFailure(failure, diagnostics: diagnostics)
+      }
+      .onChange(of: analysis?.preferenceResolution?.replacementPreference) {
+        _, replacement in
+        guard let replacement else { return }
+        _ = migratePreference(preference ?? .automatic, replacement)
       }
     }
   }
 
   @ViewBuilder
-  private func chartArea(
-    recommendation: AutoChartRecommendation
-  ) -> some View {
-    if let preparedChart = chart.matchingPreparedChart(for: recommendation.id) {
+  private func chartArea(recommendation: AutoChartRecommendation) -> some View {
+    if case .ready(let analysis, let presented?) = session.state {
       AutoChartView(
-        preparedChart: preparedChart,
-        presentation: .preview(
-          plotHeight: ResultChartLayout.previewPlotHeight),
+        presentedChart: presented,
+        analysisID: analysis.id,
+        presentation: .preview(plotHeight: ResultChartLayout.previewPlotHeight),
         formatters: CREGChartAdapter.formatters,
         textResolver: CREGChartAdapter.textResolver)
     } else {
       ResultChartPreparationView(
         recommendation: recommendation,
-        presentation: .preview(
-          plotHeight: ResultChartLayout.previewPlotHeight),
+        presentation: .preview(plotHeight: ResultChartLayout.previewPlotHeight),
         formatters: CREGChartAdapter.formatters,
         textResolver: CREGChartAdapter.textResolver)
     }
   }
 
-  private func effectiveMode(hasChart: Bool) -> ResultPresentationPreference.Mode {
+  private func effectiveMode(hasChart: Bool) -> ResultPresentationMode {
     ResultViewerLogic.effectivePresentationMode(
       requestedMode: requestedMode,
       hasChart: hasChart,
-      preparationFailed: selectedChartFailure?.stage == .preparation)
+      preparationFailed: failure != nil)
   }
 
-  private func selectMode(_ selectedMode: ResultPresentationPreference.Mode) {
-    resultPresentationModeSelectionTransition(
-      selectedMode,
-      state: presentationState,
-      authoritativePreference: preference,
-      requestKey: chartRequest.key,
-      chartRetryAvailable: selectedChartFailure?.retryability == .retryable
-    ).commit(
-      setState: { presentationState = $0 },
-      retryChart: retryFailedChart,
-      persistPreference: setPreference)
-  }
-
-  private func retryFailedChart() {
-    chart.retryFailure(
-      for: chartRequest.key,
-      recommendationID: selectedRecommendation?.id)
+  private func selectMode(_ mode: ResultPresentationMode) {
+    let updated: AutoChartPreference = mode == .table ? .table : .chart(.recommended)
+    session.setPreference(updated)
+    setPreference(updated)
   }
 
   private var tablePreview: some View {
@@ -247,26 +216,19 @@ struct ResultPreviewView: View {
       Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 6) {
         GridRow {
           ForEach(Array(result.columns.enumerated()), id: \.offset) { _, column in
-            Text(column)
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(.secondary)
-              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            Text(column).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
           }
         }
         Divider()
-        ForEach(
-          Array(result.rows.prefix(Self.previewRowLimit).enumerated()),
-          id: \.offset
-        ) { _, row in
+        ForEach(Array(result.rows.prefix(Self.previewRowLimit).enumerated()), id: \.offset) {
+          _, row in
           GridRow {
             ForEach(Array(row.enumerated()), id: \.offset) { index, value in
               Text(
                 ResultViewerLogic.displayedCopyValue(
                   value,
-                  column: index < result.columns.count ? result.columns[index] : "")
-              )
-              .font(.caption.monospacedDigit())
-              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                  column: index < result.columns.count ? result.columns[index] : ""))
+                .font(.caption.monospacedDigit())
             }
           }
         }
@@ -279,33 +241,24 @@ struct ResultPreviewView: View {
   private var pinchGesture: some Gesture {
     MagnifyGesture()
       .onChanged { value in
-        let magnification = value.magnification
         let armed = ResultViewerLogic.pinchIsArmed(
-          magnification: magnification,
-          wasArmed: pinchIsArmed)
+          magnification: value.magnification, wasArmed: pinchIsArmed)
         var transaction = Transaction()
         transaction.animation = nil
         withTransaction(transaction) {
-          pinchMagnification = magnification
-          if armed && !pinchIsArmed {
-            pinchHapticTrigger += 1
-          }
+          pinchMagnification = value.magnification
+          if armed && !pinchIsArmed { pinchHapticTrigger += 1 }
           pinchIsArmed = armed
         }
       }
       .onEnded { value in
         let shouldOpen = ResultViewerLogic.pinchIsArmed(
-          magnification: value.magnification,
-          wasArmed: pinchIsArmed)
-        withAnimation(
-          reduceMotion ? nil : .spring(duration: 0.24, bounce: 0.18)
-        ) {
+          magnification: value.magnification, wasArmed: pinchIsArmed)
+        withAnimation(reduceMotion ? nil : .spring(duration: 0.24, bounce: 0.18)) {
           pinchMagnification = 1
           pinchIsArmed = false
         }
-        if shouldOpen {
-          open()
-        }
+        if shouldOpen { open() }
       }
   }
 }

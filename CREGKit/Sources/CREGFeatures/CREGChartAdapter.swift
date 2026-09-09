@@ -5,6 +5,7 @@ import Foundation
 struct CREGChartAnalysisInput: Sendable {
   var dataset: AutoChartDataset<Int>
   var context: AutoChartContext
+  var request: AutoChartRequest<Int>
 }
 
 enum CREGChartAdapter {
@@ -12,7 +13,7 @@ enum CREGChartAdapter {
   /// inline preview and the full-screen viewer so analyzer caching keys off
   /// the same string everywhere.
   static func resultDataIdentity(messageID: UUID) -> String {
-    "CREG.Result.v2:\(messageID.uuidString.lowercased())"
+    "CREG.Result.v3:\(messageID.uuidString.lowercased())"
   }
 
   static func analysisInput(
@@ -28,7 +29,7 @@ enum CREGChartAdapter {
       AutoChartColumn(
         id: columnID(index: index, name: name),
         name: name,
-        hints: hints(
+        semantics: semantics(
           for: name,
           projection: projections[index],
           values: result.rows.map { row in
@@ -54,12 +55,14 @@ enum CREGChartAdapter {
       metadata: AutoChartTableMetadata(
         isTruncated: result.isTruncated,
         provenance: "CREG query result"),
-      key: AutoChartDataKey(
-        identity: dataIdentity ?? "CREG.Result.v2:\(fingerprint)",
+      key: .trusted(
+        identity: dataIdentity ?? "CREG.Result.v3:\(fingerprint)",
         revision: dataKeyRevision(resultFingerprint: fingerprint, sql: sql)))
+    let context = analysisContext(question: question, sql: sql)
     return CREGChartAnalysisInput(
       dataset: dataset,
-      context: analysisContext(question: question, sql: sql))
+      context: context,
+      request: try AutoChartRequest(table: dataset, context: context))
   }
 
   static func analysisContext(
@@ -120,7 +123,7 @@ enum CREGChartAdapter {
     sql: String
   ) -> String {
     [
-      "CREG.ChartData.v2",
+      "CREG.ChartData.v3",
       resultFingerprint,
       PreparedFollowUpIntegrity.fingerprint(sql: sql),
     ].joined(separator: ":")
@@ -144,95 +147,90 @@ enum CREGChartAdapter {
     }
   }
 
-  static func hints(
+  static func semantics(
     for name: String,
     projection: String?,
     values: @autoclosure () -> [SQLValue] = []
-  ) -> AutoChartColumnHints {
+  ) -> AutoChartColumnSemantics {
     let normalized = name.lowercased()
     let aggregation = aggregate(in: projection)
 
     if normalized == "id" || normalized.hasSuffix("_id") {
-      return AutoChartColumnHints(
-        semanticType: .identifier,
-        role: .identifier)
+      return .identifier(semanticType: .identifier)
     }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
     if style == .date {
       let temporalValues = values()
       guard temporalValues.isEmpty || hasValidTemporalValues(temporalValues) else {
-        return AutoChartColumnHints(
+        return .inferred(
           measureSemantics: measureSemantics(for: aggregation))
       }
-      let role: AutoChartAnalyticRole =
-        containsWord(
+      if containsWord(
           normalized,
           [
             "commencement", "origination", "acquisition", "inception", "start",
           ])
-        ? .intervalStart
-        : containsWord(
+      {
+        return .intervalStart()
+      }
+      if containsWord(
           normalized,
           [
             "expiration", "maturity", "disposition", "end",
           ])
-          ? .intervalEnd : .dimension
-      return AutoChartColumnHints(
-        semanticType: .temporal,
-        role: role)
+      {
+        return .intervalEnd()
+      }
+      return .dimension(semanticType: .temporal)
     }
     if normalized.hasPrefix("is_") || normalized.hasPrefix("has_") {
       // SQLite permits mixed storage classes in one result column. Do not force
       // opaque bytes into a categorical identity that charting would collapse
       // into the same missing group as SQL NULL.
       guard !containsBlob(values()) else {
-        return AutoChartColumnHints(
+        return .inferred(
           measureSemantics: measureSemantics(for: aggregation))
       }
-      return AutoChartColumnHints(
-        semanticType: .boolean,
-        role: .dimension)
+      return .dimension(semanticType: .boolean)
     }
     if style == .percent {
       let sourceValues = values()
-      return quantitativeHints(
+      return quantitativeSemantics(
         values: sourceValues,
         unit: percentUnit(for: sourceValues),
         aggregation: aggregation)
     }
     if style == .currency || style == .currencyPerSquareFoot {
-      return quantitativeHints(
+      return quantitativeSemantics(
         values: values(),
         unit: .currency(code: "USD"),
         aggregation: aggregation)
     }
     if style == .squareFeet {
-      return quantitativeHints(
+      return quantitativeSemantics(
         values: values(),
         unit: .area(unit: "sq ft"),
         aggregation: aggregation)
     }
     if style == .count, containsWord(normalized, ["month", "months"]) {
-      return quantitativeHints(
+      return quantitativeSemantics(
         values: values(),
         unit: .duration(unit: "months"),
         aggregation: aggregation)
     }
     if style == .ratio {
-      return quantitativeHints(
+      return quantitativeSemantics(
         values: values(),
         aggregation: aggregation)
     }
     if style == .plainDigits, containsWord(normalized, ["year"]) {
       guard !containsBlob(values()) else {
-        return AutoChartColumnHints(
+        return .inferred(
           measureSemantics: measureSemantics(for: aggregation))
       }
-      return AutoChartColumnHints(
-        semanticType: .ordinal,
-        role: .dimension)
+      return .dimension(semanticType: .ordinal)
     }
-    return AutoChartColumnHints(
+    return .inferred(
       measureSemantics: measureSemantics(for: aggregation))
   }
 
@@ -522,20 +520,19 @@ enum CREGChartAdapter {
     }
   }
 
-  private static func quantitativeHints(
+  private static func quantitativeSemantics(
     values: [SQLValue],
     unit: AutoChartUnit? = nil,
     aggregation: AutoChartAggregation?
-  ) -> AutoChartColumnHints {
+  ) -> AutoChartColumnSemantics {
     guard values.isEmpty || hasQuantitativeValues(values) else {
-      return AutoChartColumnHints(
+      return .inferred(
         measureSemantics: measureSemantics(for: aggregation))
     }
-    return AutoChartColumnHints(
+    return .measure(
       semanticType: .quantitative,
-      role: .measure,
       unit: unit,
-      measureSemantics: measureSemantics(for: aggregation))
+      semantics: measureSemantics(for: aggregation))
   }
 
   private static func measureSemantics(

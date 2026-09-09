@@ -14,13 +14,10 @@ let package = Package(
   ],
   dependencies: [
     // Recommendation behavior is part of CREG's persisted presentation
-    // contract. This pin must carry policy v11: CREG preserves the user's
-    // table/chart mode while clearing older chart-type pins. Integration tests
-    // pin that policy, the affected box-plot fixtures, and CREG's selection
-    // formatting and accessibility contract with the package presentation API.
+    // contract, so CREG deliberately pins the reviewed v3 implementation.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "abd5058b98a22a5c2a231e02b468afe0e5952df4"),
+      revision: "38be47c55cdb9f9b9244c438330fc1175df20cb1"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
@@ -88,6 +85,7 @@ let package = Package(
         "CREGCore",
         "CREGEngine",
         .product(name: "AutoTableCharts", package: "AutoTableCharts"),
+        .product(name: "AutoTableChartsUI", package: "AutoTableCharts"),
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         .product(name: "ZIPFoundation", package: "ZIPFoundation"),
         .product(name: "GRDB", package: "GRDB.swift"),
@@ -166,6 +164,7 @@ let package = Package(
         "CREGFeatures",
         "CREGTestSupport",
         .product(name: "AutoTableCharts", package: "AutoTableCharts"),
+        .product(name: "AutoTableChartsUI", package: "AutoTableCharts"),
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         .product(name: "ZIPFoundation", package: "ZIPFoundation"),
       ]

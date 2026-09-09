@@ -8,6 +8,11 @@ import SwiftUI
 /// Sorting, searching, and truncation labeling for the Result Viewer. Pure
 /// so result tests never need a rendered view.
 public enum ResultViewerLogic {
+  public struct DisplayRow: Equatable, Sendable, Identifiable {
+    public let sourceRowID: Int
+    public let values: [SQLValue]
+    public var id: Int { sourceRowID }
+  }
   public static let pinchArmThreshold: CGFloat = 1.12
   public static let pinchDisarmThreshold: CGFloat = 1.08
 
@@ -46,12 +51,30 @@ public enum ResultViewerLogic {
     sort: SortState?,
     searchText: String
   ) -> [[SQLValue]] {
-    var rows = result.rows
+    identifiedDisplayRows(
+      result: result,
+      sourceRowIDs: nil,
+      sort: sort,
+      searchText: searchText
+    ).map(\.values)
+  }
+
+  /// Search and sort rows without discarding their original result indexes.
+  public static func identifiedDisplayRows(
+    result: QueryResult,
+    sourceRowIDs: Set<Int>?,
+    sort: SortState?,
+    searchText: String
+  ) -> [DisplayRow] {
+    var rows: [DisplayRow] = result.rows.indices.compactMap { index -> DisplayRow? in
+      guard sourceRowIDs?.contains(index) ?? true else { return nil }
+      return DisplayRow(sourceRowID: index, values: result.rows[index])
+    }
     let query = normalizedForSearch(
       searchText.trimmingCharacters(in: .whitespacesAndNewlines))
     if !query.isEmpty {
       rows = rows.filter { row in
-        row.contains { cell in
+        row.values.contains { cell in
           normalizedForSearch(cell.displayString).contains(query)
             || normalizedForSearch(cell.exportString).contains(query)
         }
@@ -61,17 +84,16 @@ public enum ResultViewerLogic {
       return rows
     }
     // Index tie-break keeps equal cells in their original result order.
-    return rows.enumerated()
+    return rows
       .sorted { lhs, rhs in
-        let left = cell(lhs.element, at: sort.column)
-        let right = cell(rhs.element, at: sort.column)
+        let left = cell(lhs.values, at: sort.column)
+        let right = cell(rhs.values, at: sort.column)
         if valuesEqual(left, right) {
-          return lhs.offset < rhs.offset
+          return lhs.sourceRowID < rhs.sourceRowID
         }
         let ascending = isOrderedAscending(left, right)
         return sort.ascending ? ascending : !ascending
       }
-      .map(\.element)
   }
 
   static func filteredResult(
@@ -142,10 +164,10 @@ public enum ResultViewerLogic {
   /// persisted choice. This keeps the picker and rendered content consistent
   /// while chart analysis or preparation makes Chart unavailable.
   static func effectivePresentationMode(
-    requestedMode: ResultPresentationPreference.Mode,
+    requestedMode: ResultPresentationMode,
     hasChart: Bool,
     preparationFailed: Bool
-  ) -> ResultPresentationPreference.Mode {
+  ) -> ResultPresentationMode {
     guard hasChart, !preparationFailed else { return .table }
     return requestedMode
   }
@@ -163,8 +185,8 @@ public enum ResultViewerLogic {
   /// recommendation with the persisted one. This preserves `nil` as automatic
   /// and keeps retry behavior explicit and testable.
   static func modeSelectionIntent(
-    _ selectedMode: ResultPresentationPreference.Mode,
-    requestedMode: ResultPresentationPreference.Mode,
+    _ selectedMode: ResultPresentationMode,
+    requestedMode: ResultPresentationMode,
     preserving specificationID: AutoChartRecommendationID?,
     retryAvailable: Bool
   ) -> ModeSelectionIntent {
