@@ -67,20 +67,11 @@ struct ResultPreviewView: View {
   }
 
   private var analysis: AutoChartAnalysis<Int>? {
-    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
-    return switch session.state {
-    case .preparing(let analysis, _), .ready(let analysis, _),
-      .fallback(let analysis, _):
-      analysis
-    case .idle, .analyzing, .failed:
-      chartOwner.cachedAnalysis()
-    }
+    chartOwner.analysis(for: chartInputIdentity)
   }
 
   private var failure: AutoChartFailure? {
-    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
-    if case .failed(let failure) = session.state { return failure }
-    return chartOwner.requestFailure
+    chartOwner.failure(for: chartInputIdentity)
   }
 
   private var renderedScale: CGFloat {
@@ -88,30 +79,29 @@ struct ResultPreviewView: View {
   }
 
   var body: some View {
-    let analysis = self.analysis
-    let currentPreference = preference ?? .automatic
-    let preferenceResolution = analysis?.resolve(currentPreference.packagePreference)
-    let selectedRecommendation = preferenceResolution?.recommendation
-    let failure = self.failure
-    let hasChartOptions: Bool = {
-      guard let analysis, case .charts(let catalog) = analysis.outcome else { return false }
-      return !catalog.cataloged.isEmpty
-    }()
-    let migrationSuggestion = resultPresentationMigrationSuggestion(
-      analysis: analysis,
-      preference: currentPreference,
-      resolution: preferenceResolution)
-    let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
-      requestedMode: currentPreference.mode,
-      hasChart: selectedRecommendation != nil,
-      chartFailed: failure != nil)
-
     if result.rows.isEmpty {
       Text("No matching rows.")
         .font(.subheadline)
         .foregroundStyle(.secondary)
         .padding(10)
     } else {
+      let analysis = self.analysis
+      let currentPreference = preference ?? .automatic
+      let preferenceResolution = analysis?.resolve(currentPreference.packagePreference)
+      let selectedRecommendation = preferenceResolution?.recommendation
+      let failure = self.failure
+      let hasChartOptions: Bool = {
+        guard let analysis, case .charts(let catalog) = analysis.outcome else { return false }
+        return !catalog.cataloged.isEmpty
+      }()
+      let migrationSuggestion = resultPresentationMigrationSuggestion(
+        analysis: analysis,
+        preference: currentPreference,
+        resolution: preferenceResolution)
+      let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
+        requestedMode: currentPreference.mode,
+        hasChart: selectedRecommendation != nil,
+        chartFailed: failure != nil)
       let selected = selectedRecommendation
       VStack(alignment: .leading, spacing: 8) {
         if hasChartOptions || failure?.isRetryable == true {
@@ -222,27 +212,14 @@ struct ResultPreviewView: View {
 
   private func selectMode(_ mode: ResultPresentationMode) {
     let currentPreference = preference ?? .automatic
-    switch ResultViewerLogic.modeSelectionIntent(
-      mode,
-      requestedMode: currentPreference.mode,
-      preserving: currentPreference.specificationID,
-      retryAvailable: failure?.isRetryable == true)
-    {
-    case .none:
-      return
-    case .persist(let updated):
-      applyUserPreference(updated)
-    case .retryChart(let updated):
-      if let updated { applyUserPreference(updated) }
-      session.retry()
-    }
-  }
-
-  private func applyUserPreference(_ updated: ResultPresentationPreference) {
-    if session.preference != updated.packagePreference {
-      session.setPreference(updated.packagePreference)
-    }
-    setPreference(updated)
+    applyResultPresentationModeSelection(
+      ResultViewerLogic.modeSelectionIntent(
+        mode,
+        requestedMode: currentPreference.mode,
+        preserving: currentPreference.specificationID,
+        retryAvailable: failure?.isRetryable == true),
+      chartOwner: chartOwner,
+      persistPreference: setPreference)
   }
 
   private var tablePreview: some View {

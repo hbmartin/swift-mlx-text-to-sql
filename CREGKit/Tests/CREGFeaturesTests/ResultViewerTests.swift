@@ -98,6 +98,36 @@ import Testing
     #expect(rows.count == result.rows.count)
   }
 
+  @Test func searchInvalidationClearsOnlyCellDerivedChartSelections() {
+    let row = result.rows[0]
+    #expect(
+      ResultViewerLogic.searchSelectionInvalidation(
+        row: row,
+        sourceRowID: 0,
+        searchText: "harbor",
+        tableSelectionSourceRowID: 0) == .keep)
+    #expect(
+      ResultViewerLogic.searchSelectionInvalidation(
+        row: row,
+        sourceRowID: 0,
+        searchText: "atlas",
+        tableSelectionSourceRowID: nil) == .clearCell)
+    #expect(
+      ResultViewerLogic.searchSelectionInvalidation(
+        row: row,
+        sourceRowID: 0,
+        searchText: "atlas",
+        tableSelectionSourceRowID: 0)
+        == .clearCellAndLinkedChartSelection)
+    #expect(
+      ResultViewerLogic.searchSelectionInvalidation(
+        row: nil,
+        sourceRowID: 0,
+        searchText: "",
+        tableSelectionSourceRowID: 0)
+        == .clearCellAndLinkedChartSelection)
+  }
+
   // MARK: Truncation labels
 
   @Test func truncatedResultsAreLabeledFirstNPlusRows() {

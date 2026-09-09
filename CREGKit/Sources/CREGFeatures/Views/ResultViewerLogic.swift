@@ -26,6 +26,12 @@ public enum ResultViewerLogic {
     }
   }
 
+  enum SearchSelectionInvalidation: Equatable {
+    case keep
+    case clearCell
+    case clearCellAndLinkedChartSelection
+  }
+
   /// One-column typed sorting: a new column starts ascending; the active
   /// column toggles direction.
   public static func toggleSort(_ current: SortState?, column: Int) -> SortState {
@@ -41,6 +47,29 @@ public enum ResultViewerLogic {
     text.folding(
       options: [.caseInsensitive, .diacriticInsensitive],
       locale: nil)
+  }
+
+  static func rowMatchesSearch(
+    _ row: [SQLValue],
+    searchText: String
+  ) -> Bool {
+    let query = normalizedForSearch(
+      searchText.trimmingCharacters(in: .whitespacesAndNewlines))
+    return rowMatchesSearch(row, normalizedQuery: query)
+  }
+
+  static func searchSelectionInvalidation(
+    row: [SQLValue]?,
+    sourceRowID: Int,
+    searchText: String,
+    tableSelectionSourceRowID: Int?
+  ) -> SearchSelectionInvalidation {
+    if let row, rowMatchesSearch(row, searchText: searchText) {
+      return .keep
+    }
+    return tableSelectionSourceRowID == sourceRowID
+      ? .clearCellAndLinkedChartSelection
+      : .clearCell
   }
 
   /// Rows filtered by search text and ordered by the sort state. Sorting is
@@ -74,10 +103,7 @@ public enum ResultViewerLogic {
       searchText.trimmingCharacters(in: .whitespacesAndNewlines))
     if !query.isEmpty {
       rows = rows.filter { row in
-        row.values.contains { cell in
-          normalizedForSearch(cell.displayString).contains(query)
-            || normalizedForSearch(cell.exportString).contains(query)
-        }
+        rowMatchesSearch(row.values, normalizedQuery: query)
       }
     }
     guard let sort, sort.column >= 0, sort.column < result.columns.count else {
@@ -94,6 +120,17 @@ public enum ResultViewerLogic {
         let ascending = isOrderedAscending(left, right)
         return sort.ascending ? ascending : !ascending
       }
+  }
+
+  private static func rowMatchesSearch(
+    _ row: [SQLValue],
+    normalizedQuery: String
+  ) -> Bool {
+    guard !normalizedQuery.isEmpty else { return true }
+    return row.contains { cell in
+      normalizedForSearch(cell.displayString).contains(normalizedQuery)
+        || normalizedForSearch(cell.exportString).contains(normalizedQuery)
+    }
   }
 
   static func filteredResult(

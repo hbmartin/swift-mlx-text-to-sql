@@ -15,6 +15,40 @@ typealias ResultPresentationMigrationHandler = (
   ResultPresentationPreference, ResultPresentationPreference
 ) -> ResultPresentationMigrationOutcome
 
+@MainActor
+func applyResultPresentationPreference(
+  _ updated: ResultPresentationPreference,
+  chartOwner: CREGChartSessionOwner,
+  persistPreference: (ResultPresentationPreference) -> Void
+) {
+  chartOwner.setPreferenceIfNeeded(updated.packagePreference)
+  persistPreference(updated)
+}
+
+@MainActor
+func applyResultPresentationModeSelection(
+  _ intent: ResultViewerLogic.ModeSelectionIntent,
+  chartOwner: CREGChartSessionOwner,
+  persistPreference: (ResultPresentationPreference) -> Void
+) {
+  switch intent {
+  case .none:
+    return
+  case .persist(let updated):
+    applyResultPresentationPreference(
+      updated,
+      chartOwner: chartOwner,
+      persistPreference: persistPreference)
+  case .retryChart(let updated):
+    if let updated {
+      chartOwner.retry(preference: updated.packagePreference)
+      persistPreference(updated)
+    } else {
+      chartOwner.retry()
+    }
+  }
+}
+
 struct ResultPresentationMigrationSuggestion: Hashable {
   var analysisID: AutoChartAnalysisID
   var previous: ResultPresentationPreference
