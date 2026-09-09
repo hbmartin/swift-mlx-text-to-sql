@@ -481,6 +481,35 @@ import Testing
         == failure.episodeID.uuidString.lowercased()
           .replacingOccurrences(of: "-", with: ""))
   }
+
+  @Test func requestConstructionFailuresShareAnEpisodeAcrossSurfaces() {
+    let client = CREGChartAnalysisClient.testValue
+    let inputIdentity = CREGChartInputIdentity(
+      resultFingerprint: "failed-result",
+      dataIdentity: "message-result",
+      sql: "SELECT value FROM properties",
+      question: "Show property values")
+
+    let previewFailure = client.requestConstructionFailure(
+      inputIdentity: inputIdentity,
+      kind: .invalidData,
+      message: "The chart dataset is invalid.")
+    let viewerFailure = client.requestConstructionFailure(
+      inputIdentity: inputIdentity,
+      kind: .invalidData,
+      message: "The chart dataset is invalid.")
+    let otherFailure = client.requestConstructionFailure(
+      inputIdentity: CREGChartInputIdentity(
+        resultFingerprint: "other-result",
+        dataIdentity: "other-message-result",
+        sql: inputIdentity.sql,
+        question: inputIdentity.question),
+      kind: .invalidData,
+      message: "The chart dataset is invalid.")
+
+    #expect(previewFailure.episodeID == viewerFailure.episodeID)
+    #expect(previewFailure.episodeID != otherFailure.episodeID)
+  }
 }
 
 @MainActor

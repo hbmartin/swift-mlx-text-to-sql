@@ -125,6 +125,40 @@ import Testing
         == "First 4+ rows · 2 matching returned rows")
   }
 
+  // MARK: Presentation mode
+
+  @Test func anyChartFailureForcesTheVisibleTableFallback() {
+    #expect(
+      ResultViewerLogic.effectivePresentationMode(
+        requestedMode: .chart,
+        hasChart: true,
+        chartFailed: true) == .table)
+    #expect(
+      ResultViewerLogic.effectivePresentationMode(
+        requestedMode: .chart,
+        hasChart: true,
+        chartFailed: false) == .chart)
+  }
+
+  @Test func selectingTheFailedChartModeRequestsARetry() {
+    let id = chartTestRecommendationID("policy|bar|fund|value")
+
+    #expect(
+      ResultViewerLogic.modeSelectionIntent(
+        .chart,
+        requestedMode: .chart,
+        preserving: id,
+        retryAvailable: true) == .retryChart(nil))
+    #expect(
+      ResultViewerLogic.modeSelectionIntent(
+        .chart,
+        requestedMode: .table,
+        preserving: id,
+        retryAvailable: true)
+        == .retryChart(
+          ResultPresentationPreference(mode: .chart, specificationID: id)))
+  }
+
   @Test func chartSelectionPreservesTheTruncationWarning() {
     var truncated = result
     truncated.isTruncated = true
