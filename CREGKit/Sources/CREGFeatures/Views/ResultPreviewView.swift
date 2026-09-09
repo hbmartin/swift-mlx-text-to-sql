@@ -73,17 +73,8 @@ struct ResultPreviewView: View {
       .fallback(let analysis, _):
       analysis
     case .idle, .analyzing, .failed:
-      chartOwner.request.flatMap { chartAnalysis.cachedAnalysis(for: $0) }
+      chartOwner.cachedAnalysis()
     }
-  }
-
-  private var preferenceResolution: AutoChartPreferenceResolution? {
-    guard let analysis else { return nil }
-    return analysis.resolve((preference ?? .automatic).packagePreference)
-  }
-
-  private var selectedRecommendation: AutoChartRecommendation? {
-    preferenceResolution?.recommendation
   }
 
   private var failure: AutoChartFailure? {
@@ -92,26 +83,29 @@ struct ResultPreviewView: View {
     return chartOwner.requestFailure
   }
 
-  private var requestedMode: ResultPresentationMode {
-    (preference ?? .automatic).mode
-  }
-
-  private var hasChartOptions: Bool {
-    guard let analysis, case .charts(let catalog) = analysis.outcome else { return false }
-    return !catalog.cataloged.isEmpty
-  }
-
-  private var migrationSuggestion: ResultPresentationMigrationSuggestion? {
-    resultPresentationMigrationSuggestion(
-      analysis: analysis,
-      preference: preference ?? .automatic)
-  }
-
   private var renderedScale: CGFloat {
     reduceMotion ? 1 : ResultViewerLogic.previewScale(for: pinchMagnification)
   }
 
   var body: some View {
+    let analysis = self.analysis
+    let currentPreference = preference ?? .automatic
+    let preferenceResolution = analysis?.resolve(currentPreference.packagePreference)
+    let selectedRecommendation = preferenceResolution?.recommendation
+    let failure = self.failure
+    let hasChartOptions: Bool = {
+      guard let analysis, case .charts(let catalog) = analysis.outcome else { return false }
+      return !catalog.cataloged.isEmpty
+    }()
+    let migrationSuggestion = resultPresentationMigrationSuggestion(
+      analysis: analysis,
+      preference: currentPreference,
+      resolution: preferenceResolution)
+    let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
+      requestedMode: currentPreference.mode,
+      hasChart: selectedRecommendation != nil,
+      chartFailed: failure != nil)
+
     if result.rows.isEmpty {
       Text("No matching rows.")
         .font(.subheadline)
@@ -119,13 +113,12 @@ struct ResultPreviewView: View {
         .padding(10)
     } else {
       let selected = selectedRecommendation
-      let mode = effectiveMode(hasChart: selected != nil)
       VStack(alignment: .leading, spacing: 8) {
         if hasChartOptions || failure?.isRetryable == true {
           Picker(
             "Result preview",
             selection: Binding(
-              get: { effectiveMode(hasChart: selected != nil) },
+              get: { effectiveResultMode },
               set: { selectMode($0) })
           ) {
             Label("Chart", systemImage: "chart.xyaxis.line")
@@ -137,7 +130,7 @@ struct ResultPreviewView: View {
           .accessibilityIdentifier("result-preview-mode")
         }
 
-        if let failure, requestedMode == .chart {
+        if let failure, currentPreference.mode == .chart {
           ResultChartRecoveryControls(
             spacing: 10,
             keepTable: { selectMode(.table) },
@@ -147,7 +140,7 @@ struct ResultPreviewView: View {
 
         Button(action: open) {
           VStack(alignment: .leading, spacing: 6) {
-            if mode == .chart, let selected {
+            if effectiveResultMode == .chart, let selected {
               chartArea(recommendation: selected)
             } else {
               tablePreview
@@ -179,7 +172,7 @@ struct ResultPreviewView: View {
         .sensoryFeedback(.selection, trigger: pinchHapticTrigger)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-          "Result \(mode == .chart ? "chart" : "table"), \(ResultViewerLogic.rowCountLabel(for: result))")
+          "Result \(effectiveResultMode == .chart ? "chart" : "table"), \(ResultViewerLogic.rowCountLabel(for: result))")
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
       .task(id: chartInputIdentity) {
@@ -196,10 +189,7 @@ struct ResultPreviewView: View {
       }
       .task(id: failure?.episodeID) {
         guard let failure else { return }
-        recordChartFailure(
-          failure,
-          chartAnalysis: chartAnalysis,
-          diagnostics: diagnostics)
+        chartOwner.recordFailure(failure, diagnostics: diagnostics)
       }
       .task(id: migrationSuggestion) {
         guard let migrationSuggestion, let analysis else { return }
@@ -230,15 +220,25 @@ struct ResultPreviewView: View {
     }
   }
 
-  private func effectiveMode(hasChart: Bool) -> ResultPresentationMode {
-    ResultViewerLogic.effectivePresentationMode(
-      requestedMode: requestedMode,
-      hasChart: hasChart,
-      preparationFailed: failure != nil)
+  private func selectMode(_ mode: ResultPresentationMode) {
+    let currentPreference = preference ?? .automatic
+    switch ResultViewerLogic.modeSelectionIntent(
+      mode,
+      requestedMode: currentPreference.mode,
+      preserving: currentPreference.specificationID,
+      retryAvailable: failure?.isRetryable == true)
+    {
+    case .none:
+      return
+    case .persist(let updated):
+      applyUserPreference(updated)
+    case .retryChart(let updated):
+      if let updated { applyUserPreference(updated) }
+      session.retry()
+    }
   }
 
-  private func selectMode(_ mode: ResultPresentationMode) {
-    let updated = (preference ?? .automatic).selectingMode(mode)
+  private func applyUserPreference(_ updated: ResultPresentationPreference) {
     if session.preference != updated.packagePreference {
       session.setPreference(updated.packagePreference)
     }

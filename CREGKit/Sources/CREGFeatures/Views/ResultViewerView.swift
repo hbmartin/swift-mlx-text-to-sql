@@ -157,46 +157,14 @@ struct ResultViewerView: View {
       .fallback(let analysis, _):
       analysis
     case .idle, .analyzing, .failed:
-      chartOwner.request.flatMap { chartAnalysis.cachedAnalysis(for: $0) }
+      chartOwner.cachedAnalysis()
     }
-  }
-
-  var chartRecommendations: [AutoChartRecommendation] {
-    guard let analysis, case .charts(let catalog) = analysis.outcome else { return [] }
-    return catalog.cataloged
-  }
-
-  var chartPickerOptions: [AutoChartPickerOption] {
-    guard let analysis, case .charts(let catalog) = analysis.outcome else { return [] }
-    return catalog.pickerOptions(resolver: CREGChartAdapter.textResolver)
-  }
-
-  var selectedRecommendation: AutoChartRecommendation? {
-    guard let analysis else { return nil }
-    return analysis.resolve(
-      (preference ?? .automatic).packagePreference
-    ).recommendation
   }
 
   var selectedChartFailure: AutoChartFailure? {
     guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
     if case .failed(let failure) = session.state { return failure }
     return chartOwner.requestFailure
-  }
-
-  var selectedPreparationFailed: Bool {
-    selectedChartFailure?.stage == .chartPreparation
-  }
-
-  var requestedMode: ResultPresentationMode {
-    (preference ?? .automatic).mode
-  }
-
-  var effectiveResultMode: ResultPresentationMode {
-    ResultViewerLogic.effectivePresentationMode(
-      requestedMode: requestedMode,
-      hasChart: selectedRecommendation != nil,
-      preparationFailed: selectedPreparationFailed)
   }
 
   var selectedSourceRows: Set<Int>? {
@@ -220,12 +188,6 @@ struct ResultViewerView: View {
     return session.selection.first
   }
 
-  var migrationSuggestion: ResultPresentationMigrationSuggestion? {
-    resultPresentationMigrationSuggestion(
-      analysis: analysis,
-      preference: preference ?? .automatic)
-  }
-
   func clearChartSelection() { session.selection.removeAll() }
 
   func selectTableRow(_ sourceRowID: Int?) {
@@ -234,6 +196,7 @@ struct ResultViewerView: View {
       clearChartSelection()
       return
     }
+    initialChartSourceRows = [sourceRowID]
     guard let analysis, case .ready(_, let presented?) = session.state else {
       clearChartSelection()
       return
@@ -241,6 +204,17 @@ struct ResultViewerView: View {
     session.selection = presented.preparedChart.selections(
       for: [sourceRowID], analysisID: analysis.id)
     initialChartSourceRows = nil
+  }
+
+  func clearSelectedCellIfHidden() {
+    guard let selectedCell else { return }
+    let rowIsVisible = ResultViewerLogic.identifiedDisplayRows(
+      result: result,
+      sourceRowIDs: selectedSourceRows,
+      sort: sort,
+      searchText: searchText
+    ).contains { $0.sourceRowID == selectedCell.row }
+    if !rowIsVisible { self.selectedCell = nil }
   }
 
   func columnWidths() -> [CGFloat] {
@@ -279,6 +253,29 @@ struct ResultViewerView: View {
 
   var body: some View {
     @Bindable var session = chartOwner.session
+    let analysis = self.analysis
+    let currentPreference = preference ?? .automatic
+    let preferenceResolution = analysis?.resolve(currentPreference.packagePreference)
+    let selectedRecommendation = preferenceResolution?.recommendation
+    let chartRecommendations: [AutoChartRecommendation] = {
+      guard let analysis, case .charts(let catalog) = analysis.outcome else { return [] }
+      return catalog.cataloged
+    }()
+    let chartPickerOptions: [AutoChartPickerOption] = {
+      guard let analysis, case .charts(let catalog) = analysis.outcome else { return [] }
+      return catalog.pickerOptions(resolver: CREGChartAdapter.textResolver)
+    }()
+    let selectedChartFailure = self.selectedChartFailure
+    let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
+      requestedMode: currentPreference.mode,
+      hasChart: selectedRecommendation != nil,
+      chartFailed: selectedChartFailure != nil)
+    let chartSelection = self.chartSelection
+    let migrationSuggestion = resultPresentationMigrationSuggestion(
+      analysis: analysis,
+      preference: currentPreference,
+      resolution: preferenceResolution)
+
     NavigationStack {
       VStack(spacing: 0) {
         if !chartRecommendations.isEmpty || selectedChartFailure?.isRetryable == true {
@@ -299,7 +296,7 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-view-mode")
         }
 
-        if let failure = selectedChartFailure, requestedMode == .chart {
+        if let failure = selectedChartFailure, currentPreference.mode == .chart {
           ResultChartRecoveryControls(
             spacing: 12,
             keepTable: { selectMode(.table) },
@@ -359,9 +356,11 @@ struct ResultViewerView: View {
         ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
         ToolbarItemGroup(placement: .primaryAction) {
           if chartRecommendations.count > 1,
-            requestedMode == .chart || selectedPreparationFailed
+            currentPreference.mode == .chart || selectedChartFailure != nil
           {
-            chartTypeMenu
+            chartTypeMenu(
+              selectedRecommendation: selectedRecommendation,
+              options: chartPickerOptions)
           }
           textSizeMenu
           exportMenu
@@ -384,18 +383,15 @@ struct ResultViewerView: View {
         session.setPreference(packagePreference)
       }
     }
+    .onChange(of: searchText) { _, _ in
+      clearSelectedCellIfHidden()
+    }
     .onChange(of: chartSelection) { _, _ in
-      guard let selectedCell, let selectedSourceRows,
-        !selectedSourceRows.contains(selectedCell.row)
-      else { return }
-      self.selectedCell = nil
+      clearSelectedCellIfHidden()
     }
     .task(id: selectedChartFailure?.episodeID) {
       guard let failure = selectedChartFailure else { return }
-      recordChartFailure(
-        failure,
-        chartAnalysis: chartAnalysis,
-        diagnostics: diagnostics)
+      chartOwner.recordFailure(failure, diagnostics: diagnostics)
     }
     .task(id: migrationSuggestion) {
       guard let migrationSuggestion, let analysis else { return }
@@ -423,8 +419,21 @@ struct ResultViewerView: View {
   }
 
   private func selectMode(_ mode: ResultPresentationMode) {
-    let updated = (preference ?? .automatic).selectingMode(mode)
-    applyUserPreference(updated)
+    let currentPreference = preference ?? .automatic
+    switch ResultViewerLogic.modeSelectionIntent(
+      mode,
+      requestedMode: currentPreference.mode,
+      preserving: currentPreference.specificationID,
+      retryAvailable: selectedChartFailure?.isRetryable == true)
+    {
+    case .none:
+      return
+    case .persist(let updated):
+      applyUserPreference(updated)
+    case .retryChart(let updated):
+      if let updated { applyUserPreference(updated) }
+      session.retry()
+    }
   }
 
   func applyUserPreference(_ updated: ResultPresentationPreference) {

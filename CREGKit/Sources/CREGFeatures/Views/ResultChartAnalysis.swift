@@ -18,11 +18,11 @@ struct CREGChartAnalysisClient: Sendable {
     cache: AutoChartCache(configuration: configuration))
 
   let cache: AutoChartCache
-  private let failureDiagnostics: ChartFailureDiagnosticStore
+  private let failures: ChartFailureStore
 
   init(cache: AutoChartCache) {
     self.cache = cache
-    self.failureDiagnostics = ChartFailureDiagnosticStore()
+    self.failures = ChartFailureStore()
   }
 
   @MainActor
@@ -36,8 +36,19 @@ struct CREGChartAnalysisClient: Sendable {
     cache.completedAnalysis(for: request.id)
   }
 
-  func shouldRecordFailure(_ failure: AutoChartFailure) -> Bool {
-    failureDiagnostics.insert(failure.episodeID)
+  func requestConstructionFailure(
+    inputIdentity: CREGChartInputIdentity,
+    kind: AutoChartFailureKind,
+    message: String
+  ) -> AutoChartFailure {
+    failures.requestConstructionFailure(
+      inputIdentity: inputIdentity,
+      kind: kind,
+      message: message)
+  }
+
+  func claimFailureEpisode(_ failure: AutoChartFailure) -> Bool {
+    failures.claim(failure.episodeID)
   }
 
   func trimToMinimum() async {
@@ -63,6 +74,7 @@ struct CREGChartInputIdentity: Hashable, Sendable {
 /// for every transient View value.
 @MainActor
 final class CREGChartSessionOwner: ObservableObject {
+  private let client: CREGChartAnalysisClient
   let session: AutoChartSession<Int>
   @Published private(set) var inputIdentity: CREGChartInputIdentity
   @Published private(set) var request: AutoChartRequest<Int>?
@@ -73,9 +85,13 @@ final class CREGChartSessionOwner: ObservableObject {
     inputIdentity: CREGChartInputIdentity,
     result: QueryResult
   ) {
+    self.client = client
     self.session = client.makeSession()
     self.inputIdentity = inputIdentity
-    let setup = Self.makeRequest(result: result, inputIdentity: inputIdentity)
+    let setup = Self.makeRequest(
+      client: client,
+      result: result,
+      inputIdentity: inputIdentity)
     self.request = setup.request
     self.requestFailure = setup.failure
   }
@@ -88,7 +104,10 @@ final class CREGChartSessionOwner: ObservableObject {
     if inputIdentity != self.inputIdentity {
       session.cancel()
       session.selection.removeAll()
-      let setup = Self.makeRequest(result: result, inputIdentity: inputIdentity)
+      let setup = Self.makeRequest(
+        client: client,
+        result: result,
+        inputIdentity: inputIdentity)
       self.request = setup.request
       self.requestFailure = setup.failure
       self.inputIdentity = inputIdentity
@@ -103,7 +122,22 @@ final class CREGChartSessionOwner: ObservableObject {
       textResolver: CREGChartAdapter.textResolver)
   }
 
+  func cachedAnalysis() -> AutoChartAnalysis<Int>? {
+    request.flatMap { client.cachedAnalysis(for: $0) }
+  }
+
+  func recordFailure(
+    _ failure: AutoChartFailure,
+    diagnostics: DiagnosticsClient
+  ) {
+    recordChartFailure(
+      failure,
+      chartAnalysis: client,
+      diagnostics: diagnostics)
+  }
+
   private static func makeRequest(
+    client: CREGChartAnalysisClient,
     result: QueryResult,
     inputIdentity: CREGChartInputIdentity
   ) -> (request: AutoChartRequest<Int>?, failure: AutoChartFailure?) {
@@ -120,11 +154,9 @@ final class CREGChartSessionOwner: ObservableObject {
         error is AutoChartDatasetError ? .invalidData : .internalFailure
       return (
         nil,
-        AutoChartFailure(
-          stage: .materialization,
+        client.requestConstructionFailure(
+          inputIdentity: inputIdentity,
           kind: kind,
-          isRetryable: false,
-          diagnosticID: "ATC.materialization.\(kind.rawValue)",
           message: String(describing: error)))
     }
   }
@@ -133,13 +165,20 @@ final class CREGChartSessionOwner: ObservableObject {
 /// A bounded process-local ledger. The package intentionally shares an episode
 /// ID across sessions for the same failure; CREG records that episode once even
 /// when preview and viewer surfaces observe it independently.
-private final class ChartFailureDiagnosticStore: @unchecked Sendable {
+private final class ChartFailureStore: @unchecked Sendable {
+  private struct RequestConstructionKey: Hashable {
+    var inputIdentity: CREGChartInputIdentity
+    var kind: AutoChartFailureKind
+  }
+
   private static let maximumEntries = 1_024
   private let lock = NSLock()
   private var episodeIDs: Set<UUID> = []
   private var insertionOrder: [UUID] = []
+  private var requestConstructionFailures: [RequestConstructionKey: AutoChartFailure] = [:]
+  private var requestConstructionOrder: [RequestConstructionKey] = []
 
-  func insert(_ episodeID: UUID) -> Bool {
+  func claim(_ episodeID: UUID) -> Bool {
     lock.lock()
     defer { lock.unlock() }
     guard episodeIDs.insert(episodeID).inserted else { return false }
@@ -148,6 +187,32 @@ private final class ChartFailureDiagnosticStore: @unchecked Sendable {
       episodeIDs.remove(insertionOrder.removeFirst())
     }
     return true
+  }
+
+  func requestConstructionFailure(
+    inputIdentity: CREGChartInputIdentity,
+    kind: AutoChartFailureKind,
+    message: String
+  ) -> AutoChartFailure {
+    lock.lock()
+    defer { lock.unlock() }
+    let key = RequestConstructionKey(
+      inputIdentity: inputIdentity,
+      kind: kind)
+    if let failure = requestConstructionFailures[key] { return failure }
+    let failure = AutoChartFailure(
+      stage: .materialization,
+      kind: kind,
+      isRetryable: false,
+      diagnosticID: "ATC.materialization.\(kind.rawValue)",
+      message: message)
+    requestConstructionFailures[key] = failure
+    requestConstructionOrder.append(key)
+    if requestConstructionOrder.count > Self.maximumEntries {
+      requestConstructionFailures.removeValue(
+        forKey: requestConstructionOrder.removeFirst())
+    }
+    return failure
   }
 }
 
@@ -170,7 +235,7 @@ func recordChartFailure(
   chartAnalysis: CREGChartAnalysisClient,
   diagnostics: DiagnosticsClient
 ) {
-  guard chartAnalysis.shouldRecordFailure(failure) else { return }
+  guard chartAnalysis.claimFailureEpisode(failure) else { return }
   diagnostics.record(
     DiagnosticEvent(
       level: .error,

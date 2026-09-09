@@ -143,7 +143,10 @@ extension ResultViewerView {
     }
   }
 
-  var chartTypeMenu: some View {
+  func chartTypeMenu(
+    selectedRecommendation: AutoChartRecommendation?,
+    options: [AutoChartPickerOption]
+  ) -> some View {
     Menu {
       // The one user action that changes the chart specification: persist
       // the preference here, and clear the exact-mark selection whose row
@@ -156,12 +159,11 @@ extension ResultViewerView {
             guard id != selectedRecommendation?.id else { return }
             guard let id else { return }
             clearChartSelection()
-            let updated = ResultViewerLogic.chartTypeSelectionPreference(
-              specificationID: id)
+            let updated = (preference ?? .automatic).selectingChart(id)
             applyUserPreference(updated)
           })
       ) {
-        ForEach(chartPickerOptions) { option in
+        ForEach(options) { option in
           Text(option.label)
             .tag(Optional(option.id))
         }

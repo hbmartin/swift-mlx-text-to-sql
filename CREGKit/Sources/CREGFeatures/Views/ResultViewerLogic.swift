@@ -166,9 +166,9 @@ public enum ResultViewerLogic {
   static func effectivePresentationMode(
     requestedMode: ResultPresentationMode,
     hasChart: Bool,
-    preparationFailed: Bool
+    chartFailed: Bool
   ) -> ResultPresentationMode {
-    guard hasChart, !preparationFailed else { return .table }
+    guard hasChart, !chartFailed else { return .table }
     return requestedMode
   }
 
@@ -204,16 +204,6 @@ public enum ResultViewerLogic {
       ResultPresentationPreference(
         mode: selectedMode,
         specificationID: specificationID))
-  }
-
-  /// Choosing a chart type is also an explicit request to show a chart. This
-  /// matters while the recovery menu remains available over a Table fallback.
-  static func chartTypeSelectionPreference(
-    specificationID: AutoChartRecommendationID?
-  ) -> ResultPresentationPreference {
-    ResultPresentationPreference(
-      mode: .chart,
-      specificationID: specificationID)
   }
 
   /// Pinch arming uses hysteresis so tiny reversals around the activation

@@ -23,10 +23,12 @@ struct ResultPresentationMigrationSuggestion: Hashable {
 
 func resultPresentationMigrationSuggestion(
   analysis: AutoChartAnalysis<Int>?,
-  preference: ResultPresentationPreference
+  preference: ResultPresentationPreference,
+  resolution suppliedResolution: AutoChartPreferenceResolution? = nil
 ) -> ResultPresentationMigrationSuggestion? {
   guard let analysis else { return nil }
-  let resolution = analysis.resolve(preference.packagePreference)
+  let resolution = suppliedResolution
+    ?? analysis.resolve(preference.packagePreference)
   guard let replacement = resolution.replacementPreference else { return nil }
   return ResultPresentationMigrationSuggestion(
     analysisID: analysis.id,
