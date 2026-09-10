@@ -498,6 +498,10 @@ import Testing
       inputIdentity: inputIdentity,
       kind: .invalidData,
       message: "The chart dataset is invalid.")
+    let differentFailure = client.requestConstructionFailure(
+      inputIdentity: inputIdentity,
+      kind: .invalidData,
+      message: "A different dataset validation failed.")
     let otherFailure = client.requestConstructionFailure(
       inputIdentity: CREGChartInputIdentity(
         resultFingerprint: "other-result",
@@ -508,7 +512,29 @@ import Testing
       message: "The chart dataset is invalid.")
 
     #expect(previewFailure.episodeID == viewerFailure.episodeID)
+    #expect(previewFailure.episodeID != differentFailure.episodeID)
     #expect(previewFailure.episodeID != otherFailure.episodeID)
+  }
+
+  @Test func minimumMemoryTrimReleasesRequestFailureEpisodes() async {
+    let client = CREGChartAnalysisClient.testValue
+    let inputIdentity = CREGChartInputIdentity(
+      resultFingerprint: "failed-result",
+      dataIdentity: "message-result",
+      sql: "SELECT value FROM properties",
+      question: "Show property values")
+    let first = client.requestConstructionFailure(
+      inputIdentity: inputIdentity,
+      kind: .invalidData,
+      message: "The chart dataset is invalid.")
+
+    await client.trimToMinimum()
+
+    let recreated = client.requestConstructionFailure(
+      inputIdentity: inputIdentity,
+      kind: .invalidData,
+      message: "The chart dataset is invalid.")
+    #expect(first.episodeID != recreated.episodeID)
   }
 }
 

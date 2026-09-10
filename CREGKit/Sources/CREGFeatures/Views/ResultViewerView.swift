@@ -22,6 +22,7 @@ struct ResultViewerView: View {
   @Binding var textSize: ResultTableTextSize
   @StateObject private var chartOwner: CREGChartSessionOwner
   @State private var initialChartSourceRows: Set<Int>?
+  @State private var tableSelectionSourceRowID: Int?
   @State var sort: ResultViewerLogic.SortState?
   @State var searchText: String
   @State var selectedCell: ResultCellSelection?
@@ -151,20 +152,11 @@ struct ResultViewerView: View {
   }
 
   var analysis: AutoChartAnalysis<Int>? {
-    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
-    return switch session.state {
-    case .preparing(let analysis, _), .ready(let analysis, _),
-      .fallback(let analysis, _):
-      analysis
-    case .idle, .analyzing, .failed:
-      chartOwner.cachedAnalysis()
-    }
+    chartOwner.analysis(for: chartInputIdentity)
   }
 
   var selectedChartFailure: AutoChartFailure? {
-    guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
-    if case .failed(let failure) = session.state { return failure }
-    return chartOwner.requestFailure
+    chartOwner.failure(for: chartInputIdentity)
   }
 
   var selectedSourceRows: Set<Int>? {
@@ -188,17 +180,31 @@ struct ResultViewerView: View {
     return session.selection.first
   }
 
-  func clearChartSelection() { session.selection.removeAll() }
+  var interactiveChartSelection: Binding<AutoChartSelectionSet<Int>> {
+    Binding(
+      get: { session.selection },
+      set: { updated in
+        initialChartSourceRows = nil
+        tableSelectionSourceRowID = nil
+        session.selection = updated
+      })
+  }
+
+  func clearChartSelection() {
+    initialChartSourceRows = nil
+    tableSelectionSourceRowID = nil
+    session.selection.removeAll()
+  }
 
   func selectTableRow(_ sourceRowID: Int?) {
     guard let sourceRowID else {
-      initialChartSourceRows = nil
       clearChartSelection()
       return
     }
+    clearChartSelection()
     initialChartSourceRows = [sourceRowID]
+    tableSelectionSourceRowID = sourceRowID
     guard let analysis, case .ready(_, let presented?) = session.state else {
-      clearChartSelection()
       return
     }
     session.selection = presented.preparedChart.selections(
@@ -206,15 +212,44 @@ struct ResultViewerView: View {
     initialChartSourceRows = nil
   }
 
-  func clearSelectedCellIfHidden() {
+  func clearSelectedCellIfHiddenBySearch() {
     guard let selectedCell else { return }
-    let rowIsVisible = ResultViewerLogic.identifiedDisplayRows(
-      result: result,
-      sourceRowIDs: selectedSourceRows,
-      sort: sort,
-      searchText: searchText
-    ).contains { $0.sourceRowID == selectedCell.row }
-    if !rowIsVisible { self.selectedCell = nil }
+    let row = result.rows.indices.contains(selectedCell.row)
+      ? result.rows[selectedCell.row] : nil
+    let invalidation = ResultViewerLogic.searchSelectionInvalidation(
+      row: row,
+      sourceRowID: selectedCell.row,
+      searchText: searchText,
+      tableSelectionSourceRowID: tableSelectionSourceRowID)
+    switch invalidation {
+    case .keep:
+      return
+    case .clearCell, .clearCellAndLinkedChartSelection:
+      let clearsLinkedChartSelection =
+        invalidation == .clearCellAndLinkedChartSelection
+      self.selectedCell = nil
+      initialChartSourceRows = nil
+      tableSelectionSourceRowID = nil
+      if clearsLinkedChartSelection {
+        session.selection.removeAll()
+      }
+    }
+  }
+
+  func clearSelectedCellIfExcludedByChartSelection() {
+    guard let selectedCell, let selectedSourceRows,
+      !selectedSourceRows.contains(selectedCell.row)
+    else { return }
+    self.selectedCell = nil
+    initialChartSourceRows = nil
+    tableSelectionSourceRowID = nil
+  }
+
+  func chartPickerOptions(
+    for analysis: AutoChartAnalysis<Int>?
+  ) -> [AutoChartPickerOption] {
+    guard let analysis, case .charts(let catalog) = analysis.outcome else { return [] }
+    return catalog.pickerOptions(resolver: CREGChartAdapter.textResolver)
   }
 
   func columnWidths() -> [CGFloat] {
@@ -260,10 +295,6 @@ struct ResultViewerView: View {
     let chartRecommendations: [AutoChartRecommendation] = {
       guard let analysis, case .charts(let catalog) = analysis.outcome else { return [] }
       return catalog.cataloged
-    }()
-    let chartPickerOptions: [AutoChartPickerOption] = {
-      guard let analysis, case .charts(let catalog) = analysis.outcome else { return [] }
-      return catalog.pickerOptions(resolver: CREGChartAdapter.textResolver)
     }()
     let selectedChartFailure = self.selectedChartFailure
     let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
@@ -315,7 +346,7 @@ struct ResultViewerView: View {
               AutoChartView(
                 presentedChart: presented,
                 analysisID: analysis.id,
-                selection: $session.selection,
+                selection: interactiveChartSelection,
                 presentation: .explorer(
                   plotHeight: ResultChartLayout.explorerPlotHeight),
                 formatters: CREGChartAdapter.formatters,
@@ -360,7 +391,7 @@ struct ResultViewerView: View {
           {
             chartTypeMenu(
               selectedRecommendation: selectedRecommendation,
-              options: chartPickerOptions)
+              options: chartPickerOptions(for: analysis))
           }
           textSizeMenu
           exportMenu
@@ -370,6 +401,7 @@ struct ResultViewerView: View {
     .task(id: chartInputIdentity) {
       if chartOwner.inputIdentity != chartInputIdentity {
         initialChartSourceRows = nil
+        tableSelectionSourceRowID = nil
         selectedCell = nil
       }
       chartOwner.load(
@@ -384,10 +416,15 @@ struct ResultViewerView: View {
       }
     }
     .onChange(of: searchText) { _, _ in
-      clearSelectedCellIfHidden()
+      guard effectiveResultMode == .table else { return }
+      clearSelectedCellIfHiddenBySearch()
     }
-    .onChange(of: chartSelection) { _, _ in
-      clearSelectedCellIfHidden()
+    .onChange(of: selectedSourceRows) { _, _ in
+      clearSelectedCellIfExcludedByChartSelection()
+    }
+    .onChange(of: effectiveResultMode) { _, mode in
+      guard mode == .table else { return }
+      clearSelectedCellIfHiddenBySearch()
     }
     .task(id: selectedChartFailure?.episodeID) {
       guard let failure = selectedChartFailure else { return }
@@ -420,26 +457,20 @@ struct ResultViewerView: View {
 
   private func selectMode(_ mode: ResultPresentationMode) {
     let currentPreference = preference ?? .automatic
-    switch ResultViewerLogic.modeSelectionIntent(
-      mode,
-      requestedMode: currentPreference.mode,
-      preserving: currentPreference.specificationID,
-      retryAvailable: selectedChartFailure?.isRetryable == true)
-    {
-    case .none:
-      return
-    case .persist(let updated):
-      applyUserPreference(updated)
-    case .retryChart(let updated):
-      if let updated { applyUserPreference(updated) }
-      session.retry()
-    }
+    applyResultPresentationModeSelection(
+      ResultViewerLogic.modeSelectionIntent(
+        mode,
+        requestedMode: currentPreference.mode,
+        preserving: currentPreference.specificationID,
+        retryAvailable: selectedChartFailure?.isRetryable == true),
+      chartOwner: chartOwner,
+      persistPreference: persistPreference)
   }
 
   func applyUserPreference(_ updated: ResultPresentationPreference) {
-    if session.preference != updated.packagePreference {
-      session.setPreference(updated.packagePreference)
-    }
-    persistPreference(updated)
+    applyResultPresentationPreference(
+      updated,
+      chartOwner: chartOwner,
+      persistPreference: persistPreference)
   }
 }

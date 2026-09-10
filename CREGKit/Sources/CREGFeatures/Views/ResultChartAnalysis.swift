@@ -52,6 +52,7 @@ struct CREGChartAnalysisClient: Sendable {
   }
 
   func trimToMinimum() async {
+    failures.removeAll()
     await cache.trim(to: .minimum)
   }
 
@@ -77,8 +78,8 @@ final class CREGChartSessionOwner: ObservableObject {
   private let client: CREGChartAnalysisClient
   let session: AutoChartSession<Int>
   @Published private(set) var inputIdentity: CREGChartInputIdentity
-  @Published private(set) var request: AutoChartRequest<Int>?
-  @Published private(set) var requestFailure: AutoChartFailure?
+  @Published private var request: AutoChartRequest<Int>?
+  @Published private var requestFailure: AutoChartFailure?
 
   init(
     client: CREGChartAnalysisClient,
@@ -122,8 +123,52 @@ final class CREGChartSessionOwner: ObservableObject {
       textResolver: CREGChartAdapter.textResolver)
   }
 
-  func cachedAnalysis() -> AutoChartAnalysis<Int>? {
+  private func cachedAnalysis() -> AutoChartAnalysis<Int>? {
     request.flatMap { client.cachedAnalysis(for: $0) }
+  }
+
+  func analysis(
+    for inputIdentity: CREGChartInputIdentity
+  ) -> AutoChartAnalysis<Int>? {
+    guard self.inputIdentity == inputIdentity else { return nil }
+    return switch session.state {
+    case .preparing(let analysis, _), .ready(let analysis, _),
+      .fallback(let analysis, _):
+      analysis
+    case .idle, .analyzing, .failed:
+      cachedAnalysis()
+    }
+  }
+
+  func failure(
+    for inputIdentity: CREGChartInputIdentity
+  ) -> AutoChartFailure? {
+    guard self.inputIdentity == inputIdentity else { return nil }
+    if case .failed(let failure) = session.state { return failure }
+    return requestFailure
+  }
+
+  func setPreferenceIfNeeded(_ preference: AutoChartPreference) {
+    if session.preference != preference {
+      session.setPreference(preference)
+    }
+  }
+
+  /// Begins one retry attempt, optionally changing the preference as part of
+  /// that same attempt. `AutoChartSession.setPreference` itself starts work, so
+  /// calling it immediately before `retry()` would start and cancel two tasks.
+  func retry(preference: AutoChartPreference? = nil) {
+    guard let preference else {
+      session.retry()
+      return
+    }
+    guard let request else {
+      session.setPreference(preference)
+      return
+    }
+    session.selection.removeAll()
+    client.cache.beginRetry(for: request.id)
+    session.setPreference(preference)
   }
 
   func recordFailure(
@@ -169,6 +214,7 @@ private final class ChartFailureStore: @unchecked Sendable {
   private struct RequestConstructionKey: Hashable {
     var inputIdentity: CREGChartInputIdentity
     var kind: AutoChartFailureKind
+    var message: String
   }
 
   private static let maximumEntries = 1_024
@@ -198,7 +244,8 @@ private final class ChartFailureStore: @unchecked Sendable {
     defer { lock.unlock() }
     let key = RequestConstructionKey(
       inputIdentity: inputIdentity,
-      kind: kind)
+      kind: kind,
+      message: message)
     if let failure = requestConstructionFailures[key] { return failure }
     let failure = AutoChartFailure(
       stage: .materialization,
@@ -213,6 +260,15 @@ private final class ChartFailureStore: @unchecked Sendable {
         forKey: requestConstructionOrder.removeFirst())
     }
     return failure
+  }
+
+  func removeAll() {
+    lock.lock()
+    defer { lock.unlock() }
+    episodeIDs.removeAll(keepingCapacity: false)
+    insertionOrder.removeAll(keepingCapacity: false)
+    requestConstructionFailures.removeAll(keepingCapacity: false)
+    requestConstructionOrder.removeAll(keepingCapacity: false)
   }
 }
 
