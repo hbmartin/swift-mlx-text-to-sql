@@ -179,14 +179,26 @@ import Testing
     #expect(lifecycle.restorableSourceRows == [1, 2])
   }
 
-  @Test func packageBindingResetDoesNotDiscardPendingRestoration() {
+  @Test func interactiveBindingClearSupersedesPendingRestoration() {
     var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
       initialChartSourceRows: [1, 2])
 
     lifecycle.chartSelectionChanged(sourceRows: [])
 
-    #expect(lifecycle.pendingSourceRows == [1, 2])
-    #expect(lifecycle.restorableSourceRows == [1, 2])
+    #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.restorableSourceRows == nil)
+  }
+
+  @Test func userSelectionSupersedesPendingRestoration() {
+    var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
+      initialChartSourceRows: [1, 2])
+
+    lifecycle.chartSelectionChanged(sourceRows: [3])
+
+    #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.restorableSourceRows == [3])
+    lifecycle.prepareForSessionRestart()
+    #expect(lifecycle.pendingSourceRows == [3])
   }
 
   @Test func chartInteractionAndEmptyRestorationUpdateRestorableRows() {

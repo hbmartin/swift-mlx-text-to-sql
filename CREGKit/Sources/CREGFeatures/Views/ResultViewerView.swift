@@ -336,7 +336,9 @@ struct ResultViewerView: View {
           let selectedRecommendation
         {
           ResultChartExplorerContainer(recommendation: selectedRecommendation) {
-            if case .ready(_, let presented?) = session.state {
+            if chartSelectionLifecycle.pendingSourceRows == nil,
+              case .ready(_, let presented?) = session.state
+            {
               AutoChartView(
                 presentedChart: presented,
                 analysisID: analysis.id,

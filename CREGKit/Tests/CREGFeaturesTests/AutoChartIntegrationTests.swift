@@ -486,6 +486,46 @@ import Testing
     #expect(selection.unionedSourceRows == [0])
   }
 
+  @Test func userSelectionCancelsPendingRestorationBeforeBindingAssignment()
+    async throws
+  {
+    let result = QueryResult(
+      columns: ["category", "value"],
+      rows: [
+        [.text("A"), .real(10)],
+        [.text("B"), .real(20)],
+        [.text("C"), .real(30)],
+      ])
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT category, value FROM properties",
+      question: "Compare value by category")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request, preparation: .primary)
+    let chart = try #require(analysis.primaryChart)
+    let previousSelection = chart.selections(for: [0], analysisID: analysis.id)
+    let userSelection = chart.selections(for: [2], analysisID: analysis.id)
+    let session = AutoChartSession<Int>()
+    session.selection = previousSelection
+    var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
+      initialChartSourceRows: previousSelection.unionedSourceRows)
+    lifecycle.pendingSelectionApplied(
+      sourceRows: previousSelection.unionedSourceRows)
+    lifecycle.prepareForSessionRestart()
+
+    lifecycle.chartSelectionChanged(
+      sourceRows: userSelection.unionedSourceRows)
+    session.selection = userSelection
+    if let staleRows = lifecycle.pendingSourceRows {
+      session.selection = chart.selections(
+        for: staleRows, analysisID: analysis.id)
+    }
+
+    #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.restorableSourceRows == [2])
+    #expect(session.selection.unionedSourceRows == [2])
+  }
+
   @Test func chartFailureDiagnosticsRetainPackageEpisodeProvenance() throws {
     let recorder = DiagnosticEventRecorder()
     let client = CREGChartAnalysisClient.testValue

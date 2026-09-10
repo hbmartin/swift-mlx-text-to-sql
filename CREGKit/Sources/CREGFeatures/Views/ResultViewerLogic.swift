@@ -77,11 +77,10 @@ public enum ResultViewerLogic {
       }
     }
 
-    /// Binding writes can also come from the package while it resets its
-    /// transient interaction state. Do not let those writes replace a pending
-    /// app-owned restoration.
+    /// The interactive chart is mounted only after pending restoration is
+    /// complete, so every binding write here supersedes prior source-row intent.
     mutating func chartSelectionChanged(sourceRows: Set<Int>) {
-      guard pendingSourceRows == nil else { return }
+      pendingSourceRows = nil
       restorableSourceRows = sourceRows.isEmpty ? nil : sourceRows
       tableSelectionSourceRowID = nil
     }
