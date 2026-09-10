@@ -51,7 +51,8 @@ struct ResultViewerView: View {
     persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
-    initialChartSelection: AutoChartSelection<Int>? = nil
+    initialChartSelection: AutoChartSelection<Int>? = nil,
+    initialTableSelectionSourceRowID: Int? = nil
   ) {
     self.init(
       result: result,
@@ -65,7 +66,8 @@ struct ResultViewerView: View {
       migratePreference: { _, updated in .migrated(updated) },
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
-      initialChartSelection: initialChartSelection)
+      initialChartSelection: initialChartSelection,
+      initialTableSelectionSourceRowID: initialTableSelectionSourceRowID)
   }
 
   init(
@@ -81,7 +83,8 @@ struct ResultViewerView: View {
     migratePreference: @escaping ResultPresentationMigrationHandler,
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
-    initialChartSelection: AutoChartSelection<Int>? = nil
+    initialChartSelection: AutoChartSelection<Int>? = nil,
+    initialTableSelectionSourceRowID: Int? = nil
   ) {
     self.init(
       result: result,
@@ -96,7 +99,8 @@ struct ResultViewerView: View {
       migratePreference: migratePreference,
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
-      initialChartSelection: initialChartSelection)
+      initialChartSelection: initialChartSelection,
+      initialTableSelectionSourceRowID: initialTableSelectionSourceRowID)
   }
 
   private init(
@@ -111,7 +115,8 @@ struct ResultViewerView: View {
     migratePreference: @escaping ResultPresentationMigrationHandler,
     initialSearchText: String,
     initialSelection: ResultCellSelection?,
-    initialChartSelection: AutoChartSelection<Int>?
+    initialChartSelection: AutoChartSelection<Int>?,
+    initialTableSelectionSourceRowID: Int?
   ) {
     self.result = result
     self.runtimeMode = runtimeMode
@@ -132,8 +137,8 @@ struct ResultViewerView: View {
     self._selectedCell = State(initialValue: initialSelection)
     self._chartSelectionLifecycle = State(
       initialValue: ResultViewerLogic.ChartSelectionLifecycle(
-        initialCellSourceRowID: initialSelection?.row,
-        initialChartSourceRows: initialChartSelection?.sourceRowIDs))
+        initialChartSourceRows: initialChartSelection?.sourceRowIDs,
+        initialTableSelectionSourceRowID: initialTableSelectionSourceRowID))
     let inputIdentity = CREGChartInputIdentity(
       resultFingerprint: fingerprint,
       dataIdentity: dataIdentity,
@@ -165,17 +170,6 @@ struct ResultViewerView: View {
     return session.selection.isEmpty ? nil : session.selection.unionedSourceRows
   }
 
-  func filteredResult(selectedSourceRows: Set<Int>?) -> QueryResult {
-    guard let selectedSourceRows else { return result }
-    return QueryResult(
-      columns: result.columns,
-      rows: result.rows.enumerated().compactMap { index, row in
-        selectedSourceRows.contains(index) ? row : nil
-      },
-      isTruncated: result.isTruncated,
-      elapsedMicroseconds: result.elapsedMicroseconds)
-  }
-
   var chartSelection: AutoChartSelection<Int>? {
     guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
     return session.selection.first
@@ -186,7 +180,8 @@ struct ResultViewerView: View {
       get: { session.selection },
       set: { updated in
         guard updated != session.selection else { return }
-        chartSelectionLifecycle.detachTableSelection()
+        chartSelectionLifecycle.chartSelectionChanged(
+          sourceRows: updated.unionedSourceRows)
         session.selection = updated
       })
   }
@@ -197,11 +192,8 @@ struct ResultViewerView: View {
   }
 
   func selectTableRow(_ sourceRowID: Int?) {
-    guard let sourceRowID else {
-      clearChartSelection()
-      return
-    }
     clearChartSelection()
+    guard let sourceRowID else { return }
     chartSelectionLifecycle.selectTableRow(sourceRowID)
     guard let analysis, case .ready(_, let presented?) = session.state else {
       return
@@ -210,7 +202,7 @@ struct ResultViewerView: View {
       for: [sourceRowID], analysisID: analysis.id)
     session.selection = selection
     chartSelectionLifecycle.pendingSelectionApplied(
-      selectionIsEmpty: selection.isEmpty)
+      sourceRows: selection.unionedSourceRows)
   }
 
   func clearSelectedCellIfHiddenBySearch() {
@@ -242,7 +234,7 @@ struct ResultViewerView: View {
       !selectedSourceRows.contains(selectedCell.row)
     else { return }
     self.selectedCell = nil
-    chartSelectionLifecycle.detachTableSelection()
+    chartSelectionLifecycle.clearTableSelectionLink()
   }
 
   func chartPickerOptions(
@@ -300,6 +292,9 @@ struct ResultViewerView: View {
       chartFailed: selectedChartFailure != nil)
     let chartSelection = self.chartSelection
     let selectedSourceRows = self.selectedSourceRows
+    let selectedRowCount = selectedSourceRows.map { sourceRows in
+      sourceRows.lazy.filter { result.rows.indices.contains($0) }.count
+    } ?? result.rowCount
     let migrationSuggestion = resultPresentationMigrationSuggestion(
       analysis: analysis,
       preference: currentPreference,
@@ -379,8 +374,7 @@ struct ResultViewerView: View {
               if let selectedResultCell { selectionAccessory(selectedResultCell) }
               footer(
                 displayedRowCount: displayRows.count,
-                sourceResult: filteredResult(
-                  selectedSourceRows: selectedSourceRows),
+                selectedRowCount: selectedRowCount,
                 selectionIsActive: selectedSourceRows != nil)
             }
           )
@@ -412,11 +406,13 @@ struct ResultViewerView: View {
       chartOwner.load(
         result: result,
         inputIdentity: chartInputIdentity,
-        preference: (preference ?? .automatic).packagePreference)
+        preference: (preference ?? .automatic).packagePreference,
+        beforeRestart: prepareChartSelectionForSessionRestart)
     }
     .onChange(of: preference) { _, updated in
-      let packagePreference = (updated ?? .automatic).packagePreference
-      setChartPreferenceIfNeeded(packagePreference)
+      chartOwner.setPreferenceIfNeeded(
+        (updated ?? .automatic).packagePreference,
+        beforeRestart: prepareChartSelectionForSessionRestart)
     }
     .onChange(of: searchText) { _, _ in
       guard effectiveResultMode == .table else { return }
@@ -451,7 +447,7 @@ struct ResultViewerView: View {
         for: rows, analysisID: analysis.id)
       session.selection = selection
       chartSelectionLifecycle.pendingSelectionApplied(
-        selectionIsEmpty: selection.isEmpty)
+        sourceRows: selection.unionedSourceRows)
     }
   }
 
@@ -480,17 +476,8 @@ struct ResultViewerView: View {
     chartSelectionLifecycle.prepareForSessionRestart()
   }
 
-  private func setChartPreferenceIfNeeded(
-    _ packagePreference: AutoChartPreference
-  ) {
-    guard session.preference != packagePreference else { return }
-    prepareChartSelectionForSessionRestart()
-    chartOwner.setPreferenceIfNeeded(packagePreference)
-  }
-
   private func retryChart() {
-    prepareChartSelectionForSessionRestart()
-    chartOwner.retry()
+    chartOwner.retry(beforeRestart: prepareChartSelectionForSessionRestart)
   }
 
   private func selectMode(_ mode: ResultPresentationMode) {

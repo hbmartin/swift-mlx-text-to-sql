@@ -52,7 +52,6 @@ struct CREGChartAnalysisClient: Sendable {
   }
 
   func trimToMinimum() async {
-    failures.removeRequestConstructionFailures()
     await cache.trim(to: .minimum)
   }
 
@@ -83,6 +82,7 @@ final class CREGChartSessionOwner: ObservableObject {
   @Published private(set) var selectionRestorationAttempt: UInt64 = 0
   @Published private var request: AutoChartRequest<Int>?
   @Published private var requestFailure: AutoChartFailure?
+  private var isSessionLoaded = false
 
   init(
     client: CREGChartAnalysisClient,
@@ -103,12 +103,17 @@ final class CREGChartSessionOwner: ObservableObject {
   func load(
     result: QueryResult,
     inputIdentity: CREGChartInputIdentity,
-    preference: AutoChartPreference
+    preference: AutoChartPreference,
+    beforeRestart: () -> Void = {}
   ) {
+    if isSessionLoaded {
+      beforeRestart()
+      selectionRestorationAttempt &+= 1
+    }
     if inputIdentity != self.inputIdentity {
       session.cancel()
       session.selection.removeAll()
-      selectionRestorationAttempt &+= 1
+      isSessionLoaded = false
       let setup = Self.makeRequest(
         client: client,
         result: result,
@@ -125,6 +130,7 @@ final class CREGChartSessionOwner: ObservableObject {
       presentationContext: .init(identity: "creg-v3"),
       formatters: CREGChartAdapter.formatters,
       textResolver: CREGChartAdapter.textResolver)
+    isSessionLoaded = true
   }
 
   private func cachedAnalysis() -> AutoChartAnalysis<Int>? {
@@ -152,29 +158,36 @@ final class CREGChartSessionOwner: ObservableObject {
     return requestFailure
   }
 
-  func setPreferenceIfNeeded(_ preference: AutoChartPreference) {
+  func setPreferenceIfNeeded(
+    _ preference: AutoChartPreference,
+    beforeRestart: () -> Void = {}
+  ) {
     guard session.preference != preference else { return }
-    selectionRestorationAttempt &+= 1
+    if isSessionLoaded {
+      beforeRestart()
+      selectionRestorationAttempt &+= 1
+    }
     session.setPreference(preference)
   }
 
   /// Begins one retry attempt, optionally changing the preference as part of
-  /// that same attempt. `AutoChartSession.setPreference` itself starts work, so
-  /// calling it immediately before `retry()` would start and cancel two tasks.
-  func retry(preference: AutoChartPreference? = nil) {
-    guard let preference else {
-      selectionRestorationAttempt &+= 1
-      session.retry()
+  /// that attempt. Retry invalidation remains owned by AutoTableCharts.
+  func retry(
+    preference: AutoChartPreference? = nil,
+    beforeRestart: () -> Void = {}
+  ) {
+    guard isSessionLoaded else {
+      if let preference {
+        setPreferenceIfNeeded(preference)
+      }
       return
     }
-    guard let request else {
-      setPreferenceIfNeeded(preference)
-      return
-    }
+    beforeRestart()
     selectionRestorationAttempt &+= 1
-    session.selection.removeAll()
-    client.cache.beginRetry(for: request.id)
-    session.setPreference(preference)
+    session.retry()
+    if let preference, session.preference != preference {
+      session.setPreference(preference)
+    }
   }
 
   func recordFailure(
@@ -266,13 +279,6 @@ private final class ChartFailureStore: @unchecked Sendable {
         forKey: requestConstructionOrder.removeFirst())
     }
     return failure
-  }
-
-  func removeRequestConstructionFailures() {
-    lock.lock()
-    defer { lock.unlock() }
-    requestConstructionFailures.removeAll(keepingCapacity: false)
-    requestConstructionOrder.removeAll(keepingCapacity: false)
   }
 }
 

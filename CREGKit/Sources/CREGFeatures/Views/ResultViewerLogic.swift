@@ -37,40 +37,52 @@ public enum ResultViewerLogic {
   /// only the source-row intent needed while a chart is being prepared again.
   struct ChartSelectionLifecycle: Equatable {
     private(set) var pendingSourceRows: Set<Int>?
+    private(set) var restorableSourceRows: Set<Int>?
     private(set) var tableSelectionSourceRowID: Int?
 
     init(
-      initialCellSourceRowID: Int?,
-      initialChartSourceRows: Set<Int>?
+      initialChartSourceRows: Set<Int>?,
+      initialTableSelectionSourceRowID: Int? = nil
     ) {
-      pendingSourceRows = initialChartSourceRows
-      tableSelectionSourceRowID = initialCellSourceRowID.flatMap { rowID in
-        initialChartSourceRows?.contains(rowID) == true ? rowID : nil
+      let sourceRows = initialChartSourceRows.flatMap { rows in
+        rows.isEmpty ? nil : rows
+      }
+      pendingSourceRows = sourceRows
+      restorableSourceRows = sourceRows
+      tableSelectionSourceRowID = initialTableSelectionSourceRowID.flatMap { rowID in
+        sourceRows?.contains(rowID) == true ? rowID : nil
       }
     }
 
     mutating func selectTableRow(_ sourceRowID: Int) {
       pendingSourceRows = [sourceRowID]
+      restorableSourceRows = [sourceRowID]
       tableSelectionSourceRowID = sourceRowID
     }
 
-    /// Preserve a table-derived selection across a package operation that may
-    /// clear incompatible marks. An already-pending independent restoration is
-    /// also retained.
+    /// Preserve the last applied source-row intent across a package operation
+    /// that may clear or replace the concrete mark selection.
     mutating func prepareForSessionRestart() {
-      guard pendingSourceRows == nil, let tableSelectionSourceRowID else { return }
-      pendingSourceRows = [tableSelectionSourceRowID]
+      guard pendingSourceRows == nil else { return }
+      pendingSourceRows = restorableSourceRows
     }
 
-    mutating func pendingSelectionApplied(selectionIsEmpty: Bool) {
+    mutating func pendingSelectionApplied(sourceRows: Set<Int>) {
       pendingSourceRows = nil
-      if selectionIsEmpty {
+      restorableSourceRows = sourceRows.isEmpty ? nil : sourceRows
+      if let linkedRowID = tableSelectionSourceRowID,
+        !sourceRows.contains(linkedRowID)
+      {
         tableSelectionSourceRowID = nil
       }
     }
 
-    mutating func detachTableSelection() {
-      pendingSourceRows = nil
+    /// Binding writes can also come from the package while it resets its
+    /// transient interaction state. Do not let those writes replace a pending
+    /// app-owned restoration.
+    mutating func chartSelectionChanged(sourceRows: Set<Int>) {
+      guard pendingSourceRows == nil else { return }
+      restorableSourceRows = sourceRows.isEmpty ? nil : sourceRows
       tableSelectionSourceRowID = nil
     }
 
@@ -82,6 +94,7 @@ public enum ResultViewerLogic {
 
     mutating func clearChartSelection() {
       pendingSourceRows = nil
+      restorableSourceRows = nil
       tableSelectionSourceRowID = nil
     }
   }
@@ -185,26 +198,6 @@ public enum ResultViewerLogic {
       normalizedForSearch(cell.displayString).contains(normalizedQuery)
         || normalizedForSearch(cell.exportString).contains(normalizedQuery)
     }
-  }
-
-  static func filteredResult(
-    _ result: QueryResult,
-    selectionState: ResultChartSelectionState?,
-    currentResultFingerprint: String
-  ) -> QueryResult {
-    guard
-      let indexes = selectionState?.selection(
-        for: currentResultFingerprint)?.sourceRowIDs
-    else {
-      return result
-    }
-    return QueryResult(
-      columns: result.columns,
-      rows: result.rows.enumerated().compactMap { index, row in
-        indexes.contains(index) ? row : nil
-      },
-      isTruncated: result.isTruncated,
-      elapsedMicroseconds: result.elapsedMicroseconds)
   }
 
   public static func truncationLabel(for result: QueryResult) -> String? {

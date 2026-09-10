@@ -128,27 +128,38 @@ import Testing
         == .clearCellAndLinkedChartSelection)
   }
 
-  @Test func restoredCellAndChartSelectionRecoverLinkedProvenance() {
+  @Test func restoredSelectionUsesExplicitTableProvenance() {
     let linked = ResultViewerLogic.ChartSelectionLifecycle(
-      initialCellSourceRowID: 2,
+      initialChartSourceRows: [1, 2, 3],
+      initialTableSelectionSourceRowID: 2)
+    var overlappingIndependent = ResultViewerLogic.ChartSelectionLifecycle(
       initialChartSourceRows: [1, 2, 3])
-    let independent = ResultViewerLogic.ChartSelectionLifecycle(
-      initialCellSourceRowID: 0,
-      initialChartSourceRows: [1, 2, 3])
+    var singletonIndependent = ResultViewerLogic.ChartSelectionLifecycle(
+      initialChartSourceRows: [2])
 
     #expect(linked.tableSelectionSourceRowID == 2)
     #expect(linked.pendingSourceRows == [1, 2, 3])
-    #expect(independent.tableSelectionSourceRowID == nil)
+    #expect(linked.restorableSourceRows == [1, 2, 3])
+    #expect(overlappingIndependent.tableSelectionSourceRowID == nil)
+    #expect(singletonIndependent.tableSelectionSourceRowID == nil)
+
+    overlappingIndependent.pendingSelectionApplied(sourceRows: [1, 2, 3])
+    overlappingIndependent.prepareForSessionRestart()
+    singletonIndependent.pendingSelectionApplied(sourceRows: [2])
+    singletonIndependent.prepareForSessionRestart()
+
+    #expect(overlappingIndependent.pendingSourceRows == [1, 2, 3])
+    #expect(singletonIndependent.pendingSourceRows == [2])
   }
 
   @Test func linkedSelectionIsDeferredAcrossSessionRestart() {
     var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
-      initialCellSourceRowID: nil,
       initialChartSourceRows: nil)
     lifecycle.selectTableRow(2)
-    lifecycle.pendingSelectionApplied(selectionIsEmpty: false)
+    lifecycle.pendingSelectionApplied(sourceRows: [2])
 
     #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.restorableSourceRows == [2])
     #expect(lifecycle.tableSelectionSourceRowID == 2)
 
     lifecycle.prepareForSessionRestart()
@@ -159,28 +170,47 @@ import Testing
 
   @Test func independentPendingChartSelectionSurvivesCellInvalidation() {
     var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
-      initialCellSourceRowID: 0,
       initialChartSourceRows: [1, 2])
 
     lifecycle.clearTableSelectionLink()
 
     #expect(lifecycle.tableSelectionSourceRowID == nil)
     #expect(lifecycle.pendingSourceRows == [1, 2])
+    #expect(lifecycle.restorableSourceRows == [1, 2])
   }
 
-  @Test func chartInteractionAndEmptyRestorationRemoveTableProvenance() {
+  @Test func packageBindingResetDoesNotDiscardPendingRestoration() {
     var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
-      initialCellSourceRowID: nil,
+      initialChartSourceRows: [1, 2])
+
+    lifecycle.chartSelectionChanged(sourceRows: [])
+
+    #expect(lifecycle.pendingSourceRows == [1, 2])
+    #expect(lifecycle.restorableSourceRows == [1, 2])
+  }
+
+  @Test func chartInteractionAndEmptyRestorationUpdateRestorableRows() {
+    var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
       initialChartSourceRows: nil)
     lifecycle.selectTableRow(2)
-    lifecycle.pendingSelectionApplied(selectionIsEmpty: true)
+    lifecycle.pendingSelectionApplied(sourceRows: [])
 
     #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.restorableSourceRows == nil)
     #expect(lifecycle.tableSelectionSourceRowID == nil)
 
     lifecycle.selectTableRow(1)
-    lifecycle.detachTableSelection()
+    lifecycle.pendingSelectionApplied(sourceRows: [1])
+    lifecycle.chartSelectionChanged(sourceRows: [2, 3])
+    lifecycle.prepareForSessionRestart()
+
+    #expect(lifecycle.pendingSourceRows == [2, 3])
+    #expect(lifecycle.restorableSourceRows == [2, 3])
+    #expect(lifecycle.tableSelectionSourceRowID == nil)
+
+    lifecycle.clearChartSelection()
     #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.restorableSourceRows == nil)
     #expect(lifecycle.tableSelectionSourceRowID == nil)
   }
 

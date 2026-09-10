@@ -549,7 +549,7 @@ import Testing
     #expect(previewFailure.episodeID != otherFailure.episodeID)
   }
 
-  @Test func minimumMemoryTrimReleasesRequestFailureEpisodes() async {
+  @Test func minimumMemoryTrimPreservesRequestFailureEpisodes() async {
     let client = CREGChartAnalysisClient.testValue
     let inputIdentity = CREGChartInputIdentity(
       resultFingerprint: "failed-result",
@@ -567,7 +567,7 @@ import Testing
       inputIdentity: inputIdentity,
       kind: .invalidData,
       message: "The chart dataset is invalid.")
-    #expect(first.episodeID != recreated.episodeID)
+    #expect(first.episodeID == recreated.episodeID)
   }
 
   @Test func minimumMemoryTrimPreservesClaimedFailureEpisodes() async {
@@ -1179,6 +1179,12 @@ import Testing
       client: .testValue,
       inputIdentity: inputIdentity,
       result: result)
+    chartOwner.load(
+      result: result,
+      inputIdentity: inputIdentity,
+      preference: .automatic)
+    let restorationAttemptBeforeMigration =
+      chartOwner.selectionRestorationAttempt
     var attempts: [(ResultPresentationPreference, ResultPresentationPreference)] = []
     var sessionRestarts = 0
 
@@ -1199,7 +1205,9 @@ import Testing
     #expect(attempts[1].0 == authoritative)
     #expect(attempts[1].1 == .chart(.recommended))
     #expect(sessionRestarts == 2)
-    #expect(chartOwner.selectionRestorationAttempt == 2)
+    #expect(
+      chartOwner.selectionRestorationAttempt
+        == restorationAttemptBeforeMigration + 2)
     #expect(chartOwner.session.preference == .chart(.recommended))
   }
 

@@ -22,10 +22,9 @@ func applyResultPresentationPreference(
   persistPreference: (ResultPresentationPreference) -> Void,
   beforeSessionRestart: () -> Void = {}
 ) {
-  if chartOwner.session.preference != updated.packagePreference {
-    beforeSessionRestart()
-  }
-  chartOwner.setPreferenceIfNeeded(updated.packagePreference)
+  chartOwner.setPreferenceIfNeeded(
+    updated.packagePreference,
+    beforeRestart: beforeSessionRestart)
   persistPreference(updated)
 }
 
@@ -46,12 +45,13 @@ func applyResultPresentationModeSelection(
       persistPreference: persistPreference,
       beforeSessionRestart: beforeSessionRestart)
   case .retryChart(let updated):
-    beforeSessionRestart()
     if let updated {
-      chartOwner.retry(preference: updated.packagePreference)
+      chartOwner.retry(
+        preference: updated.packagePreference,
+        beforeRestart: beforeSessionRestart)
       persistPreference(updated)
     } else {
-      chartOwner.retry()
+      chartOwner.retry(beforeRestart: beforeSessionRestart)
     }
   }
 }
@@ -88,7 +88,6 @@ func applyResultPresentationMigration(
   beforeSessionRestart: () -> Void = {},
   migratePreference: ResultPresentationMigrationHandler
 ) {
-  let session = chartOwner.session
   var previous = suggestion.previous
   var updated = suggestion.updated
   var visited: Set<ResultPresentationPreference> = []
@@ -96,17 +95,15 @@ func applyResultPresentationMigration(
   while visited.insert(previous).inserted {
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
-      if session.preference != stored.packagePreference {
-        beforeSessionRestart()
-        chartOwner.setPreferenceIfNeeded(stored.packagePreference)
-      }
+      chartOwner.setPreferenceIfNeeded(
+        stored.packagePreference,
+        beforeRestart: beforeSessionRestart)
       return
     case .retained(let authoritative):
       guard authoritative != previous else { return }
-      if session.preference != authoritative.packagePreference {
-        beforeSessionRestart()
-        chartOwner.setPreferenceIfNeeded(authoritative.packagePreference)
-      }
+      chartOwner.setPreferenceIfNeeded(
+        authoritative.packagePreference,
+        beforeRestart: beforeSessionRestart)
       let resolution = analysis.resolve(authoritative.packagePreference)
       guard let replacement = resolution.replacementPreference else { return }
       previous = authoritative
@@ -114,22 +111,6 @@ func applyResultPresentationMigration(
     case .messageMissing:
       return
     }
-  }
-}
-
-/// Legacy helper retained only for pure table-filter tests; live views use the
-/// package selection set directly.
-struct ResultChartSelectionState {
-  private let selectionValue: AutoChartSelection<Int>
-  private let resultFingerprint: String
-
-  init(selection: AutoChartSelection<Int>, resultFingerprint: String) {
-    self.selectionValue = selection
-    self.resultFingerprint = resultFingerprint
-  }
-
-  func selection(for currentResultFingerprint: String) -> AutoChartSelection<Int>? {
-    currentResultFingerprint == resultFingerprint ? selectionValue : nil
   }
 }
 
