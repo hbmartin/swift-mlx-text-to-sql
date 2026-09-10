@@ -32,6 +32,60 @@ public enum ResultViewerLogic {
     case clearCellAndLinkedChartSelection
   }
 
+  /// App-owned provenance for chart selections that originate from the result
+  /// table. The package owns the concrete mark selection; this value retains
+  /// only the source-row intent needed while a chart is being prepared again.
+  struct ChartSelectionLifecycle: Equatable {
+    private(set) var pendingSourceRows: Set<Int>?
+    private(set) var tableSelectionSourceRowID: Int?
+
+    init(
+      initialCellSourceRowID: Int?,
+      initialChartSourceRows: Set<Int>?
+    ) {
+      pendingSourceRows = initialChartSourceRows
+      tableSelectionSourceRowID = initialCellSourceRowID.flatMap { rowID in
+        initialChartSourceRows?.contains(rowID) == true ? rowID : nil
+      }
+    }
+
+    mutating func selectTableRow(_ sourceRowID: Int) {
+      pendingSourceRows = [sourceRowID]
+      tableSelectionSourceRowID = sourceRowID
+    }
+
+    /// Preserve a table-derived selection across a package operation that may
+    /// clear incompatible marks. An already-pending independent restoration is
+    /// also retained.
+    mutating func prepareForSessionRestart() {
+      guard pendingSourceRows == nil, let tableSelectionSourceRowID else { return }
+      pendingSourceRows = [tableSelectionSourceRowID]
+    }
+
+    mutating func pendingSelectionApplied(selectionIsEmpty: Bool) {
+      pendingSourceRows = nil
+      if selectionIsEmpty {
+        tableSelectionSourceRowID = nil
+      }
+    }
+
+    mutating func detachTableSelection() {
+      pendingSourceRows = nil
+      tableSelectionSourceRowID = nil
+    }
+
+    /// The selected cell was independent from the chart selection. Preserve
+    /// any pending chart restoration while removing stale table provenance.
+    mutating func clearTableSelectionLink() {
+      tableSelectionSourceRowID = nil
+    }
+
+    mutating func clearChartSelection() {
+      pendingSourceRows = nil
+      tableSelectionSourceRowID = nil
+    }
+  }
+
   /// One-column typed sorting: a new column starts ascending; the active
   /// column toggles direction.
   public static func toggleSort(_ current: SortState?, column: Int) -> SortState {

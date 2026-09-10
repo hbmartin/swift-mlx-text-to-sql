@@ -90,10 +90,7 @@ struct ResultPreviewView: View {
       let preferenceResolution = analysis?.resolve(currentPreference.packagePreference)
       let selectedRecommendation = preferenceResolution?.recommendation
       let failure = self.failure
-      let hasChartOptions: Bool = {
-        guard let analysis, case .charts(let catalog) = analysis.outcome else { return false }
-        return !catalog.cataloged.isEmpty
-      }()
+      let hasChartOptions = !(analysis?.cregRecommendationCatalog?.cataloged.isEmpty ?? true)
       let migrationSuggestion = resultPresentationMigrationSuggestion(
         analysis: analysis,
         preference: currentPreference,
@@ -124,8 +121,9 @@ struct ResultPreviewView: View {
           ResultChartRecoveryControls(
             spacing: 10,
             keepTable: { selectMode(.table) },
-            retryChart: failure.isRetryable ? { session.retry() } : nil)
-            .accessibilityIdentifier("result-preview-chart-recovery")
+            retryChart: failure.isRetryable ? { chartOwner.retry() } : nil
+          )
+          .accessibilityIdentifier("result-preview-chart-recovery")
         }
 
         Button(action: open) {
@@ -172,10 +170,8 @@ struct ResultPreviewView: View {
           preference: (preference ?? .automatic).packagePreference)
       }
       .onChange(of: preference) { _, updated in
-        let packagePreference = (updated ?? .automatic).packagePreference
-        if session.preference != packagePreference {
-          session.setPreference(packagePreference)
-        }
+        chartOwner.setPreferenceIfNeeded(
+          (updated ?? .automatic).packagePreference)
       }
       .task(id: failure?.episodeID) {
         guard let failure else { return }
@@ -186,7 +182,7 @@ struct ResultPreviewView: View {
         applyResultPresentationMigration(
           migrationSuggestion,
           analysis: analysis,
-          session: session,
+          chartOwner: chartOwner,
           migratePreference: migratePreference)
       }
     }

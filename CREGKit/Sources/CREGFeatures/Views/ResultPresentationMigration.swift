@@ -19,8 +19,12 @@ typealias ResultPresentationMigrationHandler = (
 func applyResultPresentationPreference(
   _ updated: ResultPresentationPreference,
   chartOwner: CREGChartSessionOwner,
-  persistPreference: (ResultPresentationPreference) -> Void
+  persistPreference: (ResultPresentationPreference) -> Void,
+  beforeSessionRestart: () -> Void = {}
 ) {
+  if chartOwner.session.preference != updated.packagePreference {
+    beforeSessionRestart()
+  }
   chartOwner.setPreferenceIfNeeded(updated.packagePreference)
   persistPreference(updated)
 }
@@ -29,7 +33,8 @@ func applyResultPresentationPreference(
 func applyResultPresentationModeSelection(
   _ intent: ResultViewerLogic.ModeSelectionIntent,
   chartOwner: CREGChartSessionOwner,
-  persistPreference: (ResultPresentationPreference) -> Void
+  persistPreference: (ResultPresentationPreference) -> Void,
+  beforeSessionRestart: () -> Void = {}
 ) {
   switch intent {
   case .none:
@@ -38,8 +43,10 @@ func applyResultPresentationModeSelection(
     applyResultPresentationPreference(
       updated,
       chartOwner: chartOwner,
-      persistPreference: persistPreference)
+      persistPreference: persistPreference,
+      beforeSessionRestart: beforeSessionRestart)
   case .retryChart(let updated):
+    beforeSessionRestart()
     if let updated {
       chartOwner.retry(preference: updated.packagePreference)
       persistPreference(updated)
@@ -77,9 +84,11 @@ func resultPresentationMigrationSuggestion(
 func applyResultPresentationMigration(
   _ suggestion: ResultPresentationMigrationSuggestion,
   analysis: AutoChartAnalysis<Int>,
-  session: AutoChartSession<Int>,
+  chartOwner: CREGChartSessionOwner,
+  beforeSessionRestart: () -> Void = {},
   migratePreference: ResultPresentationMigrationHandler
 ) {
+  let session = chartOwner.session
   var previous = suggestion.previous
   var updated = suggestion.updated
   var visited: Set<ResultPresentationPreference> = []
@@ -88,13 +97,15 @@ func applyResultPresentationMigration(
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
       if session.preference != stored.packagePreference {
-        session.setPreference(stored.packagePreference)
+        beforeSessionRestart()
+        chartOwner.setPreferenceIfNeeded(stored.packagePreference)
       }
       return
     case .retained(let authoritative):
       guard authoritative != previous else { return }
       if session.preference != authoritative.packagePreference {
-        session.setPreference(authoritative.packagePreference)
+        beforeSessionRestart()
+        chartOwner.setPreferenceIfNeeded(authoritative.packagePreference)
       }
       let resolution = analysis.resolve(authoritative.packagePreference)
       guard let replacement = resolution.replacementPreference else { return }

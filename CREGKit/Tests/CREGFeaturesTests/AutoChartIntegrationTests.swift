@@ -536,6 +536,20 @@ import Testing
       message: "The chart dataset is invalid.")
     #expect(first.episodeID != recreated.episodeID)
   }
+
+  @Test func minimumMemoryTrimPreservesClaimedFailureEpisodes() async {
+    let client = CREGChartAnalysisClient.testValue
+    let failure = AutoChartFailure(
+      stage: .chartPreparation,
+      kind: .invalidSpecification,
+      isRetryable: true,
+      diagnosticID: "ATC.chartPreparation.invalidSpecification",
+      message: "The chart specification is invalid.")
+
+    #expect(client.claimFailureEpisode(failure))
+    await client.trimToMinimum()
+    #expect(!client.claimFailureEpisode(failure))
+  }
 }
 
 @MainActor
@@ -1123,13 +1137,23 @@ import Testing
       resultPresentationMigrationSuggestion(
         analysis: analysis,
         preference: previous))
-    let session = AutoChartSession<Int>(cache: AutoChartCache())
+    let inputIdentity = CREGChartInputIdentity(
+      resultFingerprint: "migration-result",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let chartOwner = CREGChartSessionOwner(
+      client: .testValue,
+      inputIdentity: inputIdentity,
+      result: result)
     var attempts: [(ResultPresentationPreference, ResultPresentationPreference)] = []
+    var sessionRestarts = 0
 
     applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
-      session: session
+      chartOwner: chartOwner,
+      beforeSessionRestart: { sessionRestarts += 1 }
     ) { receivedPrevious, updated in
       attempts.append((receivedPrevious, updated))
       return attempts.count == 1
@@ -1141,7 +1165,9 @@ import Testing
     #expect(attempts[0].0 == previous)
     #expect(attempts[1].0 == authoritative)
     #expect(attempts[1].1 == .chart(.recommended))
-    #expect(session.preference == .chart(.recommended))
+    #expect(sessionRestarts == 2)
+    #expect(chartOwner.selectionRestorationAttempt == 2)
+    #expect(chartOwner.session.preference == .chart(.recommended))
   }
 
   private func migrationStore(

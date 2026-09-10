@@ -128,6 +128,62 @@ import Testing
         == .clearCellAndLinkedChartSelection)
   }
 
+  @Test func restoredCellAndChartSelectionRecoverLinkedProvenance() {
+    let linked = ResultViewerLogic.ChartSelectionLifecycle(
+      initialCellSourceRowID: 2,
+      initialChartSourceRows: [1, 2, 3])
+    let independent = ResultViewerLogic.ChartSelectionLifecycle(
+      initialCellSourceRowID: 0,
+      initialChartSourceRows: [1, 2, 3])
+
+    #expect(linked.tableSelectionSourceRowID == 2)
+    #expect(linked.pendingSourceRows == [1, 2, 3])
+    #expect(independent.tableSelectionSourceRowID == nil)
+  }
+
+  @Test func linkedSelectionIsDeferredAcrossSessionRestart() {
+    var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
+      initialCellSourceRowID: nil,
+      initialChartSourceRows: nil)
+    lifecycle.selectTableRow(2)
+    lifecycle.pendingSelectionApplied(selectionIsEmpty: false)
+
+    #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.tableSelectionSourceRowID == 2)
+
+    lifecycle.prepareForSessionRestart()
+
+    #expect(lifecycle.pendingSourceRows == [2])
+    #expect(lifecycle.tableSelectionSourceRowID == 2)
+  }
+
+  @Test func independentPendingChartSelectionSurvivesCellInvalidation() {
+    var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
+      initialCellSourceRowID: 0,
+      initialChartSourceRows: [1, 2])
+
+    lifecycle.clearTableSelectionLink()
+
+    #expect(lifecycle.tableSelectionSourceRowID == nil)
+    #expect(lifecycle.pendingSourceRows == [1, 2])
+  }
+
+  @Test func chartInteractionAndEmptyRestorationRemoveTableProvenance() {
+    var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
+      initialCellSourceRowID: nil,
+      initialChartSourceRows: nil)
+    lifecycle.selectTableRow(2)
+    lifecycle.pendingSelectionApplied(selectionIsEmpty: true)
+
+    #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.tableSelectionSourceRowID == nil)
+
+    lifecycle.selectTableRow(1)
+    lifecycle.detachTableSelection()
+    #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.tableSelectionSourceRowID == nil)
+  }
+
   // MARK: Truncation labels
 
   @Test func truncatedResultsAreLabeledFirstNPlusRows() {
