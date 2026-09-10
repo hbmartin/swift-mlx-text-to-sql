@@ -453,6 +453,39 @@ import Testing
     #expect(filtered.map(\.sourceRowID) == [2, 0])
   }
 
+  @Test func aggregateChartSelectionRetainsOnlyTheRequestedTableRow() async throws {
+    let result = QueryResult(
+      columns: ["category", "value"],
+      rows: [
+        [.text("A"), .real(10)],
+        [.text("A"), .real(20)],
+        [.text("B"), .real(30)],
+      ])
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT category, SUM(value) AS value FROM properties GROUP BY category",
+      question: "Compare total value by category")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request, preparation: .none)
+    let chart = try await analysis.prepare(
+      AutoChartSpecification(
+        .bar(
+          category: CREGChartAdapter.columnID(index: 0, name: "category"),
+          measure: CREGChartAdapter.columnID(index: 1, name: "value"),
+          aggregation: .sum,
+          orientation: .vertical,
+          sort: .source,
+          title: "")))
+    let aggregateMark = try #require(
+      chart.marks.first { $0.sourceRowIDs == [0, 1] })
+
+    let selection = chart.selections(for: [0], analysisID: analysis.id)
+
+    #expect(selection.count == 1)
+    #expect(selection.first?.markID == aggregateMark.identity)
+    #expect(selection.unionedSourceRows == [0])
+  }
+
   @Test func chartFailureDiagnosticsRetainPackageEpisodeProvenance() throws {
     let recorder = DiagnosticEventRecorder()
     let client = CREGChartAnalysisClient.testValue
