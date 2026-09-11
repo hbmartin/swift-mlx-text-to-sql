@@ -19,9 +19,12 @@ typealias ResultPresentationMigrationHandler = (
 func applyResultPresentationPreference(
   _ updated: ResultPresentationPreference,
   chartOwner: CREGChartSessionOwner,
-  persistPreference: (ResultPresentationPreference) -> Void
+  persistPreference: (ResultPresentationPreference) -> Void,
+  beforeSessionRestart: () -> Void = {}
 ) {
-  chartOwner.setPreferenceIfNeeded(updated.packagePreference)
+  chartOwner.setPreferenceIfNeeded(
+    updated.packagePreference,
+    beforeRestart: beforeSessionRestart)
   persistPreference(updated)
 }
 
@@ -29,7 +32,8 @@ func applyResultPresentationPreference(
 func applyResultPresentationModeSelection(
   _ intent: ResultViewerLogic.ModeSelectionIntent,
   chartOwner: CREGChartSessionOwner,
-  persistPreference: (ResultPresentationPreference) -> Void
+  persistPreference: (ResultPresentationPreference) -> Void,
+  beforeSessionRestart: () -> Void = {}
 ) {
   switch intent {
   case .none:
@@ -38,13 +42,16 @@ func applyResultPresentationModeSelection(
     applyResultPresentationPreference(
       updated,
       chartOwner: chartOwner,
-      persistPreference: persistPreference)
+      persistPreference: persistPreference,
+      beforeSessionRestart: beforeSessionRestart)
   case .retryChart(let updated):
     if let updated {
-      chartOwner.retry(preference: updated.packagePreference)
+      chartOwner.retry(
+        preference: updated.packagePreference,
+        beforeRestart: beforeSessionRestart)
       persistPreference(updated)
     } else {
-      chartOwner.retry()
+      chartOwner.retry(beforeRestart: beforeSessionRestart)
     }
   }
 }
@@ -77,7 +84,8 @@ func resultPresentationMigrationSuggestion(
 func applyResultPresentationMigration(
   _ suggestion: ResultPresentationMigrationSuggestion,
   analysis: AutoChartAnalysis<Int>,
-  session: AutoChartSession<Int>,
+  chartOwner: CREGChartSessionOwner,
+  beforeSessionRestart: () -> Void = {},
   migratePreference: ResultPresentationMigrationHandler
 ) {
   var previous = suggestion.previous
@@ -87,15 +95,15 @@ func applyResultPresentationMigration(
   while visited.insert(previous).inserted {
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
-      if session.preference != stored.packagePreference {
-        session.setPreference(stored.packagePreference)
-      }
+      chartOwner.setPreferenceIfNeeded(
+        stored.packagePreference,
+        beforeRestart: beforeSessionRestart)
       return
     case .retained(let authoritative):
       guard authoritative != previous else { return }
-      if session.preference != authoritative.packagePreference {
-        session.setPreference(authoritative.packagePreference)
-      }
+      chartOwner.setPreferenceIfNeeded(
+        authoritative.packagePreference,
+        beforeRestart: beforeSessionRestart)
       let resolution = analysis.resolve(authoritative.packagePreference)
       guard let replacement = resolution.replacementPreference else { return }
       previous = authoritative
@@ -103,22 +111,6 @@ func applyResultPresentationMigration(
     case .messageMissing:
       return
     }
-  }
-}
-
-/// Legacy helper retained only for pure table-filter tests; live views use the
-/// package selection set directly.
-struct ResultChartSelectionState {
-  private let selectionValue: AutoChartSelection<Int>
-  private let resultFingerprint: String
-
-  init(selection: AutoChartSelection<Int>, resultFingerprint: String) {
-    self.selectionValue = selection
-    self.resultFingerprint = resultFingerprint
-  }
-
-  func selection(for currentResultFingerprint: String) -> AutoChartSelection<Int>? {
-    currentResultFingerprint == resultFingerprint ? selectionValue : nil
   }
 }
 

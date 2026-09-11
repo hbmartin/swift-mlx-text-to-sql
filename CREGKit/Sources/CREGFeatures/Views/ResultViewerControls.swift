@@ -6,14 +6,14 @@ import SwiftUI
 extension ResultViewerView {
   func footer(
     displayedRowCount: Int,
-    sourceResult: QueryResult,
+    selectedRowCount: Int,
     selectionIsActive: Bool
   ) -> some View {
     ViewThatFits(in: .horizontal) {
       HStack(spacing: 8) {
         rowStatus(
           displayedRowCount: displayedRowCount,
-          sourceResult: sourceResult,
+          selectedRowCount: selectedRowCount,
           selectionIsActive: selectionIsActive)
         Spacer(minLength: 0)
         if selectionIsActive {
@@ -24,7 +24,7 @@ extension ResultViewerView {
       VStack(alignment: .leading, spacing: 6) {
         rowStatus(
           displayedRowCount: displayedRowCount,
-          sourceResult: sourceResult,
+          selectedRowCount: selectedRowCount,
           selectionIsActive: selectionIsActive)
         if selectionIsActive {
           clearChartSelectionButton
@@ -52,14 +52,14 @@ extension ResultViewerView {
 
   func rowStatus(
     displayedRowCount: Int,
-    sourceResult: QueryResult,
+    selectedRowCount: Int,
     selectionIsActive: Bool
   ) -> some View {
     let label =
       if selectionIsActive {
         ResultViewerLogic.selectedRowStatusLabel(
           for: result,
-          selectedRowCount: sourceResult.rowCount,
+          selectedRowCount: selectedRowCount,
           displayedRowCount: displayedRowCount,
           searchIsActive: !normalizedSearchText.isEmpty)
       } else {

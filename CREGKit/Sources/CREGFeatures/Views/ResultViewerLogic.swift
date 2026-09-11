@@ -32,6 +32,72 @@ public enum ResultViewerLogic {
     case clearCellAndLinkedChartSelection
   }
 
+  /// App-owned provenance for chart selections that originate from the result
+  /// table. The package owns the concrete mark selection; this value retains
+  /// only the source-row intent needed while a chart is being prepared again.
+  struct ChartSelectionLifecycle: Equatable {
+    private(set) var pendingSourceRows: Set<Int>?
+    private(set) var restorableSourceRows: Set<Int>?
+    private(set) var tableSelectionSourceRowID: Int?
+
+    init(
+      initialChartSourceRows: Set<Int>?,
+      initialTableSelectionSourceRowID: Int? = nil
+    ) {
+      let sourceRows = initialChartSourceRows.flatMap { rows in
+        rows.isEmpty ? nil : rows
+      }
+      pendingSourceRows = sourceRows
+      restorableSourceRows = sourceRows
+      tableSelectionSourceRowID = initialTableSelectionSourceRowID.flatMap { rowID in
+        sourceRows?.contains(rowID) == true ? rowID : nil
+      }
+    }
+
+    mutating func selectTableRow(_ sourceRowID: Int) {
+      pendingSourceRows = [sourceRowID]
+      restorableSourceRows = [sourceRowID]
+      tableSelectionSourceRowID = sourceRowID
+    }
+
+    /// Preserve the last applied source-row intent across a package operation
+    /// that may clear or replace the concrete mark selection.
+    mutating func prepareForSessionRestart() {
+      guard pendingSourceRows == nil else { return }
+      pendingSourceRows = restorableSourceRows
+    }
+
+    mutating func pendingSelectionApplied(sourceRows: Set<Int>) {
+      pendingSourceRows = nil
+      restorableSourceRows = sourceRows.isEmpty ? nil : sourceRows
+      if let linkedRowID = tableSelectionSourceRowID,
+        !sourceRows.contains(linkedRowID)
+      {
+        tableSelectionSourceRowID = nil
+      }
+    }
+
+    /// The interactive chart is mounted only after pending restoration is
+    /// complete, so every binding write here supersedes prior source-row intent.
+    mutating func chartSelectionChanged(sourceRows: Set<Int>) {
+      pendingSourceRows = nil
+      restorableSourceRows = sourceRows.isEmpty ? nil : sourceRows
+      tableSelectionSourceRowID = nil
+    }
+
+    /// The selected cell was independent from the chart selection. Preserve
+    /// any pending chart restoration while removing stale table provenance.
+    mutating func clearTableSelectionLink() {
+      tableSelectionSourceRowID = nil
+    }
+
+    mutating func clearChartSelection() {
+      pendingSourceRows = nil
+      restorableSourceRows = nil
+      tableSelectionSourceRowID = nil
+    }
+  }
+
   /// One-column typed sorting: a new column starts ascending; the active
   /// column toggles direction.
   public static func toggleSort(_ current: SortState?, column: Int) -> SortState {
@@ -131,26 +197,6 @@ public enum ResultViewerLogic {
       normalizedForSearch(cell.displayString).contains(normalizedQuery)
         || normalizedForSearch(cell.exportString).contains(normalizedQuery)
     }
-  }
-
-  static func filteredResult(
-    _ result: QueryResult,
-    selectionState: ResultChartSelectionState?,
-    currentResultFingerprint: String
-  ) -> QueryResult {
-    guard
-      let indexes = selectionState?.selection(
-        for: currentResultFingerprint)?.sourceRowIDs
-    else {
-      return result
-    }
-    return QueryResult(
-      columns: result.columns,
-      rows: result.rows.enumerated().compactMap { index, row in
-        indexes.contains(index) ? row : nil
-      },
-      isTruncated: result.isTruncated,
-      elapsedMicroseconds: result.elapsedMicroseconds)
   }
 
   public static func truncationLabel(for result: QueryResult) -> String? {

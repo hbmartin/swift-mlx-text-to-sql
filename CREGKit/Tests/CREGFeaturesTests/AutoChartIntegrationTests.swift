@@ -453,6 +453,79 @@ import Testing
     #expect(filtered.map(\.sourceRowID) == [2, 0])
   }
 
+  @Test func aggregateChartSelectionRetainsOnlyTheRequestedTableRow() async throws {
+    let result = QueryResult(
+      columns: ["category", "value"],
+      rows: [
+        [.text("A"), .real(10)],
+        [.text("A"), .real(20)],
+        [.text("B"), .real(30)],
+      ])
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT category, SUM(value) AS value FROM properties GROUP BY category",
+      question: "Compare total value by category")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request, preparation: .none)
+    let chart = try await analysis.prepare(
+      AutoChartSpecification(
+        .bar(
+          category: CREGChartAdapter.columnID(index: 0, name: "category"),
+          measure: CREGChartAdapter.columnID(index: 1, name: "value"),
+          aggregation: .sum,
+          orientation: .vertical,
+          sort: .source,
+          title: "")))
+    let aggregateMark = try #require(
+      chart.marks.first { $0.sourceRowIDs == [0, 1] })
+
+    let selection = chart.selections(for: [0], analysisID: analysis.id)
+
+    #expect(selection.count == 1)
+    #expect(selection.first?.markID == aggregateMark.identity)
+    #expect(selection.unionedSourceRows == [0])
+  }
+
+  @Test func userSelectionCancelsPendingRestorationBeforeBindingAssignment()
+    async throws
+  {
+    let result = QueryResult(
+      columns: ["category", "value"],
+      rows: [
+        [.text("A"), .real(10)],
+        [.text("B"), .real(20)],
+        [.text("C"), .real(30)],
+      ])
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT category, value FROM properties",
+      question: "Compare value by category")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request, preparation: .primary)
+    let chart = try #require(analysis.primaryChart)
+    let previousSelection = chart.selections(for: [0], analysisID: analysis.id)
+    let userSelection = chart.selections(for: [2], analysisID: analysis.id)
+    let session = AutoChartSession<Int>()
+    session.selection = previousSelection
+    var lifecycle = ResultViewerLogic.ChartSelectionLifecycle(
+      initialChartSourceRows: previousSelection.unionedSourceRows)
+    lifecycle.pendingSelectionApplied(
+      sourceRows: previousSelection.unionedSourceRows)
+    lifecycle.prepareForSessionRestart()
+
+    lifecycle.chartSelectionChanged(
+      sourceRows: userSelection.unionedSourceRows)
+    session.selection = userSelection
+    if let staleRows = lifecycle.pendingSourceRows {
+      session.selection = chart.selections(
+        for: staleRows, analysisID: analysis.id)
+    }
+
+    #expect(lifecycle.pendingSourceRows == nil)
+    #expect(lifecycle.restorableSourceRows == [2])
+    #expect(session.selection.unionedSourceRows == [2])
+  }
+
   @Test func chartFailureDiagnosticsRetainPackageEpisodeProvenance() throws {
     let recorder = DiagnosticEventRecorder()
     let client = CREGChartAnalysisClient.testValue
@@ -516,7 +589,7 @@ import Testing
     #expect(previewFailure.episodeID != otherFailure.episodeID)
   }
 
-  @Test func minimumMemoryTrimReleasesRequestFailureEpisodes() async {
+  @Test func minimumMemoryTrimPreservesRequestFailureEpisodes() async {
     let client = CREGChartAnalysisClient.testValue
     let inputIdentity = CREGChartInputIdentity(
       resultFingerprint: "failed-result",
@@ -534,7 +607,21 @@ import Testing
       inputIdentity: inputIdentity,
       kind: .invalidData,
       message: "The chart dataset is invalid.")
-    #expect(first.episodeID != recreated.episodeID)
+    #expect(first.episodeID == recreated.episodeID)
+  }
+
+  @Test func minimumMemoryTrimPreservesClaimedFailureEpisodes() async {
+    let client = CREGChartAnalysisClient.testValue
+    let failure = AutoChartFailure(
+      stage: .chartPreparation,
+      kind: .invalidSpecification,
+      isRetryable: true,
+      diagnosticID: "ATC.chartPreparation.invalidSpecification",
+      message: "The chart specification is invalid.")
+
+    #expect(client.claimFailureEpisode(failure))
+    await client.trimToMinimum()
+    #expect(!client.claimFailureEpisode(failure))
   }
 }
 
@@ -1123,13 +1210,29 @@ import Testing
       resultPresentationMigrationSuggestion(
         analysis: analysis,
         preference: previous))
-    let session = AutoChartSession<Int>(cache: AutoChartCache())
+    let inputIdentity = CREGChartInputIdentity(
+      resultFingerprint: "migration-result",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let chartOwner = CREGChartSessionOwner(
+      client: .testValue,
+      inputIdentity: inputIdentity,
+      result: result)
+    chartOwner.load(
+      result: result,
+      inputIdentity: inputIdentity,
+      preference: .automatic)
+    let restorationAttemptBeforeMigration =
+      chartOwner.selectionRestorationAttempt
     var attempts: [(ResultPresentationPreference, ResultPresentationPreference)] = []
+    var sessionRestarts = 0
 
     applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
-      session: session
+      chartOwner: chartOwner,
+      beforeSessionRestart: { sessionRestarts += 1 }
     ) { receivedPrevious, updated in
       attempts.append((receivedPrevious, updated))
       return attempts.count == 1
@@ -1141,7 +1244,11 @@ import Testing
     #expect(attempts[0].0 == previous)
     #expect(attempts[1].0 == authoritative)
     #expect(attempts[1].1 == .chart(.recommended))
-    #expect(session.preference == .chart(.recommended))
+    #expect(sessionRestarts == 2)
+    #expect(
+      chartOwner.selectionRestorationAttempt
+        == restorationAttemptBeforeMigration + 2)
+    #expect(chartOwner.session.preference == .chart(.recommended))
   }
 
   private func migrationStore(
