@@ -184,9 +184,10 @@ final class CREGChartSessionOwner: ObservableObject {
     }
     beforeRestart()
     selectionRestorationAttempt &+= 1
-    session.retry()
     if let preference, session.preference != preference {
-      session.setPreference(preference)
+      session.retry(preference: preference)
+    } else {
+      session.retry()
     }
   }
 
