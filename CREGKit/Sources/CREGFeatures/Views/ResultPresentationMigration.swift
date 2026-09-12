@@ -46,10 +46,12 @@ func applyResultPresentationModeSelection(
       beforeSessionRestart: beforeSessionRestart)
   case .retryChart(let updated):
     if let updated {
-      chartOwner.retry(
+      let didStartRetry = chartOwner.retry(
         preference: updated.packagePreference,
         beforeRestart: beforeSessionRestart)
-      persistPreference(updated)
+      if didStartRetry {
+        persistPreference(updated)
+      }
     } else {
       chartOwner.retry(beforeRestart: beforeSessionRestart)
     }

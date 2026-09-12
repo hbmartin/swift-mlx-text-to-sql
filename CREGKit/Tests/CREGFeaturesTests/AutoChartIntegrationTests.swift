@@ -439,12 +439,18 @@ import Testing
       request, preparation: .primary)
     let chart = try #require(analysis.primaryChart)
 
-    let tableHighlight = chart.selections(for: [1], analysisID: analysis.id)
+    let tableHighlight = CREGChartAdapter.tableSelections(
+      in: chart,
+      for: [1],
+      analysisID: analysis.id)
     #expect(tableHighlight.belongs(to: analysis))
     #expect(tableHighlight.belongs(to: chart))
     #expect(tableHighlight.unionedSourceRows.contains(1))
 
-    let chartSelection = chart.selections(for: [0, 2], analysisID: analysis.id)
+    let chartSelection = CREGChartAdapter.tableSelections(
+      in: chart,
+      for: [0, 2],
+      analysisID: analysis.id)
     let filtered = ResultViewerLogic.identifiedDisplayRows(
       result: result,
       sourceRowIDs: chartSelection.unionedSourceRows,
@@ -478,9 +484,15 @@ import Testing
           title: "")))
     let aggregateMark = try #require(
       chart.marks.first { $0.sourceRowIDs == [0, 1] })
+    let packageSelection = chart.selections(
+      for: [0], analysisID: analysis.id)
 
-    let selection = chart.selections(for: [0], analysisID: analysis.id)
+    let selection = CREGChartAdapter.tableSelections(
+      in: chart,
+      for: [0],
+      analysisID: analysis.id)
 
+    #expect(packageSelection.unionedSourceRows == [0, 1])
     #expect(selection.count == 1)
     #expect(selection.first?.markID == aggregateMark.identity)
     #expect(selection.unionedSourceRows == [0])
@@ -1127,6 +1139,68 @@ import Testing
 
 @MainActor
 @Suite struct ResultPresentationMigrationHandlerTests {
+  @Test func loadedRetryChangesPreferenceInOneOwnerAttempt() {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [
+        [.text("A"), .real(10)],
+        [.text("B"), .real(20)],
+      ])
+    let inputIdentity = CREGChartInputIdentity(
+      resultFingerprint: "atomic-retry-result",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let chartOwner = CREGChartSessionOwner(
+      client: .testValue,
+      inputIdentity: inputIdentity,
+      result: result)
+    chartOwner.load(
+      result: result,
+      inputIdentity: inputIdentity,
+      preference: .automatic)
+    let previousAttempt = chartOwner.selectionRestorationAttempt
+    var restartCount = 0
+
+    let didStart = chartOwner.retry(
+      preference: .chart(.recommended),
+      beforeRestart: { restartCount += 1 })
+
+    #expect(didStart)
+    #expect(restartCount == 1)
+    #expect(chartOwner.selectionRestorationAttempt == previousAttempt + 1)
+    #expect(chartOwner.session.preference == .chart(.recommended))
+  }
+
+  @Test func unloadedRetryDoesNotPersistAnUnappliedPreference() {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)]])
+    let inputIdentity = CREGChartInputIdentity(
+      resultFingerprint: "unloaded-retry-result",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let chartOwner = CREGChartSessionOwner(
+      client: .testValue,
+      inputIdentity: inputIdentity,
+      result: result)
+    let updated = ResultPresentationPreference.chart(.recommended)
+    var persisted: [ResultPresentationPreference] = []
+    var restartCount = 0
+
+    applyResultPresentationModeSelection(
+      .retryChart(updated),
+      chartOwner: chartOwner,
+      persistPreference: { persisted.append($0) },
+      beforeSessionRestart: { restartCount += 1 })
+
+    #expect(persisted.isEmpty)
+    #expect(restartCount == 0)
+    #expect(chartOwner.selectionRestorationAttempt == 0)
+    #expect(chartOwner.session.preference == .automatic)
+  }
+
   @Test func acceptedMigrationReturnsTheStoredPreference() {
     let previous = ResultPresentationPreference(
       mode: .chart,

@@ -83,6 +83,21 @@ enum CREGChartAdapter {
       title: question)
   }
 
+  /// Restores table-owned row intent without changing the package's complete
+  /// mark-lineage semantics for selections made directly in a chart.
+  static func tableSelections(
+    in chart: AutoChartPreparedChart<Int>,
+    for sourceRows: Set<Int>,
+    analysisID: AutoChartAnalysisID
+  ) -> AutoChartSelectionSet<Int> {
+    AutoChartSelectionSet(
+      chart.selections(for: sourceRows, analysisID: analysisID).compactMap { selection in
+        var narrowed = selection
+        narrowed.sourceRowIDs.formIntersection(sourceRows)
+        return narrowed.sourceRowIDs.isEmpty ? nil : narrowed
+      })
+  }
+
   static let formatters = AutoChartFormatters(
     locale: Locale(identifier: "en_US"),
     timeZone: .gmt,
