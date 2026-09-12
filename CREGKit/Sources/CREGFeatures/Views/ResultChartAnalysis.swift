@@ -170,25 +170,18 @@ final class CREGChartSessionOwner: ObservableObject {
     session.setPreference(preference)
   }
 
-  /// Begins one retry attempt, optionally changing the preference as part of
-  /// that attempt. Retry invalidation remains owned by AutoTableCharts.
+  /// Begins one retry attempt, optionally changing the preference atomically.
+  /// Returns false when this owner has no loaded request to retry.
+  @discardableResult
   func retry(
     preference: AutoChartPreference? = nil,
     beforeRestart: () -> Void = {}
-  ) {
-    guard isSessionLoaded else {
-      if let preference {
-        setPreferenceIfNeeded(preference)
-      }
-      return
-    }
+  ) -> Bool {
+    guard isSessionLoaded else { return false }
     beforeRestart()
     selectionRestorationAttempt &+= 1
-    if let preference, session.preference != preference {
-      session.retry(preference: preference)
-    } else {
-      session.retry()
-    }
+    session.retry(preference: preference ?? session.preference)
+    return true
   }
 
   func recordFailure(

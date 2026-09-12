@@ -198,8 +198,10 @@ struct ResultViewerView: View {
     guard let analysis, case .ready(_, let presented?) = session.state else {
       return
     }
-    let selection = presented.preparedChart.selections(
-      for: [sourceRowID], analysisID: analysis.id)
+    let selection = CREGChartAdapter.tableSelections(
+      in: presented.preparedChart,
+      for: [sourceRowID],
+      analysisID: analysis.id)
     session.selection = selection
     chartSelectionLifecycle.pendingSelectionApplied(
       sourceRows: selection.unionedSourceRows)
@@ -445,8 +447,10 @@ struct ResultViewerView: View {
         let analysis,
         case .ready(_, let presented?) = session.state
       else { return }
-      let selection = presented.preparedChart.selections(
-        for: rows, analysisID: analysis.id)
+      let selection = CREGChartAdapter.tableSelections(
+        in: presented.preparedChart,
+        for: rows,
+        analysisID: analysis.id)
       session.selection = selection
       chartSelectionLifecycle.pendingSelectionApplied(
         sourceRows: selection.unionedSourceRows)

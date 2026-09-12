@@ -27,6 +27,9 @@ jobs:
       - name: Select Xcode 26.3
         run: sudo xcode-select --switch /Applications/Xcode_26.3.app
 
+      - name: Verify AutoTableCharts pin agreement
+        run: python3 fine-tuning/tools/check_swift_package_pins.py
+
       - name: Cache Swift and Xcode build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
