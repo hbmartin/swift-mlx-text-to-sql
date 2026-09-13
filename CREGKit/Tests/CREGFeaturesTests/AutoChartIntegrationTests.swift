@@ -125,6 +125,30 @@ import Testing
     #expect(validation.issues.contains { $0.messageValue.code == .chasmRisk })
   }
 
+  @Test func groupedSiblingAggregatesStillRejectChasmRisk() async throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["total_rent", "total_debt"],
+        rows: [[.real(100_000), .real(2_000_000)]]),
+      sql: """
+        SELECT SUM(l.annual_base_rent) AS total_rent,
+               SUM(n.current_balance) AS total_debt
+        FROM properties p
+        JOIN leases l ON l.property_id = p.property_id
+        JOIN loans n ON n.property_id = p.property_id
+        GROUP BY p.name
+        """)
+    let rent = dataset.chartColumns[0]
+    let debt = dataset.chartColumns[1]
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    let validation = analysis.validate(.scatter(x: rent.id, y: debt.id))
+
+    #expect(rent.provenance?.sourceGrain == AutoChartGrain(entity: "leases"))
+    #expect(debt.provenance?.sourceGrain == AutoChartGrain(entity: "loans"))
+    #expect(validation.issues.contains { $0.messageValue.code == .chasmRisk })
+  }
+
   @Test func unaliasedJoinStillRejectsParentMeasureFanOut() async throws {
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
@@ -262,7 +286,11 @@ import Testing
   }
 
   @Test func unitLanguageDoesNotBecomeAComparisonGoal() {
-    for question in ["Show rent per square foot", "Show free rent per month"] {
+    for question in [
+      "Show rent per square foot",
+      "Show free rent per month",
+      "Show rent per leased square foot",
+    ] {
       #expect(
         CREGChartAdapter.analysisContext(
           question: question,
@@ -304,6 +332,53 @@ import Testing
       rating.chartColumns[0].categoryOrder?.first == .text("AAA"))
     #expect(rating.chartColumns[0].categoryOrder?.last == .text("NR"))
     #expect(strategyAlias.chartColumns[0].categoryOrder == nil)
+  }
+
+  @Test func aggregatesAndDerivedExpressionsDoNotInheritSourceCategoryOrder() throws {
+    let aggregate = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["credit_rating"],
+        rows: [[.integer(3)]]),
+      sql: "SELECT COUNT(credit_rating) AS credit_rating FROM tenants")
+    let derived = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["building_class"],
+        rows: [[.text("Upper")], [.text("Other")]]),
+      sql: """
+        SELECT CASE WHEN building_class = 'A' THEN 'Upper' ELSE 'Other' END
+          AS building_class
+        FROM properties
+        """)
+
+    #expect(aggregate.chartColumns[0].categoryOrder == nil)
+    #expect(aggregate.chartColumns[0].hints.semanticType != .ordinal)
+    #expect(
+      aggregate.chartColumns[0].hints.measureSemantics?.source
+        == .aggregated(.count))
+    #expect(derived.chartColumns[0].categoryOrder == nil)
+  }
+
+  @Test func stalePersistedLineageIsReanalyzed() throws {
+    let stale = SQLQueryLineage(
+      columns: [
+        SQLResultColumnLineage(
+          sourceColumns: [.init(table: "funds", column: "name")],
+          sourceGrain: ["funds"],
+          preservesSourceDomain: true)
+      ],
+      rowGrain: ["funds"],
+      analysisVersion: SQLQueryLineage.currentAnalysisVersion - 1)
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["city"],
+        rows: [[.text("Phoenix")]],
+        lineage: stale),
+      sql: "SELECT city FROM properties")
+
+    #expect(
+      dataset.chartColumns[0].provenance?.sourceColumns
+        == [.init(entity: "properties", name: "city")])
+    #expect(dataset.chartMetadata.rowGrain == AutoChartGrain(entity: "properties"))
   }
 
   @Test func blobBearingOrdinalColumnsAreNotForcedIntoCategorySemantics() throws {

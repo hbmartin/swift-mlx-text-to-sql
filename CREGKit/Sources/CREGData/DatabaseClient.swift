@@ -9,6 +9,8 @@ private final class SQLiteAuthorizerState: @unchecked Sendable {
   private var isCapturing = false
   private var capturedReads: [SQLSourceRead] = []
 
+  deinit {}
+
   func beginCapture() {
     lock.withLock {
       isCapturing = true
@@ -67,6 +69,15 @@ private final class SQLiteAuthorizerState: @unchecked Sendable {
   }
 }
 
+private struct SQLiteExecutionSnapshot: Sendable {
+  var columns: [String]
+  var directOrigins: [SQLSourceColumn?]
+  var reads: [SQLSourceRead]
+  var rows: [[SQLValue]]
+  var isTruncated: Bool
+  var elapsedMicroseconds: Int64
+}
+
 /// Read-only access to the bundled portfolio database.
 public struct DatabaseClient: Sendable {
   /// Stable identity of the exact read-only portfolio snapshot.
@@ -78,8 +89,10 @@ public struct DatabaseClient: Sendable {
 
   public init(
     fingerprint: String,
-    validate: @escaping @Sendable (_ sql: String) async throws
-      -> SQLValidationReport = { _ in SQLValidationReport() },
+    validate:
+      @escaping @Sendable (_ sql: String) async throws -> SQLValidationReport = {
+        _ in SQLValidationReport()
+      },
     execute: @escaping @Sendable (_ sql: String) async throws -> QueryResult
   ) {
     self.fingerprint = fingerprint
@@ -174,7 +187,7 @@ extension DatabaseClient {
       },
       execute: { sql in
         let start = ContinuousClock.now
-        return try await queue.read { db in
+        let snapshot = try await queue.read { db in
           authorizer.beginCapture()
           let statement: Statement
           do {
@@ -196,11 +209,6 @@ extension DatabaseClient {
               table: String(cString: tablePointer).lowercased(),
               column: String(cString: columnPointer).lowercased())
           }
-          let lineage = SQLQueryAnalyzer.lineage(
-            sql: sql,
-            outputColumnNames: columns,
-            directOrigins: directOrigins,
-            reads: reads)
           var rows: [[SQLValue]] = []
           var isTruncated = false
           let cursor = try Row.fetchCursor(statement)
@@ -212,19 +220,33 @@ extension DatabaseClient {
             // GRDB's DatabaseValue TEXT conversion uses a C-string path that
             // truncates at embedded NUL. Read the raw sqlite3 bytes instead so
             // Swift and Python share the same replacement-decoding contract.
-            rows.append((0..<row.count).map {
-              SQLValue(statement: statement.sqliteStatement, column: Int32($0))
-            })
+            rows.append(
+              (0..<row.count).map {
+                SQLValue(statement: statement.sqliteStatement, column: Int32($0))
+              })
           }
           let elapsed = start.duration(to: .now)
-          return QueryResult(
+          return SQLiteExecutionSnapshot(
             columns: columns,
+            directOrigins: directOrigins,
+            reads: reads,
             rows: rows,
-            lineage: lineage,
             isTruncated: isTruncated,
-            elapsedMicroseconds: elapsed.microseconds
-          )
+            elapsedMicroseconds: elapsed.microseconds)
         }
+        // Tokenization and graph analysis are pure CPU work. Keep them off the
+        // serial SQLite queue and outside the database execution timing.
+        let lineage = SQLQueryAnalyzer.lineage(
+          sql: sql,
+          outputColumnNames: snapshot.columns,
+          directOrigins: snapshot.directOrigins,
+          reads: snapshot.reads)
+        return QueryResult(
+          columns: snapshot.columns,
+          rows: snapshot.rows,
+          lineage: lineage,
+          isTruncated: snapshot.isTruncated,
+          elapsedMicroseconds: snapshot.elapsedMicroseconds)
       })
   }
 }
@@ -296,9 +318,10 @@ extension SQLValue {
         self = .text("")
         return
       }
-      self = .text(String(
-        decoding: UnsafeBufferPointer(start: pointer, count: count),
-        as: UTF8.self))
+      self = .text(
+        String(
+          decoding: UnsafeBufferPointer(start: pointer, count: count),
+          as: UTF8.self))
     case SQLITE_BLOB:
       let count = Int(sqlite3_column_bytes(statement, column))
       guard count > 0, let pointer = sqlite3_column_blob(statement, column) else {

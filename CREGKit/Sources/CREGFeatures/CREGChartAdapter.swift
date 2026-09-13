@@ -37,19 +37,25 @@ enum CREGChartAdapter {
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
   ) throws -> AutoChartDataset<Int> {
+    let persistedLineage = result.lineage
     let queryLineage =
-      result.lineage
-      ?? SQLQueryAnalyzer.lineage(
-        sql: sql, outputColumnNames: result.columns)
+      persistedLineage?.analysisVersion == SQLQueryLineage.currentAnalysisVersion
+      ? persistedLineage!
+      : SQLQueryAnalyzer.lineage(
+        sql: sql,
+        outputColumnNames: result.columns,
+        reads: persistedLineage?.reads ?? [])
     let columns = result.columns.enumerated().map { index, name in
       let lineage =
         queryLineage.columns.indices.contains(index)
         ? queryLineage.columns[index] : nil
       let aggregation = aggregation(for: lineage?.aggregation)
       let orderedSourceName =
-        lineage?.sourceColumns.count == 1
+        aggregation == nil
+          && lineage?.preservesSourceDomain == true
+          && lineage?.sourceColumns.count == 1
         ? lineage?.sourceColumns.first?.column : nil
-      let categoryOrder = categoryOrder(for: orderedSourceName ?? name)
+      let categoryOrder = orderedSourceName.flatMap(categoryOrder(for:))
       return AutoChartColumn(
         id: columnID(index: index, name: name),
         name: name,
@@ -330,7 +336,7 @@ enum CREGChartAdapter {
     if containsAny(
       text,
       ["compare", " by ", "group by", "for each", "for every", " each "])
-      || containsAny(
+      || containsAnyWholePhrase(
         text,
         [
           " per property", " per properties", " per fund", " per funds",
@@ -497,6 +503,28 @@ enum CREGChartAdapter {
 
   private static func containsAny(_ value: String, _ needles: [String]) -> Bool {
     needles.contains { value.contains($0) }
+  }
+
+  private static func containsAnyWholePhrase(
+    _ value: String,
+    _ needles: [String]
+  ) -> Bool {
+    needles.contains { needle in
+      var searchStart = value.startIndex
+      while searchStart < value.endIndex,
+        let range = value.range(of: needle, range: searchStart..<value.endIndex)
+      {
+        if range.upperBound == value.endIndex
+          || !value[range.upperBound].isLetter
+            && !value[range.upperBound].isNumber
+            && value[range.upperBound] != "_"
+        {
+          return true
+        }
+        searchStart = value.index(after: range.lowerBound)
+      }
+      return false
+    }
   }
 
   private static let gregorianGMTCalendar: Calendar = {

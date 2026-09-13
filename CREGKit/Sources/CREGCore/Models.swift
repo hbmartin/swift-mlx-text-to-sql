@@ -81,20 +81,47 @@ public struct SQLResultColumnLineage: Sendable, Equatable, Hashable, Codable {
   /// The effective entity grain chart safety should compare with dimensions.
   public var sourceGrain: [String]
   public var aggregation: SQLAggregateOperation?
+  /// True only when the result preserves the source column's value domain.
+  /// Aggregates and computed expressions may retain source provenance without
+  /// inheriting categorical ordering from that source.
+  public var preservesSourceDomain: Bool
 
   public init(
     sourceColumns: [SQLSourceColumn] = [],
     sourceGrain: [String] = [],
-    aggregation: SQLAggregateOperation? = nil
+    aggregation: SQLAggregateOperation? = nil,
+    preservesSourceDomain: Bool = false
   ) {
     self.sourceColumns = sourceColumns
     self.sourceGrain = sourceGrain
     self.aggregation = aggregation
+    self.preservesSourceDomain = preservesSourceDomain
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case sourceColumns, sourceGrain, aggregation, preservesSourceDomain
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    sourceColumns = try values.decode([SQLSourceColumn].self, forKey: .sourceColumns)
+    sourceGrain = try values.decode([String].self, forKey: .sourceGrain)
+    // Lineage is advisory presentation metadata. A future aggregate operation
+    // must not make an otherwise readable stored answer undecodable.
+    aggregation = try? values.decodeIfPresent(
+      SQLAggregateOperation.self, forKey: .aggregation)
+    preservesSourceDomain =
+      try values.decodeIfPresent(Bool.self, forKey: .preservesSourceDomain) ?? false
   }
 }
 
 /// SQLite-backed and query-block-aware lineage for an executed result.
 public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
+  /// Bump whenever derived grain/domain decisions change incompatibly. Stored
+  /// lineage from an older analyzer is re-derived instead of being trusted.
+  public static let currentAnalysisVersion = 2
+
+  public var analysisVersion: Int
   /// Entries align one-for-one with the result's output columns.
   public var columns: [SQLResultColumnLineage?]
   /// Effective entity grain of each returned row, when it can be established.
@@ -105,11 +132,26 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
   public init(
     columns: [SQLResultColumnLineage?],
     rowGrain: [String] = [],
-    reads: [SQLSourceRead] = []
+    reads: [SQLSourceRead] = [],
+    analysisVersion: Int = SQLQueryLineage.currentAnalysisVersion
   ) {
+    self.analysisVersion = analysisVersion
     self.columns = columns
     self.rowGrain = rowGrain
     self.reads = reads
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case analysisVersion, columns, rowGrain, reads
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    analysisVersion =
+      try values.decodeIfPresent(Int.self, forKey: .analysisVersion) ?? 1
+    columns = try values.decode([SQLResultColumnLineage?].self, forKey: .columns)
+    rowGrain = try values.decodeIfPresent([String].self, forKey: .rowGrain) ?? []
+    reads = try values.decodeIfPresent([SQLSourceRead].self, forKey: .reads) ?? []
   }
 }
 
@@ -167,7 +209,10 @@ public struct QueryResult: Sendable, Equatable, Codable {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     columns = try values.decode([String].self, forKey: .columns)
     rows = try values.decode([[SQLValue]].self, forKey: .rows)
-    lineage = try values.decodeIfPresent(SQLQueryLineage.self, forKey: .lineage)
+    // Presentation lineage is optional and versioned independently from the
+    // answer payload. Corrupt or future lineage must not drop the whole stored
+    // answer message from history.
+    lineage = try? values.decode(SQLQueryLineage.self, forKey: .lineage)
     isTruncated = try values.decodeIfPresent(Bool.self, forKey: .isTruncated) ?? false
     if let microseconds = try values.decodeIfPresent(
       Int64.self, forKey: .elapsedMicroseconds)

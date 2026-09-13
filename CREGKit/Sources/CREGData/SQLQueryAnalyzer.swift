@@ -5,6 +5,15 @@ import Foundation
 package struct SQLQueryScope: Sendable, Equatable {
   package var aliases: [String: String]
   package var tables: Set<String>
+  /// Output columns exposed by each relation qualifier in this block.
+  package var qualifiedColumns: [String: [String: SQLQueryScopeColumn]]
+  /// One entry per relation that exposes an unqualified output name. Keeping
+  /// relation entries separate preserves SQLite's ambiguity rules for self joins.
+  package var unqualifiedColumns: [String: [SQLQueryScopeColumn]]
+}
+
+package struct SQLQueryScopeColumn: Sendable, Equatable {
+  package var source: SQLSourceColumn?
 }
 
 /// One query-block-aware SQL analysis shared by database execution, grounding,
@@ -40,6 +49,7 @@ package enum SQLQueryAnalyzer {
         var descriptor = output.descriptor
         if directOrigins.indices.contains(index), let origin = directOrigins[index] {
           descriptor.sourceColumns = [origin]
+          descriptor.preservesSourceDomain = true
           if descriptor.aggregation == nil {
             descriptor.chartGrain = Analyzer.grain(
               for: origin, schema: PortfolioSchemaCatalog.document)
@@ -52,7 +62,10 @@ package enum SQLQueryAnalyzer {
         if !readColumns.isEmpty,
           !descriptor.sourceColumns.allSatisfy(readColumns.contains)
         {
-          return nil
+          guard let aggregation = descriptor.aggregation else { return nil }
+          return SQLResultColumnLineage(
+            aggregation: aggregation,
+            preservesSourceDomain: false)
         }
         guard
           !descriptor.sourceColumns.isEmpty || !descriptor.chartGrain.isEmpty
@@ -61,7 +74,8 @@ package enum SQLQueryAnalyzer {
         return SQLResultColumnLineage(
           sourceColumns: descriptor.sourceColumns,
           sourceGrain: descriptor.chartGrain,
-          aggregation: descriptor.aggregation)
+          aggregation: descriptor.aggregation,
+          preservesSourceDomain: descriptor.preservesSourceDomain)
       }
     } else {
       columns = directLineage(
@@ -78,7 +92,9 @@ package enum SQLQueryAnalyzer {
     let tokens = SQLLexer.tokenize(sql)
     return Analyzer(tokens: tokens).analyze(
       range: tokens.indices, inheritedCTEs: [:]
-    )?.scope ?? SQLQueryScope(aliases: [:], tables: [])
+    )?.scope
+      ?? SQLQueryScope(
+        aliases: [:], tables: [], qualifiedColumns: [:], unqualifiedColumns: [:])
   }
 
   private static func directLineage(
@@ -91,7 +107,8 @@ package enum SQLQueryAnalyzer {
       return SQLResultColumnLineage(
         sourceColumns: [origin],
         sourceGrain: Analyzer.grain(
-          for: origin, schema: PortfolioSchemaCatalog.document))
+          for: origin, schema: PortfolioSchemaCatalog.document),
+        preservesSourceDomain: true)
     }
   }
 }
@@ -208,6 +225,12 @@ private struct ColumnDescriptor {
   var chartGrain: [String]
   var aggregation: SQLAggregateOperation?
   var isAggregateExpression: Bool
+  var preservesSourceDomain: Bool
+}
+
+private struct AggregateAnalysis {
+  var operation: SQLAggregateOperation?
+  var hasAggregateCall: Bool
 }
 
 private struct QueryOutput {
@@ -221,14 +244,31 @@ private struct Relation {
   var outputs: [QueryOutput]
   var rowGrain: [String]
   var physicalTables: Set<String>
+  var columns: [String: ColumnDescriptor]
 
-  var columns: [String: ColumnDescriptor] {
+  init(
+    name: String,
+    aliases: Set<String>,
+    outputs: [QueryOutput],
+    rowGrain: [String],
+    physicalTables: Set<String>
+  ) {
+    self.name = name
+    self.aliases = aliases
+    self.outputs = outputs
+    self.rowGrain = rowGrain
+    self.physicalTables = physicalTables
     var result: [String: ColumnDescriptor] = [:]
-    for output in outputs where result[output.name] == nil {
-      result[output.name] = output.descriptor
+    for output in outputs {
+      let name = normalizedRelationColumnName(output.name)
+      if result[name] == nil { result[name] = output.descriptor }
     }
-    return result
+    self.columns = result
   }
+}
+
+private func normalizedRelationColumnName(_ name: String) -> String {
+  name.lowercased().filter { !$0.isWhitespace }
 }
 
 private struct QueryBlock {
@@ -259,9 +299,17 @@ private struct Analyzer {
       while selectIndex < range.upperBound, tokens[selectIndex].word != "select" {
         guard let cteName = tokens[selectIndex].word else { return nil }
         selectIndex += 1
+        var declaredOutputNames: [String]?
         if selectIndex < range.upperBound, tokens[selectIndex] == .symbol("(") {
           guard let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
           else { return nil }
+          let names = splitTopLevel((selectIndex + 1)..<close).compactMap { nameRange in
+            nameRange.count == 1 ? tokens[nameRange.lowerBound].word : nil
+          }
+          guard names.count == splitTopLevel((selectIndex + 1)..<close).count else {
+            return nil
+          }
+          declaredOutputNames = names
           selectIndex = close + 1
         }
         guard selectIndex < range.upperBound, tokens[selectIndex].word == "as" else {
@@ -273,13 +321,37 @@ private struct Analyzer {
           let block = analyze(
             range: (selectIndex + 1)..<close, inheritedCTEs: ctes)
         else { return nil }
-        ctes[cteName] = relation(name: cteName, block: block)
+        var relation = relation(name: cteName, block: block)
+        if let declaredOutputNames {
+          guard declaredOutputNames.count == relation.outputs.count else { return nil }
+          for index in relation.outputs.indices {
+            relation.outputs[index].name = declaredOutputNames[index]
+          }
+          relation = Relation(
+            name: relation.name,
+            aliases: relation.aliases,
+            outputs: relation.outputs,
+            rowGrain: relation.rowGrain,
+            physicalTables: relation.physicalTables)
+        }
+        ctes[cteName] = relation
         selectIndex = close + 1
         if selectIndex < range.upperBound, tokens[selectIndex] == .symbol(",") {
           selectIndex += 1
           continue
         }
       }
+    }
+
+    if let armRanges = compoundArmRanges(
+      in: selectIndex..<range.upperBound)
+    {
+      guard !armRanges.isEmpty else { return nil }
+      let arms = armRanges.compactMap {
+        analyze(range: $0, inheritedCTEs: ctes)
+      }
+      guard arms.count == armRanges.count else { return nil }
+      return compoundBlock(from: arms)
     }
 
     guard selectIndex < range.upperBound, tokens[selectIndex].word == "select",
@@ -306,8 +378,9 @@ private struct Analyzer {
       let references = references(in: expression, relations: relations, ctes: ctes)
       let localAggregation = aggregate(in: expression)
       let aggregation =
-        localAggregation
-        ?? (references.count == 1 ? references[0].aggregation : nil)
+        localAggregation.operation
+        ?? (!localAggregation.hasAggregateCall && references.count == 1
+          ? references[0].aggregation : nil)
       let rawGrain =
         references.isEmpty && aggregation == .count
         ? fromGrain
@@ -317,7 +390,12 @@ private struct Analyzer {
         expressionGrain: rawGrain,
         chartGrain: rawGrain,
         aggregation: aggregation,
-        isAggregateExpression: localAggregation != nil)
+        isAggregateExpression: localAggregation.hasAggregateCall,
+        preservesSourceDomain:
+          !localAggregation.hasAggregateCall
+          && references.count == 1
+          && isDirectColumnReference(expression)
+          && references[0].preservesSourceDomain)
       return [
         QueryOutput(
           name: alias ?? inferredOutputName(expression),
@@ -342,13 +420,16 @@ private struct Analyzer {
         {
           return drafts[position - 1].descriptor.expressionGrain
         }
+        let sourceGrain = references(
+          in: expression, relations: relations, ctes: ctes
+        ).flatMap(\.expressionGrain)
+        if !sourceGrain.isEmpty { return sourceGrain }
         if expression.count == 1, let alias = tokens[expression.lowerBound].word,
           let output = drafts.first(where: { $0.name == alias })
         {
           return output.descriptor.expressionGrain
         }
-        return references(in: expression, relations: relations, ctes: ctes)
-          .flatMap(\.expressionGrain)
+        return []
       }
       return normalize(grains)
     }()
@@ -376,8 +457,8 @@ private struct Analyzer {
       let effectiveGroup = groupGrain.isEmpty ? rowGrain : groupGrain
       let isUnsafe =
         aggregation.isDuplicateSensitive
-        && !effectiveGroup.isEmpty
-        && isStrictlyFiner(effectiveGroup, than: rawGrain)
+        && !fromGrain.isEmpty
+        && isStrictlyFiner(fromGrain, than: rawGrain)
       drafts[index].descriptor.chartGrain =
         isUnsafe
         ? rawGrain : (effectiveGroup.isEmpty ? rawGrain : effectiveGroup)
@@ -388,8 +469,19 @@ private struct Analyzer {
 
     var aliases: [String: String] = [:]
     var tables: Set<String> = []
+    var qualifiedColumns: [String: [String: SQLQueryScopeColumn]] = [:]
+    var unqualifiedColumns: [String: [SQLQueryScopeColumn]] = [:]
     for relation in relations {
       tables.formUnion(relation.physicalTables)
+      let exposedColumns = relation.columns.mapValues { descriptor in
+        SQLQueryScopeColumn(
+          source: descriptor.sourceColumns.count == 1
+            ? descriptor.sourceColumns[0] : nil)
+      }
+      for alias in relation.aliases { qualifiedColumns[alias] = exposedColumns }
+      for (name, column) in exposedColumns {
+        unqualifiedColumns[name, default: []].append(column)
+      }
       guard relation.physicalTables.count == 1, let table = relation.physicalTables.first
       else { continue }
       for alias in relation.aliases { aliases[alias] = table }
@@ -397,7 +489,11 @@ private struct Analyzer {
     return QueryBlock(
       outputs: drafts,
       rowGrain: rowGrain,
-      scope: SQLQueryScope(aliases: aliases, tables: tables),
+      scope: SQLQueryScope(
+        aliases: aliases,
+        tables: tables,
+        qualifiedColumns: qualifiedColumns,
+        unqualifiedColumns: unqualifiedColumns),
       physicalTables: tables)
   }
 
@@ -410,8 +506,8 @@ private struct Analyzer {
       physicalTables: block.physicalTables)
   }
 
-  private func physicalRelation(name: String) -> Relation {
-    let columns = schema.tables[name] ?? []
+  private func physicalRelation(name: String) -> Relation? {
+    guard let columns = schema.tables[name] else { return nil }
     return Relation(
       name: name,
       aliases: [name],
@@ -425,7 +521,8 @@ private struct Analyzer {
             expressionGrain: grain,
             chartGrain: grain,
             aggregation: nil,
-            isAggregateExpression: false))
+            isAggregateExpression: false,
+            preservesSourceDomain: true))
       },
       rowGrain: [name],
       physicalTables: [name])
@@ -458,8 +555,29 @@ private struct Analyzer {
           index += 1
           continue
         }
-        var relation = ctes[name] ?? physicalRelation(name: name)
-        index += 1
+        var relationName = name
+        var nextIndex = index + 1
+        if index + 2 < range.upperBound,
+          tokens[index + 1] == .symbol("."),
+          let qualifiedName = tokens[index + 2].word,
+          schema.tables[qualifiedName] != nil
+        {
+          relationName = qualifiedName
+          nextIndex = index + 3
+        }
+        guard var relation = ctes[relationName] ?? physicalRelation(name: relationName) else {
+          // Unknown relations, including table-valued functions, are outside the
+          // frozen schema. Skip them without inventing a chart entity.
+          index = nextIndex
+          if index < range.upperBound, tokens[index] == .symbol("("),
+            let close = matchingClose(at: index, upperBound: range.upperBound)
+          {
+            index = close + 1
+          }
+          expectsRelation = false
+          continue
+        }
+        index = nextIndex
         index = applyingAlias(to: &relation, at: index, upperBound: range.upperBound)
         relations.append(relation)
         expectsRelation = false
@@ -520,13 +638,28 @@ private struct Analyzer {
         {
           output.append(descriptor)
         }
+        consumed.formUnion(index...close)
         index = close + 1
+        continue
+      }
+      if index + 4 < range.upperBound,
+        tokens[index].word != nil,
+        tokens[index + 1] == .symbol("."),
+        let qualifier = tokens[index + 2].word,
+        tokens[index + 3] == .symbol("."),
+        let column = tokens[index + 4].word,
+        let relation = relations.first(where: { $0.aliases.contains(qualifier) }),
+        let descriptor = relation.columns[normalizedRelationColumnName(column)]
+      {
+        output.append(descriptor)
+        consumed.formUnion(index...(index + 4))
+        index += 5
         continue
       }
       if index + 2 < range.upperBound, let qualifier = tokens[index].word,
         tokens[index + 1] == .symbol("."), let column = tokens[index + 2].word,
         let relation = relations.first(where: { $0.aliases.contains(qualifier) }),
-        let descriptor = relation.columns[column]
+        let descriptor = relation.columns[normalizedRelationColumnName(column)]
       {
         output.append(descriptor)
         consumed.formUnion(index...(index + 2))
@@ -541,33 +674,42 @@ private struct Analyzer {
       if index + 1 < range.upperBound, tokens[index + 1] == .symbol("(") { continue }
       if index > range.lowerBound, tokens[index - 1] == .symbol(".") { continue }
       if index + 1 < range.upperBound, tokens[index + 1] == .symbol(".") { continue }
-      let matches = relations.compactMap { $0.columns[column] }
+      let matches = relations.compactMap {
+        $0.columns[normalizedRelationColumnName(column)]
+      }
       if matches.count == 1 { output.append(matches[0]) }
     }
     return orderedUniqueDescriptors(output)
   }
 
-  private func aggregate(in range: Range<Int>) -> SQLAggregateOperation? {
-    guard !range.contains(where: { tokens[$0].word == "over" }) else { return nil }
-    for index in range {
+  private func aggregate(in range: Range<Int>) -> AggregateAnalysis {
+    let searchable = indicesOutsideSubqueries(in: range)
+    guard !searchable.contains(where: { tokens[$0].word == "over" }) else {
+      return AggregateAnalysis(operation: nil, hasAggregateCall: false)
+    }
+    var operations: [SQLAggregateOperation] = []
+    for index in searchable {
       guard let name = tokens[index].word,
         index + 1 < range.upperBound, tokens[index + 1] == .symbol("(")
       else { continue }
       switch name {
-      case "sum": return .sum
-      case "avg": return .average
-      case "min": return .minimum
-      case "max": return .maximum
-      case "total": return .total
+      case "sum": operations.append(.sum)
+      case "avg": operations.append(.average)
+      case "min": operations.append(.minimum)
+      case "max": operations.append(.maximum)
+      case "total": operations.append(.total)
       case "count":
         if index + 2 < range.upperBound, tokens[index + 2].word == "distinct" {
-          return .countDistinct
+          operations.append(.countDistinct)
+        } else {
+          operations.append(.count)
         }
-        return .count
       default: continue
       }
     }
-    return nil
+    return AggregateAnalysis(
+      operation: operations.count == 1 ? operations[0] : nil,
+      hasAggregateCall: !operations.isEmpty)
   }
 
   private func expandedWildcard(
@@ -580,6 +722,15 @@ private struct Analyzer {
     if range.count == 3, let qualifier = tokens[range.lowerBound].word,
       tokens[range.lowerBound + 1] == .symbol("."),
       tokens[range.lowerBound + 2] == .symbol("*"),
+      let relation = relations.first(where: { $0.aliases.contains(qualifier) })
+    {
+      return relation.outputs
+    }
+    if range.count == 5,
+      tokens[range.lowerBound + 1] == .symbol("."),
+      let qualifier = tokens[range.lowerBound + 2].word,
+      tokens[range.lowerBound + 3] == .symbol("."),
+      tokens[range.lowerBound + 4] == .symbol("*"),
       let relation = relations.first(where: { $0.aliases.contains(qualifier) })
     {
       return relation.outputs
@@ -615,7 +766,160 @@ private struct Analyzer {
     {
       return word
     }
-    return "expression"
+    if range.count == 5,
+      tokens[range.lowerBound + 1] == .symbol("."),
+      tokens[range.lowerBound + 3] == .symbol("."),
+      let word = tokens[range.lowerBound + 4].word
+    {
+      return word
+    }
+    return range.map { index in
+      switch tokens[index] {
+      case .word(let value), .number(let value): value
+      case .string(let value): "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+      case .symbol(let value): String(value)
+      }
+    }.joined()
+  }
+
+  private func isDirectColumnReference(_ range: Range<Int>) -> Bool {
+    if range.count == 1 { return tokens[range.lowerBound].word != nil }
+    if range.count == 3 {
+      return tokens[range.lowerBound].word != nil
+        && tokens[range.lowerBound + 1] == .symbol(".")
+        && tokens[range.lowerBound + 2].word != nil
+    }
+    if range.count == 5 {
+      return tokens[range.lowerBound].word != nil
+        && tokens[range.lowerBound + 1] == .symbol(".")
+        && tokens[range.lowerBound + 2].word != nil
+        && tokens[range.lowerBound + 3] == .symbol(".")
+        && tokens[range.lowerBound + 4].word != nil
+    }
+    return false
+  }
+
+  private func indicesOutsideSubqueries(in range: Range<Int>) -> [Int] {
+    var output: [Int] = []
+    var index = range.lowerBound
+    while index < range.upperBound {
+      if tokens[index] == .symbol("("),
+        let close = matchingClose(at: index, upperBound: range.upperBound),
+        index + 1 < close,
+        ["select", "with"].contains(tokens[index + 1].word)
+      {
+        index = close + 1
+        continue
+      }
+      output.append(index)
+      index += 1
+    }
+    return output
+  }
+
+  private func compoundArmRanges(
+    in range: Range<Int>
+  ) -> [Range<Int>]? {
+    guard !range.isEmpty else { return nil }
+    var arms: [Range<Int>] = []
+    var depth = 0
+    var start = range.lowerBound
+    for index in range {
+      if tokens[index] == .symbol("(") {
+        depth += 1
+      } else if tokens[index] == .symbol(")") {
+        depth = max(0, depth - 1)
+      } else if depth == 0,
+        let word = tokens[index].word,
+        Self.compoundWords.contains(word)
+      {
+        guard start < index else { return [] }
+        arms.append(start..<index)
+        start = index + 1
+        if start < range.upperBound,
+          let modifier = tokens[start].word,
+          modifier == "all" || modifier == "distinct"
+        {
+          start += 1
+        }
+      }
+    }
+    guard !arms.isEmpty else { return nil }
+    guard start < range.upperBound else { return [] }
+    arms.append(start..<range.upperBound)
+    return arms
+  }
+
+  private func compoundBlock(from arms: [QueryBlock]) -> QueryBlock {
+    let emptyDescriptor = ColumnDescriptor(
+      sourceColumns: [],
+      expressionGrain: [],
+      chartGrain: [],
+      aggregation: nil,
+      isAggregateExpression: false,
+      preservesSourceDomain: false)
+    let outputs = arms[0].outputs.map {
+      QueryOutput(name: $0.name, descriptor: emptyDescriptor)
+    }
+    let scope = mergedScope(arms.map(\.scope))
+    return QueryBlock(
+      outputs: outputs,
+      rowGrain: [],
+      scope: scope,
+      physicalTables: Set(arms.flatMap(\.physicalTables)))
+  }
+
+  private func mergedScope(_ scopes: [SQLQueryScope]) -> SQLQueryScope {
+    var aliasTables: [String: Set<String>] = [:]
+    var tables: Set<String> = []
+    var qualifiedCandidates: [String: [String: [SQLQueryScopeColumn]]] = [:]
+    var unqualifiedCandidates: [String: [[SQLQueryScopeColumn]]] = [:]
+
+    for scope in scopes {
+      tables.formUnion(scope.tables)
+      for (alias, table) in scope.aliases {
+        aliasTables[alias, default: []].insert(table)
+      }
+      for (qualifier, columns) in scope.qualifiedColumns {
+        for (name, column) in columns {
+          qualifiedCandidates[qualifier, default: [:]][name, default: []]
+            .append(column)
+        }
+      }
+      for (name, columns) in scope.unqualifiedColumns {
+        unqualifiedCandidates[name, default: []].append(columns)
+      }
+    }
+
+    let aliases = aliasTables.compactMapValues { candidates in
+      candidates.count == 1 ? candidates.first : nil
+    }
+    let qualifiedColumns = qualifiedCandidates.mapValues { columns in
+      columns.mapValues { conservativeColumn(from: $0) }
+    }
+    let unqualifiedColumns = unqualifiedCandidates.mapValues { candidates in
+      guard candidates.allSatisfy({ $0.count == 1 }),
+        let first = candidates.first?.first,
+        candidates.allSatisfy({ $0[0] == first })
+      else {
+        return [SQLQueryScopeColumn(source: nil)]
+      }
+      return [first]
+    }
+    return SQLQueryScope(
+      aliases: aliases,
+      tables: tables,
+      qualifiedColumns: qualifiedColumns,
+      unqualifiedColumns: unqualifiedColumns)
+  }
+
+  private func conservativeColumn(
+    from candidates: [SQLQueryScopeColumn]
+  ) -> SQLQueryScopeColumn {
+    guard let first = candidates.first,
+      candidates.allSatisfy({ $0 == first })
+    else { return SQLQueryScopeColumn(source: nil) }
+    return first
   }
 
   private func clauseBoundaries(
@@ -732,16 +1036,7 @@ private struct Analyzer {
   }
 
   private func isAncestor(_ ancestor: String, of descendant: String) -> Bool {
-    var frontier = [ancestor]
-    var visited: Set<String> = []
-    while let current = frontier.popLast() {
-      guard visited.insert(current).inserted else { continue }
-      for relationship in schema.foreignKeys where relationship.toTable == current {
-        if relationship.fromTable == descendant { return true }
-        frontier.append(relationship.fromTable)
-      }
-    }
-    return false
+    Self.ancestorPairs.contains(EntityPair(ancestor: ancestor, descendant: descendant))
   }
 
   static func grain(
@@ -776,5 +1071,32 @@ private struct Analyzer {
 
   private static let clauseWords: Set<String> = [
     "where", "group", "having", "order", "limit", "union", "except", "intersect",
+  ]
+
+  private struct EntityPair: Hashable {
+    var ancestor: String
+    var descendant: String
+  }
+
+  private static let ancestorPairs: Set<EntityPair> = {
+    let schema = PortfolioSchemaCatalog.document
+    var pairs: Set<EntityPair> = []
+    for ancestor in schema.tables.keys {
+      var frontier = [ancestor]
+      var visited: Set<String> = []
+      while let current = frontier.popLast() {
+        guard visited.insert(current).inserted else { continue }
+        for relationship in schema.foreignKeys where relationship.toTable == current {
+          pairs.insert(
+            EntityPair(ancestor: ancestor, descendant: relationship.fromTable))
+          frontier.append(relationship.fromTable)
+        }
+      }
+    }
+    return pairs
+  }()
+
+  private static let compoundWords: Set<String> = [
+    "union", "except", "intersect",
   ]
 }
