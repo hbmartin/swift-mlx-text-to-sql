@@ -49,6 +49,35 @@ import Testing
         == [.init(table: "leases", column: "status")])
   }
 
+  @Test func unqualifiedScalarSubqueryColumnsStayInTheirQueryBlock() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT p.name,
+               (SELECT status FROM leases LIMIT 1) AS lease_status
+        FROM properties p
+        """,
+      outputColumnNames: ["name", "lease_status"])
+
+    #expect(
+      try #require(lineage.columns[1]).sourceColumns
+        == [.init(table: "leases", column: "status")])
+  }
+
+  @Test func scalarSubqueryAggregatesDoNotCollapseTheOuterRowGrain() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT p.name,
+               (SELECT SUM(l.annual_base_rent)
+                FROM leases l
+                WHERE l.property_id = p.property_id) AS total_rent
+        FROM properties p
+        """,
+      outputColumnNames: ["name", "total_rent"])
+
+    #expect(lineage.rowGrain == ["properties"])
+    #expect(try #require(lineage.columns[1]).aggregation == .sum)
+  }
+
   @Test func derivesCaseAndOpaqueBucketRowGrain() throws {
     let caseLineage = SQLQueryAnalyzer.lineage(
       sql: """
@@ -162,6 +191,203 @@ import Testing
     #expect(try #require(derived.columns[0]).sourceGrain == ["properties"])
     #expect(try #require(derived.columns[1]).sourceGrain == ["properties"])
     #expect(derived.rowGrain == ["properties"])
+  }
+
+  @Test func groupedSiblingAggregatesKeepTheirPreAggregationGrains() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT p.name,
+               SUM(l.annual_base_rent) AS total_rent,
+               SUM(n.current_balance) AS total_debt
+        FROM properties p
+        JOIN leases l ON l.property_id = p.property_id
+        JOIN loans n ON n.property_id = p.property_id
+        GROUP BY p.name
+        """,
+      outputColumnNames: ["name", "total_rent", "total_debt"])
+
+    #expect(try #require(lineage.columns[1]).sourceGrain == ["leases"])
+    #expect(try #require(lineage.columns[2]).sourceGrain == ["loans"])
+    #expect(lineage.rowGrain == ["properties"])
+  }
+
+  @Test func groupByPrefersSourceColumnsOverConflictingOutputAliases() {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT l.status AS name, COUNT(*) AS row_count
+        FROM properties p
+        JOIN leases l ON l.property_id = p.property_id
+        GROUP BY name
+        """,
+      outputColumnNames: ["name", "row_count"])
+
+    #expect(lineage.rowGrain == ["properties"])
+  }
+
+  @Test func cteColumnListsRenameExposedOutputs() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH cte(label) AS (SELECT city FROM properties)
+        SELECT label FROM cte
+        """,
+      outputColumnNames: ["label"])
+
+    #expect(
+      try #require(lineage.columns[0]).sourceColumns
+        == [.init(table: "properties", column: "city")])
+  }
+
+  @Test func aliaslessDerivedExpressionsRetainTheirSQLiteOutputName() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT d."city || state"
+        FROM (SELECT city || state FROM properties) d
+        """,
+      outputColumnNames: ["city || state"])
+
+    #expect(
+      try #require(lineage.columns[0]).sourceColumns
+        == [
+          .init(table: "properties", column: "city"),
+          .init(table: "properties", column: "state"),
+        ])
+  }
+
+  @Test func schemaQualifiedAndUnknownRelationsStayConservative() throws {
+    let qualified = SQLQueryAnalyzer.lineage(
+      sql: "SELECT properties.city FROM main.properties",
+      outputColumnNames: ["city"])
+    #expect(
+      try #require(qualified.columns[0]).sourceColumns
+        == [.init(table: "properties", column: "city")])
+    #expect(qualified.rowGrain == ["properties"])
+
+    let unknown = SQLQueryAnalyzer.lineage(
+      sql: "SELECT value FROM json_each('[1]')",
+      outputColumnNames: ["value"])
+    #expect(unknown.columns == [nil])
+    #expect(unknown.rowGrain.isEmpty)
+  }
+
+  @Test func compoundSelectsDoNotBorrowClausesFromLaterArms() {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT city FROM properties
+        UNION ALL
+        SELECT headquarters_city FROM tenants GROUP BY headquarters_city
+        """,
+      outputColumnNames: ["city"])
+
+    #expect(lineage.columns == [nil])
+    #expect(lineage.rowGrain.isEmpty)
+  }
+
+  @Test func compoundSelectsPreserveConservativeScopeFromEveryArm() {
+    let scope = SQLQueryAnalyzer.scope(
+      in: """
+        SELECT p.city FROM properties p WHERE p.city = 'Seattle'
+        UNION ALL
+        SELECT t.headquarters_city FROM tenants t
+        WHERE t.headquarters_city = 'Seattle'
+        """)
+
+    #expect(scope.tables == ["properties", "tenants"])
+    #expect(scope.aliases["p"] == "properties")
+    #expect(scope.aliases["t"] == "tenants")
+    #expect(
+      scope.qualifiedColumns["p"]?["city"]?.source
+        == .init(table: "properties", column: "city"))
+    #expect(
+      scope.qualifiedColumns["t"]?["headquarters_city"]?.source
+        == .init(table: "tenants", column: "headquarters_city"))
+  }
+
+  @Test func compoundSelectsDiscardConflictingAliasAndColumnMappings() {
+    let scope = SQLQueryAnalyzer.scope(
+      in: """
+        SELECT source.name FROM properties source
+        UNION ALL
+        SELECT source.name FROM tenants source
+        """)
+
+    #expect(scope.aliases["source"] == nil)
+    #expect(scope.qualifiedColumns["source"]?["name"]?.source == nil)
+    #expect(scope.unqualifiedColumns["name"]?.first?.source == nil)
+  }
+
+  @Test func compoundArmsShareTopLevelCTEsWithoutPublishingLineage() {
+    let sql = """
+      WITH places(label) AS (SELECT city FROM properties)
+      SELECT places.label FROM places
+      UNION ALL
+      SELECT places.label FROM places
+      """
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: sql, outputColumnNames: ["label"])
+    let scope = SQLQueryAnalyzer.scope(in: sql)
+
+    #expect(lineage.columns == [nil])
+    #expect(lineage.rowGrain.isEmpty)
+    #expect(scope.tables == ["properties"])
+    #expect(
+      scope.qualifiedColumns["places"]?["label"]?.source
+        == .init(table: "properties", column: "city"))
+  }
+
+  @Test func multipleAggregateCallsDoNotClaimOneOperation() throws {
+    for expression in [
+      "SUM(p.current_market_value) + MAX(p.current_market_value)",
+      "SUM(p.current_market_value) + SUM(p.current_market_value)",
+    ] {
+      let lineage = SQLQueryAnalyzer.lineage(
+        sql: "SELECT \(expression) AS value FROM properties p",
+        outputColumnNames: ["value"])
+      let column = try #require(lineage.columns[0])
+
+      #expect(column.aggregation == nil)
+      #expect(lineage.rowGrain.isEmpty)
+    }
+  }
+
+  @Test func ambiguousLocalAggregatesDoNotInheritAnOperationFromTheirReference()
+    throws
+  {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH totals AS (
+          SELECT SUM(current_market_value) AS value FROM properties
+        )
+        SELECT SUM(value) + MAX(value) AS combined FROM totals
+        """,
+      outputColumnNames: ["combined"])
+
+    #expect(try #require(lineage.columns[0]).aggregation == nil)
+    #expect(lineage.rowGrain.isEmpty)
+  }
+
+  @Test func windowAggregatesDoNotCollapseTheRowGrain() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT p.city, SUM(p.current_market_value) OVER () AS total_value
+        FROM properties p
+        """,
+      outputColumnNames: ["city", "total_value"])
+
+    #expect(try #require(lineage.columns[1]).aggregation == nil)
+    #expect(lineage.rowGrain == ["properties"])
+  }
+
+  @Test func contradictoryReadsPreserveSyntacticAggregation() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: "SELECT SUM(p.current_market_value) AS total FROM properties p",
+      outputColumnNames: ["total"],
+      reads: [.init(table: "properties", column: "name")])
+    let column = try #require(lineage.columns[0])
+
+    #expect(column.sourceColumns.isEmpty)
+    #expect(column.sourceGrain.isEmpty)
+    #expect(column.aggregation == .sum)
+    #expect(!column.preservesSourceDomain)
   }
 
   @Test func duplicateInvariantAggregatesUseTheProducedGroupGrain() throws {

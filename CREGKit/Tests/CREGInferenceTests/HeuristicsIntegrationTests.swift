@@ -174,6 +174,79 @@ import Testing
       ])
   }
 
+  @Test func nestedPredicatesUseTheirOwnQueryBlockScope() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-nested-grounding-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(sql: "CREATE TABLE properties (property_id INTEGER, name TEXT)")
+      try db.execute(sql: "CREATE TABLE leases (property_id INTEGER, status TEXT)")
+      try db.execute(sql: "INSERT INTO leases VALUES (1, 'Active')")
+    }
+    let heuristics = ResultHeuristics(db: try DatabaseClient.live(url: url))
+    let report = await heuristics.inspectDetailed(
+      sql: """
+        SELECT p.name
+        FROM properties p
+        WHERE p.property_id IN (
+          SELECT l.property_id FROM leases l WHERE l.status = 'Actve'
+        )
+        """,
+      result: QueryResult(columns: ["name"], rows: []))
+
+    #expect(
+      report.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(table: "leases", column: "status"),
+          literal: "Actve",
+          suggestion: "Active"))
+  }
+
+  @Test func derivedAliasesGroundThroughTheirExposedOutputLineage() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-derived-grounding-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(sql: "CREATE TABLE properties (name TEXT, city TEXT)")
+      try db.execute(sql: "INSERT INTO properties VALUES ('Desert Plaza', 'Phoenix')")
+    }
+    let heuristics = ResultHeuristics(db: try DatabaseClient.live(url: url))
+    let report = await heuristics.inspectDetailed(
+      sql: """
+        SELECT d.name
+        FROM (SELECT city AS name FROM properties) d
+        WHERE d.name = 'Phoenx'
+        """,
+      result: QueryResult(columns: ["name"], rows: []))
+
+    #expect(
+      report.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(table: "properties", column: "city"),
+          literal: "Phoenx",
+          suggestion: "Phoenix"))
+  }
+
+  @Test func repairGuidanceFindsAliasesInsideSubqueries() {
+    let issue = SQLValidationIssue(
+      kind: .binding,
+      disposition: .repairable,
+      message: "no such column: l.name")
+    let guidance = ResultHeuristics.repairGuidance(
+      issue: issue,
+      sql: """
+        SELECT p.name FROM properties p
+        WHERE p.property_id IN (
+          SELECT l.property_id FROM leases l WHERE l.name = 'Suite 1'
+        )
+        """,
+      failedFingerprints: [])
+
+    #expect(guidance.declaredSources.contains("properties"))
+    #expect(guidance.declaredSources.contains("leases"))
+    #expect(guidance.correctiveInstruction.contains("l refers to leases"))
+  }
+
   @Test func validCategoricalValueAndUnsupportedPredicatesAreReported()
     async throws
   {

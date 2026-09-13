@@ -32,6 +32,49 @@ import Testing
     #expect(decoded.lineage == nil)
   }
 
+  @Test func futureOrMalformedLineageDoesNotMakeTheResultUndecodable() throws {
+    let result = QueryResult(
+      columns: ["total"],
+      rows: [[.integer(1)]],
+      lineage: SQLQueryLineage(
+        columns: [
+          SQLResultColumnLineage(
+            sourceColumns: [.init(table: "properties", column: "property_id")],
+            sourceGrain: ["properties"],
+            aggregation: .count)
+        ]))
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(result))
+        as? [String: Any])
+    var lineage = try #require(object["lineage"] as? [String: Any])
+    var columns = try #require(lineage["columns"] as? [[String: Any]])
+    columns[0]["aggregation"] = "futureAggregate"
+    lineage["columns"] = columns
+    object["lineage"] = lineage
+    let data = try JSONSerialization.data(withJSONObject: object)
+
+    let decoded = try JSONDecoder().decode(QueryResult.self, from: data)
+    #expect(decoded.columns == result.columns)
+    #expect(decoded.rows == result.rows)
+    #expect(decoded.lineage?.columns[0]?.aggregation == nil)
+  }
+
+  @Test func lineageWithoutAVersionDecodesAsLegacy() throws {
+    let result = QueryResult(
+      columns: ["city"], rows: [[.text("Phoenix")]],
+      lineage: SQLQueryLineage(columns: [nil]))
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(result))
+        as? [String: Any])
+    var lineage = try #require(object["lineage"] as? [String: Any])
+    lineage.removeValue(forKey: "analysisVersion")
+    object["lineage"] = lineage
+    let data = try JSONSerialization.data(withJSONObject: object)
+
+    let decoded = try JSONDecoder().decode(QueryResult.self, from: data)
+    #expect(decoded.lineage?.analysisVersion == 1)
+  }
+
   @Test func presentationLineageDoesNotChangeResultContentFingerprint() {
     let plain = QueryResult(columns: ["city"], rows: [[.text("Phoenix")]])
     let enriched = QueryResult(
