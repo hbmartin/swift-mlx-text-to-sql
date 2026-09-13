@@ -4,6 +4,69 @@ import Foundation
 import GRDB
 import SQLite3
 
+private final class SQLiteAuthorizerState: @unchecked Sendable {
+  private let lock = NSLock()
+  private var isCapturing = false
+  private var capturedReads: [SQLSourceRead] = []
+
+  func beginCapture() {
+    lock.withLock {
+      isCapturing = true
+      capturedReads.removeAll(keepingCapacity: true)
+    }
+  }
+
+  func finishCapture() -> [SQLSourceRead] {
+    lock.withLock {
+      isCapturing = false
+      var seen: Set<SQLSourceRead> = []
+      let reads = capturedReads.filter { seen.insert($0).inserted }
+      capturedReads.removeAll(keepingCapacity: true)
+      return reads
+    }
+  }
+
+  func cancelCapture() {
+    lock.withLock {
+      isCapturing = false
+      capturedReads.removeAll(keepingCapacity: true)
+    }
+  }
+
+  func authorize(
+    action: Int32,
+    first: UnsafePointer<CChar>?,
+    second: UnsafePointer<CChar>?,
+    third: UnsafePointer<CChar>?,
+    fourth: UnsafePointer<CChar>?
+  ) -> Int32 {
+    switch action {
+    case SQLITE_SELECT, SQLITE_FUNCTION, SQLITE_RECURSIVE,
+      SQLITE_TRANSACTION, SQLITE_SAVEPOINT:
+      return SQLITE_OK
+    case SQLITE_READ:
+      if let table = Self.string(first) {
+        let column = Self.string(second).flatMap { $0.isEmpty ? nil : $0 }
+        let read = SQLSourceRead(
+          table: table.lowercased(),
+          column: column?.lowercased(),
+          database: Self.string(third)?.lowercased(),
+          scope: Self.string(fourth)?.lowercased())
+        lock.withLock {
+          if isCapturing { capturedReads.append(read) }
+        }
+      }
+      return SQLITE_OK
+    default:
+      return SQLITE_DENY
+    }
+  }
+
+  private static func string(_ value: UnsafePointer<CChar>?) -> String? {
+    value.map { String(cString: $0) }
+  }
+}
+
 /// Read-only access to the bundled portfolio database.
 public struct DatabaseClient: Sendable {
   /// Stable identity of the exact read-only portfolio snapshot.
@@ -69,24 +132,27 @@ extension DatabaseClient {
       contentsOf: url)
     var configuration = Configuration()
     configuration.readonly = true
+    let authorizer = SQLiteAuthorizerState()
     configuration.prepareDatabase { db in
       let rc = sqlite3_set_authorizer(
         db.sqliteConnection,
-        { _, action, _, _, _, _ in
-          switch action {
-          case SQLITE_SELECT, SQLITE_READ, SQLITE_FUNCTION, SQLITE_RECURSIVE,
-            // transactions/savepoints are read-only-safe on a read-only
-            // connection and GRDB wraps every read in one
-            SQLITE_TRANSACTION, SQLITE_SAVEPOINT:
-            return SQLITE_OK
-          default:
-            return SQLITE_DENY
-          }
+        { context, action, first, second, third, fourth in
+          guard let context else { return SQLITE_DENY }
+          return Unmanaged<SQLiteAuthorizerState>.fromOpaque(context)
+            .takeUnretainedValue()
+            .authorize(
+              action: action,
+              first: first,
+              second: second,
+              third: third,
+              fourth: fourth)
         },
-        nil
+        Unmanaged.passUnretained(authorizer).toOpaque()
       )
       guard rc == SQLITE_OK else {
-        throw DatabaseError(resultCode: ResultCode(rawValue: rc), message: "could not install authorizer")
+        throw DatabaseError(
+          resultCode: ResultCode(rawValue: rc),
+          message: "could not install authorizer")
       }
     }
     let queue = try DatabaseQueue(path: url.path, configuration: configuration)
@@ -109,8 +175,32 @@ extension DatabaseClient {
       execute: { sql in
         let start = ContinuousClock.now
         return try await queue.read { db in
-          let statement = try db.makeStatement(sql: sql)
+          authorizer.beginCapture()
+          let statement: Statement
+          do {
+            statement = try db.makeStatement(sql: sql)
+          } catch {
+            authorizer.cancelCapture()
+            throw error
+          }
+          let reads = authorizer.finishCapture()
           let columns = statement.columnNames
+          let directOrigins = (0..<columns.count).map { index -> SQLSourceColumn? in
+            guard
+              let tablePointer = sqlite3_column_table_name(
+                statement.sqliteStatement, Int32(index)),
+              let columnPointer = sqlite3_column_origin_name(
+                statement.sqliteStatement, Int32(index))
+            else { return nil }
+            return SQLSourceColumn(
+              table: String(cString: tablePointer).lowercased(),
+              column: String(cString: columnPointer).lowercased())
+          }
+          let lineage = SQLQueryAnalyzer.lineage(
+            sql: sql,
+            outputColumnNames: columns,
+            directOrigins: directOrigins,
+            reads: reads)
           var rows: [[SQLValue]] = []
           var isTruncated = false
           let cursor = try Row.fetchCursor(statement)
@@ -130,6 +220,7 @@ extension DatabaseClient {
           return QueryResult(
             columns: columns,
             rows: rows,
+            lineage: lineage,
             isTruncated: isTruncated,
             elapsedMicroseconds: elapsed.microseconds
           )
