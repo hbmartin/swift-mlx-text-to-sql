@@ -37,21 +37,28 @@ enum CREGChartAdapter {
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
   ) throws -> AutoChartDataset<Int> {
-    let projections = alignedProjections(
-      sql, columnCount: result.columns.count)
-    let queryScope = queryScope(in: sql)
+    let queryLineage =
+      result.lineage
+      ?? SQLQueryAnalyzer.lineage(
+        sql: sql, outputColumnNames: result.columns)
     let columns = result.columns.enumerated().map { index, name in
-      AutoChartColumn(
+      let lineage =
+        queryLineage.columns.indices.contains(index)
+        ? queryLineage.columns[index] : nil
+      let aggregation = aggregation(for: lineage?.aggregation)
+      let orderedSourceName =
+        lineage?.sourceColumns.count == 1
+        ? lineage?.sourceColumns.first?.column : nil
+      let categoryOrder = categoryOrder(for: orderedSourceName ?? name)
+      return AutoChartColumn(
         id: columnID(index: index, name: name),
         name: name,
-        categoryOrder: categoryOrder(for: name),
-        provenance: columnProvenance(
-          outputName: name,
-          projection: projections[index],
-          queryScope: queryScope),
+        categoryOrder: categoryOrder,
+        provenance: columnProvenance(lineage),
         semantics: semantics(
           for: name,
-          projection: projections[index],
+          aggregation: aggregation,
+          categoryOrder: categoryOrder,
           values: result.rows.map { row in
             row.indices.contains(index) ? row[index] : .null
           }))
@@ -67,13 +74,18 @@ enum CREGChartAdapter {
           temporal: columns[columnIndex].hints.semanticType == .temporal)
       }
     }
-    let fingerprint = resultFingerprint
+    let fingerprint =
+      resultFingerprint
       ?? PreparedFollowUpIntegrity.fingerprint(result: result)
     let dataset = try AutoChartDataset<Int>(
       columns: columns,
       rows: rows,
       metadata: AutoChartTableMetadata(
         isTruncated: result.isTruncated,
+        rowGrain: queryLineage.rowGrain.isEmpty
+          ? nil
+          : AutoChartGrain(
+            queryLineage.rowGrain.map(AutoChartEntityID.init(rawValue:))),
         semanticModel: portfolioSemanticModel,
         provenance: "CREG query result"),
       key: .trusted(
@@ -181,13 +193,17 @@ enum CREGChartAdapter {
 
   static func semantics(
     for name: String,
-    projection: String?,
+    aggregation: AutoChartAggregation?,
+    categoryOrder: [AutoChartValue]?,
     values: @autoclosure () -> [SQLValue] = []
   ) -> AutoChartColumnSemantics {
     let normalized = name.lowercased()
-    let aggregation = aggregate(in: projection)
 
-    if categoryOrder(for: normalized) != nil {
+    if categoryOrder != nil {
+      guard !containsBlob(values()) else {
+        return .inferred(
+          measureSemantics: measureSemantics(for: aggregation))
+      }
       return .dimension(semanticType: .ordinal)
     }
 
@@ -313,22 +329,21 @@ enum CREGChartAdapter {
     if containsAny(text, ["distribution", "spread", "histogram"]) { return .distribution }
     if containsAny(
       text,
-      ["compare", " by ", "group by", "for each", "for every", " each ", " per "])
+      ["compare", " by ", "group by", "for each", "for every", " each "])
+      || containsAny(
+        text,
+        [
+          " per property", " per properties", " per fund", " per funds",
+          " per lease", " per leases", " per tenant", " per tenants",
+          " per loan", " per loans", " per valuation", " per valuations",
+        ])
     {
       return .comparison
     }
     return .overview
   }
 
-  private struct QueryScope {
-    var aliases: [String: String]
-    var tables: Set<String>
-  }
-
   private static let portfolioSchema = PortfolioSchemaCatalog.document
-
-  private static let portfolioTableColumns =
-    portfolioSchema.tables.mapValues(Set.init)
 
   private static let portfolioSemanticModel = AutoChartSemanticModel(
     relationships: portfolioSchema.foreignKeys.map { foreignKey in
@@ -337,237 +352,35 @@ enum CREGChartAdapter {
         many: AutoChartEntityID(rawValue: foreignKey.fromTable))
     })
 
-  private static let sourceBoundaryWords: Set<String> = [
-    "where", "join", "left", "right", "inner", "outer", "cross", "full",
-    "on", "group", "order", "having", "limit", "union", "except", "intersect",
-  ]
-
-  private static func queryScope(in sql: String) -> QueryScope {
-    let tokens = sqlTokens(in: sql)
-    var aliases: [String: String] = [:]
-    var tables: Set<String> = []
-    var index = 0
-    while index < tokens.count {
-      guard case .word(let sourceKeyword) = tokens[index],
-        sourceKeyword == "from" || sourceKeyword == "join",
-        index + 1 < tokens.count,
-        case .word(let table) = tokens[index + 1],
-        portfolioTableColumns[table] != nil
-      else {
-        index += 1
-        continue
-      }
-      tables.insert(table)
-      aliases[table] = table
-      var aliasIndex = index + 2
-      if aliasIndex < tokens.count, tokens[aliasIndex] == .word("as") {
-        aliasIndex += 1
-      }
-      if aliasIndex < tokens.count, case .word(let alias) = tokens[aliasIndex],
-        !sourceBoundaryWords.contains(alias)
-      {
-        aliases[alias] = table
-      }
-      index = aliasIndex + 1
-    }
-    return QueryScope(aliases: aliases, tables: tables)
-  }
-
   private static func columnProvenance(
-    outputName: String,
-    projection: String?,
-    queryScope: QueryScope
+    _ lineage: SQLResultColumnLineage?
   ) -> AutoChartColumnProvenance? {
-    let references: [AutoChartSourceColumn] = projection.map {
-      sourceColumns(in: $0, queryScope: queryScope)
-    } ?? []
-    var derivedColumns = references
-    if derivedColumns.isEmpty,
-      let source = uniqueSourceColumn(
-        named: outputName.lowercased(),
-        among: queryScope.tables)
-    {
-      derivedColumns = [source]
-    }
-
-    var seen: Set<AutoChartSourceColumn> = []
-    derivedColumns = derivedColumns.filter { seen.insert($0).inserted }
-    var entities = derivedColumns.map(\.entity)
-    if entities.isEmpty, aggregate(in: projection) != nil {
-      entities = queryScope.tables.sorted().map(AutoChartEntityID.init(rawValue:))
-    }
-    guard !derivedColumns.isEmpty || !entities.isEmpty else { return nil }
+    guard let lineage,
+      !lineage.sourceColumns.isEmpty || !lineage.sourceGrain.isEmpty
+    else { return nil }
     return AutoChartColumnProvenance(
-      sourceColumns: derivedColumns,
-      sourceGrain: entities.isEmpty ? nil : AutoChartGrain(entities))
+      sourceColumns: lineage.sourceColumns.map {
+        AutoChartSourceColumn(
+          entity: AutoChartEntityID(rawValue: $0.table), name: $0.column)
+      },
+      sourceGrain: lineage.sourceGrain.isEmpty
+        ? nil
+        : AutoChartGrain(
+          lineage.sourceGrain.map(AutoChartEntityID.init(rawValue:))))
   }
 
-  private static func sourceColumns(
-    in projection: String,
-    queryScope: QueryScope
-  ) -> [AutoChartSourceColumn] {
-    let tokens = sqlTokens(in: projection)
-    var output: [AutoChartSourceColumn] = []
-    for index in tokens.indices {
-      guard index + 2 < tokens.count,
-        case .word(let qualifier) = tokens[index],
-        tokens[index + 1] == .symbol("."),
-        case .word(let column) = tokens[index + 2]
-      else { continue }
-      if let table = queryScope.aliases[qualifier],
-        portfolioTableColumns[table]?.contains(column) == true
-      {
-        output.append(
-          AutoChartSourceColumn(
-            entity: AutoChartEntityID(rawValue: table), name: column))
-      } else if let unique = uniqueSourceColumn(named: column, among: queryScope.tables) {
-        // A CTE alias is not a physical schema entity. A globally unambiguous
-        // frozen-schema column still carries useful lineage through it.
-        output.append(unique)
-      }
+  private static func aggregation(
+    for operation: SQLAggregateOperation?
+  ) -> AutoChartAggregation? {
+    switch operation {
+    case .sum, .total: .sum
+    case .average: .mean
+    case .minimum: .minimum
+    case .maximum: .maximum
+    case .count: .count
+    case .countDistinct: .countDistinct
+    case nil: nil
     }
-
-    if output.isEmpty {
-      for token in tokens {
-        guard case .word(let column) = token,
-          let unique = uniqueSourceColumn(named: column, among: queryScope.tables)
-        else { continue }
-        output.append(unique)
-      }
-    }
-    return output
-  }
-
-  private static func uniqueSourceColumn(
-    named column: String,
-    among tables: Set<String>
-  ) -> AutoChartSourceColumn? {
-    var owners = tables.filter {
-      portfolioTableColumns[$0]?.contains(column) == true
-    }
-    if owners.isEmpty {
-      owners = Set(
-        portfolioTableColumns.compactMap { table, columns in
-          columns.contains(column) ? table : nil
-        })
-    }
-    guard owners.count == 1, let table = owners.first else { return nil }
-    return AutoChartSourceColumn(
-      entity: AutoChartEntityID(rawValue: table), name: column)
-  }
-
-  static func aggregate(in projection: String?) -> AutoChartAggregation? {
-    guard let projection else { return nil }
-    let tokens = sqlTokens(in: projection)
-    guard !tokens.contains(.word("over")) else { return nil }
-    for index in tokens.indices {
-      guard case .word(let name) = tokens[index],
-        index + 1 < tokens.count,
-        tokens[index + 1] == .symbol("(")
-      else { continue }
-      switch name {
-      case "sum": return .sum
-      case "avg": return .mean
-      case "min": return .minimum
-      case "max": return .maximum
-      case "count":
-        if index + 2 < tokens.count, tokens[index + 2] == .word("distinct") {
-          return .countDistinct
-        }
-        return .count
-      default: continue
-      }
-    }
-    return nil
-  }
-
-  static func alignedProjections(
-    _ sql: String,
-    columnCount: Int
-  ) -> [String?] {
-    let projections = topLevelProjections(sql)
-    guard projections.count == columnCount,
-      !projections.contains(where: isWildcardProjection)
-    else { return Array(repeating: nil, count: columnCount) }
-    return projections.map(Optional.some)
-  }
-
-  static func topLevelProjections(_ sql: String) -> [String] {
-    let characters = Array(sql)
-    var depth = 0
-    var selectStart: Int?
-    var index = 0
-    while index < characters.count {
-      let character = characters[index]
-      if let next = skippingComment(characters, from: index) {
-        index = next
-        continue
-      }
-      if let next = skippingQuotedRegion(characters, from: index) {
-        index = next
-        continue
-      }
-      if character == "(" {
-        depth += 1
-        index += 1
-        continue
-      }
-      if character == ")" {
-        depth = max(0, depth - 1)
-        index += 1
-        continue
-      }
-      if depth == 0, character.isLetter {
-        let wordStart = index
-        while index < characters.count,
-          characters[index].isLetter || characters[index] == "_"
-        {
-          index += 1
-        }
-        let word = String(characters[wordStart..<index]).lowercased()
-        if word == "select" {
-          selectStart = index
-        } else if word == "from", let start = selectStart {
-          return splitTopLevel(String(characters[start..<wordStart]))
-        }
-        continue
-      }
-      index += 1
-    }
-    return []
-  }
-
-  private static func splitTopLevel(_ text: String) -> [String] {
-    let characters = Array(text)
-    var output: [String] = []
-    var depth = 0
-    var start = 0
-    var index = 0
-    while index < characters.count {
-      let character = characters[index]
-      if let next = skippingComment(characters, from: index) {
-        index = next
-        continue
-      }
-      if let next = skippingQuotedRegion(characters, from: index) {
-        index = next
-        continue
-      }
-      if character == "(" {
-        depth += 1
-      } else if character == ")" {
-        depth = max(0, depth - 1)
-      } else if character == ",", depth == 0 {
-        output.append(
-          String(characters[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines))
-        start = index + 1
-      }
-      index += 1
-    }
-    if start < characters.count {
-      output.append(String(characters[start...]).trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-    return output
   }
 
   static func parseISODate(
@@ -587,107 +400,6 @@ enum CREGChartAdapter {
       return localCalendar.date(from: components)
     }
     return try? Date(text, strategy: .iso8601)
-  }
-
-  private enum SQLToken: Equatable {
-    case word(String)
-    case symbol(Character)
-  }
-
-  private static func sqlTokens(in sql: String) -> [SQLToken] {
-    let characters = Array(sql)
-    var tokens: [SQLToken] = []
-    var index = 0
-    while index < characters.count {
-      let character = characters[index]
-      if character.isWhitespace {
-        index += 1
-        continue
-      }
-      if let next = skippingComment(characters, from: index) {
-        index = next
-        continue
-      }
-      if let next = skippingQuotedRegion(characters, from: index) {
-        index = next
-        continue
-      }
-      if character.isLetter || character == "_" {
-        let start = index
-        index += 1
-        while index < characters.count,
-          characters[index].isLetter || characters[index].isNumber
-            || characters[index] == "_" || characters[index] == "$"
-        {
-          index += 1
-        }
-        tokens.append(.word(String(characters[start..<index]).lowercased()))
-        continue
-      }
-      tokens.append(.symbol(character))
-      index += 1
-    }
-    return tokens
-  }
-
-  private static func isWildcardProjection(_ projection: String) -> Bool {
-    let tokens = sqlTokens(in: projection)
-    if tokens == [.symbol("*")] { return true }
-    return tokens.count >= 2
-      && Array(tokens.suffix(2)) == [.symbol("."), .symbol("*")]
-  }
-
-  /// Advances past a SQL line or block comment beginning at `index`.
-  private static func skippingComment(
-    _ characters: [Character], from index: Int
-  ) -> Int? {
-    guard index + 1 < characters.count else { return nil }
-    if characters[index] == "-", characters[index + 1] == "-" {
-      var next = index + 2
-      while next < characters.count, !characters[next].isNewline { next += 1 }
-      return next
-    }
-    if characters[index] == "/", characters[index + 1] == "*" {
-      var next = index + 2
-      while next + 1 < characters.count,
-        !(characters[next] == "*" && characters[next + 1] == "/")
-      {
-        next += 1
-      }
-      return min(next + 2, characters.count)
-    }
-    return nil
-  }
-
-  /// Advances past a quoted value or quoted/bracketed identifier, including
-  /// SQL's doubled-delimiter escaping. Returns nil when `index` is unquoted.
-  private static func skippingQuotedRegion(
-    _ characters: [Character], from index: Int
-  ) -> Int? {
-    guard let closing = closingDelimiter(for: characters[index]) else {
-      return nil
-    }
-    var next = index + 1
-    while next < characters.count {
-      guard characters[next] == closing else {
-        next += 1
-        continue
-      }
-      if next + 1 < characters.count, characters[next + 1] == closing {
-        next += 2
-        continue
-      }
-      return next + 1
-    }
-    return characters.count
-  }
-
-  private static func closingDelimiter(for character: Character) -> Character? {
-    switch character {
-    case "'", "\"", "`": character
-    case "[": "]"
-    default: nil
-    }
   }
 
   private static func hasValidTemporalValues(_ values: [SQLValue]) -> Bool {

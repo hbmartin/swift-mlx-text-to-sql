@@ -22,10 +22,103 @@ public enum SQLValue: Sendable, Equatable, Hashable, Codable {
   }
 }
 
+/// One physical SQLite column that contributed to a result expression.
+public struct SQLSourceColumn: Sendable, Equatable, Hashable, Codable {
+  public var table: String
+  public var column: String
+
+  public init(table: String, column: String) {
+    self.table = table
+    self.column = column
+  }
+}
+
+/// A physical read reported while SQLite prepares a statement.
+///
+/// `scope` is SQLite's innermost view, trigger, or CTE name when one is
+/// available. A nil column represents structural reads such as `COUNT(*)`.
+public struct SQLSourceRead: Sendable, Equatable, Hashable, Codable {
+  public var table: String
+  public var column: String?
+  public var database: String?
+  public var scope: String?
+
+  public init(
+    table: String,
+    column: String? = nil,
+    database: String? = nil,
+    scope: String? = nil
+  ) {
+    self.table = table
+    self.column = column
+    self.database = database
+    self.scope = scope
+  }
+}
+
+/// SQL aggregate semantics retained independently of the charting package.
+public enum SQLAggregateOperation: String, Sendable, Equatable, Hashable, Codable {
+  case sum
+  case average
+  case minimum
+  case maximum
+  case count
+  case countDistinct
+  case total
+
+  /// Whether multiplying otherwise identical joined rows can change the result.
+  public var isDuplicateSensitive: Bool {
+    switch self {
+    case .sum, .average, .count, .total: true
+    case .minimum, .maximum, .countDistinct: false
+    }
+  }
+}
+
+/// Source facts for one output column, aligned with ``QueryResult/columns``.
+public struct SQLResultColumnLineage: Sendable, Equatable, Hashable, Codable {
+  public var sourceColumns: [SQLSourceColumn]
+  /// The effective entity grain chart safety should compare with dimensions.
+  public var sourceGrain: [String]
+  public var aggregation: SQLAggregateOperation?
+
+  public init(
+    sourceColumns: [SQLSourceColumn] = [],
+    sourceGrain: [String] = [],
+    aggregation: SQLAggregateOperation? = nil
+  ) {
+    self.sourceColumns = sourceColumns
+    self.sourceGrain = sourceGrain
+    self.aggregation = aggregation
+  }
+}
+
+/// SQLite-backed and query-block-aware lineage for an executed result.
+public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
+  /// Entries align one-for-one with the result's output columns.
+  public var columns: [SQLResultColumnLineage?]
+  /// Effective entity grain of each returned row, when it can be established.
+  public var rowGrain: [String]
+  /// Exact physical reads reported by SQLite's authorizer.
+  public var reads: [SQLSourceRead]
+
+  public init(
+    columns: [SQLResultColumnLineage?],
+    rowGrain: [String] = [],
+    reads: [SQLSourceRead] = []
+  ) {
+    self.columns = columns
+    self.rowGrain = rowGrain
+    self.reads = reads
+  }
+}
+
 /// The table returned by executing a query.
 public struct QueryResult: Sendable, Equatable, Codable {
   public var columns: [String]
   public var rows: [[SQLValue]]
+  /// Typed source lineage captured while the statement was prepared.
+  public var lineage: SQLQueryLineage?
   /// True when the row set was cut off at the client's row cap.
   public var isTruncated: Bool
   /// Monotonic execution duration. Microseconds are the persisted canonical
@@ -35,11 +128,13 @@ public struct QueryResult: Sendable, Equatable, Codable {
   public init(
     columns: [String],
     rows: [[SQLValue]],
+    lineage: SQLQueryLineage? = nil,
     isTruncated: Bool = false,
     elapsedMicroseconds: Int64 = 0
   ) {
     self.columns = columns
     self.rows = rows
+    self.lineage = lineage
     self.isTruncated = isTruncated
     self.elapsedMicroseconds = elapsedMicroseconds
   }
@@ -49,12 +144,14 @@ public struct QueryResult: Sendable, Equatable, Codable {
   public init(
     columns: [String],
     rows: [[SQLValue]],
+    lineage: SQLQueryLineage? = nil,
     isTruncated: Bool = false,
     elapsedMilliseconds: Double
   ) {
     self.init(
       columns: columns,
       rows: rows,
+      lineage: lineage,
       isTruncated: isTruncated,
       elapsedMicroseconds: Int64((elapsedMilliseconds * 1_000).rounded()))
   }
@@ -63,13 +160,14 @@ public struct QueryResult: Sendable, Equatable, Codable {
   public var elapsedMilliseconds: Double { Double(elapsedMicroseconds) / 1_000 }
 
   enum CodingKeys: String, CodingKey {
-    case columns, rows, isTruncated, elapsedMicroseconds, elapsedMilliseconds
+    case columns, rows, lineage, isTruncated, elapsedMicroseconds, elapsedMilliseconds
   }
 
   public init(from decoder: Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     columns = try values.decode([String].self, forKey: .columns)
     rows = try values.decode([[SQLValue]].self, forKey: .rows)
+    lineage = try values.decodeIfPresent(SQLQueryLineage.self, forKey: .lineage)
     isTruncated = try values.decodeIfPresent(Bool.self, forKey: .isTruncated) ?? false
     if let microseconds = try values.decodeIfPresent(
       Int64.self, forKey: .elapsedMicroseconds)
@@ -86,6 +184,7 @@ public struct QueryResult: Sendable, Equatable, Codable {
     var values = encoder.container(keyedBy: CodingKeys.self)
     try values.encode(columns, forKey: .columns)
     try values.encode(rows, forKey: .rows)
+    try values.encodeIfPresent(lineage, forKey: .lineage)
     try values.encode(isTruncated, forKey: .isTruncated)
     try values.encode(elapsedMicroseconds, forKey: .elapsedMicroseconds)
   }

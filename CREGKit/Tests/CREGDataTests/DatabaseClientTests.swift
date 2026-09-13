@@ -49,6 +49,28 @@ extension DatabaseClient {
     #expect(!result.isTruncated)
   }
 
+  @Test func executionCapturesSQLiteReadsAndDirectColumnOrigins() async throws {
+    let client = try DatabaseClient.live(url: makeDatabase())
+    let result = try await client.execute(
+      "SELECT id, name FROM t WHERE name != ''")
+    let lineage = try #require(result.lineage)
+
+    #expect(
+      lineage.columns[0]?.sourceColumns
+        == [.init(table: "t", column: "id")])
+    #expect(
+      lineage.columns[1]?.sourceColumns
+        == [.init(table: "t", column: "name")])
+    #expect(
+      lineage.reads.contains {
+        $0.table == "t" && $0.column == "id" && $0.database == "main"
+      })
+    #expect(
+      lineage.reads.contains {
+        $0.table == "t" && $0.column == "name" && $0.database == "main"
+      })
+  }
+
   @Test func writesAreDenied() async throws {
     let client = try DatabaseClient.live(url: makeDatabase())
     await #expect(throws: (any Error).self) {

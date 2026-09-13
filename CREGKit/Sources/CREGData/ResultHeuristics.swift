@@ -88,11 +88,6 @@ public actor ResultHeuristics {
     GroundingColumn(table: "valuations", column: "appraiser"),
   ]
 
-  private static let reservedAliases: Set<String> = [
-    "where", "join", "left", "right", "inner", "outer", "cross", "on",
-    "group", "order", "having", "limit", "union",
-  ]
-
   private static let schemaCatalog = PortfolioSchemaCatalog.document
 
   private static let tableColumns = schemaCatalog.tables.mapValues(Set.init)
@@ -334,24 +329,8 @@ public actor ResultHeuristics {
   private static func querySources(
     in sql: String
   ) -> (aliases: [String: String], tables: Set<String>) {
-    let pattern =
-      #"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?"#
-    let regex = try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-    let string = sql as NSString
-    var aliases: [String: String] = [:]
-    var tables: Set<String> = []
-    for match in regex.matches(in: sql, range: NSRange(location: 0, length: string.length)) {
-      let table = string.substring(with: match.range(at: 1)).lowercased()
-      tables.insert(table)
-      aliases[table] = table
-      if match.range(at: 2).location != NSNotFound {
-        let alias = string.substring(with: match.range(at: 2)).lowercased()
-        if !reservedAliases.contains(alias) {
-          aliases[alias] = table
-        }
-      }
-    }
-    return (aliases, tables)
+    let scope = SQLQueryAnalyzer.scope(in: sql)
+    return (scope.aliases, scope.tables)
   }
 
   private static func resolve(
