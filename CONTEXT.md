@@ -177,6 +177,14 @@ _Avoid_: partial answer, duplicate answer
 The per-answer Chart or Table choice and, when charted, the selected deterministic specification. Chart marks retain the source row identities needed to filter the Table view temporarily; exports always use the complete returned result.
 _Avoid_: generated visualization, sampled chart
 
+**Chart Provenance**:
+The source columns, Source Grain, and declared entity relationships that CREG carries from reviewed schema and SQL into Result Presentation.
+_Avoid_: value-inferred grain, chart metadata string
+
+**Chart Safety Finding**:
+A typed explanation that a proposed chart would change or overstate the result's meaning; it changes presentation or requests host correction but never rewrites result values.
+_Avoid_: chart preference, automatic data repair
+
 **Turn Failure**:
 A completed turn that produced no answer, carrying exactly one typed reason. A Scope Miss (the schema does not cover the subject) is not an empty result — an empty result means the schema covers it and no rows matched, which is Grounding Check territory.
 _Avoid_: error, crash

@@ -1,10 +1,10 @@
 import CREGCore
 import Foundation
 
-private struct SchemaCatalogDocument: Decodable {
-  var schemaVersion: Int
-  var tables: [String: [String]]
-  var foreignKeys: [SchemaForeignKey]
+package struct PortfolioSchemaDocument: Decodable, Sendable {
+  package var schemaVersion: Int
+  package var tables: [String: [String]]
+  package var foreignKeys: [PortfolioSchemaForeignKey]
 
   enum CodingKeys: String, CodingKey {
     case schemaVersion = "schema_version"
@@ -13,11 +13,11 @@ private struct SchemaCatalogDocument: Decodable {
   }
 }
 
-private struct SchemaForeignKey: Decodable {
-  var fromTable: String
-  var fromColumn: String
-  var toTable: String
-  var toColumn: String
+package struct PortfolioSchemaForeignKey: Decodable, Hashable, Sendable {
+  package var fromTable: String
+  package var fromColumn: String
+  package var toTable: String
+  package var toColumn: String
 
   enum CodingKeys: String, CodingKey {
     case fromTable = "from_table"
@@ -26,9 +26,27 @@ private struct SchemaForeignKey: Decodable {
     case toColumn = "to_column"
   }
 
-  var description: String {
+  package var description: String {
     "\(fromTable).\(fromColumn) -> \(toTable).\(toColumn)"
   }
+}
+
+/// One process-wide, resource-backed view of CREG's frozen portfolio schema.
+/// Consumers use this instead of duplicating table and relationship lists.
+package enum PortfolioSchemaCatalog {
+  package static let document: PortfolioSchemaDocument = {
+    guard
+      let url = Bundle.module.url(
+        forResource: "schema_catalog", withExtension: "json"),
+      let data = try? Data(contentsOf: url),
+      let catalog = try? JSONDecoder().decode(
+        PortfolioSchemaDocument.self, from: data),
+      catalog.schemaVersion == 2
+    else {
+      preconditionFailure("schema_catalog.json is missing or incompatible")
+    }
+    return catalog
+  }()
 }
 
 /// Conservative empty-result grounding. Only string literals bound to a
@@ -75,19 +93,7 @@ public actor ResultHeuristics {
     "group", "order", "having", "limit", "union",
   ]
 
-  private static let schemaCatalog: SchemaCatalogDocument = {
-    guard
-      let url = Bundle.module.url(
-        forResource: "schema_catalog", withExtension: "json"),
-      let data = try? Data(contentsOf: url),
-      let catalog = try? JSONDecoder().decode(
-        SchemaCatalogDocument.self, from: data),
-      catalog.schemaVersion == 2
-    else {
-      preconditionFailure("schema_catalog.json is missing or incompatible")
-    }
-    return catalog
-  }()
+  private static let schemaCatalog = PortfolioSchemaCatalog.document
 
   private static let tableColumns = schemaCatalog.tables.mapValues(Set.init)
   private static let foreignKeys = schemaCatalog.foreignKeys

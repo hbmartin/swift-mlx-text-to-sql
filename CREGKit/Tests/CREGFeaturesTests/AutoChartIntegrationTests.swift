@@ -74,6 +74,105 @@ import Testing
         sql: sql).goal == .range)
   }
 
+  @Test func chartProvenanceUsesTheFrozenSchemaAndRejectsJoinFanOut() async throws {
+    let sql = """
+      SELECT l.lease_type, SUM(p.current_market_value) AS total_value
+      FROM leases l
+      JOIN properties p ON p.property_id = l.property_id
+      GROUP BY l.lease_type
+      """
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["lease_type", "total_value"],
+        rows: [
+          [.text("Gross"), .real(20_000_000)],
+          [.text("NNN"), .real(15_000_000)],
+        ]),
+      sql: sql)
+    let category = dataset.chartColumns[0]
+    let measure = dataset.chartColumns[1]
+
+    #expect(category.provenance?.sourceGrain == AutoChartGrain(entity: "leases"))
+    #expect(measure.provenance?.sourceGrain == AutoChartGrain(entity: "properties"))
+    #expect(
+      measure.provenance?.sourceColumns
+        == [.init(entity: "properties", name: "current_market_value")])
+
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    let validation = analysis.validate(
+      .bar(category: category.id, measure: measure.id))
+    #expect(!validation.isValid)
+    #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
+  }
+
+  @Test func chartProvenanceAllowsMeasuresGroupedAtACoarserGrain() async throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["fund_name", "total_value"],
+        rows: [
+          [.text("Core"), .real(20_000_000)],
+          [.text("Value-Add"), .real(15_000_000)],
+        ]),
+      sql: """
+        SELECT f.name AS fund_name, SUM(p.current_market_value) AS total_value
+        FROM funds f
+        JOIN properties p ON p.fund_id = f.fund_id
+        GROUP BY f.name
+        """)
+    let category = dataset.chartColumns[0]
+    let measure = dataset.chartColumns[1]
+
+    #expect(category.provenance?.sourceGrain == AutoChartGrain(entity: "funds"))
+    #expect(measure.provenance?.sourceGrain == AutoChartGrain(entity: "properties"))
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    #expect(analysis.validate(.bar(category: category.id, measure: measure.id)).isValid)
+  }
+
+  @Test func chartProvenanceRejectsSiblingMeasureChasms() async throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["annual_base_rent", "current_balance"],
+        rows: [[.real(100_000), .real(2_000_000)]]),
+      sql: """
+        SELECT l.annual_base_rent, n.current_balance
+        FROM leases l
+        JOIN properties p ON p.property_id = l.property_id
+        JOIN loans n ON n.property_id = p.property_id
+        """)
+    let rent = dataset.chartColumns[0]
+    let balance = dataset.chartColumns[1]
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    let validation = analysis.validate(.scatter(x: rent.id, y: balance.id))
+
+    #expect(rent.provenance?.sourceGrain == AutoChartGrain(entity: "leases"))
+    #expect(balance.provenance?.sourceGrain == AutoChartGrain(entity: "loans"))
+    #expect(!validation.isValid)
+    #expect(validation.issues.contains { $0.messageValue.code == .chasmRisk })
+  }
+
+  @Test func repeatedEntityLanguageClassifiesAsComparison() {
+    #expect(
+      CREGChartAdapter.analysisContext(
+        question: "Show current market value for each property",
+        sql: "SELECT name, current_market_value FROM properties"
+      ).goal == .comparison)
+  }
+
+  @Test func frozenOrdinalDomainsCarrySemanticOrder() throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["building_class"],
+        rows: [[.text("C")], [.text("A")], [.text("B")]]),
+      sql: "SELECT building_class FROM properties")
+    let column = try #require(dataset.chartColumns.first)
+
+    #expect(column.hints.semanticType == .ordinal)
+    #expect(column.categoryOrder == ["A", "B", "C"].map(AutoChartValue.text))
+  }
+
   /// A ragged row (a prepared result decoded from history written by an
   /// older or buggy producer) pads with nulls — matching the defensive
   /// padding in the hints closure — instead of throwing and silently
@@ -339,7 +438,7 @@ import Testing
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
     // A bump invalidates persisted chart-type pins. Keep this exact assertion
     // separate from the version-agnostic migration behavior test.
-    #expect(AutoTableCharts.recommendationPolicyVersion == 12)
+    #expect(AutoTableCharts.recommendationPolicyVersion == 13)
   }
 
   @MainActor
