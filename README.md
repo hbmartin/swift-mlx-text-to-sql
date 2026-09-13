@@ -82,7 +82,10 @@ persisted in chat history and JSONL.
 CREG adapts each typed `QueryResult` to the local
 [`AutoTableCharts`](../AutoTableCharts) Swift package. The package profiles the
 supplied rows, generates a bounded set of semantically safe specifications,
-ranks them deterministically, and renders them with native Swift Charts. It is
+ranks them deterministically using bounded descriptive signals, and renders
+them with native Swift Charts. CREG derives source-column grain from the
+executed SQL and its frozen schema catalog; unsafe child-grain rollups are
+rejected instead of being visually legitimized or silently repaired. It is
 fully offline and does not parse the user's question with a model.
 
 Chartable answers default to a compact, noninteractive chart preview. The
@@ -92,6 +95,8 @@ the contributing source-row IDs; changing the chart or closing the explorer
 clears that temporary selection. CSV and Markdown exports always contain the
 complete returned result. Truncated results are labeled as the first returned
 rows and suppress totals, frequency claims, and composition charts.
+Known ordinal domains retain their reviewed order, and supported charts expose
+VoiceOver Audio Graphs plus non-color encodings where Swift Charts permits them.
 
 The package retains prepared snapshots and rendering data in a process-wide
 cache. CREG lowers both of its layers to 16 MiB — half the package default —

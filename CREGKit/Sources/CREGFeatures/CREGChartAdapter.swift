@@ -1,4 +1,5 @@
 import AutoTableCharts
+import CREGData
 import CREGEngine
 import Foundation
 
@@ -38,10 +39,16 @@ enum CREGChartAdapter {
   ) throws -> AutoChartDataset<Int> {
     let projections = alignedProjections(
       sql, columnCount: result.columns.count)
+    let queryScope = queryScope(in: sql)
     let columns = result.columns.enumerated().map { index, name in
       AutoChartColumn(
         id: columnID(index: index, name: name),
         name: name,
+        categoryOrder: categoryOrder(for: name),
+        provenance: columnProvenance(
+          outputName: name,
+          projection: projections[index],
+          queryScope: queryScope),
         semantics: semantics(
           for: name,
           projection: projections[index],
@@ -67,6 +74,7 @@ enum CREGChartAdapter {
       rows: rows,
       metadata: AutoChartTableMetadata(
         isTruncated: result.isTruncated,
+        semanticModel: portfolioSemanticModel,
         provenance: "CREG query result"),
       key: .trusted(
         identity: dataIdentity ?? "CREG.Result.v3:\(fingerprint)",
@@ -179,6 +187,10 @@ enum CREGChartAdapter {
     let normalized = name.lowercased()
     let aggregation = aggregate(in: projection)
 
+    if categoryOrder(for: normalized) != nil {
+      return .dimension(semanticType: .ordinal)
+    }
+
     if normalized == "id" || normalized.hasSuffix("_id") {
       return .identifier(semanticType: .identifier)
     }
@@ -258,6 +270,23 @@ enum CREGChartAdapter {
       measureSemantics: measureSemantics(for: aggregation))
   }
 
+  private static func categoryOrder(for name: String) -> [AutoChartValue]? {
+    switch name.lowercased() {
+    case "building_class":
+      ["A", "B", "C"].map(AutoChartValue.text)
+    case "strategy":
+      ["Core", "Core-Plus", "Value-Add", "Opportunistic"].map(AutoChartValue.text)
+    case "credit_rating":
+      [
+        "AAA", "AA+", "AA", "AA-", "A+", "A", "A-", "BBB+", "BBB", "BBB-",
+        "BB+", "BB", "BB-", "B+", "B", "B-", "CCC+", "CCC", "CCC-", "CC",
+        "C", "D", "NR",
+      ].map(AutoChartValue.text)
+    default:
+      nil
+    }
+  }
+
   static func goal(question: String?, sql: String) -> AutoChartGoal {
     let questionGoal = classifiedGoal(in: (question ?? "").lowercased())
     guard questionGoal == .overview else { return questionGoal }
@@ -282,8 +311,149 @@ enum CREGChartAdapter {
       return .ranking
     }
     if containsAny(text, ["distribution", "spread", "histogram"]) { return .distribution }
-    if containsAny(text, ["compare", " by ", "group by"]) { return .comparison }
+    if containsAny(
+      text,
+      ["compare", " by ", "group by", "for each", "for every", " each ", " per "])
+    {
+      return .comparison
+    }
     return .overview
+  }
+
+  private struct QueryScope {
+    var aliases: [String: String]
+    var tables: Set<String>
+  }
+
+  private static let portfolioSchema = PortfolioSchemaCatalog.document
+
+  private static let portfolioTableColumns =
+    portfolioSchema.tables.mapValues(Set.init)
+
+  private static let portfolioSemanticModel = AutoChartSemanticModel(
+    relationships: portfolioSchema.foreignKeys.map { foreignKey in
+      AutoChartEntityRelationship(
+        one: AutoChartEntityID(rawValue: foreignKey.toTable),
+        many: AutoChartEntityID(rawValue: foreignKey.fromTable))
+    })
+
+  private static let sourceBoundaryWords: Set<String> = [
+    "where", "join", "left", "right", "inner", "outer", "cross", "full",
+    "on", "group", "order", "having", "limit", "union", "except", "intersect",
+  ]
+
+  private static func queryScope(in sql: String) -> QueryScope {
+    let tokens = sqlTokens(in: sql)
+    var aliases: [String: String] = [:]
+    var tables: Set<String> = []
+    var index = 0
+    while index < tokens.count {
+      guard case .word(let sourceKeyword) = tokens[index],
+        sourceKeyword == "from" || sourceKeyword == "join",
+        index + 1 < tokens.count,
+        case .word(let table) = tokens[index + 1],
+        portfolioTableColumns[table] != nil
+      else {
+        index += 1
+        continue
+      }
+      tables.insert(table)
+      aliases[table] = table
+      var aliasIndex = index + 2
+      if aliasIndex < tokens.count, tokens[aliasIndex] == .word("as") {
+        aliasIndex += 1
+      }
+      if aliasIndex < tokens.count, case .word(let alias) = tokens[aliasIndex],
+        !sourceBoundaryWords.contains(alias)
+      {
+        aliases[alias] = table
+      }
+      index = aliasIndex + 1
+    }
+    return QueryScope(aliases: aliases, tables: tables)
+  }
+
+  private static func columnProvenance(
+    outputName: String,
+    projection: String?,
+    queryScope: QueryScope
+  ) -> AutoChartColumnProvenance? {
+    let references: [AutoChartSourceColumn] = projection.map {
+      sourceColumns(in: $0, queryScope: queryScope)
+    } ?? []
+    var derivedColumns = references
+    if derivedColumns.isEmpty,
+      let source = uniqueSourceColumn(
+        named: outputName.lowercased(),
+        among: queryScope.tables)
+    {
+      derivedColumns = [source]
+    }
+
+    var seen: Set<AutoChartSourceColumn> = []
+    derivedColumns = derivedColumns.filter { seen.insert($0).inserted }
+    var entities = derivedColumns.map(\.entity)
+    if entities.isEmpty, aggregate(in: projection) != nil {
+      entities = queryScope.tables.sorted().map(AutoChartEntityID.init(rawValue:))
+    }
+    guard !derivedColumns.isEmpty || !entities.isEmpty else { return nil }
+    return AutoChartColumnProvenance(
+      sourceColumns: derivedColumns,
+      sourceGrain: entities.isEmpty ? nil : AutoChartGrain(entities))
+  }
+
+  private static func sourceColumns(
+    in projection: String,
+    queryScope: QueryScope
+  ) -> [AutoChartSourceColumn] {
+    let tokens = sqlTokens(in: projection)
+    var output: [AutoChartSourceColumn] = []
+    for index in tokens.indices {
+      guard index + 2 < tokens.count,
+        case .word(let qualifier) = tokens[index],
+        tokens[index + 1] == .symbol("."),
+        case .word(let column) = tokens[index + 2]
+      else { continue }
+      if let table = queryScope.aliases[qualifier],
+        portfolioTableColumns[table]?.contains(column) == true
+      {
+        output.append(
+          AutoChartSourceColumn(
+            entity: AutoChartEntityID(rawValue: table), name: column))
+      } else if let unique = uniqueSourceColumn(named: column, among: queryScope.tables) {
+        // A CTE alias is not a physical schema entity. A globally unambiguous
+        // frozen-schema column still carries useful lineage through it.
+        output.append(unique)
+      }
+    }
+
+    if output.isEmpty {
+      for token in tokens {
+        guard case .word(let column) = token,
+          let unique = uniqueSourceColumn(named: column, among: queryScope.tables)
+        else { continue }
+        output.append(unique)
+      }
+    }
+    return output
+  }
+
+  private static func uniqueSourceColumn(
+    named column: String,
+    among tables: Set<String>
+  ) -> AutoChartSourceColumn? {
+    var owners = tables.filter {
+      portfolioTableColumns[$0]?.contains(column) == true
+    }
+    if owners.isEmpty {
+      owners = Set(
+        portfolioTableColumns.compactMap { table, columns in
+          columns.contains(column) ? table : nil
+        })
+    }
+    guard owners.count == 1, let table = owners.first else { return nil }
+    return AutoChartSourceColumn(
+      entity: AutoChartEntityID(rawValue: table), name: column)
   }
 
   static func aggregate(in projection: String?) -> AutoChartAggregation? {
