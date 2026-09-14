@@ -957,7 +957,7 @@ import Testing
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
     // A bump invalidates persisted chart-type pins. Keep this exact assertion
     // separate from the version-agnostic migration behavior test.
-    #expect(AutoTableCharts.recommendationPolicyVersion == 13)
+    #expect(AutoTableCharts.recommendationPolicyVersion == 15)
   }
 
   @MainActor
