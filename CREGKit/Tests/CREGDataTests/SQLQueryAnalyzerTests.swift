@@ -267,6 +267,18 @@ import Testing
       outputColumnNames: ["value"])
     #expect(unknown.columns == [nil])
     #expect(unknown.rowGrain == ["creg.opaque.json_each"])
+
+    let runtimeGrounded = SQLQueryAnalyzer.lineage(
+      sql: "SELECT value FROM json_each('[1]')",
+      outputColumnNames: ["value"],
+      directOrigins: [.init(table: "json_each", column: "value")])
+    #expect(
+      try #require(runtimeGrounded.columns[0]).sourceColumns
+        == [.init(table: "json_each", column: "value")])
+    #expect(
+      try #require(runtimeGrounded.columns[0]).sourceGrain
+        == ["creg.opaque.json_each"])
+    #expect(runtimeGrounded.rowGrain == ["creg.opaque.json_each"])
   }
 
   @Test func computedRelationOutputsDoNotPreserveRawSourceDomains() {
@@ -296,6 +308,15 @@ import Testing
       outputColumnNames: ["building_class"],
       directOrigins: [.init(table: "properties", column: "building_class")])
     #expect(computed.columns[0]?.preservesSourceDomain == false)
+
+    let parenthesized = SQLQueryAnalyzer.lineage(
+      sql: "SELECT (building_class) AS building_class FROM properties",
+      outputColumnNames: ["building_class"],
+      directOrigins: [.init(table: "properties", column: "building_class")])
+    #expect(parenthesized.columns[0]?.preservesSourceDomain == true)
+    #expect(
+      parenthesized.columns[0]?.sourceColumns
+        == [.init(table: "properties", column: "building_class")])
   }
 
   @Test func scopedBlocksComeFromTokensInsteadOfParenthesisText() {
@@ -483,6 +504,34 @@ import Testing
     #expect(
       try #require(originFilled.columns[1]).sourceColumns
         == [.init(table: "tenants", column: "credit_rating")])
+
+    let withSingleton = SQLQueryAnalyzer.lineage(
+      sql: """
+        SELECT *
+        FROM properties JOIN leases USING (property_id)
+        CROSS JOIN (SELECT DATE('now') AS today)
+        """,
+      outputColumnNames: [
+        "property_id", "fund_id", "name", "address", "city", "state",
+        "market", "submarket", "property_type", "building_class",
+        "rentable_sqft", "year_built", "year_renovated", "num_floors",
+        "acquisition_date", "acquisition_price", "current_market_value",
+        "ownership_pct", "status", "disposition_date", "lease_id",
+        "tenant_id", "suite", "floor", "leased_sqft", "lease_type",
+        "base_rent_psf", "annual_base_rent", "escalation_pct",
+        "commencement_date", "expiration_date", "term_months",
+        "security_deposit", "has_renewal_option", "free_rent_months",
+        "ti_allowance_psf", "status", "today",
+      ],
+      directOrigins: Array(repeating: nil, count: 37)
+        + [.init(table: "leases", column: "status")])
+    #expect(
+      withSingleton.columns[9]?.sourceColumns
+        == [.init(table: "properties", column: "building_class")])
+    #expect(
+      withSingleton.columns[36]?.sourceColumns
+        == [.init(table: "leases", column: "status")])
+    #expect(withSingleton.columns[37] == nil)
   }
 
   @Test func directOriginsAndLegacyFallbackAreRejectedForCompounds() {
@@ -505,13 +554,54 @@ import Testing
       fallbackColumns: [stale])
 
     #expect(lineage.columns == [nil])
+
+    for sql in [
+      """
+      WITH u AS (
+        SELECT credit_rating FROM tenants
+        UNION ALL
+        SELECT status FROM leases
+      )
+      SELECT credit_rating FROM u
+      """,
+      """
+      SELECT credit_rating FROM (
+        SELECT credit_rating FROM tenants
+        UNION ALL
+        SELECT status FROM leases
+      ) u
+      """,
+    ] {
+      let nested = SQLQueryAnalyzer.lineage(
+        sql: sql,
+        outputColumnNames: ["credit_rating"],
+        directOrigins: [.init(table: "leases", column: "status")],
+        reads: [
+          .init(table: "tenants", column: "credit_rating"),
+          .init(table: "leases", column: "status"),
+        ],
+        fallbackColumns: [stale])
+      #expect(nested.columns == [nil])
+    }
+
+    let failedCTE = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH unsupported AS (VALUES (1))
+        SELECT credit_rating FROM tenants
+        UNION ALL
+        SELECT status FROM leases
+        """,
+      outputColumnNames: ["credit_rating"],
+      directOrigins: [.init(table: "leases", column: "status")],
+      reads: [.init(table: "tenants", column: "credit_rating")],
+      fallbackColumns: [stale])
+    #expect(failedCTE.columns == [nil])
   }
 
   @Test func unmatchedLegacyFallbackIsConservativeAndReadChecked() throws {
     let stale = SQLResultColumnLineage(
       sourceColumns: [.init(table: "tenants", column: "credit_rating")],
       sourceGrain: ["stale"],
-      aggregation: .maximum,
       preservesSourceDomain: true)
     let accepted = SQLQueryAnalyzer.lineage(
       sql: "SELECT city, state FROM properties",
@@ -522,7 +612,7 @@ import Testing
 
     #expect(fallback.sourceColumns == stale.sourceColumns)
     #expect(fallback.sourceGrain == ["tenants"])
-    #expect(fallback.aggregation == .maximum)
+    #expect(fallback.aggregation == nil)
     #expect(!fallback.preservesSourceDomain)
 
     let contradicted = SQLQueryAnalyzer.lineage(
@@ -531,6 +621,47 @@ import Testing
       reads: [.init(table: "properties", column: "city")],
       fallbackColumns: [nil, stale, nil])
     #expect(contradicted.columns[1] == nil)
+
+    let noEvidence = SQLQueryAnalyzer.lineage(
+      sql: "SELECT city, state FROM properties",
+      outputColumnNames: ["city", "legacy_rating", "state"],
+      fallbackColumns: [nil, stale, nil])
+    #expect(noEvidence.columns[1] == nil)
+
+    let aggregate = SQLResultColumnLineage(
+      sourceColumns: stale.sourceColumns,
+      sourceGrain: ["stale"],
+      aggregation: .maximum,
+      preservesSourceDomain: true)
+    let rejectedAggregate = SQLQueryAnalyzer.lineage(
+      sql: "SELECT city, state FROM properties",
+      outputColumnNames: ["city", "legacy_rating", "state"],
+      reads: [.init(table: "tenants", column: "credit_rating")],
+      fallbackColumns: [nil, aggregate, nil])
+    #expect(rejectedAggregate.columns[1] == nil)
+  }
+
+  @Test func totalAnalysisFailureUsesOnlyReadProvenFallback() throws {
+    let stale = SQLResultColumnLineage(
+      sourceColumns: [.init(table: "legacy_table", column: "label")],
+      sourceGrain: ["stale"],
+      preservesSourceDomain: true)
+    let accepted = SQLQueryAnalyzer.lineage(
+      sql: "VALUES ('x')",
+      outputColumnNames: ["label"],
+      reads: [.init(table: "legacy_table", column: "label")],
+      fallbackColumns: [stale])
+    let column = try #require(accepted.columns[0])
+
+    #expect(column.sourceColumns == stale.sourceColumns)
+    #expect(column.sourceGrain == ["creg.opaque.legacy_table"])
+    #expect(!column.preservesSourceDomain)
+
+    let rejected = SQLQueryAnalyzer.lineage(
+      sql: "VALUES ('x')",
+      outputColumnNames: ["label"],
+      fallbackColumns: [stale])
+    #expect(rejected.columns == [nil])
   }
 
   @Test func malformedCompoundsStayConservative() {
@@ -560,12 +691,30 @@ import Testing
   }
 
   @Test func windowAggregatesDoNotCollapseTheRowGrain() throws {
+    for expression in [
+      "SUM(p.current_market_value) OVER ()",
+      "SUM(p.current_market_value) FILTER (WHERE p.status = 'Owned') OVER ()",
+    ] {
+      let lineage = SQLQueryAnalyzer.lineage(
+        sql: """
+          SELECT p.city, \(expression) AS total_value
+          FROM properties p
+          """,
+        outputColumnNames: ["city", "total_value"])
+
+      #expect(try #require(lineage.columns[1]).aggregation == nil)
+      #expect(lineage.rowGrain == ["properties"])
+    }
+  }
+
+  @Test func multiArgumentMaxIsScalar() throws {
     let lineage = SQLQueryAnalyzer.lineage(
       sql: """
-        SELECT p.city, SUM(p.current_market_value) OVER () AS total_value
+        SELECT p.city,
+               MAX(p.current_market_value, p.acquisition_price) AS larger_value
         FROM properties p
         """,
-      outputColumnNames: ["city", "total_value"])
+      outputColumnNames: ["city", "larger_value"])
 
     #expect(try #require(lineage.columns[1]).aggregation == nil)
     #expect(lineage.rowGrain == ["properties"])

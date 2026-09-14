@@ -202,6 +202,43 @@ import Testing
           suggestion: "Active"))
   }
 
+  @Test func nestedPredicatesRemainGroundedWhenTheOuterBlockHasNoFromOrIsUnsupported()
+    async throws
+  {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-failed-outer-grounding-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(sql: "CREATE TABLE leases (status TEXT)")
+      try db.execute(sql: "INSERT INTO leases VALUES ('Active')")
+    }
+    let heuristics = ResultHeuristics(db: try DatabaseClient.live(url: url))
+    let queries = [
+      """
+      SELECT EXISTS (
+        SELECT l.status FROM leases l WHERE l.status = 'Actve'
+      ) AS matches
+      """,
+      """
+      VALUES ((
+        SELECT l.status FROM leases l WHERE l.status = 'Actve'
+      ))
+      """,
+    ]
+
+    for sql in queries {
+      let report = await heuristics.inspectDetailed(
+        sql: sql,
+        result: QueryResult(columns: ["matches"], rows: []))
+      #expect(
+        report.findings.first
+          == .literalNotFound(
+            column: GroundingColumn(table: "leases", column: "status"),
+            literal: "Actve",
+            suggestion: "Active"))
+    }
+  }
+
   @Test func derivedAliasesGroundThroughTheirExposedOutputLineage() async throws {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("creg-derived-grounding-\(UUID().uuidString).sqlite")

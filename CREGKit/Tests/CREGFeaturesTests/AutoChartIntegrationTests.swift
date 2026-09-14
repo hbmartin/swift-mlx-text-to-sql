@@ -10,8 +10,8 @@ import Testing
 @testable import CREGFeatures
 
 @Suite struct CREGChartAdapterTests {
-  @Test func lineageAnalysisVersionRemainsOnTheUnmergedVersion() {
-    #expect(SQLQueryLineage.currentAnalysisVersion == 2)
+  @Test func lineageAnalysisVersionIsThree() {
+    #expect(SQLQueryLineage.currentAnalysisVersion == 3)
   }
 
   @Test func analysisDatasetUsesOffsetIDsTypedSemanticsAndStableDataKey() throws {
@@ -22,7 +22,12 @@ import Testing
         [.integer(43), .real(900_000), .text("2028-01-01")],
       ])
     let fingerprint = PreparedFollowUpIntegrity.fingerprint(result: result)
-    let sql = "SELECT loan_id, SUM(current_balance), MAX(maturity_date) FROM loans"
+    let sql = """
+      SELECT loan_id,
+             SUM(current_balance) AS current_balance,
+             MAX(maturity_date) AS maturity_date
+      FROM loans
+      """
     let dataset = try CREGChartAdapter.analysisDataset(
       result: result,
       sql: sql,
@@ -223,6 +228,56 @@ import Testing
           aggregation: aggregation))
       #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
     }
+  }
+
+  @Test func failedDerivedRelationsRemainInRowGrainAndRejectFanOut() async throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["city", "current_market_value"],
+        rows: [
+          [.text("Phoenix"), .real(20_000_000)],
+          [.text("Phoenix"), .real(20_000_000)],
+        ]),
+      sql: """
+        SELECT p.city, p.current_market_value
+        FROM properties p JOIN (VALUES (1), (2)) v
+        """)
+    let category = dataset.chartColumns[0]
+    let measure = dataset.chartColumns[1]
+    let rowEntities = try #require(dataset.chartMetadata.rowGrain).entities
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    let validation = analysis.validate(
+      .bar(category: category.id, measure: measure.id, aggregation: .sum))
+
+    #expect(rowEntities.contains("properties"))
+    #expect(rowEntities.contains("creg.opaque.derived"))
+    #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
+  }
+
+  @Test func inflatedAggregateKeepsItsSafetyGrainAcrossACTE() async throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["lease_type", "total_value"],
+        rows: [[.text("Gross"), .real(20_000_000)]]),
+      sql: """
+        WITH inflated AS (
+          SELECT l.lease_type, SUM(p.current_market_value) AS total_value
+          FROM properties p
+          JOIN leases l ON l.property_id = p.property_id
+          GROUP BY l.lease_type
+        )
+        SELECT lease_type, total_value FROM inflated
+        """)
+    let category = dataset.chartColumns[0]
+    let measure = dataset.chartColumns[1]
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    let validation = analysis.validate(
+      .bar(category: category.id, measure: measure.id))
+
+    #expect(measure.provenance?.sourceGrain == AutoChartGrain(entity: "properties"))
+    #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
   }
 
   @Test func childCountAndAncestorNormalizedExpressionAvoidFalseFanOut() async throws {
@@ -521,7 +576,7 @@ import Testing
           preservesSourceDomain: true)
       ],
       rowGrain: ["funds"],
-      analysisVersion: SQLQueryLineage.currentAnalysisVersion - 1)
+      analysisVersion: 2)
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["city"],
@@ -547,7 +602,7 @@ import Testing
           sourceColumns: [.init(table: "leases", column: "status")],
           preservesSourceDomain: true),
       ],
-      analysisVersion: 1)
+      analysisVersion: 2)
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["property_id", "building_class", "status"],
@@ -581,7 +636,8 @@ import Testing
           preservesSourceDomain: true),
         nil,
       ],
-      analysisVersion: 1)
+      reads: [.init(table: "tenants", column: "credit_rating")],
+      analysisVersion: 2)
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["city", "legacy_rating", "state"],
@@ -605,7 +661,7 @@ import Testing
           sourceGrain: ["tenants"],
           preservesSourceDomain: true)
       ],
-      analysisVersion: 1)
+      analysisVersion: 2)
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["credit_rating"],
