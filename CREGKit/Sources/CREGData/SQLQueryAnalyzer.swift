@@ -594,10 +594,11 @@ private final class Analyzer {
         if selectIndex < range.upperBound, tokens[selectIndex] == .symbol("(") {
           guard let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
           else { return fail(rejectsExternalOrigins: true) }
-          let names = splitTopLevel((selectIndex + 1)..<close).compactMap { nameRange in
+          let nameRanges = splitTopLevel((selectIndex + 1)..<close)
+          let names = nameRanges.compactMap { nameRange in
             nameRange.count == 1 ? tokens[nameRange.lowerBound].word : nil
           }
-          guard names.count == splitTopLevel((selectIndex + 1)..<close).count else {
+          guard names.count == nameRanges.count else {
             return fail(rejectsExternalOrigins: true)
           }
           declaredOutputNames = names

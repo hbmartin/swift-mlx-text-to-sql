@@ -95,6 +95,7 @@ import SwiftUI
   @MainActor
   struct AccessibilityScenarioView: View {
     let scenario: AccessibilityUITestConfiguration.Scenario
+    @State private var resultExplorerPreference = ResultPresentationPreference.automatic
 
     @ViewBuilder
     var body: some View {
@@ -116,7 +117,9 @@ import SwiftUI
           runtimeMode: .evaluated,
           textSize: .constant(.standard),
           sql: StarterQueryID.portfolioValueByFundV1.sql,
-          question: StarterQueryID.portfolioValueByFundV1.question)
+          question: StarterQueryID.portfolioValueByFundV1.question,
+          preference: resultExplorerPreference,
+          persistPreference: { resultExplorerPreference = $0 })
 
       case .resultChartRecovery:
         ResultChartRecoveryAccessibilityHarness(retryAvailable: true)
