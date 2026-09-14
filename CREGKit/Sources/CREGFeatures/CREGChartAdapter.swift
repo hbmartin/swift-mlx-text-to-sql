@@ -44,7 +44,8 @@ enum CREGChartAdapter {
       : SQLQueryAnalyzer.lineage(
         sql: sql,
         outputColumnNames: result.columns,
-        reads: persistedLineage?.reads ?? [])
+        reads: persistedLineage?.reads ?? [],
+        fallbackColumns: persistedLineage?.columns ?? [])
     let columns = result.columns.enumerated().map { index, name in
       let lineage =
         queryLineage.columns.indices.contains(index)
@@ -336,12 +337,12 @@ enum CREGChartAdapter {
     if containsAny(
       text,
       ["compare", " by ", "group by", "for each", "for every", " each "])
-      || containsAnyWholePhrase(
+      || containsWord(
         text,
         [
-          " per property", " per properties", " per fund", " per funds",
-          " per lease", " per leases", " per tenant", " per tenants",
-          " per loan", " per loans", " per valuation", " per valuations",
+          "per property", "per properties", "per fund", "per funds",
+          "per lease", "per leases", "per tenant", "per tenants",
+          "per loan", "per loans", "per valuation", "per valuations",
         ])
     {
       return .comparison
@@ -503,28 +504,6 @@ enum CREGChartAdapter {
 
   private static func containsAny(_ value: String, _ needles: [String]) -> Bool {
     needles.contains { value.contains($0) }
-  }
-
-  private static func containsAnyWholePhrase(
-    _ value: String,
-    _ needles: [String]
-  ) -> Bool {
-    needles.contains { needle in
-      var searchStart = value.startIndex
-      while searchStart < value.endIndex,
-        let range = value.range(of: needle, range: searchStart..<value.endIndex)
-      {
-        if range.upperBound == value.endIndex
-          || !value[range.upperBound].isLetter
-            && !value[range.upperBound].isNumber
-            && value[range.upperBound] != "_"
-        {
-          return true
-        }
-        searchStart = value.index(after: range.lowerBound)
-      }
-      return false
-    }
   }
 
   private static let gregorianGMTCalendar: Calendar = {

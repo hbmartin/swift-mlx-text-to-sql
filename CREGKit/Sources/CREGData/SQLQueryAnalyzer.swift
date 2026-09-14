@@ -16,6 +16,64 @@ package struct SQLQueryScopeColumn: Sendable, Equatable {
   package var source: SQLSourceColumn?
 }
 
+package struct SQLScopedQueryBlock: Sendable, Equatable {
+  package var range: NSRange
+  package var scope: SQLQueryScope
+}
+
+extension SQLQueryScope {
+  package static func mergedConservatively(
+    _ scopes: [SQLQueryScope]
+  ) -> SQLQueryScope {
+    var aliasTables: [String: Set<String>] = [:]
+    var tables: Set<String> = []
+    var qualifiedCandidates: [String: [String: [SQLQueryScopeColumn]]] = [:]
+    var unqualifiedCandidates: [String: [[SQLQueryScopeColumn]]] = [:]
+
+    for scope in scopes {
+      tables.formUnion(scope.tables)
+      for (alias, table) in scope.aliases {
+        aliasTables[alias, default: []].insert(table)
+      }
+      for (qualifier, columns) in scope.qualifiedColumns {
+        for (name, column) in columns {
+          qualifiedCandidates[qualifier, default: [:]][name, default: []]
+            .append(column)
+        }
+      }
+      for (name, columns) in scope.unqualifiedColumns {
+        unqualifiedCandidates[name, default: []].append(columns)
+      }
+    }
+
+    let aliases = aliasTables.compactMapValues { candidates in
+      candidates.count == 1 ? candidates.first : nil
+    }
+    let qualifiedColumns = qualifiedCandidates.mapValues { columns in
+      columns.mapValues { candidates in
+        guard let first = candidates.first,
+          candidates.allSatisfy({ $0 == first })
+        else { return SQLQueryScopeColumn(source: nil) }
+        return first
+      }
+    }
+    let unqualifiedColumns = unqualifiedCandidates.mapValues { candidates in
+      guard candidates.allSatisfy({ $0.count == 1 }),
+        let first = candidates.first?.first,
+        candidates.allSatisfy({ $0[0] == first })
+      else {
+        return [SQLQueryScopeColumn(source: nil)]
+      }
+      return [first]
+    }
+    return SQLQueryScope(
+      aliases: aliases,
+      tables: tables,
+      qualifiedColumns: qualifiedColumns,
+      unqualifiedColumns: unqualifiedColumns)
+  }
+}
+
 /// One query-block-aware SQL analysis shared by database execution, grounding,
 /// and chart presentation. It intentionally implements the constrained CREG
 /// SELECT grammar rather than guessing from unrelated words in the statement.
@@ -24,37 +82,65 @@ package enum SQLQueryAnalyzer {
     sql: String,
     outputColumnNames: [String],
     directOrigins: [SQLSourceColumn?] = [],
-    reads: [SQLSourceRead] = []
+    reads: [SQLSourceRead] = [],
+    fallbackColumns: [SQLResultColumnLineage?] = []
   ) -> SQLQueryLineage {
-    let tokens = SQLLexer.tokenize(sql)
+    let tokenization = SQLLexer.tokenize(sql)
+    let analyzer = Analyzer(tokenization: tokenization)
+    let readColumns = Set(
+      reads.compactMap { read -> SQLSourceColumn? in
+        guard let column = read.column else { return nil }
+        return SQLSourceColumn(table: read.table, column: column)
+      })
     guard
-      let block = Analyzer(tokens: tokens).analyze(
-        range: tokens.indices, inheritedCTEs: [:])
+      let block = analyzer.analyze(
+        range: tokenization.tokens.indices, inheritedCTEs: [:])
     else {
+      let rejectsExternalOrigins = analyzer.rejectsExternalOrigins(
+        in: tokenization.tokens.indices)
       return SQLQueryLineage(
-        columns: directLineage(
-          outputColumnNames: outputColumnNames,
-          directOrigins: directOrigins),
+        columns: outputColumnNames.indices.map { index in
+          guard !rejectsExternalOrigins else { return nil }
+          if directOrigins.indices.contains(index), let origin = directOrigins[index] {
+            return directLineage(for: origin)
+          }
+          return fallbackLineage(
+            at: index,
+            fallbackColumns: fallbackColumns,
+            readColumns: readColumns)
+        },
         reads: reads)
     }
 
-    var columns: [SQLResultColumnLineage?]
-    if block.outputs.count == outputColumnNames.count {
-      let readColumns = Set(
-        reads.compactMap { read -> SQLSourceColumn? in
-          guard let column = read.column else { return nil }
-          return SQLSourceColumn(table: read.table, column: column)
-        })
-      columns = block.outputs.enumerated().map { index, output in
-        var descriptor = output.descriptor
-        if directOrigins.indices.contains(index), let origin = directOrigins[index] {
-          descriptor.sourceColumns = [origin]
-          descriptor.preservesSourceDomain = true
-          if descriptor.aggregation == nil {
-            descriptor.chartGrain = Analyzer.grain(
-              for: origin, schema: PortfolioSchemaCatalog.document)
-          }
-        }
+    let alignedOutputs = alignedOutputs(
+      block.outputs, with: outputColumnNames)
+    let columns = outputColumnNames.indices.map { index -> SQLResultColumnLineage? in
+      let alignedOutput = alignedOutputs[index]
+      var descriptor = alignedOutput?.descriptor
+      if block.acceptsExternalOrigins,
+        directOrigins.indices.contains(index),
+        let origin = directOrigins[index],
+        descriptor == nil
+          || descriptor?.preservesSourceDomain == true
+          || descriptor.map({
+            $0.isDirectReference
+              && $0.sourceColumns.isEmpty
+              && $0.chartGrain.isEmpty
+              && $0.aggregation == nil
+          }) == true
+      {
+        let grain = Analyzer.grain(
+          for: origin, schema: PortfolioSchemaCatalog.document)
+        descriptor = ColumnDescriptor(
+          sourceColumns: [origin],
+          expressionGrain: grain,
+          chartGrain: grain,
+          aggregation: nil,
+          aggregateCalls: [],
+          preservesSourceDomain: true,
+          isDirectReference: true)
+      }
+      if let descriptor {
         // The structured analyzer maps projection expressions to sources;
         // SQLite's authorizer independently proves those physical columns were
         // actually read. When runtime evidence contradicts the mapping, omit
@@ -67,20 +153,24 @@ package enum SQLQueryAnalyzer {
             aggregation: aggregation,
             preservesSourceDomain: false)
         }
-        guard
-          !descriptor.sourceColumns.isEmpty || !descriptor.chartGrain.isEmpty
-            || descriptor.aggregation != nil
-        else { return nil }
-        return SQLResultColumnLineage(
-          sourceColumns: descriptor.sourceColumns,
-          sourceGrain: descriptor.chartGrain,
-          aggregation: descriptor.aggregation,
-          preservesSourceDomain: descriptor.preservesSourceDomain)
+        if !descriptor.sourceColumns.isEmpty || !descriptor.chartGrain.isEmpty
+          || descriptor.aggregation != nil
+        {
+          return SQLResultColumnLineage(
+            sourceColumns: descriptor.sourceColumns,
+            sourceGrain: descriptor.chartGrain,
+            aggregation: descriptor.aggregation,
+            preservesSourceDomain: descriptor.preservesSourceDomain)
+        }
       }
-    } else {
-      columns = directLineage(
-        outputColumnNames: outputColumnNames,
-        directOrigins: directOrigins)
+      guard alignedOutput == nil,
+        block.acceptsExternalOrigins,
+        let fallback = fallbackLineage(
+          at: index,
+          fallbackColumns: fallbackColumns,
+          readColumns: readColumns)
+      else { return nil }
+      return fallback
     }
     return SQLQueryLineage(
       columns: columns,
@@ -89,27 +179,124 @@ package enum SQLQueryAnalyzer {
   }
 
   package static func scope(in sql: String) -> SQLQueryScope {
-    let tokens = SQLLexer.tokenize(sql)
-    return Analyzer(tokens: tokens).analyze(
-      range: tokens.indices, inheritedCTEs: [:]
+    let tokenization = SQLLexer.tokenize(sql)
+    return Analyzer(tokenization: tokenization).analyze(
+      range: tokenization.tokens.indices, inheritedCTEs: [:]
     )?.scope
       ?? SQLQueryScope(
         aliases: [:], tables: [], qualifiedColumns: [:], unqualifiedColumns: [:])
   }
 
-  private static func directLineage(
-    outputColumnNames: [String],
-    directOrigins: [SQLSourceColumn?]
-  ) -> [SQLResultColumnLineage?] {
-    outputColumnNames.indices.map { index in
-      guard directOrigins.indices.contains(index), let origin = directOrigins[index]
-      else { return nil }
-      return SQLResultColumnLineage(
-        sourceColumns: [origin],
-        sourceGrain: Analyzer.grain(
-          for: origin, schema: PortfolioSchemaCatalog.document),
-        preservesSourceDomain: true)
+  package static func scopedQueryBlocks(in sql: String) -> [SQLScopedQueryBlock] {
+    let tokenization = SQLLexer.tokenize(sql)
+    let analyzer = Analyzer(tokenization: tokenization, collectsNestedScopes: true)
+    _ = analyzer.analyze(
+      range: tokenization.tokens.indices, inheritedCTEs: [:])
+    return analyzer.scopedQueryBlocks
+  }
+
+  private static func alignedOutputs(
+    _ analyzed: [QueryOutput],
+    with outputColumnNames: [String]
+  ) -> [QueryOutput?] {
+    let left = analyzed.map { normalizedRelationColumnName($0.name) }
+    let right = outputColumnNames.map(normalizedRelationColumnName)
+    if left.count == right.count,
+      zip(left, right).allSatisfy({ $0 == $1 })
+    {
+      return analyzed.map(Optional.some)
     }
+    let prefix = lcsTable(left, right)
+    let optimal = prefix[left.count][right.count]
+    guard optimal > 0 else { return Array(repeating: nil, count: right.count) }
+    let suffix = lcsSuffixTable(left, right)
+    return right.indices.map { rightIndex in
+      var candidates: [Int] = []
+      for leftIndex in left.indices where left[leftIndex] == right[rightIndex] {
+        if prefix[leftIndex][rightIndex] + 1
+          + suffix[leftIndex + 1][rightIndex + 1] == optimal
+        {
+          candidates.append(leftIndex)
+        }
+      }
+      let bestWithoutColumn = (0...left.count).reduce(0) { best, leftIndex in
+        max(
+          best,
+          prefix[leftIndex][rightIndex]
+            + suffix[leftIndex][rightIndex + 1])
+      }
+      guard bestWithoutColumn < optimal,
+        candidates.count == 1,
+        let match = candidates.first
+      else { return nil }
+      return analyzed[match]
+    }
+  }
+
+  private static func lcsTable(_ left: [String], _ right: [String]) -> [[Int]] {
+    var table = Array(
+      repeating: Array(repeating: 0, count: right.count + 1),
+      count: left.count + 1)
+    for leftIndex in left.indices {
+      for rightIndex in right.indices {
+        table[leftIndex + 1][rightIndex + 1] =
+          left[leftIndex] == right[rightIndex]
+          ? table[leftIndex][rightIndex] + 1
+          : max(
+            table[leftIndex][rightIndex + 1],
+            table[leftIndex + 1][rightIndex])
+      }
+    }
+    return table
+  }
+
+  private static func lcsSuffixTable(
+    _ left: [String], _ right: [String]
+  ) -> [[Int]] {
+    var table = Array(
+      repeating: Array(repeating: 0, count: right.count + 1),
+      count: left.count + 1)
+    for leftIndex in left.indices.reversed() {
+      for rightIndex in right.indices.reversed() {
+        table[leftIndex][rightIndex] =
+          left[leftIndex] == right[rightIndex]
+          ? table[leftIndex + 1][rightIndex + 1] + 1
+          : max(
+            table[leftIndex + 1][rightIndex],
+            table[leftIndex][rightIndex + 1])
+      }
+    }
+    return table
+  }
+
+  private static func directLineage(
+    for origin: SQLSourceColumn
+  ) -> SQLResultColumnLineage {
+    SQLResultColumnLineage(
+      sourceColumns: [origin],
+      sourceGrain: Analyzer.grain(
+        for: origin, schema: PortfolioSchemaCatalog.document),
+      preservesSourceDomain: true)
+  }
+
+  private static func fallbackLineage(
+    at index: Int,
+    fallbackColumns: [SQLResultColumnLineage?],
+    readColumns: Set<SQLSourceColumn>
+  ) -> SQLResultColumnLineage? {
+    guard !readColumns.isEmpty,
+      fallbackColumns.indices.contains(index),
+      let fallback = fallbackColumns[index],
+      fallback.aggregation == nil,
+      !fallback.sourceColumns.isEmpty,
+      fallback.sourceColumns.allSatisfy(readColumns.contains)
+    else { return nil }
+    return SQLResultColumnLineage(
+      sourceColumns: fallback.sourceColumns,
+      sourceGrain: Analyzer.normalizedGrain(
+        for: fallback.sourceColumns,
+        schema: PortfolioSchemaCatalog.document),
+      preservesSourceDomain: false)
   }
 }
 
@@ -125,10 +312,30 @@ private enum SQLToken: Equatable {
   }
 }
 
+private struct SQLTokenization {
+  var tokens: [SQLToken]
+  var ranges: [NSRange]
+}
+
 private enum SQLLexer {
-  static func tokenize(_ sql: String) -> [SQLToken] {
+  static func tokenize(_ sql: String) -> SQLTokenization {
     let characters = Array(sql)
+    var offsets: [Int] = []
+    var utf16Offset = 0
+    for character in characters {
+      offsets.append(utf16Offset)
+      utf16Offset += String(character).utf16.count
+    }
+    offsets.append(utf16Offset)
     var output: [SQLToken] = []
+    var ranges: [NSRange] = []
+    func append(_ token: SQLToken, from start: Int, to end: Int) {
+      output.append(token)
+      ranges.append(
+        NSRange(
+          location: offsets[start],
+          length: offsets[end] - offsets[start]))
+    }
     var index = 0
     while index < characters.count {
       let character = characters[index]
@@ -153,14 +360,14 @@ private enum SQLLexer {
       }
       if character == "'" {
         let (value, next) = quoted(characters, from: index, closing: "'")
-        output.append(.string(value))
+        append(.string(value), from: index, to: next)
         index = next
         continue
       }
       if character == "\"" || character == "`" || character == "[" {
         let closing: Character = character == "[" ? "]" : character
         let (value, next) = quoted(characters, from: index, closing: closing)
-        output.append(.word(value.lowercased()))
+        append(.word(value.lowercased()), from: index, to: next)
         index = next
         continue
       }
@@ -173,7 +380,10 @@ private enum SQLLexer {
         {
           index += 1
         }
-        output.append(.word(String(characters[start..<index]).lowercased()))
+        append(
+          .word(String(characters[start..<index]).lowercased()),
+          from: start,
+          to: index)
         continue
       }
       if character.isNumber {
@@ -184,13 +394,13 @@ private enum SQLLexer {
         {
           index += 1
         }
-        output.append(.number(String(characters[start..<index])))
+        append(.number(String(characters[start..<index])), from: start, to: index)
         continue
       }
-      output.append(.symbol(character))
+      append(.symbol(character), from: index, to: index + 1)
       index += 1
     }
-    return output
+    return SQLTokenization(tokens: output, ranges: ranges)
   }
 
   private static func quoted(
@@ -224,13 +434,28 @@ private struct ColumnDescriptor {
   /// Grain exposed to chart safety for this result column.
   var chartGrain: [String]
   var aggregation: SQLAggregateOperation?
-  var isAggregateExpression: Bool
+  var aggregateCalls: [AggregateCallAnalysis]
   var preservesSourceDomain: Bool
+  var isDirectReference: Bool
+
+  var hasGroupedAggregateCall: Bool {
+    aggregateCalls.contains { !$0.isWindowed }
+  }
+}
+
+private struct AggregateCallAnalysis {
+  var operation: SQLAggregateOperation
+  var inputGrain: [String]
+  var isWindowed: Bool
 }
 
 private struct AggregateAnalysis {
   var operation: SQLAggregateOperation?
-  var hasAggregateCall: Bool
+  var calls: [AggregateCallAnalysis]
+
+  var hasGroupedAggregateCall: Bool {
+    calls.contains { !$0.isWindowed }
+  }
 }
 
 private struct QueryOutput {
@@ -241,23 +466,26 @@ private struct QueryOutput {
 private struct Relation {
   var name: String
   var aliases: Set<String>
-  var outputs: [QueryOutput]
-  var rowGrain: [String]
-  var physicalTables: Set<String>
-  var columns: [String: ColumnDescriptor]
+  let outputs: [QueryOutput]
+  let rowGrain: [String]
+  let physicalTables: Set<String>
+  let acceptsExternalOrigins: Bool
+  let columns: [String: ColumnDescriptor]
 
   init(
     name: String,
     aliases: Set<String>,
     outputs: [QueryOutput],
     rowGrain: [String],
-    physicalTables: Set<String>
+    physicalTables: Set<String>,
+    acceptsExternalOrigins: Bool
   ) {
     self.name = name
     self.aliases = aliases
     self.outputs = outputs
     self.rowGrain = rowGrain
     self.physicalTables = physicalTables
+    self.acceptsExternalOrigins = acceptsExternalOrigins
     var result: [String: ColumnDescriptor] = [:]
     for output in outputs {
       let name = normalizedRelationColumnName(output.name)
@@ -276,11 +504,52 @@ private struct QueryBlock {
   var rowGrain: [String]
   var scope: SQLQueryScope
   var physicalTables: Set<String>
+  var acceptsExternalOrigins: Bool
 }
 
-private struct Analyzer {
+private enum BlockAnalysisOutcome {
+  case success(QueryBlock)
+  case failure(rejectsExternalOrigins: Bool)
+}
+
+private final class Analyzer {
+  deinit {}
+
   let tokens: [SQLToken]
+  let tokenRanges: [NSRange]
   private let schema = PortfolioSchemaCatalog.document
+  private let collectsNestedScopes: Bool
+  private var outcomes: [Range<Int>: BlockAnalysisOutcome] = [:]
+
+  init(
+    tokenization: SQLTokenization,
+    collectsNestedScopes: Bool = false
+  ) {
+    tokens = tokenization.tokens
+    tokenRanges = tokenization.ranges
+    self.collectsNestedScopes = collectsNestedScopes
+  }
+
+  var scopedQueryBlocks: [SQLScopedQueryBlock] {
+    outcomes.compactMap { range, outcome in
+      guard case .success(let block) = outcome else { return nil }
+      guard let sourceRange = sourceRange(for: range) else { return nil }
+      return SQLScopedQueryBlock(range: sourceRange, scope: block.scope)
+    }.sorted {
+      if $0.range.location != $1.range.location {
+        return $0.range.location < $1.range.location
+      }
+      return $0.range.length > $1.range.length
+    }
+  }
+
+  func rejectsExternalOrigins(in range: Range<Int>) -> Bool {
+    switch outcomes[unwrapped(range)] {
+    case .success(let block): !block.acceptsExternalOrigins
+    case .failure(let rejectsExternalOrigins): rejectsExternalOrigins
+    case nil: false
+    }
+  }
 
   func analyze(
     range: Range<Int>,
@@ -288,7 +557,27 @@ private struct Analyzer {
   ) -> QueryBlock? {
     let range = unwrapped(range)
     guard !range.isEmpty else { return nil }
+    if let cached = outcomes[range] {
+      guard case .success(let block) = cached else { return nil }
+      return block
+    }
+    let rejectsForTopLevelCompound = containsTopLevelCompound(in: range)
     var ctes = inheritedCTEs
+    defer {
+      if collectsNestedScopes {
+        analyzeNestedQueryBlocks(in: range, inheritedCTEs: ctes)
+      }
+    }
+    func fail(rejectsExternalOrigins: Bool = false) -> QueryBlock? {
+      outcomes[range] = .failure(
+        rejectsExternalOrigins:
+          rejectsForTopLevelCompound || rejectsExternalOrigins)
+      return nil
+    }
+    func succeed(_ block: QueryBlock) -> QueryBlock {
+      outcomes[range] = .success(block)
+      return block
+    }
     var selectIndex = range.lowerBound
 
     if tokens[selectIndex].word == "with" {
@@ -297,42 +586,50 @@ private struct Analyzer {
         selectIndex += 1
       }
       while selectIndex < range.upperBound, tokens[selectIndex].word != "select" {
-        guard let cteName = tokens[selectIndex].word else { return nil }
+        guard let cteName = tokens[selectIndex].word else {
+          return fail(rejectsExternalOrigins: true)
+        }
         selectIndex += 1
         var declaredOutputNames: [String]?
         if selectIndex < range.upperBound, tokens[selectIndex] == .symbol("(") {
           guard let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
-          else { return nil }
+          else { return fail(rejectsExternalOrigins: true) }
           let names = splitTopLevel((selectIndex + 1)..<close).compactMap { nameRange in
             nameRange.count == 1 ? tokens[nameRange.lowerBound].word : nil
           }
           guard names.count == splitTopLevel((selectIndex + 1)..<close).count else {
-            return nil
+            return fail(rejectsExternalOrigins: true)
           }
           declaredOutputNames = names
           selectIndex = close + 1
         }
         guard selectIndex < range.upperBound, tokens[selectIndex].word == "as" else {
-          return nil
+          return fail(rejectsExternalOrigins: true)
         }
         selectIndex += 1
         guard selectIndex < range.upperBound, tokens[selectIndex] == .symbol("("),
-          let close = matchingClose(at: selectIndex, upperBound: range.upperBound),
-          let block = analyze(
-            range: (selectIndex + 1)..<close, inheritedCTEs: ctes)
-        else { return nil }
+          let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
+        else { return fail(rejectsExternalOrigins: true) }
+        let cteRange = (selectIndex + 1)..<close
+        guard let block = analyze(range: cteRange, inheritedCTEs: ctes) else {
+          return fail(rejectsExternalOrigins: true)
+        }
         var relation = relation(name: cteName, block: block)
         if let declaredOutputNames {
-          guard declaredOutputNames.count == relation.outputs.count else { return nil }
-          for index in relation.outputs.indices {
-            relation.outputs[index].name = declaredOutputNames[index]
+          guard declaredOutputNames.count == relation.outputs.count else {
+            return fail(rejectsExternalOrigins: true)
+          }
+          let renamedOutputs = zip(relation.outputs, declaredOutputNames).map {
+            output, name in
+            QueryOutput(name: name, descriptor: output.descriptor)
           }
           relation = Relation(
             name: relation.name,
             aliases: relation.aliases,
-            outputs: relation.outputs,
+            outputs: renamedOutputs,
             rowGrain: relation.rowGrain,
-            physicalTables: relation.physicalTables)
+            physicalTables: relation.physicalTables,
+            acceptsExternalOrigins: relation.acceptsExternalOrigins)
         }
         ctes[cteName] = relation
         selectIndex = close + 1
@@ -343,32 +640,47 @@ private struct Analyzer {
       }
     }
 
-    if let armRanges = compoundArmRanges(
-      in: selectIndex..<range.upperBound)
-    {
-      guard !armRanges.isEmpty else { return nil }
+    switch compoundArmRanges(in: selectIndex..<range.upperBound) {
+    case .malformed:
+      return fail(rejectsExternalOrigins: true)
+    case .arms(let armRanges):
       let arms = armRanges.compactMap {
         analyze(range: $0, inheritedCTEs: ctes)
       }
-      guard arms.count == armRanges.count else { return nil }
-      return compoundBlock(from: arms)
+      guard arms.count == armRanges.count else {
+        return fail(rejectsExternalOrigins: true)
+      }
+      let block = compoundBlock(from: arms)
+      return succeed(block)
+    case .none:
+      break
     }
 
-    guard selectIndex < range.upperBound, tokens[selectIndex].word == "select",
-      let fromIndex = firstTopLevelWord(
-        "from", in: (selectIndex + 1)..<range.upperBound)
-    else { return nil }
+    guard selectIndex < range.upperBound, tokens[selectIndex].word == "select"
+    else { return fail() }
 
     var projectionStart = selectIndex + 1
-    let isDistinct = projectionStart < fromIndex && tokens[projectionStart].word == "distinct"
+    let boundaries = clauseBoundaries(in: projectionStart..<range.upperBound)
+    let fromIndex = firstTopLevelWord(
+      "from", in: projectionStart..<range.upperBound)
+    let projectionEnd = fromIndex ?? boundaries.values.min() ?? range.upperBound
+    let isDistinct =
+      projectionStart < projectionEnd
+      && tokens[projectionStart].word == "distinct"
     if isDistinct { projectionStart += 1 }
 
-    let boundaries = clauseBoundaries(after: fromIndex, upperBound: range.upperBound)
-    let fromEnd = boundaries.values.min() ?? range.upperBound
-    let relations = parseRelations(
-      in: (fromIndex + 1)..<fromEnd, ctes: ctes)
+    let relations: [Relation]
+    if let fromIndex {
+      let fromEnd =
+        boundaries.values.filter { $0 > fromIndex }.min()
+        ?? range.upperBound
+      relations = parseRelations(
+        in: (fromIndex + 1)..<fromEnd, ctes: ctes)
+    } else {
+      relations = []
+    }
     let fromGrain = normalize(relations.flatMap(\.rowGrain))
-    let projectionRanges = splitTopLevel(projectionStart..<fromIndex)
+    let projectionRanges = splitTopLevel(projectionStart..<projectionEnd)
 
     var drafts = projectionRanges.flatMap { projection -> [QueryOutput] in
       if let expanded = expandedWildcard(projection, relations: relations) {
@@ -376,26 +688,37 @@ private struct Analyzer {
       }
       let (expression, alias) = expressionAndAlias(projection)
       let references = references(in: expression, relations: relations, ctes: ctes)
-      let localAggregation = aggregate(in: expression)
+      let localAggregation = aggregate(
+        in: expression,
+        relations: relations,
+        ctes: ctes,
+        fromGrain: fromGrain)
       let aggregation =
         localAggregation.operation
-        ?? (!localAggregation.hasAggregateCall && references.count == 1
+        ?? (!localAggregation.hasGroupedAggregateCall
+          && localAggregation.calls.isEmpty
+          && references.count == 1
           ? references[0].aggregation : nil)
       let rawGrain =
         references.isEmpty && aggregation == .count
         ? fromGrain
         : normalize(references.flatMap(\.expressionGrain))
+      let chartGrain =
+        localAggregation.calls.isEmpty
+        ? normalize(references.flatMap(\.chartGrain))
+        : rawGrain
       let descriptor = ColumnDescriptor(
         sourceColumns: orderedUnique(references.flatMap(\.sourceColumns)),
         expressionGrain: rawGrain,
-        chartGrain: rawGrain,
+        chartGrain: chartGrain,
         aggregation: aggregation,
-        isAggregateExpression: localAggregation.hasAggregateCall,
+        aggregateCalls: localAggregation.calls,
         preservesSourceDomain:
-          !localAggregation.hasAggregateCall
+          localAggregation.calls.isEmpty
           && references.count == 1
           && isDirectColumnReference(expression)
-          && references[0].preservesSourceDomain)
+          && references[0].preservesSourceDomain,
+        isDirectReference: isDirectColumnReference(expression))
       return [
         QueryOutput(
           name: alias ?? inferredOutputName(expression),
@@ -434,7 +757,7 @@ private struct Analyzer {
       return normalize(grains)
     }()
 
-    let hasAggregate = drafts.contains { $0.descriptor.isAggregateExpression }
+    let hasAggregate = drafts.contains { $0.descriptor.hasGroupedAggregateCall }
     let rowGrain: [String]
     if boundaries["group"] != nil {
       // A constant or otherwise opaque bucket still groups rows drawn from the
@@ -450,18 +773,21 @@ private struct Analyzer {
     }
 
     for index in drafts.indices {
-      guard drafts[index].descriptor.isAggregateExpression,
-        let aggregation = drafts[index].descriptor.aggregation
-      else { continue }
+      guard drafts[index].descriptor.hasGroupedAggregateCall else { continue }
       let rawGrain = drafts[index].descriptor.expressionGrain
       let effectiveGroup = groupGrain.isEmpty ? rowGrain : groupGrain
-      let isUnsafe =
-        aggregation.isDuplicateSensitive
-        && !fromGrain.isEmpty
-        && isStrictlyFiner(fromGrain, than: rawGrain)
+      let unsafeGrain = normalize(
+        drafts[index].descriptor.aggregateCalls
+          .filter {
+            !$0.isWindowed
+              && $0.operation.isDuplicateSensitive
+              && !fromGrain.isEmpty
+              && isStrictlyFiner(fromGrain, than: $0.inputGrain)
+          }
+          .flatMap(\.inputGrain))
       drafts[index].descriptor.chartGrain =
-        isUnsafe
-        ? rawGrain : (effectiveGroup.isEmpty ? rawGrain : effectiveGroup)
+        !unsafeGrain.isEmpty
+        ? unsafeGrain : (effectiveGroup.isEmpty ? rawGrain : effectiveGroup)
       // Enclosing query blocks consume an aggregate at the grain produced by
       // this block, not at the raw child grain below the aggregation boundary.
       drafts[index].descriptor.expressionGrain = rowGrain
@@ -475,7 +801,8 @@ private struct Analyzer {
       tables.formUnion(relation.physicalTables)
       let exposedColumns = relation.columns.mapValues { descriptor in
         SQLQueryScopeColumn(
-          source: descriptor.sourceColumns.count == 1
+          source: descriptor.preservesSourceDomain
+            && descriptor.sourceColumns.count == 1
             ? descriptor.sourceColumns[0] : nil)
       }
       for alias in relation.aliases { qualifiedColumns[alias] = exposedColumns }
@@ -486,7 +813,7 @@ private struct Analyzer {
       else { continue }
       for alias in relation.aliases { aliases[alias] = table }
     }
-    return QueryBlock(
+    let block = QueryBlock(
       outputs: drafts,
       rowGrain: rowGrain,
       scope: SQLQueryScope(
@@ -494,7 +821,9 @@ private struct Analyzer {
         tables: tables,
         qualifiedColumns: qualifiedColumns,
         unqualifiedColumns: unqualifiedColumns),
-      physicalTables: tables)
+      physicalTables: tables,
+      acceptsExternalOrigins: relations.allSatisfy(\.acceptsExternalOrigins))
+    return succeed(block)
   }
 
   private func relation(name: String, block: QueryBlock) -> Relation {
@@ -503,7 +832,8 @@ private struct Analyzer {
       aliases: [name],
       outputs: block.outputs,
       rowGrain: block.rowGrain,
-      physicalTables: block.physicalTables)
+      physicalTables: block.physicalTables,
+      acceptsExternalOrigins: block.acceptsExternalOrigins)
   }
 
   private func physicalRelation(name: String) -> Relation? {
@@ -521,11 +851,13 @@ private struct Analyzer {
             expressionGrain: grain,
             chartGrain: grain,
             aggregation: nil,
-            isAggregateExpression: false,
-            preservesSourceDomain: true))
+            aggregateCalls: [],
+            preservesSourceDomain: true,
+            isDirectReference: true))
       },
       rowGrain: [name],
-      physicalTables: [name])
+      physicalTables: [name],
+      acceptsExternalOrigins: true)
   }
 
   private func parseRelations(
@@ -546,7 +878,16 @@ private struct Analyzer {
             index = applyingAlias(to: &relation, at: index, upperBound: range.upperBound)
             relations.append(relation)
           } else {
+            var relation = Relation(
+              name: "derived",
+              aliases: ["derived"],
+              outputs: [],
+              rowGrain: [Self.opaqueEntity(for: "derived")],
+              physicalTables: [],
+              acceptsExternalOrigins: false)
             index = close + 1
+            index = applyingAlias(to: &relation, at: index, upperBound: range.upperBound)
+            relations.append(relation)
           }
           expectsRelation = false
           continue
@@ -565,19 +906,29 @@ private struct Analyzer {
           relationName = qualifiedName
           nextIndex = index + 3
         }
-        guard var relation = ctes[relationName] ?? physicalRelation(name: relationName) else {
-          // Unknown relations, including table-valued functions, are outside the
-          // frozen schema. Skip them without inventing a chart entity.
+        let knownRelation =
+          ctes[relationName] ?? physicalRelation(name: relationName)
+        var relation =
+          knownRelation
+          ?? Relation(
+            name: relationName,
+            aliases: [relationName],
+            outputs: [],
+            rowGrain: [Self.opaqueEntity(for: relationName)],
+            physicalTables: [],
+            acceptsExternalOrigins: true)
+        if knownRelation == nil {
+          // Unknown relations have no usable columns or physical-table scope,
+          // but their cardinality can still duplicate every known source row.
           index = nextIndex
           if index < range.upperBound, tokens[index] == .symbol("("),
             let close = matchingClose(at: index, upperBound: range.upperBound)
           {
             index = close + 1
           }
-          expectsRelation = false
-          continue
+        } else {
+          index = nextIndex
         }
-        index = nextIndex
         index = applyingAlias(to: &relation, at: index, upperBound: range.upperBound)
         relations.append(relation)
         expectsRelation = false
@@ -682,34 +1033,72 @@ private struct Analyzer {
     return orderedUniqueDescriptors(output)
   }
 
-  private func aggregate(in range: Range<Int>) -> AggregateAnalysis {
+  private func aggregate(
+    in range: Range<Int>,
+    relations: [Relation],
+    ctes: [String: Relation],
+    fromGrain: [String]
+  ) -> AggregateAnalysis {
     let searchable = indicesOutsideSubqueries(in: range)
-    guard !searchable.contains(where: { tokens[$0].word == "over" }) else {
-      return AggregateAnalysis(operation: nil, hasAggregateCall: false)
-    }
-    var operations: [SQLAggregateOperation] = []
+    var calls: [AggregateCallAnalysis] = []
     for index in searchable {
       guard let name = tokens[index].word,
-        index + 1 < range.upperBound, tokens[index + 1] == .symbol("(")
+        index + 1 < range.upperBound,
+        tokens[index + 1] == .symbol("("),
+        let close = matchingClose(at: index + 1, upperBound: range.upperBound)
       else { continue }
+      let argumentStart =
+        index + 2 < close && tokens[index + 2].word == "distinct"
+        ? index + 3 : index + 2
+      let argumentRanges = splitTopLevel(argumentStart..<close)
+      let operation: SQLAggregateOperation
       switch name {
-      case "sum": operations.append(.sum)
-      case "avg": operations.append(.average)
-      case "min": operations.append(.minimum)
-      case "max": operations.append(.maximum)
-      case "total": operations.append(.total)
+      case "sum": operation = .sum
+      case "avg": operation = .average
+      case "min":
+        guard argumentRanges.count == 1 else { continue }
+        operation = .minimum
+      case "max":
+        guard argumentRanges.count == 1 else { continue }
+        operation = .maximum
+      case "total": operation = .total
       case "count":
         if index + 2 < range.upperBound, tokens[index + 2].word == "distinct" {
-          operations.append(.countDistinct)
+          operation = .countDistinct
         } else {
-          operations.append(.count)
+          operation = .count
         }
       default: continue
       }
+      let references = references(
+        in: argumentStart..<close, relations: relations, ctes: ctes)
+      let inputGrain =
+        references.isEmpty && operation == .count
+        ? fromGrain
+        : normalize(references.flatMap(\.expressionGrain))
+      calls.append(
+        AggregateCallAnalysis(
+          operation: operation,
+          inputGrain: inputGrain,
+          isWindowed: isWindowedAggregate(
+            after: close, upperBound: range.upperBound)))
     }
     return AggregateAnalysis(
-      operation: operations.count == 1 ? operations[0] : nil,
-      hasAggregateCall: !operations.isEmpty)
+      operation:
+        calls.count == 1 && calls[0].isWindowed == false
+        ? calls[0].operation : nil,
+      calls: calls)
+  }
+
+  private func isWindowedAggregate(after callClose: Int, upperBound: Int) -> Bool {
+    var index = callClose + 1
+    if index < upperBound, tokens[index].word == "filter",
+      index + 1 < upperBound, tokens[index + 1] == .symbol("("),
+      let filterClose = matchingClose(at: index + 1, upperBound: upperBound)
+    {
+      index = filterClose + 1
+    }
+    return index < upperBound && tokens[index].word == "over"
   }
 
   private func expandedWildcard(
@@ -783,6 +1172,7 @@ private struct Analyzer {
   }
 
   private func isDirectColumnReference(_ range: Range<Int>) -> Bool {
+    let range = unwrapped(range)
     if range.count == 1 { return tokens[range.lowerBound].word != nil }
     if range.count == 3 {
       return tokens[range.lowerBound].word != nil
@@ -817,10 +1207,16 @@ private struct Analyzer {
     return output
   }
 
+  private enum CompoundArmSplit {
+    case none
+    case malformed
+    case arms([Range<Int>])
+  }
+
   private func compoundArmRanges(
     in range: Range<Int>
-  ) -> [Range<Int>]? {
-    guard !range.isEmpty else { return nil }
+  ) -> CompoundArmSplit {
+    guard !range.isEmpty else { return .none }
     var arms: [Range<Int>] = []
     var depth = 0
     var start = range.lowerBound
@@ -833,7 +1229,7 @@ private struct Analyzer {
         let word = tokens[index].word,
         Self.compoundWords.contains(word)
       {
-        guard start < index else { return [] }
+        guard start < index else { return .malformed }
         arms.append(start..<index)
         start = index + 1
         if start < range.upperBound,
@@ -844,10 +1240,10 @@ private struct Analyzer {
         }
       }
     }
-    guard !arms.isEmpty else { return nil }
-    guard start < range.upperBound else { return [] }
+    guard !arms.isEmpty else { return .none }
+    guard start < range.upperBound else { return .malformed }
     arms.append(start..<range.upperBound)
-    return arms
+    return .arms(arms)
   }
 
   private func compoundBlock(from arms: [QueryBlock]) -> QueryBlock {
@@ -856,80 +1252,44 @@ private struct Analyzer {
       expressionGrain: [],
       chartGrain: [],
       aggregation: nil,
-      isAggregateExpression: false,
-      preservesSourceDomain: false)
+      aggregateCalls: [],
+      preservesSourceDomain: false,
+      isDirectReference: false)
     let outputs = arms[0].outputs.map {
       QueryOutput(name: $0.name, descriptor: emptyDescriptor)
     }
-    let scope = mergedScope(arms.map(\.scope))
+    let scope = SQLQueryScope.mergedConservatively(arms.map(\.scope))
     return QueryBlock(
       outputs: outputs,
       rowGrain: [],
       scope: scope,
-      physicalTables: Set(arms.flatMap(\.physicalTables)))
+      physicalTables: Set(arms.flatMap(\.physicalTables)),
+      acceptsExternalOrigins: false)
   }
 
-  private func mergedScope(_ scopes: [SQLQueryScope]) -> SQLQueryScope {
-    var aliasTables: [String: Set<String>] = [:]
-    var tables: Set<String> = []
-    var qualifiedCandidates: [String: [String: [SQLQueryScopeColumn]]] = [:]
-    var unqualifiedCandidates: [String: [[SQLQueryScopeColumn]]] = [:]
-
-    for scope in scopes {
-      tables.formUnion(scope.tables)
-      for (alias, table) in scope.aliases {
-        aliasTables[alias, default: []].insert(table)
-      }
-      for (qualifier, columns) in scope.qualifiedColumns {
-        for (name, column) in columns {
-          qualifiedCandidates[qualifier, default: [:]][name, default: []]
-            .append(column)
-        }
-      }
-      for (name, columns) in scope.unqualifiedColumns {
-        unqualifiedCandidates[name, default: []].append(columns)
+  private func containsTopLevelCompound(in range: Range<Int>) -> Bool {
+    var depth = 0
+    for index in range {
+      if tokens[index] == .symbol("(") {
+        depth += 1
+      } else if tokens[index] == .symbol(")") {
+        depth = max(0, depth - 1)
+      } else if depth == 0, let word = tokens[index].word,
+        Self.compoundWords.contains(word)
+      {
+        return true
       }
     }
-
-    let aliases = aliasTables.compactMapValues { candidates in
-      candidates.count == 1 ? candidates.first : nil
-    }
-    let qualifiedColumns = qualifiedCandidates.mapValues { columns in
-      columns.mapValues { conservativeColumn(from: $0) }
-    }
-    let unqualifiedColumns = unqualifiedCandidates.mapValues { candidates in
-      guard candidates.allSatisfy({ $0.count == 1 }),
-        let first = candidates.first?.first,
-        candidates.allSatisfy({ $0[0] == first })
-      else {
-        return [SQLQueryScopeColumn(source: nil)]
-      }
-      return [first]
-    }
-    return SQLQueryScope(
-      aliases: aliases,
-      tables: tables,
-      qualifiedColumns: qualifiedColumns,
-      unqualifiedColumns: unqualifiedColumns)
-  }
-
-  private func conservativeColumn(
-    from candidates: [SQLQueryScopeColumn]
-  ) -> SQLQueryScopeColumn {
-    guard let first = candidates.first,
-      candidates.allSatisfy({ $0 == first })
-    else { return SQLQueryScopeColumn(source: nil) }
-    return first
+    return false
   }
 
   private func clauseBoundaries(
-    after fromIndex: Int,
-    upperBound: Int
+    in range: Range<Int>
   ) -> [String: Int] {
     var result: [String: Int] = [:]
     var depth = 0
-    var index = fromIndex + 1
-    while index < upperBound {
+    var index = range.lowerBound
+    while index < range.upperBound {
       if tokens[index] == .symbol("(") { depth += 1 }
       if tokens[index] == .symbol(")") { depth = max(0, depth - 1) }
       if depth == 0, let word = tokens[index].word,
@@ -1000,49 +1360,92 @@ private struct Analyzer {
     return range
   }
 
+  private func sourceRange(for tokenRange: Range<Int>) -> NSRange? {
+    guard !tokenRange.isEmpty,
+      tokenRanges.indices.contains(tokenRange.lowerBound),
+      tokenRanges.indices.contains(tokenRange.upperBound - 1)
+    else { return nil }
+    let first = tokenRanges[tokenRange.lowerBound]
+    let last = tokenRanges[tokenRange.upperBound - 1]
+    return NSRange(
+      location: first.location,
+      length: NSMaxRange(last) - first.location)
+  }
+
+  private func analyzeNestedQueryBlocks(
+    in range: Range<Int>,
+    inheritedCTEs: [String: Relation]
+  ) {
+    var index = range.lowerBound
+    while index < range.upperBound {
+      guard tokens[index] == .symbol("("),
+        index + 1 < range.upperBound,
+        let firstWord = tokens[index + 1].word,
+        firstWord == "select" || firstWord == "with",
+        let close = matchingClose(at: index, upperBound: range.upperBound)
+      else {
+        index += 1
+        continue
+      }
+      if index + 1 < close {
+        _ = analyze(
+          range: (index + 1)..<close,
+          inheritedCTEs: inheritedCTEs)
+        index = close + 1
+      } else {
+        index += 1
+      }
+    }
+  }
+
   private func normalize(_ entities: [String]) -> [String] {
+    Self.normalizedEntities(entities)
+  }
+
+  private static func normalizedEntities(_ entities: [String]) -> [String] {
     var unique: [String] = []
     for entity in entities where !unique.contains(entity) { unique.append(entity) }
     return unique.filter { candidate in
       !unique.contains { other in
         other != candidate && isAncestor(candidate, of: other)
       }
-    }
+    }.sorted()
   }
 
   private func isStrictlyFiner(_ candidate: [String], than reference: [String]) -> Bool {
     let candidate = normalize(candidate)
     let reference = normalize(reference)
-    guard !candidate.isEmpty, !reference.isEmpty, candidate != reference else { return false }
-    let candidateSet = Set(candidate)
-    if Set(reference).isSubset(of: candidateSet) { return true }
-    var traversed = false
-    for entity in reference {
-      var matched = false
-      for candidateEntity in candidate {
-        if entity == candidateEntity {
-          matched = true
-          break
-        }
-        if isAncestor(entity, of: candidateEntity) {
-          matched = true
-          traversed = true
-          break
-        }
+    guard !candidate.isEmpty, !reference.isEmpty else { return false }
+    return isAtLeastAsFine(candidate, as: reference)
+      && !isAtLeastAsFine(reference, as: candidate)
+  }
+
+  private func isAtLeastAsFine(
+    _ candidate: [String],
+    as reference: [String]
+  ) -> Bool {
+    reference.allSatisfy { entity in
+      candidate.contains { candidateEntity in
+        entity == candidateEntity || isAncestor(entity, of: candidateEntity)
       }
-      if !matched { return false }
     }
-    return traversed
   }
 
   private func isAncestor(_ ancestor: String, of descendant: String) -> Bool {
-    Self.ancestorPairs.contains(EntityPair(ancestor: ancestor, descendant: descendant))
+    Self.isAncestor(ancestor, of: descendant)
+  }
+
+  private static func isAncestor(_ ancestor: String, of descendant: String) -> Bool {
+    ancestorPairs.contains(EntityPair(ancestor: ancestor, descendant: descendant))
   }
 
   static func grain(
     for source: SQLSourceColumn,
     schema: PortfolioSchemaDocument
   ) -> [String] {
+    guard schema.tables[source.table] != nil else {
+      return [opaqueEntity(for: source.table)]
+    }
     if let relationship = schema.foreignKeys.first(where: {
       $0.fromTable == source.table && $0.fromColumn == source.column
     }) {
@@ -1051,9 +1454,23 @@ private struct Analyzer {
     return [source.table]
   }
 
+  static func normalizedGrain(
+    for sources: [SQLSourceColumn],
+    schema: PortfolioSchemaDocument
+  ) -> [String] {
+    normalizedEntities(sources.flatMap { grain(for: $0, schema: schema) })
+  }
+
+  private static func opaqueEntity(for relationName: String) -> String {
+    "creg.opaque.\(relationName)"
+  }
+
   private func orderedUnique(_ columns: [SQLSourceColumn]) -> [SQLSourceColumn] {
     var seen: Set<SQLSourceColumn> = []
-    return columns.filter { seen.insert($0).inserted }
+    return columns.filter { seen.insert($0).inserted }.sorted {
+      if $0.table != $1.table { return $0.table < $1.table }
+      return $0.column < $1.column
+    }
   }
 
   private func orderedUniqueDescriptors(

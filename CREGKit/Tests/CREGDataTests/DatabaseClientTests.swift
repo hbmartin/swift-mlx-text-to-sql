@@ -14,6 +14,7 @@ extension DatabaseClient {
     return try Data(contentsOf: url)
   }
 }
+
 @Suite struct DatabaseClientTests {
   func makeDatabase() throws -> URL {
     let url = FileManager.default.temporaryDirectory
@@ -69,6 +70,89 @@ extension DatabaseClient {
       lineage.reads.contains {
         $0.table == "t" && $0.column == "name" && $0.database == "main"
       })
+  }
+
+  @Test func compoundExecutionRejectsSQLiteOriginFromOneArm() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-compound-origin-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(sql: "CREATE TABLE tenants (credit_rating TEXT)")
+      try db.execute(sql: "CREATE TABLE leases (status TEXT)")
+      try db.execute(sql: "INSERT INTO tenants VALUES ('AAA')")
+      try db.execute(sql: "INSERT INTO leases VALUES ('Active')")
+    }
+    let client = try DatabaseClient.live(url: url)
+    for sql in [
+      """
+      SELECT credit_rating FROM tenants
+      UNION ALL
+      SELECT status FROM leases
+      """,
+      """
+      WITH u AS (
+        SELECT credit_rating FROM tenants
+        UNION ALL
+        SELECT status FROM leases
+      )
+      SELECT credit_rating FROM u
+      """,
+      """
+      SELECT credit_rating FROM (
+        SELECT credit_rating FROM tenants
+        UNION ALL
+        SELECT status FROM leases
+      ) u
+      """,
+    ] {
+      let result = try await client.execute(sql)
+      let lineage = try #require(result.lineage)
+
+      #expect(result.columns == ["credit_rating"])
+      #expect(lineage.columns == [nil])
+      #expect(
+        lineage.reads.contains {
+          $0.table == "tenants" && $0.column == "credit_rating"
+        })
+      #expect(
+        lineage.reads.contains {
+          $0.table == "leases" && $0.column == "status"
+        })
+    }
+  }
+
+  @Test func wildcardUsingAlignmentDoesNotInventAnOriginForSingletonOutputs()
+    async throws
+  {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-wildcard-alignment-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    let properties = try #require(PortfolioSchemaCatalog.document.tables["properties"])
+    let leases = try #require(PortfolioSchemaCatalog.document.tables["leases"])
+    try await queue.write { db in
+      let propertyColumns = properties.map { "\($0) TEXT" }.joined(separator: ", ")
+      let leaseColumns = leases.map { "\($0) TEXT" }.joined(separator: ", ")
+      try db.execute(sql: "CREATE TABLE properties (\(propertyColumns))")
+      try db.execute(sql: "CREATE TABLE leases (\(leaseColumns))")
+    }
+    let result = try await DatabaseClient.live(url: url).execute(
+      """
+      SELECT *
+      FROM properties JOIN leases USING (property_id)
+      CROSS JOIN (SELECT DATE('now') AS today)
+      """)
+    let lineage = try #require(result.lineage)
+    let buildingClass = try #require(result.columns.firstIndex(of: "building_class"))
+    let leaseStatus = try #require(result.columns.lastIndex(of: "status"))
+    let today = try #require(result.columns.firstIndex(of: "today"))
+
+    #expect(
+      lineage.columns[buildingClass]?.sourceColumns
+        == [.init(table: "properties", column: "building_class")])
+    #expect(
+      lineage.columns[leaseStatus]?.sourceColumns
+        == [.init(table: "leases", column: "status")])
+    #expect(lineage.columns[today] == nil)
   }
 
   @Test func writesAreDenied() async throws {

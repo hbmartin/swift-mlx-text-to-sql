@@ -61,11 +61,6 @@ public actor ResultHeuristics {
     var scopes: [SQLQueryScope]
   }
 
-  private struct ScopedQueryBlock {
-    var range: NSRange
-    var scope: SQLQueryScope
-  }
-
   private struct QuerySources {
     var scopes: [SQLQueryScope]
     var aliases: [String: String]
@@ -102,10 +97,6 @@ public actor ResultHeuristics {
   ]
 
   private static let schemaCatalog = PortfolioSchemaCatalog.document
-  private static let queryBlockPrefixExpression = try! NSRegularExpression(
-    pattern:
-      #"(?is)\A\s*(?:(?:--[^\r\n]*(?:\r?\n|\z)|/\*.*?\*/)\s*)*(?:SELECT|WITH)\b"#)
-
   private static let tableColumns = schemaCatalog.tables.mapValues(Set.init)
   private static let foreignKeys = schemaCatalog.foreignKeys
 
@@ -346,19 +337,12 @@ public actor ResultHeuristics {
   private static func querySources(
     in sql: String
   ) -> QuerySources {
-    let scopes = scopedQueryBlocks(in: sql).map(\.scope)
-    var aliasesByName: [String: Set<String>] = [:]
-    var tables: Set<String> = []
-    for scope in scopes {
-      tables.formUnion(scope.tables)
-      for (alias, table) in scope.aliases {
-        aliasesByName[alias, default: []].insert(table)
-      }
-    }
-    let aliases = aliasesByName.compactMapValues { tables in
-      tables.count == 1 ? tables.first : nil
-    }
-    return QuerySources(scopes: scopes, aliases: aliases, tables: tables)
+    let scopes = SQLQueryAnalyzer.scopedQueryBlocks(in: sql).map(\.scope)
+    let merged = SQLQueryScope.mergedConservatively(scopes)
+    return QuerySources(
+      scopes: scopes,
+      aliases: merged.aliases,
+      tables: merged.tables)
   }
 
   private static func resolve(
@@ -386,14 +370,14 @@ public actor ResultHeuristics {
   }
 
   private static func predicates(in sql: String) -> [Predicate] {
-    let blocks = scopedQueryBlocks(in: sql)
+    let blocks = SQLQueryAnalyzer.scopedQueryBlocks(in: sql)
     return equalityPredicates(in: sql, blocks: blocks)
       + inPredicates(in: sql, blocks: blocks)
   }
 
   private static func equalityPredicates(
     in sql: String,
-    blocks: [ScopedQueryBlock]
+    blocks: [SQLScopedQueryBlock]
   ) -> [Predicate] {
     let pattern =
       #"\b(?:(\w+)\s*\.\s*)?(\w+)\s*=\s*'((?:''|[^'])*)'"#
@@ -416,7 +400,7 @@ public actor ResultHeuristics {
 
   private static func inPredicates(
     in sql: String,
-    blocks: [ScopedQueryBlock]
+    blocks: [SQLScopedQueryBlock]
   ) -> [Predicate] {
     let pattern =
       #"\b(?:(\w+)\s*\.\s*)?(\w+)\s+IN\s*\(((?:\s*'(?:''|[^'])*'\s*,?)+)\)"#
@@ -444,116 +428,12 @@ public actor ResultHeuristics {
 
   private static func scopes(
     containing range: NSRange,
-    blocks: [ScopedQueryBlock]
+    blocks: [SQLScopedQueryBlock]
   ) -> [SQLQueryScope] {
     blocks
       .filter { NSLocationInRange(range.location, $0.range) }
       .sorted { $0.range.length < $1.range.length }
       .map(\.scope)
-  }
-
-  /// Finds SELECT/WITH blocks without treating parentheses inside literals,
-  /// quoted identifiers, or comments as SQL structure. Ranges use UTF-16 so
-  /// they align with NSRegularExpression predicate matches.
-  private static func scopedQueryBlocks(in sql: String) -> [ScopedQueryBlock] {
-    let string = sql as NSString
-    var ranges: [NSRange] = []
-    let whole = NSRange(location: 0, length: string.length)
-    if beginsWithQuery(in: string, range: whole) { ranges.append(whole) }
-
-    enum ScanState {
-      case normal, singleQuote, doubleQuote, backtick, bracket
-      case lineComment, blockComment
-    }
-    var state = ScanState.normal
-    var stack: [Int] = []
-    var index = 0
-    while index < string.length {
-      let character = string.character(at: index)
-      let next = index + 1 < string.length ? string.character(at: index + 1) : 0
-      switch state {
-      case .normal:
-        if character == 0x2D, next == 0x2D {
-          state = .lineComment
-          index += 2
-          continue
-        }
-        if character == 0x2F, next == 0x2A {
-          state = .blockComment
-          index += 2
-          continue
-        }
-        if character == 0x27 { state = .singleQuote }
-        else if character == 0x22 { state = .doubleQuote }
-        else if character == 0x60 { state = .backtick }
-        else if character == 0x5B { state = .bracket }
-        else if character == 0x28 { stack.append(index) }
-        else if character == 0x29, let open = stack.popLast() {
-          let range = NSRange(
-            location: open + 1,
-            length: max(0, index - open - 1))
-          if beginsWithQuery(in: string, range: range) { ranges.append(range) }
-        }
-      case .singleQuote:
-        if character == 0x27 {
-          if next == 0x27 {
-            index += 2
-            continue
-          }
-          state = .normal
-        }
-      case .doubleQuote:
-        if character == 0x22 {
-          if next == 0x22 {
-            index += 2
-            continue
-          }
-          state = .normal
-        }
-      case .backtick:
-        if character == 0x60 {
-          if next == 0x60 {
-            index += 2
-            continue
-          }
-          state = .normal
-        }
-      case .bracket:
-        if character == 0x5D {
-          if next == 0x5D {
-            index += 2
-            continue
-          }
-          state = .normal
-        }
-      case .lineComment:
-        if character == 0x0A || character == 0x0D { state = .normal }
-      case .blockComment:
-        if character == 0x2A, next == 0x2F {
-          state = .normal
-          index += 2
-          continue
-        }
-      }
-      index += 1
-    }
-
-    return ranges.map { range in
-      let blockSQL = string.substring(with: range)
-      return ScopedQueryBlock(
-        range: range,
-        scope: SQLQueryAnalyzer.scope(in: blockSQL))
-    }
-  }
-
-  private static func beginsWithQuery(
-    in string: NSString,
-    range: NSRange
-  ) -> Bool {
-    let substring = string.substring(with: range)
-    let substringRange = NSRange(location: 0, length: (substring as NSString).length)
-    return queryBlockPrefixExpression.firstMatch(
-      in: substring, range: substringRange) != nil
   }
 
   private static func allStringLiterals(in sql: String) -> [(String, NSRange)] {

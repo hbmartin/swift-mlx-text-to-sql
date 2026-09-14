@@ -119,7 +119,7 @@ public struct SQLResultColumnLineage: Sendable, Equatable, Hashable, Codable {
 public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
   /// Bump whenever derived grain/domain decisions change incompatibly. Stored
   /// lineage from an older analyzer is re-derived instead of being trusted.
-  public static let currentAnalysisVersion = 2
+  public static let currentAnalysisVersion = 3
 
   public var analysisVersion: Int
   /// Entries align one-for-one with the result's output columns.
