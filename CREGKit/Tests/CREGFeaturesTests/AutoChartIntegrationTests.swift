@@ -10,6 +10,10 @@ import Testing
 @testable import CREGFeatures
 
 @Suite struct CREGChartAdapterTests {
+  @Test func lineageAnalysisVersionRemainsOnTheUnmergedVersion() {
+    #expect(SQLQueryLineage.currentAnalysisVersion == 2)
+  }
+
   @Test func analysisDatasetUsesOffsetIDsTypedSemanticsAndStableDataKey() throws {
     let result = QueryResult(
       columns: ["loan_id", "current_balance", "maturity_date"],
@@ -192,6 +196,35 @@ import Testing
     #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
   }
 
+  @Test func unknownRelationsRemainInRowGrainAndRejectFanOut() async throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["city", "current_market_value"],
+        rows: [
+          [.text("Phoenix"), .real(20_000_000)],
+          [.text("Phoenix"), .real(20_000_000)],
+        ]),
+      sql: """
+        SELECT p.city, p.current_market_value
+        FROM properties p JOIN json_each('[1,2]') j
+        """)
+    let category = dataset.chartColumns[0]
+    let measure = dataset.chartColumns[1]
+    let rowEntities = try #require(dataset.chartMetadata.rowGrain).entities
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    #expect(rowEntities.contains("properties"))
+    #expect(rowEntities.contains("creg.opaque.json_each"))
+    for aggregation in [AutoChartAggregation.sum, .mean] {
+      let validation = analysis.validate(
+        .bar(
+          category: category.id,
+          measure: measure.id,
+          aggregation: aggregation))
+      #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
+    }
+  }
+
   @Test func childCountAndAncestorNormalizedExpressionAvoidFalseFanOut() async throws {
     let cases: [(String, String)] = [
       (
@@ -277,6 +310,122 @@ import Testing
     #expect(!validation.issues.contains { $0.messageValue.code == .chasmRisk })
   }
 
+  @Test func ratioAggregatesUseTheirProducedPropertyGrain() async throws {
+    for expression in [
+      "SUM(l.annual_base_rent) / SUM(l.leased_sqft)",
+      "SUM(l.annual_base_rent) / SUM(SUM(l.annual_base_rent)) OVER ()",
+    ] {
+      let dataset = try CREGChartAdapter.analysisDataset(
+        result: QueryResult(
+          columns: ["city", "value"],
+          rows: [[.text("Phoenix"), .real(24.5)]]),
+        sql: """
+          SELECT p.city, \(expression) AS value
+          FROM properties p
+          JOIN leases l ON l.property_id = p.property_id
+          GROUP BY p.city
+          """)
+      let category = dataset.chartColumns[0]
+      let measure = dataset.chartColumns[1]
+      let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+        AutoChartRequest(table: dataset))
+      let validation = analysis.validate(
+        .bar(category: category.id, measure: measure.id))
+
+      #expect(measure.provenance?.sourceGrain == AutoChartGrain(entity: "properties"))
+      #expect(!validation.issues.contains { $0.messageValue.code == .fanOutRisk })
+    }
+  }
+
+  @Test func derivedRatiosAndSharesStillExposeRealFanOut() async throws {
+    for expression in [
+      "SUM(annual_base_rent) / SUM(leased_sqft)",
+      "SUM(annual_base_rent) / SUM(SUM(annual_base_rent)) OVER ()",
+    ] {
+      let dataset = try CREGChartAdapter.analysisDataset(
+        result: QueryResult(
+          columns: ["status", "total_ratio"],
+          rows: [[.text("Active"), .real(24.5)]]),
+        sql: """
+          WITH rent AS (
+            SELECT property_id, \(expression) AS rent_ratio
+            FROM leases GROUP BY property_id
+          )
+          SELECT l.status, SUM(r.rent_ratio) AS total_ratio
+          FROM rent r JOIN leases l USING (property_id)
+          GROUP BY l.status
+          """)
+      let category = dataset.chartColumns[0]
+      let measure = dataset.chartColumns[1]
+      let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+        AutoChartRequest(table: dataset))
+      let validation = analysis.validate(
+        .bar(category: category.id, measure: measure.id))
+
+      #expect(measure.provenance?.sourceGrain == AutoChartGrain(entity: "properties"))
+      #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
+    }
+  }
+
+  @Test func pairedPerPropertyRatioCTEsAvoidFalseChasmRisk() async throws {
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["rent_ratio", "margin_ratio"],
+        rows: [[.real(24.5), .real(0.6)]]),
+      sql: """
+        WITH rent AS (
+          SELECT property_id,
+                 SUM(annual_base_rent) / SUM(leased_sqft) AS rent_ratio
+          FROM leases GROUP BY property_id
+        ), margins AS (
+          SELECT property_id,
+                 SUM(net_operating_income) / SUM(effective_gross_income)
+                   AS margin_ratio
+          FROM property_financials GROUP BY property_id
+        )
+        SELECT r.rent_ratio, m.margin_ratio
+        FROM rent r JOIN margins m USING (property_id)
+        """)
+    let x = dataset.chartColumns[0]
+    let y = dataset.chartColumns[1]
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      AutoChartRequest(table: dataset))
+    let validation = analysis.validate(.scatter(x: x.id, y: y.id))
+
+    #expect(x.provenance?.sourceGrain == AutoChartGrain(entity: "properties"))
+    #expect(y.provenance?.sourceGrain == AutoChartGrain(entity: "properties"))
+    #expect(!validation.issues.contains { $0.messageValue.code == .chasmRisk })
+  }
+
+  @Test func compositeExpressionOrderDoesNotChangeChartSafety() async throws {
+    var issueCodes: [[AutoChartMessage.Code]] = []
+    for expression in [
+      "SUM(pf.net_operating_income / v.market_value)",
+      "SUM(v.market_value / pf.net_operating_income)",
+    ] {
+      let dataset = try CREGChartAdapter.analysisDataset(
+        result: QueryResult(
+          columns: ["city", "value"],
+          rows: [[.text("Phoenix"), .real(0.08)]]),
+        sql: """
+          SELECT p.city, \(expression) AS value
+          FROM properties p
+          JOIN property_financials pf ON pf.property_id = p.property_id
+          JOIN valuations v ON v.property_id = p.property_id
+          GROUP BY p.city
+          """)
+      let category = dataset.chartColumns[0]
+      let measure = dataset.chartColumns[1]
+      let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+        AutoChartRequest(table: dataset))
+      issueCodes.append(
+        analysis.validate(.bar(category: category.id, measure: measure.id))
+          .issues.map(\.messageValue.code))
+    }
+
+    #expect(issueCodes[0] == issueCodes[1])
+  }
+
   @Test func repeatedEntityLanguageClassifiesAsComparison() {
     #expect(
       CREGChartAdapter.analysisContext(
@@ -300,6 +449,11 @@ import Testing
     #expect(
       CREGChartAdapter.analysisContext(
         question: "Show rent per property",
+        sql: "SELECT property_id, annual_base_rent FROM leases"
+      ).goal == .comparison)
+    #expect(
+      CREGChartAdapter.analysisContext(
+        question: "Per property, show annual rent",
         sql: "SELECT property_id, annual_base_rent FROM leases"
       ).goal == .comparison)
   }
@@ -379,6 +533,92 @@ import Testing
       dataset.chartColumns[0].provenance?.sourceColumns
         == [.init(entity: "properties", name: "city")])
     #expect(dataset.chartMetadata.rowGrain == AutoChartGrain(entity: "properties"))
+  }
+
+  @Test func savedWildcardUsingAnswerRegainsProvenOrdinalLineage() throws {
+    let stale = SQLQueryLineage(
+      columns: [
+        SQLResultColumnLineage(
+          sourceColumns: [.init(table: "properties", column: "property_id")]),
+        SQLResultColumnLineage(
+          sourceColumns: [.init(table: "properties", column: "building_class")],
+          preservesSourceDomain: true),
+        SQLResultColumnLineage(
+          sourceColumns: [.init(table: "leases", column: "status")],
+          preservesSourceDomain: true),
+      ],
+      analysisVersion: 1)
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["property_id", "building_class", "status"],
+        rows: [[.integer(1), .text("A"), .text("Active")]],
+        lineage: stale),
+      sql: """
+        SELECT *
+        FROM (
+          SELECT property_id, building_class FROM properties
+        ) p
+        JOIN (
+          SELECT property_id, status FROM leases
+        ) l USING (property_id)
+        """)
+
+    #expect(
+      dataset.chartColumns[1].provenance?.sourceColumns
+        == [.init(entity: "properties", name: "building_class")])
+    #expect(
+      dataset.chartColumns[1].categoryOrder
+        == ["A", "B", "C"].map(AutoChartValue.text))
+  }
+
+  @Test func unalignableSavedColumnKeepsOnlyConservativeProvenance() throws {
+    let stale = SQLQueryLineage(
+      columns: [
+        nil,
+        SQLResultColumnLineage(
+          sourceColumns: [.init(table: "tenants", column: "credit_rating")],
+          sourceGrain: ["stale"],
+          preservesSourceDomain: true),
+        nil,
+      ],
+      analysisVersion: 1)
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["city", "legacy_rating", "state"],
+        rows: [[.text("Phoenix"), .text("AAA"), .text("AZ")]],
+        lineage: stale),
+      sql: "SELECT city, state FROM properties")
+    let legacy = dataset.chartColumns[1]
+
+    #expect(
+      legacy.provenance?.sourceColumns
+        == [.init(entity: "tenants", name: "credit_rating")])
+    #expect(legacy.provenance?.sourceGrain == AutoChartGrain(entity: "tenants"))
+    #expect(legacy.categoryOrder == nil)
+  }
+
+  @Test func staleCompoundLineageIsNotResurrected() throws {
+    let stale = SQLQueryLineage(
+      columns: [
+        SQLResultColumnLineage(
+          sourceColumns: [.init(table: "tenants", column: "credit_rating")],
+          sourceGrain: ["tenants"],
+          preservesSourceDomain: true)
+      ],
+      analysisVersion: 1)
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["credit_rating"],
+        rows: [[.text("AAA")], [.text("Active")]],
+        lineage: stale),
+      sql: """
+        SELECT credit_rating FROM tenants
+        UNION ALL
+        SELECT status FROM leases
+        """)
+
+    #expect(dataset.chartColumns[0].provenance == nil)
+    #expect(dataset.chartColumns[0].categoryOrder == nil)
   }
 
   @Test func blobBearingOrdinalColumnsAreNotForcedIntoCategorySemantics() throws {

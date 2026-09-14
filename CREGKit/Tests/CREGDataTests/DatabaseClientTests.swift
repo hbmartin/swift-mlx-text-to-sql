@@ -71,6 +71,36 @@ extension DatabaseClient {
       })
   }
 
+  @Test func compoundExecutionRejectsSQLiteOriginFromOneArm() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-compound-origin-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(sql: "CREATE TABLE tenants (credit_rating TEXT)")
+      try db.execute(sql: "CREATE TABLE leases (status TEXT)")
+      try db.execute(sql: "INSERT INTO tenants VALUES ('AAA')")
+      try db.execute(sql: "INSERT INTO leases VALUES ('Active')")
+    }
+    let result = try await DatabaseClient.live(url: url).execute(
+      """
+      SELECT credit_rating FROM tenants
+      UNION ALL
+      SELECT status FROM leases
+      """)
+    let lineage = try #require(result.lineage)
+
+    #expect(result.columns == ["credit_rating"])
+    #expect(lineage.columns == [nil])
+    #expect(
+      lineage.reads.contains {
+        $0.table == "tenants" && $0.column == "credit_rating"
+      })
+    #expect(
+      lineage.reads.contains {
+        $0.table == "leases" && $0.column == "status"
+      })
+  }
+
   @Test func writesAreDenied() async throws {
     let client = try DatabaseClient.live(url: makeDatabase())
     await #expect(throws: (any Error).self) {

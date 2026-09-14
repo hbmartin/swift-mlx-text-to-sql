@@ -186,7 +186,7 @@ import Testing
     let heuristics = ResultHeuristics(db: try DatabaseClient.live(url: url))
     let report = await heuristics.inspectDetailed(
       sql: """
-        SELECT p.name
+        SELECT p.name || '🏢' AS name
         FROM properties p
         WHERE p.property_id IN (
           SELECT l.property_id FROM leases l WHERE l.status = 'Actve'
@@ -225,6 +225,91 @@ import Testing
           column: GroundingColumn(table: "properties", column: "city"),
           literal: "Phoenx",
           suggestion: "Phoenix"))
+  }
+
+  @Test func computedDerivedOutputsAreNotGroundedAsRawColumns() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-computed-grounding-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(sql: "CREATE TABLE properties (building_class TEXT)")
+      try db.execute(sql: "INSERT INTO properties VALUES ('A'), ('B')")
+    }
+    let heuristics = ResultHeuristics(db: try DatabaseClient.live(url: url))
+    let projections = [
+      "CASE WHEN building_class = 'A' THEN 'Upper' ELSE 'Other' END AS bucket",
+      "UPPER(building_class) AS bucket",
+      "COUNT(building_class) AS bucket",
+    ]
+    for projection in projections {
+      let report = await heuristics.inspectDetailed(
+        sql: """
+          SELECT d.bucket FROM (SELECT \(projection) FROM properties) d
+          WHERE d.bucket = 'Upper'
+          """,
+        result: QueryResult(columns: ["bucket"], rows: []))
+
+      #expect(report.findings == [.emptyResult], "\(projection)")
+    }
+
+    let direct = await heuristics.inspectDetailed(
+      sql: """
+        SELECT d.bucket
+        FROM (SELECT building_class AS bucket FROM properties) d
+        WHERE d.bucket = 'Upper'
+        """,
+      result: QueryResult(columns: ["bucket"], rows: []))
+    #expect(
+      direct.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(
+            table: "properties", column: "building_class"),
+          literal: "Upper",
+          suggestion: nil))
+  }
+
+  @Test func nestedAndLaterCTEBlocksInheritEarlierCTEScopes() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-cte-grounding-\(UUID().uuidString).sqlite")
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(
+        sql: "CREATE TABLE properties (property_id INTEGER, name TEXT, status TEXT)")
+      try db.execute(
+        sql: "CREATE TABLE leases (property_id INTEGER, status TEXT)")
+      try db.execute(sql: "INSERT INTO properties VALUES (1, 'Tower', 'Owned')")
+      try db.execute(sql: "INSERT INTO leases VALUES (1, 'Active')")
+    }
+    let heuristics = ResultHeuristics(db: try DatabaseClient.live(url: url))
+    let queries = [
+      """
+      WITH active AS (SELECT property_id, status FROM leases)
+      SELECT p.name FROM properties p
+      WHERE p.property_id IN (
+        SELECT property_id FROM active WHERE status = 'Actve'
+      )
+      """,
+      """
+      WITH active AS (SELECT property_id, status FROM leases),
+           filtered AS (
+             SELECT property_id FROM active WHERE status = 'Actve'
+           )
+      SELECT p.name FROM properties p
+      WHERE p.property_id IN (SELECT property_id FROM filtered)
+      """,
+    ]
+    for sql in queries {
+      let report = await heuristics.inspectDetailed(
+        sql: sql,
+        result: QueryResult(columns: ["name"], rows: []))
+
+      #expect(
+        report.findings.first
+          == .literalNotFound(
+            column: GroundingColumn(table: "leases", column: "status"),
+            literal: "Actve",
+            suggestion: "Active"))
+    }
   }
 
   @Test func repairGuidanceFindsAliasesInsideSubqueries() {
