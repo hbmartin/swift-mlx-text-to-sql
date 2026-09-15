@@ -783,8 +783,9 @@ private final class Analyzer {
     }
     let rejectsForTopLevelCompound = containsTopLevelCompound(in: range)
     var ctes = inheritedCTEs
+    var publishesNestedScopes = true
     defer {
-      if collectsNestedScopes {
+      if collectsNestedScopes, publishesNestedScopes {
         analyzeNestedQueryBlocks(in: range, inheritedCTEs: ctes)
       }
     }
@@ -798,8 +799,20 @@ private final class Analyzer {
       outcomes[range] = .success(block)
       return block
     }
+    // Snapshot only WITH ranges; retaining this dictionary for every plain
+    // SELECT would force a copy whenever its analysis caches a new block.
+    let outcomesBeforeCTEs =
+      tokens[range.lowerBound].word == "with" ? outcomes : nil
+    let sawOpaqueValuesBeforeCTEs = sawOpaqueValues
     guard let parsed = parseCTEs(in: range, inheritedCTEs: inheritedCTEs)
-    else { return fail(rejectsExternalOrigins: true) }
+    else {
+      // A malformed WITH clause must not publish nested SELECTs analyzed
+      // while parsing its bodies, or scan them again with inherited tables.
+      if let outcomesBeforeCTEs { outcomes = outcomesBeforeCTEs }
+      sawOpaqueValues = sawOpaqueValuesBeforeCTEs
+      publishesNestedScopes = false
+      return fail(rejectsExternalOrigins: true)
+    }
     let selectIndex = parsed.mainStart
     ctes = parsed.ctes
 
