@@ -508,6 +508,22 @@ import Testing
     }
   }
 
+  @Test func malformedNestedCTENeverPublishesPhysicalLeaseScope() {
+    for cte in [
+      "WITH leases(status) (SELECT l.status FROM leases l WHERE l.status = 'Actve')",
+      "WITH leases(status, extra) AS (SELECT l.status FROM leases l WHERE l.status = 'Actve')",
+    ] {
+      let blocks = SQLQueryAnalyzer.scopedQueryBlocks(in: """
+        SELECT 1 AS flag FROM (
+          \(cte)
+          SELECT 1 AS marker FROM leases
+        ) x
+        """)
+      #expect(!blocks.isEmpty)
+      #expect(!blocks.contains { $0.scope.tables.contains("leases") })
+    }
+  }
+
   @Test func compoundSelectsDoNotBorrowClausesFromLaterArms() {
     let lineage = SQLQueryAnalyzer.lineage(
       sql: """
