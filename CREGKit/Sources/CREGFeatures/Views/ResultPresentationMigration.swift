@@ -139,6 +139,7 @@ func applyResultPresentationMigration(
   analysis: AutoChartAnalysis<Int>,
   chartOwner: CREGChartSessionOwner,
   beforeSessionRestart: () -> Void = {},
+  isStillCurrent: () -> Bool = { true },
   migratePreference: ResultPresentationMigrationHandler
 ) async {
   var previous = suggestion.previous
@@ -147,14 +148,14 @@ func applyResultPresentationMigration(
   var latestAuthoritative: ResultPresentationPreference?
 
   func synchronize(_ preference: ResultPresentationPreference?) {
-    guard let preference, !Task.isCancelled else { return }
+    guard let preference, !Task.isCancelled, isStillCurrent() else { return }
     chartOwner.setPreferenceIfNeeded(
       preference.packagePreference,
       onRestart: beforeSessionRestart)
   }
 
   while visited.insert(previous).inserted {
-    guard !Task.isCancelled else { return }
+    guard !Task.isCancelled, isStillCurrent() else { return }
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
       chartOwner.setPreferenceIfNeeded(
@@ -173,7 +174,7 @@ func applyResultPresentationMigration(
         synchronize(authoritative)
         return
       }
-      guard !Task.isCancelled else { return }
+      guard !Task.isCancelled, isStillCurrent() else { return }
       previous = next.previous
       updated = next.updated
     case .messageMissing:
@@ -195,18 +196,22 @@ func runResultPresentationMigrationTask(
   beforeSessionRestart: () -> Void = {},
   migratePreference: ResultPresentationMigrationHandler
 ) async {
+  func isCurrent() -> Bool {
+    !Task.isCancelled
+      && chartOwner.inputIdentity == id.inputIdentity
+      && chartOwner.analysis(for: id.inputIdentity)?.id == id.analysisID
+      && isCurrentPreference()
+  }
   guard let suggestion = await resultPresentationMigrationSuggestionOffMain(
     analysis: analysis, preference: id.preference),
-    !Task.isCancelled,
-    chartOwner.inputIdentity == id.inputIdentity,
-    chartOwner.analysis(for: id.inputIdentity)?.id == id.analysisID,
-    isCurrentPreference()
+    isCurrent()
   else { return }
   await applyResultPresentationMigration(
     suggestion,
     analysis: analysis,
     chartOwner: chartOwner,
     beforeSessionRestart: beforeSessionRestart,
+    isStillCurrent: isCurrent,
     migratePreference: migratePreference)
 }
 

@@ -2700,6 +2700,56 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(chartOwner.session.preference == .chart(.recommended))
   }
 
+  @Test func retainedMigrationStopsWhenItsResultIdentityChanges() async throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
+    let sql = "SELECT fund, value FROM properties"
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("missing-old"))
+    let authoritative = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID("missing-authoritative"))
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      CREGChartAdapter.analysisRequest(
+        result: result, sql: sql, question: nil),
+      preparation: .none)
+    let suggestion = try #require(resultPresentationMigrationSuggestion(
+      analysis: analysis, preference: previous))
+    let old = CREGChartInputIdentity(
+      resultFingerprint: "migration-old-result",
+      dataIdentity: nil,
+      sql: sql,
+      question: nil)
+    var replacement = old
+    replacement.resultFingerprint = "migration-replacement-result"
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: old,
+      result: result)
+    owner.load(result: result, inputIdentity: old, preference: .automatic)
+    var attempts = 0
+
+    await applyResultPresentationMigration(
+      suggestion,
+      analysis: analysis,
+      chartOwner: owner,
+      isStillCurrent: { owner.inputIdentity == old }
+    ) { _, _ in
+      attempts += 1
+      owner.load(
+        result: result,
+        inputIdentity: replacement,
+        preference: .automatic)
+      return .retained(authoritative)
+    }
+
+    #expect(attempts == 1)
+    #expect(owner.inputIdentity == replacement)
+    #expect(owner.session.preference == .automatic)
+  }
+
   private func migrationStore(
     state: ChatFeature.State
   ) -> StoreOf<ChatFeature> {
