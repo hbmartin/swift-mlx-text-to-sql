@@ -15,6 +15,7 @@ import Testing
         "browser",
         "settings",
         "result-explorer",
+        "result-preview-identity",
         "result-chart-preparation",
         "result-chart-recovery",
         "result-chart-terminal-recovery",

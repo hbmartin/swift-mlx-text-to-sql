@@ -9,6 +9,8 @@ import Testing
 @testable import CREGEngine
 @testable import CREGFeatures
 
+private let chartTestReadyTimeout: Duration = .seconds(10)
+
 private final class PickerLabelCounter: @unchecked Sendable {
   private let lock = NSLock()
   private var storedCalls = 0
@@ -1309,7 +1311,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       inputIdentity: identity,
       preference: previous.packagePreference)
     var saves = 0
-    applyResultPresentationMigration(
+    await applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
       chartOwner: owner
@@ -1401,7 +1403,9 @@ private final class PickerLabelCounter: @unchecked Sendable {
   private func readyAnalysis(
     from session: AutoChartSession<Int>
   ) async throws -> AutoChartAnalysis<Int> {
-    for _ in 0..<200 {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: chartTestReadyTimeout)
+    while clock.now < deadline {
       switch session.state {
       case .ready(let analysis, _), .fallback(let analysis, _):
         return analysis
@@ -1416,7 +1420,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       kind: .transient,
       isRetryable: true,
       diagnosticID: "CREG.test.sessionTimeout",
-      message: "The chart session did not settle during the test.")
+      message: "The chart session did not settle: \(session.state).")
   }
 }
 
@@ -2185,15 +2189,26 @@ private final class PickerLabelCounter: @unchecked Sendable {
       inputIdentity: identity,
       result: result)
     owner.load(result: result, inputIdentity: identity, preference: .automatic)
-    var ready: (AutoChartAnalysis<Int>, AutoChartPresentedChart<Int>)?
-    for _ in 0..<400 {
-      if case .ready(let analysis, let presented?) = owner.session.state {
-        ready = (analysis, presented)
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: chartTestReadyTimeout)
+    while clock.now < deadline {
+      if case .ready(_, _?) = owner.session.state {
         break
       }
+      if case .failed(let failure) = owner.session.state { throw failure }
       try await Task.sleep(for: .milliseconds(5))
     }
-    let (analysis, drawn) = try #require(ready)
+    guard case .ready(let analysis, let drawn?) = owner.session.state else {
+      Issue.record("Chart session timed out: \(owner.session.state)")
+      return
+    }
+    var replacementIdentity = identity
+    replacementIdentity.resultFingerprint = "next-result"
+    #expect(owner.displayedRecommendation(for: replacementIdentity) == nil)
+    #expect(owner.displayedMode(
+      for: replacementIdentity, fallback: .table) == .table)
+    #expect(owner.displayedRecommendation(for: identity)?.id
+      == drawn.preparedChart.recommendation.id)
     let drawnID = drawn.preparedChart.recommendation.id
     let staleID = AutoChartRecommendationID(
       policyVersion: AutoTableCharts.recommendationPolicyVersion - 1,
@@ -2206,7 +2221,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
     let restorationAttempt = owner.selectionRestorationAttempt
     var restarts = 0
 
-    applyResultPresentationMigration(
+    await applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
       chartOwner: owner,
@@ -2218,8 +2233,22 @@ private final class PickerLabelCounter: @unchecked Sendable {
 
     let other = ResultPresentationPreference(
       mode: .chart, specificationID: chartTestRecommendationID("other-stale"))
+    var missingAttempts = 0
+    await applyResultPresentationMigration(
+      suggestion,
+      analysis: analysis,
+      chartOwner: owner,
+      beforeSessionRestart: { restarts += 1 },
+      migratePreference: { _, _ in
+        missingAttempts += 1
+        return missingAttempts == 1 ? .retained(other) : .messageMissing
+      })
+    #expect(missingAttempts == 2)
+    #expect(owner.session.preference == other.packagePreference)
+    owner.setPreferenceIfNeeded(previous.packagePreference)
+
     var attempts = 0
-    applyResultPresentationMigration(
+    await applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
       chartOwner: owner,
@@ -2244,7 +2273,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       Issue.record("Migration changed the drawn chart before persistence succeeded")
     }
 
-    applyResultPresentationMigration(
+    await applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
       chartOwner: owner,
@@ -2462,7 +2491,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
     var attempts: [(ResultPresentationPreference, ResultPresentationPreference)] = []
     var sessionRestarts = 0
 
-    applyResultPresentationMigration(
+    await applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
       chartOwner: chartOwner,
@@ -2478,10 +2507,10 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(attempts[0].0 == previous)
     #expect(attempts[1].0 == authoritative)
     #expect(attempts[1].1 == .chart(.recommended))
-    #expect(sessionRestarts == 1)
+    #expect(sessionRestarts == 2)
     #expect(
       chartOwner.selectionRestorationAttempt
-        == restorationAttemptBeforeMigration + 1)
+        == restorationAttemptBeforeMigration + 2)
     #expect(chartOwner.session.preference == .chart(.recommended))
   }
 
