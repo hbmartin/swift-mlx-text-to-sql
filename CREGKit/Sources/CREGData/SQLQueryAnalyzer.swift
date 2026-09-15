@@ -92,10 +92,8 @@ package enum SQLQueryAnalyzer {
         guard let column = read.column else { return nil }
         return SQLSourceColumn(table: read.table, column: column)
       })
-    guard
-      let block = analyzer.analyze(
-        range: tokenization.tokens.indices, inheritedCTEs: [:]),
-      !analyzer.sawOpaqueValues
+    guard let block = analyzer.analyze(
+      range: tokenization.tokens.indices, inheritedCTEs: [:])
     else {
       let rejectsExternalOrigins = analyzer.rejectsExternalOrigins(
         in: tokenization.tokens.indices)
@@ -119,7 +117,15 @@ package enum SQLQueryAnalyzer {
     let columns = outputColumnNames.indices.map { index -> SQLResultColumnLineage? in
       let alignedOutput = alignedOutputs[index]
       var descriptor = alignedOutput?.descriptor
-      if block.acceptsExternalOrigins,
+      let candidateOutput = alignedOutput
+        ?? (block.outputs.indices.contains(index) ? block.outputs[index] : nil)
+      let permitsPhysicalOnlyOrigin = block.externalOriginPolicy != .physicalOnly
+        || candidateOutput?.descriptor.hasOpaqueOrigin == false
+      if permitsPhysicalOnlyOrigin,
+        descriptor?.hasOpaqueOrigin != true,
+        block.externalOriginPolicy.allows(
+        directOrigins.indices.contains(index) ? directOrigins[index] : nil,
+        physicalTables: block.physicalTables),
         directOrigins.indices.contains(index),
         let origin = directOrigins[index],
         descriptor == nil
@@ -166,7 +172,7 @@ package enum SQLQueryAnalyzer {
         }
       }
       guard alignedOutput == nil,
-        block.acceptsExternalOrigins,
+        block.externalOriginPolicy == .all,
         let fallback = fallbackLineage(
           at: index,
           fallbackColumns: fallbackColumns,
@@ -449,6 +455,7 @@ private struct ColumnDescriptor {
   var aggregateCalls: [AggregateCallAnalysis]
   var preservesSourceDomain: Bool
   var isDirectReference: Bool
+  var hasOpaqueOrigin = false
 
   var hasGroupedAggregateCall: Bool {
     aggregateCalls.contains { !$0.isWindowed }
@@ -475,13 +482,28 @@ private struct QueryOutput {
   var descriptor: ColumnDescriptor
 }
 
+private enum ExternalOriginPolicy: Equatable {
+  case all
+  case physicalOnly
+  case none
+
+  func allows(_ origin: SQLSourceColumn?, physicalTables: Set<String>) -> Bool {
+    guard let origin else { return false }
+    switch self {
+    case .all: return true
+    case .physicalOnly: return physicalTables.contains(origin.table)
+    case .none: return false
+    }
+  }
+}
+
 private struct Relation {
   var name: String
   var aliases: Set<String>
   let outputs: [QueryOutput]
   let rowGrain: [String]
   let physicalTables: Set<String>
-  let acceptsExternalOrigins: Bool
+  let externalOriginPolicy: ExternalOriginPolicy
   let columns: [String: ColumnDescriptor]
 
   init(
@@ -490,14 +512,14 @@ private struct Relation {
     outputs: [QueryOutput],
     rowGrain: [String],
     physicalTables: Set<String>,
-    acceptsExternalOrigins: Bool
+    externalOriginPolicy: ExternalOriginPolicy
   ) {
     self.name = name
     self.aliases = aliases
     self.outputs = outputs
     self.rowGrain = rowGrain
     self.physicalTables = physicalTables
-    self.acceptsExternalOrigins = acceptsExternalOrigins
+    self.externalOriginPolicy = externalOriginPolicy
     var result: [String: ColumnDescriptor] = [:]
     for output in outputs {
       let name = normalizedRelationColumnName(output.name)
@@ -516,7 +538,7 @@ private struct QueryBlock {
   var rowGrain: [String]
   var scope: SQLQueryScope
   var physicalTables: Set<String>
-  var acceptsExternalOrigins: Bool
+  var externalOriginPolicy: ExternalOriginPolicy
 }
 
 private enum BlockAnalysisOutcome {
@@ -532,7 +554,6 @@ private final class Analyzer {
   private let schema = PortfolioSchemaCatalog.document
   private let collectsNestedScopes: Bool
   private var outcomes: [Range<Int>: BlockAnalysisOutcome] = [:]
-  private(set) var sawOpaqueValues = false
 
   init(
     tokenization: SQLTokenization,
@@ -618,17 +639,64 @@ private final class Analyzer {
       else { return nil }
       let body = (index + 1)..<close
       if tokens[body.lowerBound].word == "values" {
-        guard let arity = valuesArity(in: body),
+        let valuesBody: Range<Int>
+        let recursiveArms: [Range<Int>]
+        switch compoundArmRanges(in: body) {
+        case .none:
+          valuesBody = body
+          recursiveArms = []
+        case .arms(let arms):
+          guard let anchor = arms.first,
+            tokens[anchor.lowerBound].word == "values",
+            arms.dropFirst().allSatisfy({
+              tokens[$0.lowerBound].word == "select"
+            })
+          else { return nil }
+          valuesBody = anchor
+          recursiveArms = Array(arms.dropFirst())
+        case .malformed:
+          return nil
+        }
+        guard let arity = valuesArity(in: valuesBody),
           declaredOutputNames == nil || declaredOutputNames?.count == arity
         else { return nil }
+        let outputNames = declaredOutputNames
+          ?? (1...arity).map { "column\($0)" }
+        ctes[name] = opaqueRelation(
+          name: name, outputNames: outputNames,
+          externalOriginPolicy: .physicalOnly)
         if collectsNestedScopes {
-          analyzeNestedQueryBlocks(in: body, inheritedCTEs: ctes)
+          analyzeNestedQueryBlocks(in: valuesBody, inheritedCTEs: ctes)
         }
-        ctes[name] = opaqueCTERelation(
-          name: name, outputNames: declaredOutputNames ?? [])
-        sawOpaqueValues = true
+        for arm in recursiveArms {
+          guard let analyzed = analyze(range: arm, inheritedCTEs: ctes),
+            analyzed.outputs.count == arity
+          else { return nil }
+        }
         containsValues = true
       } else {
+        // A self-reference must resolve to this CTE while its body is parsed.
+        // SQLite rejects invalid cycles when the statement is executed.
+        ctes[name] = opaqueRelation(
+          name: name, outputNames: declaredOutputNames ?? [],
+          externalOriginPolicy: .physicalOnly)
+        if declaredOutputNames == nil {
+          switch compoundArmRanges(in: body) {
+          case .arms(let arms):
+            guard let anchor = arms.first,
+              tokens[anchor.lowerBound].word == "select",
+              let anchorBlock = analyze(range: anchor, inheritedCTEs: ctes)
+            else { return nil }
+            ctes[name] = opaqueRelation(
+              name: name,
+              outputNames: anchorBlock.outputs.compactMap(\.name),
+              externalOriginPolicy: .physicalOnly)
+          case .none:
+            break
+          case .malformed:
+            return nil
+          }
+        }
         guard let block = analyze(range: body, inheritedCTEs: ctes)
         else { return nil }
         var parsed = relation(name: name, block: block)
@@ -645,7 +713,7 @@ private final class Analyzer {
             },
             rowGrain: parsed.rowGrain,
             physicalTables: parsed.physicalTables,
-            acceptsExternalOrigins: parsed.acceptsExternalOrigins)
+            externalOriginPolicy: parsed.externalOriginPolicy)
         }
         ctes[name] = parsed
       }
@@ -660,18 +728,27 @@ private final class Analyzer {
       mainStart: index, ctes: ctes, containsValues: containsValues)
   }
 
-  private func opaqueCTERelation(name: String, outputNames: [String]) -> Relation {
-    let descriptor = ColumnDescriptor(
+  private func emptyOpaqueDescriptor() -> ColumnDescriptor {
+    ColumnDescriptor(
       sourceColumns: [], expressionGrain: [], chartGrain: [],
       aggregation: nil, aggregateCalls: [],
       preservesSourceDomain: false, isDirectReference: false)
+  }
+
+  private func opaqueRelation(
+    name: String,
+    outputNames: [String] = [],
+    externalOriginPolicy: ExternalOriginPolicy
+  ) -> Relation {
+    var descriptor = emptyOpaqueDescriptor()
+    descriptor.hasOpaqueOrigin = true
     return Relation(
       name: name, aliases: [name],
       outputs: outputNames.map {
         QueryOutput(name: $0, descriptor: descriptor)
       },
       rowGrain: [Self.opaqueEntity(for: name)],
-      physicalTables: [], acceptsExternalOrigins: false)
+      physicalTables: [], externalOriginPolicy: externalOriginPolicy)
   }
 
   /// Recover only SELECT scopes whose containing unsupported construct has a
@@ -765,7 +842,7 @@ private final class Analyzer {
 
   func rejectsExternalOrigins(in range: Range<Int>) -> Bool {
     switch outcomes[unwrapped(range)] {
-    case .success(let block): !block.acceptsExternalOrigins
+    case .success(let block): block.externalOriginPolicy == .none
     case .failure(let rejectsExternalOrigins): rejectsExternalOrigins
     case nil: false
     }
@@ -803,13 +880,11 @@ private final class Analyzer {
     // SELECT would force a copy whenever its analysis caches a new block.
     let outcomesBeforeCTEs =
       tokens[range.lowerBound].word == "with" ? outcomes : nil
-    let sawOpaqueValuesBeforeCTEs = sawOpaqueValues
     guard let parsed = parseCTEs(in: range, inheritedCTEs: inheritedCTEs)
     else {
       // A malformed WITH clause must not publish nested SELECTs analyzed
       // while parsing its bodies, or scan them again with inherited tables.
       if let outcomesBeforeCTEs { outcomes = outcomesBeforeCTEs }
-      sawOpaqueValues = sawOpaqueValuesBeforeCTEs
       publishesNestedScopes = false
       return fail(rejectsExternalOrigins: true)
     }
@@ -894,7 +969,8 @@ private final class Analyzer {
           && references.count == 1
           && isDirectColumnReference(expression)
           && references[0].preservesSourceDomain,
-        isDirectReference: isDirectColumnReference(expression))
+        isDirectReference: isDirectColumnReference(expression),
+        hasOpaqueOrigin: references.contains(where: \.hasOpaqueOrigin))
       return [
         QueryOutput(
           name: alias ?? inferredOutputName(expression),
@@ -998,7 +1074,11 @@ private final class Analyzer {
         qualifiedColumns: qualifiedColumns,
         unqualifiedColumns: unqualifiedColumns),
       physicalTables: tables,
-      acceptsExternalOrigins: relations.allSatisfy(\.acceptsExternalOrigins))
+      externalOriginPolicy: relations.contains(where: {
+        $0.externalOriginPolicy == .none
+      }) ? .none : (relations.contains(where: {
+        $0.externalOriginPolicy == .physicalOnly
+      }) ? .physicalOnly : .all))
     return succeed(block)
   }
 
@@ -1009,7 +1089,7 @@ private final class Analyzer {
       outputs: block.outputs,
       rowGrain: block.rowGrain,
       physicalTables: block.physicalTables,
-      acceptsExternalOrigins: block.acceptsExternalOrigins)
+      externalOriginPolicy: block.externalOriginPolicy)
   }
 
   private func physicalRelation(name: String) -> Relation? {
@@ -1033,7 +1113,7 @@ private final class Analyzer {
       },
       rowGrain: [name],
       physicalTables: [name],
-      acceptsExternalOrigins: true)
+      externalOriginPolicy: .all)
   }
 
   private func parseRelations(
@@ -1054,13 +1134,8 @@ private final class Analyzer {
             index = applyingAlias(to: &relation, at: index, upperBound: range.upperBound)
             relations.append(relation)
           } else {
-            var relation = Relation(
-              name: "derived",
-              aliases: ["derived"],
-              outputs: [],
-              rowGrain: [Self.opaqueEntity(for: "derived")],
-              physicalTables: [],
-              acceptsExternalOrigins: false)
+            var relation = opaqueRelation(
+              name: "derived", externalOriginPolicy: .none)
             index = close + 1
             index = applyingAlias(to: &relation, at: index, upperBound: range.upperBound)
             relations.append(relation)
@@ -1074,6 +1149,7 @@ private final class Analyzer {
         }
         var relationName = name
         var nextIndex = index + 1
+        var explicitlyQualifiedPhysicalTable = false
         if index + 2 < range.upperBound,
           tokens[index + 1] == .symbol("."),
           let qualifiedName = tokens[index + 2].word,
@@ -1081,18 +1157,16 @@ private final class Analyzer {
         {
           relationName = qualifiedName
           nextIndex = index + 3
+          explicitlyQualifiedPhysicalTable = true
         }
         let knownRelation =
-          ctes[relationName] ?? physicalRelation(name: relationName)
+          explicitlyQualifiedPhysicalTable
+          ? physicalRelation(name: relationName)
+          : (ctes[relationName] ?? physicalRelation(name: relationName))
         var relation =
           knownRelation
-          ?? Relation(
-            name: relationName,
-            aliases: [relationName],
-            outputs: [],
-            rowGrain: [Self.opaqueEntity(for: relationName)],
-            physicalTables: [],
-            acceptsExternalOrigins: true)
+          ?? opaqueRelation(
+            name: relationName, externalOriginPolicy: .all)
         if knownRelation == nil {
           // Unknown relations have no usable columns or physical-table scope,
           // but their cardinality can still duplicate every known source row.
@@ -1423,14 +1497,7 @@ private final class Analyzer {
   }
 
   private func compoundBlock(from arms: [QueryBlock]) -> QueryBlock {
-    let emptyDescriptor = ColumnDescriptor(
-      sourceColumns: [],
-      expressionGrain: [],
-      chartGrain: [],
-      aggregation: nil,
-      aggregateCalls: [],
-      preservesSourceDomain: false,
-      isDirectReference: false)
+    let emptyDescriptor = emptyOpaqueDescriptor()
     let outputs = arms[0].outputs.map {
       QueryOutput(name: $0.name, descriptor: emptyDescriptor)
     }
@@ -1440,7 +1507,7 @@ private final class Analyzer {
       rowGrain: [],
       scope: scope,
       physicalTables: Set(arms.flatMap(\.physicalTables)),
-      acceptsExternalOrigins: false)
+      externalOriginPolicy: .none)
   }
 
   private func containsTopLevelCompound(in range: Range<Int>) -> Bool {

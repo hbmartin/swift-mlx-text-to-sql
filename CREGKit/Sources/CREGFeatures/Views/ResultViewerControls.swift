@@ -151,21 +151,39 @@ extension ResultViewerView {
       // The one user action that changes the chart specification: persist
       // the preference here, and clear the exact-mark selection whose row
       // indexes are meaningless under the newly picked chart.
-      Picker(
-        "Chart type",
-        selection: Binding(
-          get: { selectedRecommendation?.id },
-          set: { id in
-            guard id != selectedRecommendation?.id else { return }
-            guard let id else { return }
-            clearChartSelection()
-            let updated = (preference ?? .automatic).selectingChart(id)
-            applyUserPreference(updated)
-          })
-      ) {
+      if selectedChartFailure?.isRetryable == true {
+        // Buttons deliver a tap even for the already selected type. A Picker
+        // can omit that binding update, which would strand a failed chart.
         ForEach(options) { option in
-          Text(option.label)
-            .tag(Optional(option.id))
+          Button {
+            selectChartType(option.id)
+          } label: {
+            if option.id == (selectedRecommendation?.id
+              ?? (preference ?? .automatic).specificationID)
+            {
+              Label(option.label, systemImage: "checkmark")
+            } else {
+              Text(option.label)
+            }
+          }
+        }
+      } else {
+        Picker(
+          "Chart type",
+          selection: Binding(
+            get: {
+              selectedRecommendation?.id
+                ?? (preference ?? .automatic).specificationID
+            },
+            set: { id in
+              guard let id else { return }
+              selectChartType(id)
+            })
+        ) {
+          ForEach(options) { option in
+            Text(option.label)
+              .tag(Optional(option.id))
+          }
         }
       }
     } label: {

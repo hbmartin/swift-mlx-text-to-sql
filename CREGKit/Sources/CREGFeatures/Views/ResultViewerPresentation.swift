@@ -105,6 +105,18 @@ struct ResultChartPreparationView: View {
   }
 }
 
+/// Used while a saved off-catalog choice is validated in the background.
+struct ResultChartNeutralPreparationView: View {
+  let plotHeight: CGFloat
+
+  var body: some View {
+    ProgressView("Preparing chart")
+      .frame(maxWidth: .infinity)
+      .frame(height: plotHeight)
+      .accessibilityIdentifier("result-chart-preparing-neutral")
+  }
+}
+
 struct ResultChartExplorerPreparationView: View {
   let recommendation: AutoChartRecommendation
   let selection: ResultChartPreparationView.SelectionConfiguration?
