@@ -109,7 +109,8 @@ package enum SQLQueryAnalyzer {
             fallbackColumns: fallbackColumns,
             readColumns: readColumns)
         },
-        reads: reads)
+        reads: reads,
+        completeness: .incomplete)
     }
 
     let alignedOutputs = alignedOutputs(
@@ -190,8 +191,10 @@ package enum SQLQueryAnalyzer {
   package static func scopedQueryBlocks(in sql: String) -> [SQLScopedQueryBlock] {
     let tokenization = SQLLexer.tokenize(sql)
     let analyzer = Analyzer(tokenization: tokenization, collectsNestedScopes: true)
-    _ = analyzer.analyze(
-      range: tokenization.tokens.indices, inheritedCTEs: [:])
+    guard
+      analyzer.analyze(
+        range: tokenization.tokens.indices, inheritedCTEs: [:]) != nil
+    else { return [] }
     return analyzer.scopedQueryBlocks
   }
 
@@ -594,7 +597,9 @@ private final class Analyzer {
         if selectIndex < range.upperBound, tokens[selectIndex] == .symbol("(") {
           guard let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
           else { return fail(rejectsExternalOrigins: true) }
-          let nameRanges = splitTopLevel((selectIndex + 1)..<close)
+          let nameRanges = splitTopLevel(
+            (selectIndex + 1)..<close,
+            preservingEmptySegments: true)
           let names = nameRanges.compactMap { nameRange in
             nameRange.count == 1 ? tokens[nameRange.lowerBound].word : nil
           }
@@ -608,12 +613,21 @@ private final class Analyzer {
           return fail(rejectsExternalOrigins: true)
         }
         selectIndex += 1
+        if selectIndex < range.upperBound, tokens[selectIndex].word == "materialized" {
+          selectIndex += 1
+        } else if selectIndex + 1 < range.upperBound,
+          tokens[selectIndex].word == "not",
+          tokens[selectIndex + 1].word == "materialized"
+        {
+          selectIndex += 2
+        }
         guard selectIndex < range.upperBound, tokens[selectIndex] == .symbol("("),
           let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
         else { return fail(rejectsExternalOrigins: true) }
         let cteRange = (selectIndex + 1)..<close
         guard let block = analyze(range: cteRange, inheritedCTEs: ctes) else {
-          return fail(rejectsExternalOrigins: true)
+          return fail(
+            rejectsExternalOrigins: rejectsExternalOrigins(in: cteRange))
         }
         var relation = relation(name: cteName, block: block)
         if let declaredOutputNames {
@@ -1322,7 +1336,10 @@ private final class Analyzer {
     return nil
   }
 
-  private func splitTopLevel(_ range: Range<Int>) -> [Range<Int>] {
+  private func splitTopLevel(
+    _ range: Range<Int>,
+    preservingEmptySegments: Bool = false
+  ) -> [Range<Int>] {
     guard !range.isEmpty else { return [] }
     var output: [Range<Int>] = []
     var depth = 0
@@ -1331,11 +1348,15 @@ private final class Analyzer {
       if tokens[index] == .symbol("(") { depth += 1 }
       if tokens[index] == .symbol(")") { depth = max(0, depth - 1) }
       if depth == 0, tokens[index] == .symbol(",") {
-        if start < index { output.append(start..<index) }
+        if preservingEmptySegments || start < index {
+          output.append(start..<index)
+        }
         start = index + 1
       }
     }
-    if start < range.upperBound { output.append(start..<range.upperBound) }
+    if preservingEmptySegments || start < range.upperBound {
+      output.append(start..<range.upperBound)
+    }
     return output
   }
 

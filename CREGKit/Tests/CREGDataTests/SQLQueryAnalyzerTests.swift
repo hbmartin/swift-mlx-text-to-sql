@@ -237,6 +237,68 @@ import Testing
         == [.init(table: "properties", column: "city")])
   }
 
+  @Test func materializedCTEsPreserveLineage() throws {
+    for modifier in ["MATERIALIZED", "NOT MATERIALIZED"] {
+      let lineage = SQLQueryAnalyzer.lineage(
+        sql: """
+          WITH cte(label) AS \(modifier) (
+            SELECT city FROM properties
+          )
+          SELECT label FROM cte
+          """,
+        outputColumnNames: ["label"])
+
+      #expect(lineage.completeness == .complete)
+      #expect(lineage.rowGrain == ["properties"])
+      #expect(
+        try #require(lineage.columns[0]).sourceColumns
+          == [.init(table: "properties", column: "city")])
+    }
+  }
+
+  @Test func malformedCTEColumnListsFailClosed() {
+    for declaration in ["a,,b", "a,"] {
+      let lineage = SQLQueryAnalyzer.lineage(
+        sql: """
+          WITH cte(\(declaration)) AS (
+            SELECT city, state FROM properties
+          )
+          SELECT a FROM cte
+          """,
+        outputColumnNames: ["a"])
+
+      #expect(lineage.completeness == .incomplete)
+      #expect(lineage.columns == [nil])
+      #expect(lineage.rowGrain.isEmpty)
+      #expect(
+        SQLQueryAnalyzer.scopedQueryBlocks(
+          in: """
+            WITH cte(\(declaration)) AS (
+              SELECT city, state FROM properties
+            )
+            SELECT a FROM cte
+            """).isEmpty)
+    }
+  }
+
+  @Test func unsupportedValidCTERetainsExactFallbackEvidence() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH unused(value) AS (VALUES (1))
+        SELECT name FROM properties
+        """,
+      outputColumnNames: ["name"],
+      directOrigins: [.init(table: "properties", column: "name")],
+      reads: [.init(table: "properties", column: "name")])
+
+    #expect(lineage.completeness == .incomplete)
+    #expect(lineage.rowGrain.isEmpty)
+    #expect(
+      try #require(lineage.columns[0]).sourceColumns
+        == [.init(table: "properties", column: "name")])
+    #expect(lineage.columns[0]?.preservesSourceDomain == true)
+  }
+
   @Test func aliaslessDerivedExpressionsRetainTheirSQLiteOutputName() throws {
     let lineage = SQLQueryAnalyzer.lineage(
       sql: """

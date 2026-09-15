@@ -18,14 +18,17 @@ enum CREGChartAdapter {
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
   ) throws -> AutoChartRequest<Int> {
+    let queryLineage = queryLineage(result: result, sql: sql)
     let dataset = try analysisDataset(
       result: result,
       sql: sql,
       resultFingerprint: resultFingerprint,
-      dataIdentity: dataIdentity)
+      dataIdentity: dataIdentity,
+      queryLineage: queryLineage)
     return try AutoChartRequest(
       table: dataset,
-      context: analysisContext(question: question, sql: sql))
+      context: analysisContext(question: question, sql: sql),
+      constraints: recommendationConstraints(for: queryLineage))
   }
 
   /// Exposed internally so adapter tests can verify CREG's row normalization,
@@ -37,15 +40,21 @@ enum CREGChartAdapter {
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
   ) throws -> AutoChartDataset<Int> {
-    let persistedLineage = result.lineage
-    let queryLineage =
-      persistedLineage?.analysisVersion == SQLQueryLineage.currentAnalysisVersion
-      ? persistedLineage!
-      : SQLQueryAnalyzer.lineage(
-        sql: sql,
-        outputColumnNames: result.columns,
-        reads: persistedLineage?.reads ?? [],
-        fallbackColumns: persistedLineage?.columns ?? [])
+    try analysisDataset(
+      result: result,
+      sql: sql,
+      resultFingerprint: resultFingerprint,
+      dataIdentity: dataIdentity,
+      queryLineage: queryLineage(result: result, sql: sql))
+  }
+
+  private static func analysisDataset(
+    result: QueryResult,
+    sql: String,
+    resultFingerprint: String?,
+    dataIdentity: String?,
+    queryLineage: SQLQueryLineage
+  ) throws -> AutoChartDataset<Int> {
     let columns = result.columns.enumerated().map { index, name in
       let lineage =
         queryLineage.columns.indices.contains(index)
@@ -64,6 +73,9 @@ enum CREGChartAdapter {
         provenance: columnProvenance(lineage),
         semantics: semantics(
           for: name,
+          sourceIdentifierName: sourceIdentifierName(
+            lineage: lineage,
+            aggregation: aggregation),
           aggregation: aggregation,
           categoryOrder: categoryOrder,
           values: result.rows.map { row in
@@ -99,6 +111,29 @@ enum CREGChartAdapter {
         identity: dataIdentity ?? "CREG.Result.v3:\(fingerprint)",
         revision: dataKeyRevision(resultFingerprint: fingerprint, sql: sql)))
     return dataset
+  }
+
+  private static func queryLineage(
+    result: QueryResult,
+    sql: String
+  ) -> SQLQueryLineage {
+    let persistedLineage = result.lineage
+    return persistedLineage?.analysisVersion == SQLQueryLineage.currentAnalysisVersion
+      ? persistedLineage!
+      : SQLQueryAnalyzer.lineage(
+        sql: sql,
+        outputColumnNames: result.columns,
+        reads: persistedLineage?.reads ?? [],
+        fallbackColumns: persistedLineage?.columns ?? [])
+  }
+
+  private static func recommendationConstraints(
+    for lineage: SQLQueryLineage
+  ) -> AutoChartRecommendationConstraints {
+    guard lineage.completeness == .incomplete else { return .init() }
+    return AutoChartRecommendationConstraints(
+      includedFamilies: [.kpi, .scatter, .bubble, .range, .line, .pointLine, .area],
+      includedAggregations: [.none])
   }
 
   static func analysisContext(
@@ -200,6 +235,7 @@ enum CREGChartAdapter {
 
   static func semantics(
     for name: String,
+    sourceIdentifierName: String? = nil,
     aggregation: AutoChartAggregation?,
     categoryOrder: [AutoChartValue]?,
     values: @autoclosure () -> [SQLValue] = []
@@ -214,8 +250,13 @@ enum CREGChartAdapter {
       return .dimension(semanticType: .ordinal)
     }
 
-    if normalized == "id" || normalized.hasSuffix("_id") {
+    if let sourceIdentifierName,
+      isIdentifierName(sourceIdentifierName)
+    {
       return .identifier(semanticType: .identifier)
+    }
+    if aggregation == nil, isIdentifierName(normalized) {
+      return .dimension(semanticType: .nominal)
     }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
     if style == .date {
@@ -291,6 +332,22 @@ enum CREGChartAdapter {
     }
     return .inferred(
       measureSemantics: measureSemantics(for: aggregation))
+  }
+
+  private static func sourceIdentifierName(
+    lineage: SQLResultColumnLineage?,
+    aggregation: AutoChartAggregation?
+  ) -> String? {
+    guard aggregation == nil,
+      lineage?.preservesSourceDomain == true,
+      lineage?.sourceColumns.count == 1
+    else { return nil }
+    return lineage?.sourceColumns.first?.column
+  }
+
+  private static func isIdentifierName(_ name: String) -> Bool {
+    let normalized = name.lowercased()
+    return normalized == "id" || normalized.hasSuffix("_id")
   }
 
   private static func categoryOrder(for name: String) -> [AutoChartValue]? {

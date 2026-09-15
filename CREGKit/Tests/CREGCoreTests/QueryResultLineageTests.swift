@@ -75,6 +75,24 @@ import Testing
     #expect(decoded.lineage?.analysisVersion == 1)
   }
 
+  @Test func lineageWithoutCompletenessDecodesConservatively() throws {
+    let result = QueryResult(
+      columns: ["city"], rows: [[.text("Phoenix")]],
+      lineage: SQLQueryLineage(columns: [nil]))
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(result))
+        as? [String: Any])
+    var lineage = try #require(object["lineage"] as? [String: Any])
+    lineage.removeValue(forKey: "completeness")
+    object["lineage"] = lineage
+
+    let decoded = try JSONDecoder().decode(
+      QueryResult.self,
+      from: JSONSerialization.data(withJSONObject: object))
+
+    #expect(decoded.lineage?.completeness == .incomplete)
+  }
+
   @Test func presentationLineageDoesNotChangeResultContentFingerprint() {
     let plain = QueryResult(columns: ["city"], rows: [[.text("Phoenix")]])
     let enriched = QueryResult(

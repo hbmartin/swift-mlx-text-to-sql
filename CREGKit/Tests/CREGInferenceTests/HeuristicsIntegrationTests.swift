@@ -202,9 +202,7 @@ import Testing
           suggestion: "Active"))
   }
 
-  @Test func nestedPredicatesRemainGroundedWhenTheOuterBlockHasNoFromOrIsUnsupported()
-    async throws
-  {
+  @Test func nestedPredicateGroundingRequiresCompleteOuterStructure() async throws {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("creg-failed-outer-grounding-\(UUID().uuidString).sqlite")
     let queue = try DatabaseQueue(path: url.path)
@@ -213,30 +211,28 @@ import Testing
       try db.execute(sql: "INSERT INTO leases VALUES ('Active')")
     }
     let heuristics = ResultHeuristics(db: try DatabaseClient.live(url: url))
-    let queries = [
-      """
+    let supportedReport = await heuristics.inspectDetailed(
+      sql: """
       SELECT EXISTS (
         SELECT l.status FROM leases l WHERE l.status = 'Actve'
       ) AS matches
       """,
-      """
+      result: QueryResult(columns: ["matches"], rows: []))
+    #expect(
+      supportedReport.findings.first
+        == .literalNotFound(
+          column: GroundingColumn(table: "leases", column: "status"),
+          literal: "Actve",
+          suggestion: "Active"))
+
+    let incompleteReport = await heuristics.inspectDetailed(
+      sql: """
       VALUES ((
         SELECT l.status FROM leases l WHERE l.status = 'Actve'
       ))
       """,
-    ]
-
-    for sql in queries {
-      let report = await heuristics.inspectDetailed(
-        sql: sql,
-        result: QueryResult(columns: ["matches"], rows: []))
-      #expect(
-        report.findings.first
-          == .literalNotFound(
-            column: GroundingColumn(table: "leases", column: "status"),
-            literal: "Actve",
-            suggestion: "Active"))
-    }
+      result: QueryResult(columns: ["matches"], rows: []))
+    #expect(incompleteReport.findings.first == .emptyResult)
   }
 
   @Test func derivedAliasesGroundThroughTheirExposedOutputLineage() async throws {

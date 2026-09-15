@@ -10,8 +10,79 @@ import Testing
 @testable import CREGFeatures
 
 @Suite struct CREGChartAdapterTests {
-  @Test func lineageAnalysisVersionIsThree() {
-    #expect(SQLQueryLineage.currentAnalysisVersion == 3)
+  @Test func lineageAnalysisVersionIsFour() {
+    #expect(SQLQueryLineage.currentAnalysisVersion == 4)
+  }
+
+  @Test func incompleteLineageAllowsOnlyUnaggregatedRawRecommendations() async throws {
+    let lineage = SQLQueryLineage(
+      columns: [
+        SQLResultColumnLineage(
+          sourceColumns: [.init(table: "property_financials", column: "period_end")],
+          sourceGrain: ["property_financials"],
+          preservesSourceDomain: true),
+        SQLResultColumnLineage(
+          sourceColumns: [
+            .init(table: "property_financials", column: "net_operating_income")
+          ],
+          sourceGrain: ["property_financials"],
+          preservesSourceDomain: true),
+      ],
+      reads: [
+        .init(table: "property_financials", column: "period_end"),
+        .init(table: "property_financials", column: "net_operating_income"),
+      ],
+      completeness: .incomplete)
+    let result = QueryResult(
+      columns: ["period_end", "net_operating_income"],
+      rows: [
+        [.text("2026-01-31"), .real(100)],
+        [.text("2026-02-28"), .real(120)],
+        [.text("2026-03-31"), .real(110)],
+      ],
+      lineage: lineage)
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "WITH unused(value) AS (VALUES (1)) SELECT period_end, net_operating_income FROM property_financials",
+      question: "Show the NOI trend")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request,
+      preparation: .none)
+    let catalog = try #require(analysis.cregRecommendationCatalog)
+    let rawFamilies: Set<AutoChartFamily> = [
+      .kpi, .scatter, .bubble, .range, .line, .pointLine, .area,
+    ]
+
+    #expect(request.constraints.includedAggregations == [.none])
+    #expect(request.constraints.includedFamilies == rawFamilies)
+    #expect(catalog.cataloged.contains { $0.specification.family == .line })
+    #expect(catalog.cataloged.allSatisfy {
+      rawFamilies.contains($0.specification.family)
+        && $0.specification.aggregation == .none
+    })
+  }
+
+  @Test func incompleteLineageSuppressesTrendsWithDuplicateMarks() async throws {
+    let result = QueryResult(
+      columns: ["period_end", "net_operating_income"],
+      rows: [
+        [.text("2026-01-31"), .real(100)],
+        [.text("2026-01-31"), .real(120)],
+      ],
+      lineage: SQLQueryLineage(
+        columns: [nil, nil],
+        completeness: .incomplete))
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      CREGChartAdapter.analysisRequest(
+        result: result,
+        sql: "WITH unused(value) AS (VALUES (1)) SELECT period_end, net_operating_income FROM property_financials",
+        question: "Show the NOI trend"),
+      preparation: .none)
+
+    #expect(
+      analysis.cregRecommendationCatalog?.cataloged.contains {
+        [.line, .pointLine, .area].contains($0.specification.family)
+      } != true)
   }
 
   @Test func analysisDatasetUsesOffsetIDsTypedSemanticsAndStableDataKey() throws {
@@ -177,6 +248,59 @@ import Testing
 
     #expect(!validation.isValid)
     #expect(validation.issues.contains { $0.messageValue.code == .fanOutRisk })
+  }
+
+  @Test func identifierEvidenceRequiresARealSourceIdentifier() throws {
+    let renamedSourceID = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["row_key"],
+        rows: [[.integer(1)], [.integer(2)]]),
+      sql: "SELECT financial_id AS row_key FROM property_financials")
+    let fakeIdentifierAlias = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["financial_id"],
+        rows: [[.text("2026-01-31")], [.text("2026-02-28")]]),
+      sql: "SELECT period_end AS financial_id FROM property_financials")
+
+    #expect(renamedSourceID.chartColumns[0].hints.role == .identifier)
+    #expect(renamedSourceID.chartColumns[0].hints.semanticType == .identifier)
+    #expect(fakeIdentifierAlias.chartColumns[0].hints.role == .dimension)
+    #expect(fakeIdentifierAlias.chartColumns[0].hints.semanticType == .nominal)
+  }
+
+  @Test func fakeIdentifierAliasesRelyOnObservedGroupingUniqueness() async throws {
+    for (periods, expectsFanOut) in [
+      (["2026-01-31", "2026-01-31"], true),
+      (["2026-01-31", "2026-02-28"], false),
+    ] {
+      let dataset = try CREGChartAdapter.analysisDataset(
+        result: QueryResult(
+          columns: ["loan_id", "annual_base_rent"],
+          rows: [
+            [.text(periods[0]), .real(100)],
+            [.text(periods[1]), .real(200)],
+          ]),
+        sql: """
+          SELECT n.maturity_date AS loan_id, l.annual_base_rent
+          FROM leases l
+          JOIN properties p ON p.property_id = l.property_id
+          JOIN loans n ON n.property_id = p.property_id
+          """)
+      let grouping = dataset.chartColumns[0]
+      let measure = dataset.chartColumns[1]
+      let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+        AutoChartRequest(table: dataset))
+      let validation = analysis.validate(
+        .bar(
+          category: grouping.id,
+          measure: measure.id,
+          aggregation: .sum))
+
+      #expect(grouping.hints.role == .dimension)
+      #expect(
+        validation.issues.contains { $0.messageValue.code == .fanOutRisk }
+          == expectsFanOut)
+    }
   }
 
   @Test func rowGrainFallbackRejectsOpaqueFanOutBucket() async throws {
@@ -955,9 +1079,136 @@ import Testing
   }
 
   @Test func recommendationPolicyVersionRemainsExplicitlyReviewed() {
-    // A bump invalidates persisted chart-type pins. Keep this exact assertion
-    // separate from the version-agnostic migration behavior test.
     #expect(AutoTableCharts.recommendationPolicyVersion == 15)
+  }
+
+  @Test func stalePolicySelectionsRebindBySpecificationAndPreserveMode() async throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [
+        [.text("A"), .real(10)],
+        [.text("B"), .real(20)],
+      ])
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      CREGChartAdapter.analysisRequest(
+        result: result,
+        sql: "SELECT fund, current_market_value AS value FROM properties",
+        question: "Compare value by fund"),
+      preparation: .none)
+    let current = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first)
+    let staleID = AutoChartRecommendationID(
+      policyVersion: AutoTableCharts.recommendationPolicyVersion - 1,
+      specificationID: current.specification.id)
+    #expect(
+      resultPresentationMigrationSuggestion(
+        analysis: analysis,
+        preference: ResultPresentationPreference(
+          mode: .chart,
+          specificationID: current.id)) == nil)
+
+    for mode in [ResultPresentationMode.chart, .table] {
+      let previous = ResultPresentationPreference(
+        mode: mode,
+        specificationID: staleID)
+      let suggestion = try #require(
+        resultPresentationMigrationSuggestion(
+          analysis: analysis,
+          preference: previous))
+
+      #expect(suggestion.previous == previous)
+      #expect(suggestion.updated.mode == mode)
+      #expect(suggestion.updated.specificationID == current.id)
+    }
+  }
+
+  @Test func unavailableSpecificSelectionsFallBackSilentlyAndPreserveTableMode()
+    async throws
+  {
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      CREGChartAdapter.analysisRequest(
+        result: QueryResult(
+          columns: ["fund", "value"],
+          rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]]),
+        sql: "SELECT fund, current_market_value AS value FROM properties",
+        question: "Compare value by fund"),
+      preparation: .none)
+    let unavailable = chartTestRecommendationID(
+      "unavailable",
+      policyVersion: AutoTableCharts.recommendationPolicyVersion - 1)
+
+    for mode in [ResultPresentationMode.chart, .table] {
+      let suggestion = try #require(
+        resultPresentationMigrationSuggestion(
+          analysis: analysis,
+          preference: ResultPresentationPreference(
+            mode: mode,
+            specificationID: unavailable)))
+
+      #expect(suggestion.updated.mode == mode)
+      #expect(suggestion.updated.specificationID == nil)
+      #expect(
+        suggestion.updated.packagePreference
+          == (mode == .chart ? .chart(.recommended) : .table))
+    }
+  }
+
+  @Test func staleSpecificSelectionClearsWhenNoChartIsAvailable() async throws {
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      CREGChartAdapter.analysisRequest(
+        result: QueryResult(
+          columns: ["label"],
+          rows: [[.text("Only text")]]),
+        sql: "SELECT name AS label FROM properties",
+        question: nil),
+      preparation: .none)
+    #expect(analysis.cregRecommendationCatalog == nil)
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID(
+        "stale",
+        policyVersion: AutoTableCharts.recommendationPolicyVersion - 1))
+    let suggestion = try #require(
+      resultPresentationMigrationSuggestion(
+        analysis: analysis,
+        preference: previous))
+
+    #expect(suggestion.updated == .chart(.recommended))
+  }
+
+  @Test func chartPickerCapsAtFiveAndKeepsAnOffFeaturedSelection() {
+    let recommendations = (0..<6).map { index in
+      AutoChartRecommendation(
+        specification: .bar(
+          category: AutoChartColumnID(rawValue: "category-\(index)"),
+          measure: "value"),
+        score: Double(6 - index),
+        rationale: [])
+    }
+    let catalog = AutoChartRecommendationCatalog(
+      featured: Array(recommendations.prefix(5)),
+      cataloged: Array(recommendations.prefix(5)),
+      preferred: recommendations[5])
+
+    let defaultOptions = resultChartPickerOptions(
+      catalog: catalog,
+      selectedID: nil)
+    let selectedOptions = resultChartPickerOptions(
+      catalog: catalog,
+      selectedID: recommendations[5].id)
+    let featuredSelectedOptions = resultChartPickerOptions(
+      catalog: catalog,
+      selectedID: recommendations[2].id)
+
+    #expect(defaultOptions.map(\.id) == recommendations.prefix(5).map(\.id))
+    #expect(selectedOptions.count == 5)
+    #expect(
+      selectedOptions.map(\.id)
+        == [recommendations[5].id]
+          + recommendations.prefix(4).map(\.id))
+    #expect(featuredSelectedOptions.count == 5)
+    #expect(featuredSelectedOptions.first?.id == recommendations[2].id)
+    #expect(Set(featuredSelectedOptions.map(\.id)).count == 5)
   }
 
   @MainActor
@@ -1839,6 +2090,40 @@ import Testing
     #expect(store.messages[id: message.id]?.resultPresentation == updated)
   }
 
+  @MainActor
+  @Test func standaloneViewerBindingPersistsSelectionsAndMigratesWithCompareAndSet() {
+    var stored = ResultPresentationPreference.automatic
+    let binding = Binding(
+      get: { stored },
+      set: { stored = $0 })
+    let viewer = ResultViewerView(
+      result: QueryResult(
+        columns: ["fund", "value"],
+        rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]]),
+      runtimeMode: .evaluated,
+      textSize: .constant(.standard),
+      preference: binding)
+
+    viewer.persistPreference(.table)
+    #expect(stored == .table)
+
+    let previous = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: chartTestRecommendationID(
+        "stale",
+        policyVersion: AutoTableCharts.recommendationPolicyVersion - 1))
+    let updated = ResultPresentationPreference.chart(.recommended)
+    stored = previous
+    #expect(viewer.migratePreference(previous, updated) == .migrated(updated))
+    #expect(stored == updated)
+
+    stored = .automatic
+    #expect(
+      viewer.migratePreference(previous, updated)
+        == .retained(.automatic))
+    #expect(stored == .automatic)
+  }
+
   @Test func rejectedMigrationReturnsTheAuthoritativePreference() {
     let previous = ResultPresentationPreference(
       mode: .chart,
@@ -1894,10 +2179,11 @@ import Testing
       request,
       preference: previous.packagePreference,
       preparation: .none)
-    #expect(
+    let tableSuggestion = try #require(
       resultPresentationMigrationSuggestion(
         analysis: analysis,
-        preference: previous.selectingMode(.table)) == nil)
+        preference: previous.selectingMode(.table)))
+    #expect(tableSuggestion.updated == .table)
     let suggestion = try #require(
       resultPresentationMigrationSuggestion(
         analysis: analysis,

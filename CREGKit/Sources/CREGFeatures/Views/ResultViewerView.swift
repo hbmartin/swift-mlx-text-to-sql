@@ -47,8 +47,7 @@ struct ResultViewerView: View {
     textSize: Binding<ResultTableTextSize>,
     sql: String = "",
     question: String? = nil,
-    preference: ResultPresentationPreference? = nil,
-    persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
+    preference: Binding<ResultPresentationPreference>,
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
     initialChartSelection: AutoChartSelection<Int>? = nil,
@@ -61,9 +60,16 @@ struct ResultViewerView: View {
       cacheIdentity: nil,
       sql: sql,
       question: question,
-      preference: preference,
-      persistPreference: persistPreference,
-      migratePreference: { _, updated in .migrated(updated) },
+      preference: preference.wrappedValue,
+      persistPreference: { preference.wrappedValue = $0 },
+      migratePreference: { previous, updated in
+        let authoritative = preference.wrappedValue
+        guard authoritative == previous else {
+          return .retained(authoritative)
+        }
+        preference.wrappedValue = updated
+        return .migrated(updated)
+      },
       initialSearchText: initialSearchText,
       initialSelection: initialSelection,
       initialChartSelection: initialChartSelection,
@@ -79,7 +85,7 @@ struct ResultViewerView: View {
     sql: String = "",
     question: String? = nil,
     preference: ResultPresentationPreference? = nil,
-    persistPreference: @escaping (ResultPresentationPreference) -> Void = { _ in },
+    persistPreference: @escaping (ResultPresentationPreference) -> Void,
     migratePreference: @escaping ResultPresentationMigrationHandler,
     initialSearchText: String = "",
     initialSelection: ResultCellSelection? = nil,
@@ -240,10 +246,13 @@ struct ResultViewerView: View {
   }
 
   func chartPickerOptions(
-    for analysis: AutoChartAnalysis<Int>?
+    for analysis: AutoChartAnalysis<Int>?,
+    selectedID: AutoChartRecommendationID?
   ) -> [AutoChartPickerOption] {
-    analysis?.cregRecommendationCatalog?.pickerOptions(
-      resolver: CREGChartAdapter.textResolver) ?? []
+    resultChartPickerOptions(
+      catalog: analysis?.cregRecommendationCatalog,
+      selectedID: selectedID,
+      resolver: CREGChartAdapter.textResolver)
   }
 
   func columnWidths() -> [CGFloat] {
@@ -284,9 +293,15 @@ struct ResultViewerView: View {
     let session = chartOwner.session
     let analysis = self.analysis
     let currentPreference = preference ?? .automatic
-    let preferenceResolution = analysis?.resolve(currentPreference.packagePreference)
+    let migrationSuggestion = resultPresentationMigrationSuggestion(
+      analysis: analysis,
+      preference: currentPreference)
+    let resolvedPreference = migrationSuggestion?.updated ?? currentPreference
+    let preferenceResolution = analysis?.resolve(resolvedPreference.packagePreference)
     let selectedRecommendation = preferenceResolution?.recommendation
-    let chartRecommendations = analysis?.cregRecommendationCatalog?.cataloged ?? []
+    let pickerOptions = chartPickerOptions(
+      for: analysis,
+      selectedID: resolvedPreference.specificationID)
     let selectedChartFailure = self.selectedChartFailure
     let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
       requestedMode: currentPreference.mode,
@@ -297,14 +312,9 @@ struct ResultViewerView: View {
     let selectedRowCount = selectedSourceRows.map { sourceRows in
       sourceRows.lazy.filter { result.rows.indices.contains($0) }.count
     } ?? result.rowCount
-    let migrationSuggestion = resultPresentationMigrationSuggestion(
-      analysis: analysis,
-      preference: currentPreference,
-      resolution: preferenceResolution)
-
     NavigationStack {
       VStack(spacing: 0) {
-        if !chartRecommendations.isEmpty || selectedChartFailure?.isRetryable == true {
+        if !pickerOptions.isEmpty || selectedChartFailure?.isRetryable == true {
           Picker(
             "Result view",
             selection: Binding(
@@ -390,12 +400,12 @@ struct ResultViewerView: View {
       .toolbar {
         ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
         ToolbarItemGroup(placement: .primaryAction) {
-          if chartRecommendations.count > 1,
+          if pickerOptions.count > 1,
             currentPreference.mode == .chart || selectedChartFailure != nil
           {
             chartTypeMenu(
               selectedRecommendation: selectedRecommendation,
-              options: chartPickerOptions(for: analysis))
+              options: pickerOptions)
           }
           textSizeMenu
           exportMenu
