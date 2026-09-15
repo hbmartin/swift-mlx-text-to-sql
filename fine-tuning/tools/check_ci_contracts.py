@@ -95,6 +95,8 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testChartRecoveryControlsOwnFullLeadingTouchTargets",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testPreviewShowsNewTableWhenChartInputIdentityChanges",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
 TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"

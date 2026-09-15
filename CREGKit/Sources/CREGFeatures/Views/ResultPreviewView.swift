@@ -105,9 +105,9 @@ struct ResultPreviewView: View {
       let displayedRequestedMode = sessionDisplayedMode
       let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
         requestedMode: displayedRequestedMode,
-        hasChart: selectedRecommendation != nil,
+        hasChart: selectedRecommendation != nil
+          || chartOwner.hasPendingChart(for: chartInputIdentity),
         chartFailed: failure != nil)
-      let selected = selectedRecommendation
       VStack(alignment: .leading, spacing: 8) {
         if hasChartOptions || failure?.isRetryable == true {
           Picker(
@@ -136,8 +136,8 @@ struct ResultPreviewView: View {
 
         Button(action: open) {
           VStack(alignment: .leading, spacing: 6) {
-            if effectiveResultMode == .chart, let selected {
-              chartArea(recommendation: selected)
+            if effectiveResultMode == .chart {
+              chartArea(recommendation: selectedRecommendation)
             } else {
               tablePreview
             }
@@ -187,25 +187,21 @@ struct ResultPreviewView: View {
       }
       .task(id: migrationTaskID) {
         guard let migrationTaskID, let analysis else { return }
-        guard let suggestion = await resultPresentationMigrationSuggestionOffMain(
-          analysis: analysis, preference: migrationTaskID.preference),
-          !Task.isCancelled,
-          chartOwner.inputIdentity == chartInputIdentity,
-          self.analysis?.id == migrationTaskID.analysisID
-        else { return }
-        await applyResultPresentationMigration(
-          suggestion,
+        await runResultPresentationMigrationTask(
+          id: migrationTaskID,
           analysis: analysis,
           chartOwner: chartOwner,
+          isCurrentPreference: {
+            (preference ?? .automatic) == migrationTaskID.preference
+          },
           migratePreference: migratePreference)
       }
     }
   }
 
   @ViewBuilder
-  private func chartArea(recommendation: AutoChartRecommendation) -> some View {
-    if chartOwner.inputIdentity == chartInputIdentity,
-      case .ready(let analysis, let presented?) = session.state
+  private func chartArea(recommendation: AutoChartRecommendation?) -> some View {
+    if case .ready(let analysis, let presented?) = session.state
     {
       AutoChartView(
         presentedChart: presented,
@@ -213,12 +209,15 @@ struct ResultPreviewView: View {
         presentation: .preview(plotHeight: ResultChartLayout.previewPlotHeight),
         formatters: CREGChartAdapter.formatters,
         textResolver: CREGChartAdapter.textResolver)
-    } else {
+    } else if let recommendation {
       ResultChartPreparationView(
         recommendation: recommendation,
         presentation: .preview(plotHeight: ResultChartLayout.previewPlotHeight),
         formatters: CREGChartAdapter.formatters,
         textResolver: CREGChartAdapter.textResolver)
+    } else {
+      ResultChartNeutralPreparationView(
+        plotHeight: ResultChartLayout.previewPlotHeight)
     }
   }
 

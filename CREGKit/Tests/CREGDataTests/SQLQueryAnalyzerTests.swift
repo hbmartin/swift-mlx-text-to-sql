@@ -294,7 +294,7 @@ import Testing
     }
   }
 
-  @Test func unsupportedValidCTERetainsExactFallbackEvidence() throws {
+  @Test func unusedValuesCTEDoesNotDegradePhysicalLineage() throws {
     let lineage = SQLQueryAnalyzer.lineage(
       sql: """
         WITH unused(value) AS (VALUES (1))
@@ -304,8 +304,8 @@ import Testing
       directOrigins: [.init(table: "properties", column: "name")],
       reads: [.init(table: "properties", column: "name")])
 
-    #expect(lineage.completeness == .incomplete)
-    #expect(lineage.rowGrain.isEmpty)
+    #expect(lineage.completeness == .complete)
+    #expect(lineage.rowGrain == ["properties"])
     #expect(
       try #require(lineage.columns[0]).sourceColumns
         == [.init(table: "properties", column: "name")])
@@ -496,6 +496,84 @@ import Testing
         && $0.scope.qualifiedColumns["l"] != nil
     })
     #expect(!laterCTE.contains { $0.scope.tables.contains("leases") })
+  }
+
+  @Test func recursiveCTESelfReferenceShadowsPhysicalLeaseTable() {
+    for anchor in ["SELECT 'Pending'", "VALUES ('Pending')"] {
+      let sql = """
+        WITH RECURSIVE leases(status) AS (
+          \(anchor)
+          UNION ALL
+          SELECT l.status FROM leases l WHERE l.status = 'Actve'
+        )
+        SELECT status FROM leases
+        """
+      let blocks = SQLQueryAnalyzer.scopedQueryBlocks(in: sql)
+      #expect(blocks.contains {
+        $0.scope.qualifiedColumns["l"]?["status"]?.source == nil
+          && $0.scope.qualifiedColumns["l"] != nil
+      })
+      #expect(!blocks.contains { $0.scope.tables.contains("leases") })
+      #expect(SQLQueryAnalyzer.scope(in: sql).tables.isEmpty)
+    }
+  }
+
+  @Test func valuesJoinRetainsOnlyProvenPhysicalOrigins() throws {
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH leases(status) AS (VALUES ('Pending'))
+        SELECT p.city, l.status
+        FROM properties p JOIN leases l ON 1 = 1
+        """,
+      outputColumnNames: ["city", "status"],
+      directOrigins: [
+        .init(table: "properties", column: "city"),
+        .init(table: "leases", column: "status"),
+      ],
+      reads: [.init(table: "properties", column: "city")])
+    #expect(lineage.completeness == .complete)
+    #expect(
+      try #require(lineage.columns[0]).sourceColumns
+        == [.init(table: "properties", column: "city")])
+    #expect(lineage.columns[1] == nil)
+
+    let unaligned = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH leases(status) AS (VALUES ('Pending'))
+        SELECT p.city FROM properties p JOIN leases l ON 1 = 1
+        """,
+      outputColumnNames: ["renamed_at_runtime"],
+      directOrigins: [.init(table: "properties", column: "city")],
+      reads: [.init(table: "properties", column: "city")])
+    #expect(
+      try #require(unaligned.columns[0]).sourceColumns
+        == [.init(table: "properties", column: "city")])
+
+    let sameNamedPhysicalJoin = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH leases(status) AS (VALUES ('Pending'))
+        SELECT v.status, p.status
+        FROM leases v JOIN main.leases p ON 1 = 1
+        """,
+      outputColumnNames: ["status", "status"],
+      directOrigins: [
+        .init(table: "leases", column: "status"),
+        .init(table: "leases", column: "status"),
+      ],
+      reads: [.init(table: "leases", column: "status")])
+    #expect(sameNamedPhysicalJoin.columns[0] == nil)
+    #expect(
+      try #require(sameNamedPhysicalJoin.columns[1]).sourceColumns
+        == [.init(table: "leases", column: "status")])
+  }
+
+  @Test func explicitlyQualifiedTableBypassesSameNamedCTE() {
+    let scope = SQLQueryAnalyzer.scope(in: """
+      WITH leases(status) AS (VALUES ('Pending'))
+      SELECT l.status FROM main.leases l
+      """)
+    #expect(scope.tables == ["leases"])
+    #expect(scope.aliases["l"] == "leases")
   }
 
   @Test func malformedValuesCTERejectsAllScopes() {

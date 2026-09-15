@@ -72,7 +72,7 @@ extension DatabaseClient {
       })
   }
 
-  @Test func validUnsupportedStructureExecutesWithExactEvidence() async throws {
+  @Test func unusedValuesCTEExecutesWithExactEvidence() async throws {
     let client = try DatabaseClient.live(url: makeDatabase())
     let result = try await client.execute(
       """
@@ -82,8 +82,8 @@ extension DatabaseClient {
     let lineage = try #require(result.lineage)
 
     #expect(result.rows == [[.text("alpha")], [.text("beta")]])
-    #expect(lineage.completeness == .incomplete)
-    #expect(lineage.rowGrain.isEmpty)
+    #expect(lineage.completeness == .complete)
+    #expect(!lineage.rowGrain.isEmpty)
     #expect(
       lineage.columns[0]?.sourceColumns
         == [.init(table: "t", column: "name")])

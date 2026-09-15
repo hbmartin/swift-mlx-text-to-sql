@@ -17,7 +17,7 @@ let package = Package(
     // contract, so CREG deliberately pins the reviewed v3 implementation.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "04e5ec791cde0345048738f59eb1c7acf22250a0"),
+      revision: "9857e441ca1ce4b4ff8cdd9c268e77376eaeee60"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
@@ -168,6 +168,9 @@ let package = Package(
         .product(name: "AutoTableChartsUI", package: "AutoTableCharts"),
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+      ],
+      swiftSettings: [
+        .define("ATC_TEST_HOOKS", .when(configuration: .debug))
       ]
     ),
   ]

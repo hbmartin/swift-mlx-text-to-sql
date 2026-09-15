@@ -2169,6 +2169,189 @@ private final class PickerLabelCounter: @unchecked Sendable {
 
 @MainActor
 @Suite struct ResultPresentationMigrationHandlerTests {
+  @Test func cachedChartPreparationKeepsChartModeThroughTableToChartChoice()
+    async throws
+  {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "cached-chart-mode",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let cache = AutoChartCache()
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: identity.sql,
+      question: identity.question,
+      resultFingerprint: identity.resultFingerprint)
+    let base = try await AutoChartAnalyzer(cache: cache).analyze(
+      request, preparation: .none)
+    let primary = try #require(base.cregRecommendationCatalog?.primary)
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: cache),
+      inputIdentity: identity,
+      result: result)
+    owner.load(result: result, inputIdentity: identity, preference: .table)
+    owner.setPreferenceIfNeeded(.chart(.recommended))
+
+    #expect(owner.displayedMode(for: identity, fallback: .table) == .chart)
+    #expect(owner.displayedRecommendation(for: identity)?.id == primary.id)
+    #expect(owner.hasPendingChart(for: identity))
+    #expect(ResultViewerLogic.effectivePresentationMode(
+      requestedMode: .chart,
+      hasChart: owner.hasPendingChart(for: identity),
+      chartFailed: false) == .chart)
+  }
+
+  @Test func newIdentityCannotDisplayOldChartBeforeItsLoadTask() async throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
+    let old = CREGChartInputIdentity(
+      resultFingerprint: "identity-old-chart",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    var replacement = old
+    replacement.resultFingerprint = "identity-new-result"
+    let cache = AutoChartCache()
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: old.sql,
+      question: old.question,
+      resultFingerprint: old.resultFingerprint)
+    let base = try await AutoChartAnalyzer(cache: cache).analyze(
+      request, preparation: .none)
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: cache),
+      inputIdentity: old,
+      result: result)
+    owner.load(result: result, inputIdentity: old, preference: .automatic)
+    #expect(owner.displayedRecommendation(for: old)?.id
+      == base.cregRecommendationCatalog?.primary?.id)
+
+    // SwiftUI may render with the new input before .task(id:) runs. Its body
+    // must see only fallback state for that identity in this exact interval.
+    #expect(owner.displayedRecommendation(for: replacement) == nil)
+    #expect(owner.analysis(for: replacement)?.id == nil)
+    #expect(owner.displayedMode(for: replacement, fallback: .table) == .table)
+    #expect(!owner.hasPendingChart(for: replacement))
+  }
+
+  #if ATC_TEST_HOOKS
+  @Test func failedOffFeaturedChartStaysSelectedAndSameChoiceRetries()
+    async throws
+  {
+    let dimensions = (0..<8).map { "category_\($0)" }
+    let measures = (0..<8).map { "measure_\($0)" }
+    let names = dimensions + measures
+    let rows: [[SQLValue]] = (0..<4).map { row in
+      dimensions.indices.map { column in
+        .text("D\(column)-R\(row)")
+      } + measures.indices.map { column in
+        .real(Double((column + 1) * (row + 1)))
+      }
+    }
+    let result = QueryResult(columns: names, rows: rows)
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "failed-off-featured-chart",
+      dataIdentity: nil,
+      sql: "SELECT * FROM properties",
+      question: nil)
+    let cache = AutoChartCache()
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: identity.sql,
+      question: nil,
+      resultFingerprint: identity.resultFingerprint)
+    let base = try await AutoChartAnalyzer(cache: cache).analyze(
+      request, preparation: .none)
+    let catalog = try #require(base.cregRecommendationCatalog)
+    let featuredIDs = Set(catalog.featured.map(\.id))
+    let selected = try #require(catalog.cataloged.first {
+      !featuredIDs.contains($0.id)
+    })
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: cache),
+      inputIdentity: identity,
+      result: result)
+    owner.load(
+      result: result,
+      inputIdentity: identity,
+      preference: .chart(.specific(selected.id)))
+    owner.session.failCurrentAttemptForTesting(AutoChartFailure(
+      stage: .chartPreparation,
+      kind: .internalFailure,
+      isRetryable: true,
+      diagnosticID: "ATC.test.offFeaturedFailure",
+      message: "A controlled chart failure."))
+
+    #expect(owner.failure(for: identity)?.isRetryable == true)
+    let visible = try #require(owner.displayedRecommendation(for: identity))
+    #expect(visible.id == selected.id)
+    let options = owner.pickerOptions(
+      analysis: owner.analysis(for: identity),
+      selectedRecommendation: visible)
+    #expect(options.last?.id == selected.id)
+    #expect(options.count == AutoChartRecommendationCatalog.maximumFeaturedCount)
+
+    #expect(owner.retry(preference: .chart(.specific(selected.id))))
+    guard case .preparing = owner.session.state else {
+      Issue.record("Choosing the selected chart type did not retry.")
+      return
+    }
+    #expect(owner.displayedRecommendation(for: identity)?.id == selected.id)
+    owner.session.cancel()
+  }
+  #endif
+
+  @Test func failedNewRequestCannotRestartThePreviousResult() throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
+    let old = CREGChartInputIdentity(
+      resultFingerprint: "old-request",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    var replacement = old
+    replacement.resultFingerprint = "failed-new-request"
+    let client = CREGChartAnalysisClient(cache: AutoChartCache())
+    let owner = CREGChartSessionOwner(
+      client: client,
+      inputIdentity: old,
+      result: result,
+      requestFactory: { client, result, identity in
+        if identity == replacement {
+          return (
+            nil,
+            client.requestConstructionFailure(
+              inputIdentity: identity,
+              kind: .invalidData,
+              message: "The new result cannot form a chart request."))
+        }
+        return (
+          try! CREGChartAdapter.analysisRequest(
+            result: result,
+            sql: identity.sql,
+            question: identity.question,
+            resultFingerprint: identity.resultFingerprint),
+          nil)
+      })
+    owner.load(result: result, inputIdentity: old, preference: .automatic)
+    owner.load(result: result, inputIdentity: replacement, preference: .automatic)
+    #expect(owner.failure(for: replacement) != nil)
+    #expect(owner.analysis(for: replacement) == nil)
+    owner.setPreferenceIfNeeded(.chart(.recommended))
+    guard case .idle = owner.session.state else {
+      Issue.record("A preference change restarted the previous request.")
+      return
+    }
+    #expect(owner.displayedRecommendation(for: replacement) == nil)
+  }
+
   @Test func drawnChartAndChromeStayAlignedUntilMigrationActuallySucceeds()
     async throws
   {
@@ -2245,7 +2428,9 @@ private final class PickerLabelCounter: @unchecked Sendable {
       })
     #expect(missingAttempts == 2)
     #expect(owner.session.preference == other.packagePreference)
+    #expect(restarts == 1)
     owner.setPreferenceIfNeeded(previous.packagePreference)
+    restarts = 0
 
     var attempts = 0
     await applyResultPresentationMigration(
@@ -2273,6 +2458,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       Issue.record("Migration changed the drawn chart before persistence succeeded")
     }
 
+    let restorationAttemptBeforeSuccess = owner.selectionRestorationAttempt
     await applyResultPresentationMigration(
       suggestion,
       analysis: analysis,
@@ -2280,7 +2466,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       beforeSessionRestart: { restarts += 1 },
       migratePreference: { _, updated in .migrated(updated) })
     #expect(owner.session.preference == .chart(.specific(drawnID)))
-    #expect(owner.selectionRestorationAttempt == restorationAttempt)
+    #expect(owner.selectionRestorationAttempt == restorationAttemptBeforeSuccess)
     #expect(restarts == 0)
     if case .ready(let updatedAnalysis, let presented?) = owner.session.state {
       #expect(presented.preparedChart.id == drawn.preparedChart.id)
@@ -2507,10 +2693,10 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(attempts[0].0 == previous)
     #expect(attempts[1].0 == authoritative)
     #expect(attempts[1].1 == .chart(.recommended))
-    #expect(sessionRestarts == 2)
+    #expect(sessionRestarts == 1)
     #expect(
       chartOwner.selectionRestorationAttempt
-        == restorationAttemptBeforeMigration + 2)
+        == restorationAttemptBeforeMigration + 1)
     #expect(chartOwner.session.preference == .chart(.recommended))
   }
 

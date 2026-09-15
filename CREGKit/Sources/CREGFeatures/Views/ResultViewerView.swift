@@ -304,7 +304,8 @@ struct ResultViewerView: View {
     let selectedChartFailure = self.selectedChartFailure
     let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
       requestedMode: displayedRequestedMode,
-      hasChart: selectedRecommendation != nil,
+      hasChart: selectedRecommendation != nil
+        || chartOwner.hasPendingChart(for: chartInputIdentity),
       chartFailed: selectedChartFailure != nil)
     let chartSelection = self.chartSelection
     let selectedSourceRows = self.selectedSourceRows
@@ -342,13 +343,10 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-chart-recovery")
         }
 
-        if effectiveResultMode == .chart,
-          let analysis,
-          let selectedRecommendation
-        {
-          ResultChartExplorerContainer(recommendation: selectedRecommendation) {
+        if effectiveResultMode == .chart {
+          if let analysis, let selectedRecommendation {
+            ResultChartExplorerContainer(recommendation: selectedRecommendation) {
             if chartSelectionLifecycle.pendingSourceRows == nil,
-              chartOwner.inputIdentity == chartInputIdentity,
               case .ready(_, let presented?) = session.state
             {
               AutoChartView(
@@ -374,6 +372,13 @@ struct ResultViewerView: View {
                     clear: clearChartSelection)
                 })
             }
+          }
+          } else {
+            ScrollView {
+              ResultChartNeutralPreparationView(
+                plotHeight: ResultChartLayout.explorerPlotHeight)
+            }
+            .accessibilityIdentifier("result-chart-explorer")
           }
         } else {
           let displayRows = ResultViewerLogic.identifiedDisplayRows(
@@ -401,7 +406,8 @@ struct ResultViewerView: View {
         ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
         ToolbarItemGroup(placement: .primaryAction) {
           if pickerOptions.count > 1,
-            displayedRequestedMode == .chart || selectedChartFailure != nil
+            (selectedChartFailure == nil && displayedRequestedMode == .chart)
+              || selectedChartFailure?.isRetryable == true
           {
             chartTypeMenu(
               selectedRecommendation: selectedRecommendation,
@@ -445,17 +451,13 @@ struct ResultViewerView: View {
     }
     .task(id: migrationTaskID) {
       guard let migrationTaskID, let analysis else { return }
-      guard let suggestion = await resultPresentationMigrationSuggestionOffMain(
-        analysis: analysis, preference: migrationTaskID.preference),
-        !Task.isCancelled,
-        chartOwner.inputIdentity == chartInputIdentity,
-        self.analysis?.id == migrationTaskID.analysisID,
-        (preference ?? .automatic) == migrationTaskID.preference
-      else { return }
-      await applyResultPresentationMigration(
-        suggestion,
+      await runResultPresentationMigrationTask(
+        id: migrationTaskID,
         analysis: analysis,
         chartOwner: chartOwner,
+        isCurrentPreference: {
+          (preference ?? .automatic) == migrationTaskID.preference
+        },
         beforeSessionRestart: prepareChartSelectionForSessionRestart,
         migratePreference: migratePreference)
     }
@@ -522,5 +524,23 @@ struct ResultViewerView: View {
       chartOwner: chartOwner,
       persistPreference: persistPreference,
       beforeSessionRestart: prepareChartSelectionForSessionRestart)
+  }
+
+  func selectChartType(_ id: AutoChartRecommendationID) {
+    let currentPreference = preference ?? .automatic
+    let currentlySelectedID = chartOwner.displayedRecommendation(
+      for: chartInputIdentity)?.id ?? currentPreference.specificationID
+    let updated = currentPreference.selectingChart(id)
+    if selectedChartFailure?.isRetryable == true {
+      clearChartSelection()
+      let didRetry = chartOwner.retry(
+        preference: updated.packagePreference,
+        beforeRestart: prepareChartSelectionForSessionRestart)
+      if didRetry && updated != currentPreference { persistPreference(updated) }
+      return
+    }
+    guard id != currentlySelectedID else { return }
+    clearChartSelection()
+    applyUserPreference(updated)
   }
 }

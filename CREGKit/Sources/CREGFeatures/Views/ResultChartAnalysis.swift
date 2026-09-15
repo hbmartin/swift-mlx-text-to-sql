@@ -74,7 +74,11 @@ struct CREGChartInputIdentity: Hashable, Sendable {
 /// for every transient View value.
 @MainActor
 final class CREGChartSessionOwner: ObservableObject {
+  typealias RequestFactory = (
+    CREGChartAnalysisClient, QueryResult, CREGChartInputIdentity
+  ) -> (request: AutoChartRequest<Int>?, failure: AutoChartFailure?)
   private let client: CREGChartAnalysisClient
+  private let requestFactory: RequestFactory?
   let session: AutoChartSession<Int>
   @Published private(set) var inputIdentity: CREGChartInputIdentity
   /// Changes whenever the package may replace its prepared chart, including
@@ -83,19 +87,28 @@ final class CREGChartSessionOwner: ObservableObject {
   @Published private var request: AutoChartRequest<Int>?
   @Published private var requestFailure: AutoChartFailure?
   private var isSessionLoaded = false
+  private struct PickerMemoKey: Equatable {
+    let analysisID: AutoChartAnalysisID
+    let catalog: AutoChartRecommendationCatalog
+    let selectedRecommendation: AutoChartRecommendation?
+  }
+  private var pickerMemo: (key: PickerMemoKey, options: [AutoChartPickerOption])?
 
   init(
     client: CREGChartAnalysisClient,
     inputIdentity: CREGChartInputIdentity,
-    result: QueryResult
+    result: QueryResult,
+    requestFactory: RequestFactory? = nil
   ) {
     self.client = client
+    self.requestFactory = requestFactory
     self.session = client.makeSession()
     self.inputIdentity = inputIdentity
-    let setup = Self.makeRequest(
-      client: client,
-      result: result,
-      inputIdentity: inputIdentity)
+    let setup = requestFactory?(client, result, inputIdentity)
+      ?? Self.makeRequest(
+        client: client,
+        result: result,
+        inputIdentity: inputIdentity)
     self.request = setup.request
     self.requestFailure = setup.failure
   }
@@ -111,13 +124,14 @@ final class CREGChartSessionOwner: ObservableObject {
       selectionRestorationAttempt &+= 1
     }
     if inputIdentity != self.inputIdentity {
-      session.cancel()
-      session.selection.removeAll()
+      session.unload()
       isSessionLoaded = false
-      let setup = Self.makeRequest(
-        client: client,
-        result: result,
-        inputIdentity: inputIdentity)
+      pickerMemo = nil
+      let setup = requestFactory?(client, result, inputIdentity)
+        ?? Self.makeRequest(
+          client: client,
+          result: result,
+          inputIdentity: inputIdentity)
       self.request = setup.request
       self.requestFailure = setup.failure
       self.inputIdentity = inputIdentity
@@ -172,13 +186,20 @@ final class CREGChartSessionOwner: ObservableObject {
     for expectedInputIdentity: CREGChartInputIdentity
   ) -> AutoChartRecommendation? {
     guard inputIdentity == expectedInputIdentity else { return nil }
+    return session.currentRecommendation
+  }
+
+  func hasPendingChart(
+    for expectedInputIdentity: CREGChartInputIdentity
+  ) -> Bool {
+    guard inputIdentity == expectedInputIdentity,
+      session.preference != .table,
+      let analysis = analysis(for: expectedInputIdentity),
+      analysis.cregRecommendationCatalog?.primary != nil
+    else { return false }
     switch session.state {
-    case .ready(_, let presented?):
-      return presented.preparedChart.recommendation
-    case .ready(let analysis, nil), .preparing(let analysis, _):
-      return analysis.preferenceResolution?.recommendation
-    case .idle, .analyzing, .fallback, .failed:
-      return nil
+    case .preparing, .ready, .analyzing: return true
+    case .idle, .fallback, .failed: return false
     }
   }
 
@@ -198,11 +219,19 @@ final class CREGChartSessionOwner: ObservableObject {
     analysis: AutoChartAnalysis<Int>?,
     selectedRecommendation: AutoChartRecommendation?
   ) -> [AutoChartPickerOption] {
-    guard let analysis else { return [] }
-    return resultChartPickerOptions(
-      catalog: analysis.cregRecommendationCatalog,
+    guard let analysis, let catalog = analysis.cregRecommendationCatalog
+    else { return [] }
+    let key = PickerMemoKey(
+      analysisID: analysis.id,
+      catalog: catalog,
+      selectedRecommendation: selectedRecommendation)
+    if let pickerMemo, pickerMemo.key == key { return pickerMemo.options }
+    let options = resultChartPickerOptions(
+      catalog: catalog,
       selectedRecommendation: selectedRecommendation,
       resolver: CREGChartAdapter.textResolver)
+    pickerMemo = (key, options)
+    return options
   }
 
   /// Begins one retry attempt, optionally changing the preference atomically.
