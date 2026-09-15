@@ -176,7 +176,8 @@ package enum SQLQueryAnalyzer {
     return SQLQueryLineage(
       columns: columns,
       rowGrain: block.rowGrain,
-      reads: reads)
+      reads: reads,
+      completeness: .complete)
   }
 
   package static func scope(in sql: String) -> SQLQueryScope {
@@ -191,10 +192,13 @@ package enum SQLQueryAnalyzer {
   package static func scopedQueryBlocks(in sql: String) -> [SQLScopedQueryBlock] {
     let tokenization = SQLLexer.tokenize(sql)
     let analyzer = Analyzer(tokenization: tokenization, collectsNestedScopes: true)
-    guard
-      analyzer.analyze(
-        range: tokenization.tokens.indices, inheritedCTEs: [:]) != nil
-    else { return [] }
+    if analyzer.analyze(
+      range: tokenization.tokens.indices, inheritedCTEs: [:]) == nil
+    {
+      // An unsupported VALUES construct does not invalidate independently
+      // analyzed SELECT blocks. Syntax failures still reject every scope.
+      guard analyzer.recoverScopesInValidUnsupportedConstruct() else { return [] }
+    }
     return analyzer.scopedQueryBlocks
   }
 
@@ -544,6 +548,170 @@ private final class Analyzer {
       }
       return $0.range.length > $1.range.length
     }
+  }
+
+  /// Recover only SELECT scopes whose containing unsupported construct has a
+  /// well-formed CTE/compound/VALUES skeleton. Never treat a malformed outer
+  /// statement as proof that its inner predicates belong to a real query.
+  func recoverScopesInValidUnsupportedConstruct() -> Bool {
+    let range = tokens.indices
+    guard !range.isEmpty, hasBalancedParentheses(in: range) else { return false }
+    var mainStart = range.lowerBound
+    var ctes: [String: Relation] = [:]
+    var foundUnsupportedValues = false
+
+    if tokens[mainStart].word == "with" {
+      mainStart += 1
+      if mainStart < range.upperBound, tokens[mainStart].word == "recursive" {
+        mainStart += 1
+      }
+      repeat {
+        guard mainStart < range.upperBound,
+          let name = tokens[mainStart].word,
+          name != "select", name != "values"
+        else { return false }
+        mainStart += 1
+        var declaredOutputNames: [String]?
+        if mainStart < range.upperBound, tokens[mainStart] == .symbol("(") {
+          guard let close = matchingClose(at: mainStart, upperBound: range.upperBound)
+          else { return false }
+          let declarations = splitTopLevel(
+            (mainStart + 1)..<close, preservingEmptySegments: true)
+          guard !declarations.isEmpty,
+            declarations.allSatisfy({
+              $0.count == 1 && tokens[$0.lowerBound].word != nil
+            })
+          else { return false }
+          declaredOutputNames = declarations.compactMap {
+            tokens[$0.lowerBound].word
+          }
+          mainStart = close + 1
+        }
+        guard mainStart < range.upperBound, tokens[mainStart].word == "as"
+        else { return false }
+        mainStart += 1
+        if mainStart < range.upperBound,
+          tokens[mainStart].word == "materialized"
+        {
+          mainStart += 1
+        } else if mainStart + 1 < range.upperBound,
+          tokens[mainStart].word == "not",
+          tokens[mainStart + 1].word == "materialized"
+        {
+          mainStart += 2
+        }
+        guard mainStart < range.upperBound,
+          tokens[mainStart] == .symbol("("),
+          let close = matchingClose(at: mainStart, upperBound: range.upperBound),
+          mainStart + 1 < close
+        else { return false }
+        let body = (mainStart + 1)..<close
+        if tokens[body.lowerBound].word == "values" {
+          guard isWellFormedValues(in: body) else { return false }
+          if let declaredOutputNames {
+            let firstRow = body.lowerBound + 1
+            guard let firstClose = matchingClose(
+              at: firstRow, upperBound: body.upperBound),
+              splitTopLevel((firstRow + 1)..<firstClose).count
+                == declaredOutputNames.count
+            else { return false }
+          }
+          foundUnsupportedValues = true
+        } else if let block = analyze(range: body, inheritedCTEs: ctes) {
+          var recovered = relation(name: name, block: block)
+          if let declaredOutputNames {
+            guard declaredOutputNames.count == recovered.outputs.count else {
+              return false
+            }
+            recovered = Relation(
+              name: recovered.name,
+              aliases: recovered.aliases,
+              outputs: zip(recovered.outputs, declaredOutputNames).map {
+                output, declaredName in
+                QueryOutput(name: declaredName, descriptor: output.descriptor)
+              },
+              rowGrain: recovered.rowGrain,
+              physicalTables: recovered.physicalTables,
+              acceptsExternalOrigins: recovered.acceptsExternalOrigins)
+          }
+          ctes[name] = recovered
+        } else {
+          return false
+        }
+        mainStart = close + 1
+        if mainStart < range.upperBound, tokens[mainStart] == .symbol(",") {
+          mainStart += 1
+          continue
+        }
+        break
+      } while true
+    }
+
+    guard mainStart < range.upperBound else { return false }
+    let main = mainStart..<range.upperBound
+    switch compoundArmRanges(in: main) {
+    case .malformed:
+      return false
+    case .arms(let arms):
+      guard arms.allSatisfy({ isRecoverableArm($0) }) else { return false }
+      foundUnsupportedValues = foundUnsupportedValues
+        || arms.contains { tokens[$0.lowerBound].word == "values" }
+      guard foundUnsupportedValues else { return false }
+      for arm in arms where tokens[arm.lowerBound].word == "select" {
+        guard analyze(range: arm, inheritedCTEs: ctes) != nil else { return false }
+      }
+    case .none:
+      guard isRecoverableArm(main) else { return false }
+      foundUnsupportedValues = foundUnsupportedValues
+        || tokens[main.lowerBound].word == "values"
+      guard foundUnsupportedValues else { return false }
+      if tokens[main.lowerBound].word == "select" {
+        guard analyze(range: main, inheritedCTEs: ctes) != nil else { return false }
+      }
+    }
+    return true
+  }
+
+  private func hasBalancedParentheses(in range: Range<Int>) -> Bool {
+    var depth = 0
+    for index in range {
+      if tokens[index] == .symbol("(") { depth += 1 }
+      if tokens[index] == .symbol(")") {
+        depth -= 1
+        if depth < 0 { return false }
+      }
+    }
+    return depth == 0
+  }
+
+  private func isRecoverableArm(_ range: Range<Int>) -> Bool {
+    if tokens[range.lowerBound].word == "values" {
+      return isWellFormedValues(in: range)
+    }
+    guard tokens[range.lowerBound].word == "select",
+      range.count > 1,
+      tokens[range.lowerBound + 1].word != "from"
+    else { return false }
+    return true
+  }
+
+  private func isWellFormedValues(in range: Range<Int>) -> Bool {
+    var index = range.lowerBound + 1
+    guard index < range.upperBound else { return false }
+    while index < range.upperBound {
+      guard tokens[index] == .symbol("("),
+        let close = matchingClose(at: index, upperBound: range.upperBound),
+        index + 1 < close
+      else { return false }
+      let cells = splitTopLevel(
+        (index + 1)..<close, preservingEmptySegments: true)
+      guard cells.allSatisfy({ !$0.isEmpty }) else { return false }
+      index = close + 1
+      if index == range.upperBound { return true }
+      guard tokens[index] == .symbol(",") else { return false }
+      index += 1
+    }
+    return false
   }
 
   func rejectsExternalOrigins(in range: Range<Int>) -> Bool {
