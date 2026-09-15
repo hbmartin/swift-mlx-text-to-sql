@@ -154,6 +154,16 @@ final class AccessibilityUITests: XCTestCase {
     XCTAssertTrue(
       app.descendants(matching: .any)["result-table-explorer"]
         .waitForExistence(timeout: 5))
+
+    let chart = app.segmentedControls.buttons["Chart"]
+    XCTAssertTrue(chart.waitForExistence(timeout: 5))
+    chart.tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["result-chart-explorer"]
+        .waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      app.descendants(matching: .any)["auto-chart-bar"]
+        .waitForExistence(timeout: 5))
     app.terminate()
   }
 

@@ -87,14 +87,14 @@ struct ResultPreviewView: View {
     } else {
       let analysis = self.analysis
       let currentPreference = preference ?? .automatic
-      let preferenceResolution = analysis?.resolve(currentPreference.packagePreference)
-      let selectedRecommendation = preferenceResolution?.recommendation
-      let failure = self.failure
-      let hasChartOptions = !(analysis?.cregRecommendationCatalog?.cataloged.isEmpty ?? true)
       let migrationSuggestion = resultPresentationMigrationSuggestion(
         analysis: analysis,
-        preference: currentPreference,
-        resolution: preferenceResolution)
+        preference: currentPreference)
+      let resolvedPreference = migrationSuggestion?.updated ?? currentPreference
+      let preferenceResolution = analysis?.resolve(resolvedPreference.packagePreference)
+      let selectedRecommendation = preferenceResolution?.recommendation
+      let failure = self.failure
+      let hasChartOptions = analysis?.cregRecommendationCatalog?.primary != nil
       let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
         requestedMode: currentPreference.mode,
         hasChart: selectedRecommendation != nil,

@@ -3,8 +3,8 @@ import AutoTableChartsUI
 import ComposableArchitecture
 import Foundation
 
-/// CREG keeps only optimistic compare-and-set persistence. Recommendation
-/// replacement suggestions are supplied by AutoTableCharts.
+/// CREG owns persisted-preference migration and uses optimistic compare-and-set
+/// persistence so a delayed migration cannot overwrite a newer user choice.
 enum ResultPresentationMigrationOutcome: Equatable {
   case migrated(ResultPresentationPreference)
   case retained(ResultPresentationPreference)
@@ -66,12 +66,29 @@ struct ResultPresentationMigrationSuggestion: Hashable {
 
 func resultPresentationMigrationSuggestion(
   analysis: AutoChartAnalysis<Int>?,
-  preference: ResultPresentationPreference,
-  resolution suppliedResolution: AutoChartPreferenceResolution? = nil
+  preference: ResultPresentationPreference
 ) -> ResultPresentationMigrationSuggestion? {
   guard let analysis else { return nil }
-  let resolution = suppliedResolution
-    ?? analysis.resolve(preference.packagePreference)
+  if let previousID = preference.specificationID {
+    let catalog = analysis.cregRecommendationCatalog
+    let replacementID =
+      catalog?.cataloged.first {
+        $0.specification.id == previousID.specificationID
+      }?.id
+      ?? catalog?.preferred.flatMap {
+        $0.specification.id == previousID.specificationID ? $0.id : nil
+      }
+    let updated = ResultPresentationPreference(
+      mode: preference.mode,
+      specificationID: replacementID)
+    guard updated != preference else { return nil }
+    return ResultPresentationMigrationSuggestion(
+      analysisID: analysis.id,
+      previous: preference,
+      updated: updated)
+  }
+
+  let resolution = analysis.resolve(preference.packagePreference)
   guard let replacement = resolution.replacementPreference else { return nil }
   return ResultPresentationMigrationSuggestion(
     analysisID: analysis.id,
@@ -106,14 +123,53 @@ func applyResultPresentationMigration(
       chartOwner.setPreferenceIfNeeded(
         authoritative.packagePreference,
         beforeRestart: beforeSessionRestart)
-      let resolution = analysis.resolve(authoritative.packagePreference)
-      guard let replacement = resolution.replacementPreference else { return }
-      previous = authoritative
-      updated = authoritative.applyingPackageReplacement(replacement)
+      guard
+        let next = resultPresentationMigrationSuggestion(
+          analysis: analysis,
+          preference: authoritative)
+      else { return }
+      previous = next.previous
+      updated = next.updated
     case .messageMissing:
       return
     }
   }
+}
+
+func resultChartPickerOptions(
+  catalog: AutoChartRecommendationCatalog?,
+  selectedID: AutoChartRecommendationID?,
+  resolver: AutoChartTextResolver = .default
+) -> [AutoChartPickerOption] {
+  guard let catalog else { return [] }
+  let allOptions = catalog.pickerOptions(resolver: resolver)
+  let optionsByID = Dictionary(
+    uniqueKeysWithValues: allOptions.map { ($0.id, $0) })
+  let featured = catalog.featured.compactMap { optionsByID[$0.id] }
+  guard let selectedID,
+    let selectedRecommendation = catalog.recommendation(for: selectedID)
+  else {
+    return Array(featured.prefix(AutoChartRecommendationCatalog.maximumFeaturedCount))
+  }
+  let selected: AutoChartPickerOption
+  if let cataloged = optionsByID[selectedID] {
+    selected = cataloged
+  } else {
+    let singleOptionCatalog = AutoChartRecommendationCatalog(
+      featured: [selectedRecommendation],
+      cataloged: [selectedRecommendation])
+    guard
+      let preferred = singleOptionCatalog.pickerOptions(resolver: resolver).first
+    else {
+      return Array(
+        featured.prefix(AutoChartRecommendationCatalog.maximumFeaturedCount))
+    }
+    selected = preferred
+  }
+  return [selected]
+    + Array(
+      featured.filter { $0.id != selectedID }
+        .prefix(AutoChartRecommendationCatalog.maximumFeaturedCount - 1))
 }
 
 @MainActor

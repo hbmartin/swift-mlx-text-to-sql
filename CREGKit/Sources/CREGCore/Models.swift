@@ -117,11 +117,20 @@ public struct SQLResultColumnLineage: Sendable, Equatable, Hashable, Codable {
 
 /// SQLite-backed and query-block-aware lineage for an executed result.
 public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
+  public enum Completeness: String, Sendable, Equatable, Hashable, Codable {
+    case complete
+    case incomplete
+  }
+
   /// Bump whenever derived grain/domain decisions change incompatibly. Stored
   /// lineage from an older analyzer is re-derived instead of being trusted.
-  public static let currentAnalysisVersion = 3
+  public static let currentAnalysisVersion = 4
 
   public var analysisVersion: Int
+  /// Whether the analyzer proved the full query-block structure. Incomplete
+  /// lineage retains exact SQLite evidence but must not authorize transforms
+  /// that combine result rows.
+  public var completeness: Completeness
   /// Entries align one-for-one with the result's output columns.
   public var columns: [SQLResultColumnLineage?]
   /// Effective entity grain of each returned row, when it can be established.
@@ -133,22 +142,26 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
     columns: [SQLResultColumnLineage?],
     rowGrain: [String] = [],
     reads: [SQLSourceRead] = [],
+    completeness: Completeness = .complete,
     analysisVersion: Int = SQLQueryLineage.currentAnalysisVersion
   ) {
     self.analysisVersion = analysisVersion
+    self.completeness = completeness
     self.columns = columns
     self.rowGrain = rowGrain
     self.reads = reads
   }
 
   enum CodingKeys: String, CodingKey {
-    case analysisVersion, columns, rowGrain, reads
+    case analysisVersion, completeness, columns, rowGrain, reads
   }
 
   public init(from decoder: Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     analysisVersion =
       try values.decodeIfPresent(Int.self, forKey: .analysisVersion) ?? 1
+    completeness =
+      try values.decodeIfPresent(Completeness.self, forKey: .completeness) ?? .incomplete
     columns = try values.decode([SQLResultColumnLineage?].self, forKey: .columns)
     rowGrain = try values.decodeIfPresent([String].self, forKey: .rowGrain) ?? []
     reads = try values.decodeIfPresent([SQLSourceRead].self, forKey: .reads) ?? []

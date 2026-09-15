@@ -118,8 +118,7 @@ import SwiftUI
           textSize: .constant(.standard),
           sql: StarterQueryID.portfolioValueByFundV1.sql,
           question: StarterQueryID.portfolioValueByFundV1.question,
-          preference: resultExplorerPreference,
-          persistPreference: { resultExplorerPreference = $0 })
+          preference: $resultExplorerPreference)
 
       case .resultChartRecovery:
         ResultChartRecoveryAccessibilityHarness(retryAvailable: true)

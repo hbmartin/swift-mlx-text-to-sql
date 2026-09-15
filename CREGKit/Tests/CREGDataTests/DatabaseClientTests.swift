@@ -72,6 +72,27 @@ extension DatabaseClient {
       })
   }
 
+  @Test func validUnsupportedStructureExecutesWithExactEvidence() async throws {
+    let client = try DatabaseClient.live(url: makeDatabase())
+    let result = try await client.execute(
+      """
+      WITH unused(value) AS (VALUES (1))
+      SELECT name FROM t ORDER BY id
+      """)
+    let lineage = try #require(result.lineage)
+
+    #expect(result.rows == [[.text("alpha")], [.text("beta")]])
+    #expect(lineage.completeness == .incomplete)
+    #expect(lineage.rowGrain.isEmpty)
+    #expect(
+      lineage.columns[0]?.sourceColumns
+        == [.init(table: "t", column: "name")])
+    #expect(
+      lineage.reads.contains {
+        $0.table == "t" && $0.column == "name" && $0.database == "main"
+      })
+  }
+
   @Test func compoundExecutionRejectsSQLiteOriginFromOneArm() async throws {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("creg-compound-origin-\(UUID().uuidString).sqlite")
