@@ -75,9 +75,8 @@ struct ResultPreviewView: View {
   }
 
   private var sessionDisplayedMode: ResultPresentationMode {
-    if case .idle = session.state { return (preference ?? .automatic).mode }
-    if case .table = session.preference { return .table }
-    return .chart
+    chartOwner.displayedMode(
+      for: chartInputIdentity, fallback: preference ?? .automatic)
   }
 
   private var renderedScale: CGFloat {
@@ -93,15 +92,14 @@ struct ResultPreviewView: View {
     } else {
       let analysis = self.analysis
       let currentPreference = preference ?? .automatic
-      let migrationSuggestion = resultPresentationMigrationSuggestion(
-        analysis: analysis,
-        preference: currentPreference)
-      let selectedRecommendation: AutoChartRecommendation? = {
-        if case .ready(_, let presented?) = session.state {
-          return presented.preparedChart.recommendation
-        }
-        return analysis?.resolve(session.preference).recommendation
-      }()
+      let migrationTaskID = analysis.map {
+        ResultPresentationMigrationTaskID(
+          inputIdentity: chartInputIdentity,
+          analysisID: $0.id,
+          preference: currentPreference)
+      }
+      let selectedRecommendation = chartOwner.displayedRecommendation(
+        for: chartInputIdentity)
       let failure = self.failure
       let hasChartOptions = analysis?.cregRecommendationCatalog?.primary != nil
       let displayedRequestedMode = sessionDisplayedMode
@@ -187,10 +185,16 @@ struct ResultPreviewView: View {
         guard let failure else { return }
         chartOwner.recordFailure(failure, diagnostics: diagnostics)
       }
-      .task(id: migrationSuggestion) {
-        guard let migrationSuggestion, let analysis else { return }
-        applyResultPresentationMigration(
-          migrationSuggestion,
+      .task(id: migrationTaskID) {
+        guard let migrationTaskID, let analysis else { return }
+        guard let suggestion = await resultPresentationMigrationSuggestionOffMain(
+          analysis: analysis, preference: migrationTaskID.preference),
+          !Task.isCancelled,
+          chartOwner.inputIdentity == chartInputIdentity,
+          self.analysis?.id == migrationTaskID.analysisID
+        else { return }
+        await applyResultPresentationMigration(
+          suggestion,
           analysis: analysis,
           chartOwner: chartOwner,
           migratePreference: migratePreference)
@@ -200,7 +204,9 @@ struct ResultPreviewView: View {
 
   @ViewBuilder
   private func chartArea(recommendation: AutoChartRecommendation) -> some View {
-    if case .ready(let analysis, let presented?) = session.state {
+    if chartOwner.inputIdentity == chartInputIdentity,
+      case .ready(let analysis, let presented?) = session.state
+    {
       AutoChartView(
         presentedChart: presented,
         analysisID: analysis.id,

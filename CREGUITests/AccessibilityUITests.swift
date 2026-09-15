@@ -167,6 +167,18 @@ final class AccessibilityUITests: XCTestCase {
     app.terminate()
   }
 
+  func testPreviewShowsNewTableWhenChartInputIdentityChanges() {
+    let app = launch(scenario: "result-preview-identity")
+    let originalChart = app.buttons["auto-chart-bar"]
+    XCTAssertTrue(originalChart.waitForExistence(timeout: 10))
+
+    app.buttons["Replace result"].tap()
+    let replacementTable = app.buttons["3 rows, Explore result"]
+    XCTAssertTrue(replacementTable.waitForExistence(timeout: 10))
+    XCTAssertFalse(app.buttons["auto-chart-bar"].exists)
+    app.terminate()
+  }
+
   func testChartPreparationHasDistinctIdentityInProductionPresentation() {
     let app = launch(
       scenario: "result-chart-preparation",

@@ -429,6 +429,85 @@ import Testing
     }
   }
 
+  @Test func valuesCTEShadowsPhysicalTableWithOpaqueDeclaredColumns() {
+    let sql = """
+      WITH leases(status) AS (VALUES ('Pending'))
+      SELECT l.status FROM leases l WHERE l.status = 'Actve'
+      """
+    let blocks = SQLQueryAnalyzer.scopedQueryBlocks(in: sql)
+    let scope = SQLQueryAnalyzer.scope(in: sql)
+    #expect(blocks.count == 1)
+    #expect(scope.tables.isEmpty)
+    #expect(scope.aliases["l"] == nil)
+    #expect(scope.qualifiedColumns["l"]?["status"]?.source == nil)
+
+    let joined = SQLQueryAnalyzer.scope(in: """
+      WITH leases(status) AS (VALUES ('Pending'))
+      SELECT status FROM leases l JOIN funds f ON 1 = 1
+      """)
+    #expect(joined.unqualifiedColumns["status"]?.count == 2)
+    #expect(joined.tables == ["funds"])
+  }
+
+  @Test func valuesCTELiteralDoesNotUsePhysicalCatalogOrRepairSource() async {
+    let sql = """
+      WITH leases(status) AS (VALUES ('Pending'))
+      SELECT l.status FROM leases l WHERE l.status = 'Actve'
+      """
+    let db = DatabaseClient(
+      fingerprint: "values-cte-test",
+      execute: { _ in
+        QueryResult(columns: ["status"], rows: [[.text("Active")]])
+      })
+    let report = await ResultHeuristics(db: db).inspectDetailed(
+      sql: sql, result: QueryResult(columns: ["status"], rows: []))
+    #expect(report.checks.isEmpty)
+    #expect(!report.findings.contains {
+      if case .literalNotFound = $0 { return true }
+      return false
+    })
+
+    let guidance = ResultHeuristics.repairGuidance(
+      issue: SQLValidationIssue(
+        kind: .binding, disposition: .repairable,
+        message: "no such column: l.status"),
+      sql: sql, failedFingerprints: [])
+    #expect(!guidance.declaredSources.contains("leases"))
+  }
+
+  @Test func recoveryNeverReusesSubqueryScopeFromFailedCTEPass() {
+    let sql = """
+      WITH leases(status) AS (VALUES ('Pending'))
+      VALUES ((SELECT l.status FROM leases l WHERE l.status = 'Actve'))
+      """
+    let blocks = SQLQueryAnalyzer.scopedQueryBlocks(in: sql)
+    #expect(blocks.count == 1)
+    #expect(blocks[0].scope.tables.isEmpty)
+    #expect(blocks[0].scope.qualifiedColumns["l"]?["status"]?.source == nil)
+
+    let laterCTE = SQLQueryAnalyzer.scopedQueryBlocks(in: """
+      WITH leases(status) AS (VALUES ('Pending')),
+           picked AS (SELECT 1 AS flag WHERE 'x' IN (
+             SELECT l.status FROM leases l WHERE l.status = 'Actve'))
+      SELECT flag FROM picked
+      """)
+    #expect(laterCTE.contains {
+      $0.scope.qualifiedColumns["l"]?["status"]?.source == nil
+        && $0.scope.qualifiedColumns["l"] != nil
+    })
+    #expect(!laterCTE.contains { $0.scope.tables.contains("leases") })
+  }
+
+  @Test func malformedValuesCTERejectsAllScopes() {
+    for sql in [
+      "WITH leases(status) AS (VALUES ('A', 'B')) SELECT status FROM leases",
+      "WITH leases(status) AS (VALUES ('A'), ('B', 'C')) SELECT status FROM leases",
+      "WITH leases(status) AS (VALUES ('A'),) SELECT status FROM leases",
+    ] {
+      #expect(SQLQueryAnalyzer.scopedQueryBlocks(in: sql).isEmpty)
+    }
+  }
+
   @Test func compoundSelectsDoNotBorrowClausesFromLaterArms() {
     let lineage = SQLQueryAnalyzer.lineage(
       sql: """

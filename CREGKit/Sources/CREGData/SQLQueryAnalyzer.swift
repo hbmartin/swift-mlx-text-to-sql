@@ -94,7 +94,8 @@ package enum SQLQueryAnalyzer {
       })
     guard
       let block = analyzer.analyze(
-        range: tokenization.tokens.indices, inheritedCTEs: [:])
+        range: tokenization.tokens.indices, inheritedCTEs: [:]),
+      !analyzer.sawOpaqueValues
     else {
       let rejectsExternalOrigins = analyzer.rejectsExternalOrigins(
         in: tokenization.tokens.indices)
@@ -196,8 +197,12 @@ package enum SQLQueryAnalyzer {
       range: tokenization.tokens.indices, inheritedCTEs: [:]) == nil
     {
       // An unsupported VALUES construct does not invalidate independently
-      // analyzed SELECT blocks. Syntax failures still reject every scope.
-      guard analyzer.recoverScopesInValidUnsupportedConstruct() else { return [] }
+      // analyzed SELECT blocks. A fresh analyzer keeps scopes cached by the
+      // failed pass from leaking into a different CTE environment.
+      let recovery = Analyzer(
+        tokenization: tokenization, collectsNestedScopes: true)
+      guard recovery.recoverScopesInValidUnsupportedConstruct() else { return [] }
+      return recovery.scopedQueryBlocks
     }
     return analyzer.scopedQueryBlocks
   }
@@ -527,6 +532,7 @@ private final class Analyzer {
   private let schema = PortfolioSchemaCatalog.document
   private let collectsNestedScopes: Bool
   private var outcomes: [Range<Int>: BlockAnalysisOutcome] = [:]
+  private(set) var sawOpaqueValues = false
 
   init(
     tokenization: SQLTokenization,
@@ -550,102 +556,136 @@ private final class Analyzer {
     }
   }
 
+  private struct ParsedCTEs {
+    var mainStart: Int
+    var ctes: [String: Relation]
+    var containsValues: Bool
+  }
+
+  /// Parse one WITH clause for both ordinary analysis and VALUES recovery.
+  /// A VALUES CTE shadows a same-named schema table but proves no physical
+  /// column origin, even when its explicit output names are known.
+  private func parseCTEs(
+    in range: Range<Int>, inheritedCTEs: [String: Relation]
+  ) -> ParsedCTEs? {
+    var index = range.lowerBound
+    var ctes = inheritedCTEs
+    var containsValues = false
+    guard tokens[index].word == "with" else {
+      return ParsedCTEs(mainStart: index, ctes: ctes, containsValues: false)
+    }
+    index += 1
+    if index < range.upperBound, tokens[index].word == "recursive" {
+      index += 1
+    }
+    repeat {
+      guard index < range.upperBound,
+        let name = tokens[index].word,
+        name != "select", name != "values"
+      else { return nil }
+      index += 1
+      var declaredOutputNames: [String]?
+      if index < range.upperBound, tokens[index] == .symbol("(") {
+        guard let close = matchingClose(at: index, upperBound: range.upperBound)
+        else { return nil }
+        let declarations = splitTopLevel(
+          (index + 1)..<close, preservingEmptySegments: true)
+        guard !declarations.isEmpty,
+          declarations.allSatisfy({
+            $0.count == 1 && tokens[$0.lowerBound].word != nil
+          })
+        else { return nil }
+        declaredOutputNames = declarations.compactMap {
+          tokens[$0.lowerBound].word
+        }
+        index = close + 1
+      }
+      guard index < range.upperBound, tokens[index].word == "as"
+      else { return nil }
+      index += 1
+      if index < range.upperBound, tokens[index].word == "materialized" {
+        index += 1
+      } else if index + 1 < range.upperBound,
+        tokens[index].word == "not",
+        tokens[index + 1].word == "materialized"
+      {
+        index += 2
+      }
+      guard index < range.upperBound,
+        tokens[index] == .symbol("("),
+        let close = matchingClose(at: index, upperBound: range.upperBound),
+        index + 1 < close
+      else { return nil }
+      let body = (index + 1)..<close
+      if tokens[body.lowerBound].word == "values" {
+        guard let arity = valuesArity(in: body),
+          declaredOutputNames == nil || declaredOutputNames?.count == arity
+        else { return nil }
+        if collectsNestedScopes {
+          analyzeNestedQueryBlocks(in: body, inheritedCTEs: ctes)
+        }
+        ctes[name] = opaqueCTERelation(
+          name: name, outputNames: declaredOutputNames ?? [])
+        sawOpaqueValues = true
+        containsValues = true
+      } else {
+        guard let block = analyze(range: body, inheritedCTEs: ctes)
+        else { return nil }
+        var parsed = relation(name: name, block: block)
+        if let declaredOutputNames {
+          guard declaredOutputNames.count == parsed.outputs.count else {
+            return nil
+          }
+          parsed = Relation(
+            name: parsed.name,
+            aliases: parsed.aliases,
+            outputs: zip(parsed.outputs, declaredOutputNames).map {
+              output, declaredName in
+              QueryOutput(name: declaredName, descriptor: output.descriptor)
+            },
+            rowGrain: parsed.rowGrain,
+            physicalTables: parsed.physicalTables,
+            acceptsExternalOrigins: parsed.acceptsExternalOrigins)
+        }
+        ctes[name] = parsed
+      }
+      index = close + 1
+      if index < range.upperBound, tokens[index] == .symbol(",") {
+        index += 1
+        continue
+      }
+      break
+    } while true
+    return ParsedCTEs(
+      mainStart: index, ctes: ctes, containsValues: containsValues)
+  }
+
+  private func opaqueCTERelation(name: String, outputNames: [String]) -> Relation {
+    let descriptor = ColumnDescriptor(
+      sourceColumns: [], expressionGrain: [], chartGrain: [],
+      aggregation: nil, aggregateCalls: [],
+      preservesSourceDomain: false, isDirectReference: false)
+    return Relation(
+      name: name, aliases: [name],
+      outputs: outputNames.map {
+        QueryOutput(name: $0, descriptor: descriptor)
+      },
+      rowGrain: [Self.opaqueEntity(for: name)],
+      physicalTables: [], acceptsExternalOrigins: false)
+  }
+
   /// Recover only SELECT scopes whose containing unsupported construct has a
   /// well-formed CTE/compound/VALUES skeleton. Never treat a malformed outer
   /// statement as proof that its inner predicates belong to a real query.
   func recoverScopesInValidUnsupportedConstruct() -> Bool {
     let range = tokens.indices
     guard !range.isEmpty, hasBalancedParentheses(in: range) else { return false }
-    var mainStart = range.lowerBound
-    var ctes: [String: Relation] = [:]
-    var foundUnsupportedValues = false
-
-    if tokens[mainStart].word == "with" {
-      mainStart += 1
-      if mainStart < range.upperBound, tokens[mainStart].word == "recursive" {
-        mainStart += 1
-      }
-      repeat {
-        guard mainStart < range.upperBound,
-          let name = tokens[mainStart].word,
-          name != "select", name != "values"
-        else { return false }
-        mainStart += 1
-        var declaredOutputNames: [String]?
-        if mainStart < range.upperBound, tokens[mainStart] == .symbol("(") {
-          guard let close = matchingClose(at: mainStart, upperBound: range.upperBound)
-          else { return false }
-          let declarations = splitTopLevel(
-            (mainStart + 1)..<close, preservingEmptySegments: true)
-          guard !declarations.isEmpty,
-            declarations.allSatisfy({
-              $0.count == 1 && tokens[$0.lowerBound].word != nil
-            })
-          else { return false }
-          declaredOutputNames = declarations.compactMap {
-            tokens[$0.lowerBound].word
-          }
-          mainStart = close + 1
-        }
-        guard mainStart < range.upperBound, tokens[mainStart].word == "as"
-        else { return false }
-        mainStart += 1
-        if mainStart < range.upperBound,
-          tokens[mainStart].word == "materialized"
-        {
-          mainStart += 1
-        } else if mainStart + 1 < range.upperBound,
-          tokens[mainStart].word == "not",
-          tokens[mainStart + 1].word == "materialized"
-        {
-          mainStart += 2
-        }
-        guard mainStart < range.upperBound,
-          tokens[mainStart] == .symbol("("),
-          let close = matchingClose(at: mainStart, upperBound: range.upperBound),
-          mainStart + 1 < close
-        else { return false }
-        let body = (mainStart + 1)..<close
-        if tokens[body.lowerBound].word == "values" {
-          guard isWellFormedValues(in: body) else { return false }
-          if let declaredOutputNames {
-            let firstRow = body.lowerBound + 1
-            guard let firstClose = matchingClose(
-              at: firstRow, upperBound: body.upperBound),
-              splitTopLevel((firstRow + 1)..<firstClose).count
-                == declaredOutputNames.count
-            else { return false }
-          }
-          foundUnsupportedValues = true
-        } else if let block = analyze(range: body, inheritedCTEs: ctes) {
-          var recovered = relation(name: name, block: block)
-          if let declaredOutputNames {
-            guard declaredOutputNames.count == recovered.outputs.count else {
-              return false
-            }
-            recovered = Relation(
-              name: recovered.name,
-              aliases: recovered.aliases,
-              outputs: zip(recovered.outputs, declaredOutputNames).map {
-                output, declaredName in
-                QueryOutput(name: declaredName, descriptor: output.descriptor)
-              },
-              rowGrain: recovered.rowGrain,
-              physicalTables: recovered.physicalTables,
-              acceptsExternalOrigins: recovered.acceptsExternalOrigins)
-          }
-          ctes[name] = recovered
-        } else {
-          return false
-        }
-        mainStart = close + 1
-        if mainStart < range.upperBound, tokens[mainStart] == .symbol(",") {
-          mainStart += 1
-          continue
-        }
-        break
-      } while true
+    guard let parsed = parseCTEs(in: range, inheritedCTEs: [:]) else {
+      return false
     }
+    let mainStart = parsed.mainStart
+    let ctes = parsed.ctes
+    var foundUnsupportedValues = parsed.containsValues
 
     guard mainStart < range.upperBound else { return false }
     let main = mainStart..<range.upperBound
@@ -660,6 +700,9 @@ private final class Analyzer {
       for arm in arms where tokens[arm.lowerBound].word == "select" {
         guard analyze(range: arm, inheritedCTEs: ctes) != nil else { return false }
       }
+      for arm in arms where tokens[arm.lowerBound].word == "values" {
+        analyzeNestedQueryBlocks(in: arm, inheritedCTEs: ctes)
+      }
     case .none:
       guard isRecoverableArm(main) else { return false }
       foundUnsupportedValues = foundUnsupportedValues
@@ -667,6 +710,8 @@ private final class Analyzer {
       guard foundUnsupportedValues else { return false }
       if tokens[main.lowerBound].word == "select" {
         guard analyze(range: main, inheritedCTEs: ctes) != nil else { return false }
+      } else {
+        analyzeNestedQueryBlocks(in: main, inheritedCTEs: ctes)
       }
     }
     return true
@@ -686,7 +731,7 @@ private final class Analyzer {
 
   private func isRecoverableArm(_ range: Range<Int>) -> Bool {
     if tokens[range.lowerBound].word == "values" {
-      return isWellFormedValues(in: range)
+      return valuesArity(in: range) != nil
     }
     guard tokens[range.lowerBound].word == "select",
       range.count > 1,
@@ -695,23 +740,27 @@ private final class Analyzer {
     return true
   }
 
-  private func isWellFormedValues(in range: Range<Int>) -> Bool {
+  private func valuesArity(in range: Range<Int>) -> Int? {
     var index = range.lowerBound + 1
-    guard index < range.upperBound else { return false }
+    guard index < range.upperBound else { return nil }
+    var arity: Int?
     while index < range.upperBound {
       guard tokens[index] == .symbol("("),
         let close = matchingClose(at: index, upperBound: range.upperBound),
         index + 1 < close
-      else { return false }
+      else { return nil }
       let cells = splitTopLevel(
         (index + 1)..<close, preservingEmptySegments: true)
-      guard cells.allSatisfy({ !$0.isEmpty }) else { return false }
+      guard cells.allSatisfy({ !$0.isEmpty }),
+        arity == nil || arity == cells.count
+      else { return nil }
+      arity = cells.count
       index = close + 1
-      if index == range.upperBound { return true }
-      guard tokens[index] == .symbol(",") else { return false }
+      if index == range.upperBound { return arity }
+      guard tokens[index] == .symbol(",") else { return nil }
       index += 1
     }
-    return false
+    return nil
   }
 
   func rejectsExternalOrigins(in range: Range<Int>) -> Bool {
@@ -749,79 +798,10 @@ private final class Analyzer {
       outcomes[range] = .success(block)
       return block
     }
-    var selectIndex = range.lowerBound
-
-    if tokens[selectIndex].word == "with" {
-      selectIndex += 1
-      if selectIndex < range.upperBound, tokens[selectIndex].word == "recursive" {
-        selectIndex += 1
-      }
-      while selectIndex < range.upperBound, tokens[selectIndex].word != "select" {
-        guard let cteName = tokens[selectIndex].word else {
-          return fail(rejectsExternalOrigins: true)
-        }
-        selectIndex += 1
-        var declaredOutputNames: [String]?
-        if selectIndex < range.upperBound, tokens[selectIndex] == .symbol("(") {
-          guard let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
-          else { return fail(rejectsExternalOrigins: true) }
-          let nameRanges = splitTopLevel(
-            (selectIndex + 1)..<close,
-            preservingEmptySegments: true)
-          let names = nameRanges.compactMap { nameRange in
-            nameRange.count == 1 ? tokens[nameRange.lowerBound].word : nil
-          }
-          guard names.count == nameRanges.count else {
-            return fail(rejectsExternalOrigins: true)
-          }
-          declaredOutputNames = names
-          selectIndex = close + 1
-        }
-        guard selectIndex < range.upperBound, tokens[selectIndex].word == "as" else {
-          return fail(rejectsExternalOrigins: true)
-        }
-        selectIndex += 1
-        if selectIndex < range.upperBound, tokens[selectIndex].word == "materialized" {
-          selectIndex += 1
-        } else if selectIndex + 1 < range.upperBound,
-          tokens[selectIndex].word == "not",
-          tokens[selectIndex + 1].word == "materialized"
-        {
-          selectIndex += 2
-        }
-        guard selectIndex < range.upperBound, tokens[selectIndex] == .symbol("("),
-          let close = matchingClose(at: selectIndex, upperBound: range.upperBound)
-        else { return fail(rejectsExternalOrigins: true) }
-        let cteRange = (selectIndex + 1)..<close
-        guard let block = analyze(range: cteRange, inheritedCTEs: ctes) else {
-          return fail(
-            rejectsExternalOrigins: rejectsExternalOrigins(in: cteRange))
-        }
-        var relation = relation(name: cteName, block: block)
-        if let declaredOutputNames {
-          guard declaredOutputNames.count == relation.outputs.count else {
-            return fail(rejectsExternalOrigins: true)
-          }
-          let renamedOutputs = zip(relation.outputs, declaredOutputNames).map {
-            output, name in
-            QueryOutput(name: name, descriptor: output.descriptor)
-          }
-          relation = Relation(
-            name: relation.name,
-            aliases: relation.aliases,
-            outputs: renamedOutputs,
-            rowGrain: relation.rowGrain,
-            physicalTables: relation.physicalTables,
-            acceptsExternalOrigins: relation.acceptsExternalOrigins)
-        }
-        ctes[cteName] = relation
-        selectIndex = close + 1
-        if selectIndex < range.upperBound, tokens[selectIndex] == .symbol(",") {
-          selectIndex += 1
-          continue
-        }
-      }
-    }
+    guard let parsed = parseCTEs(in: range, inheritedCTEs: inheritedCTEs)
+    else { return fail(rejectsExternalOrigins: true) }
+    let selectIndex = parsed.mainStart
+    ctes = parsed.ctes
 
     switch compoundArmRanges(in: selectIndex..<range.upperBound) {
     case .malformed:

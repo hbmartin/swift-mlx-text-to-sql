@@ -14,6 +14,7 @@ import SwiftUI
       case browser
       case settings
       case resultExplorer = "result-explorer"
+      case resultPreviewIdentity = "result-preview-identity"
       case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
       case resultChartTerminalRecovery = "result-chart-terminal-recovery"
@@ -120,6 +121,9 @@ import SwiftUI
           question: StarterQueryID.portfolioValueByFundV1.question,
           preference: $resultExplorerPreference)
 
+      case .resultPreviewIdentity:
+        ResultPreviewIdentityAccessibilityHarness()
+
       case .resultChartRecovery:
         ResultChartRecoveryAccessibilityHarness(retryAvailable: true)
 
@@ -170,6 +174,47 @@ import SwiftUI
       return ChatView(
         store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
         chrome: chrome)
+    }
+  }
+
+  @MainActor
+  private struct ResultPreviewIdentityAccessibilityHarness: View {
+    @State private var showsReplacement = false
+    @State private var preference = ResultPresentationPreference.automatic
+
+    private let replacement = QueryResult(
+      columns: ["note"],
+      rows: [
+        [.text("First replacement")],
+        [.text("Second replacement")],
+        [.text("Third replacement")],
+      ])
+
+    var body: some View {
+      VStack(spacing: 12) {
+        Button("Replace result") { showsReplacement = true }
+          .accessibilityIdentifier("replace-preview-result")
+        ResultPreviewView(
+          messageID: PreviewFixtures.id("9"),
+          resultFingerprint: showsReplacement
+            ? "preview-replacement" : "preview-original",
+          result: showsReplacement
+            ? replacement : PreviewFixtures.fundValueResult,
+          sql: showsReplacement
+            ? "SELECT note FROM properties"
+            : StarterQueryID.portfolioValueByFundV1.sql,
+          question: showsReplacement
+            ? "Show notes" : StarterQueryID.portfolioValueByFundV1.question,
+          preference: preference,
+          setPreference: { preference = $0 },
+          migratePreference: { _, updated in
+            preference = updated
+            return .migrated(updated)
+          },
+          open: {})
+        Spacer(minLength: 0)
+      }
+      .padding()
     }
   }
 

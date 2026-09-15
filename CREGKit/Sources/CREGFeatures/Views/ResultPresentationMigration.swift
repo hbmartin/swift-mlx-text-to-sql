@@ -24,7 +24,7 @@ func applyResultPresentationPreference(
 ) {
   chartOwner.setPreferenceIfNeeded(
     updated.packagePreference,
-    beforeRestart: beforeSessionRestart)
+    onRestart: beforeSessionRestart)
   persistPreference(updated)
 }
 
@@ -58,10 +58,16 @@ func applyResultPresentationModeSelection(
   }
 }
 
-struct ResultPresentationMigrationSuggestion: Hashable {
+struct ResultPresentationMigrationSuggestion: Hashable, Sendable {
   var analysisID: AutoChartAnalysisID
   var previous: ResultPresentationPreference
   var updated: ResultPresentationPreference
+}
+
+struct ResultPresentationMigrationTaskID: Hashable, Sendable {
+  var inputIdentity: CREGChartInputIdentity
+  var analysisID: AutoChartAnalysisID
+  var preference: ResultPresentationPreference
 }
 
 func resultPresentationMigrationSuggestion(
@@ -74,18 +80,13 @@ func resultPresentationMigrationSuggestion(
     // inspect. Resolve that ID as a shadow Chart choice, then preserve Table mode.
     let resolution = analysis.resolve(.chart(.specific(previousID)))
     guard let replacement = resolution.replacementPreference else { return nil }
-    let updated: ResultPresentationPreference
-    switch replacement {
-    case .chart(.specific(let rebound)):
-      updated = ResultPresentationPreference(
-        mode: preference.mode, specificationID: rebound)
-    case .chart(.recommended):
-      updated = ResultPresentationPreference(mode: preference.mode)
-    case .automatic:
-      updated = preference.mode == .table ? .table : .automatic
-    case .table:
-      updated = .table
-    }
+    let reboundID: AutoChartRecommendationID? = {
+      if case .chart(.specific(let id)) = replacement { return id }
+      return nil
+    }()
+    let updated = preference.mode == .table
+      ? ResultPresentationPreference(mode: .table, specificationID: reboundID)
+      : preference.applyingPackageReplacement(replacement)
     guard updated != preference else { return nil }
     return ResultPresentationMigrationSuggestion(
       analysisID: analysis.id,
@@ -101,6 +102,21 @@ func resultPresentationMigrationSuggestion(
     updated: preference.applyingPackageReplacement(replacement))
 }
 
+/// Preference resolution may validate an off-catalog chart against every row.
+/// Keep that work off the SwiftUI body and the main actor.
+func resultPresentationMigrationSuggestionOffMain(
+  analysis: AutoChartAnalysis<Int>,
+  preference: ResultPresentationPreference
+) async -> ResultPresentationMigrationSuggestion? {
+  let worker = Task.detached(priority: .utility) {
+    resultPresentationMigrationSuggestion(
+      analysis: analysis, preference: preference)
+  }
+  return await withTaskCancellationHandler(
+    operation: { await worker.value },
+    onCancel: { worker.cancel() })
+}
+
 /// Reconciles compare-and-set rejection immediately. A retained authoritative
 /// preference can resolve to the same package replacement, so observing only
 /// `replacementPreference` would never schedule another attempt.
@@ -111,28 +127,30 @@ func applyResultPresentationMigration(
   chartOwner: CREGChartSessionOwner,
   beforeSessionRestart: () -> Void = {},
   migratePreference: ResultPresentationMigrationHandler
-) {
+) async {
   var previous = suggestion.previous
   var updated = suggestion.updated
   var visited: Set<ResultPresentationPreference> = []
 
   while visited.insert(previous).inserted {
+    guard !Task.isCancelled else { return }
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
       chartOwner.setPreferenceIfNeeded(
         stored.packagePreference,
-        beforeRestart: beforeSessionRestart)
+        onRestart: beforeSessionRestart)
       return
     case .retained(let authoritative):
+      chartOwner.setPreferenceIfNeeded(
+        authoritative.packagePreference,
+        onRestart: beforeSessionRestart)
       guard authoritative != previous else { return }
-      guard let next = resultPresentationMigrationSuggestion(
+      guard let next = await resultPresentationMigrationSuggestionOffMain(
         analysis: analysis, preference: authoritative)
       else {
-        chartOwner.setPreferenceIfNeeded(
-          authoritative.packagePreference,
-          beforeRestart: beforeSessionRestart)
         return
       }
+      guard !Task.isCancelled else { return }
       previous = next.previous
       updated = next.updated
     case .messageMissing:

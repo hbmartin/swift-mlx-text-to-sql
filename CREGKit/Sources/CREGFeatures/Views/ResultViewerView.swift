@@ -264,11 +264,8 @@ struct ResultViewerView: View {
   var searchIsActive: Bool { !normalizedSearchText.isEmpty }
 
   private var sessionDisplayedMode: ResultPresentationMode {
-    if case .idle = chartOwner.session.state {
-      return (preference ?? .automatic).mode
-    }
-    if case .table = chartOwner.session.preference { return .table }
-    return .chart
+    chartOwner.displayedMode(
+      for: chartInputIdentity, fallback: preference ?? .automatic)
   }
 
   func selectedResultCell(
@@ -293,15 +290,14 @@ struct ResultViewerView: View {
     let session = chartOwner.session
     let analysis = self.analysis
     let currentPreference = preference ?? .automatic
-    let migrationSuggestion = resultPresentationMigrationSuggestion(
-      analysis: analysis,
-      preference: currentPreference)
-    let selectedRecommendation: AutoChartRecommendation? = {
-      if case .ready(_, let presented?) = session.state {
-        return presented.preparedChart.recommendation
-      }
-      return analysis?.resolve(session.preference).recommendation
-    }()
+    let migrationTaskID = analysis.map {
+      ResultPresentationMigrationTaskID(
+        inputIdentity: chartInputIdentity,
+        analysisID: $0.id,
+        preference: currentPreference)
+    }
+    let selectedRecommendation = chartOwner.displayedRecommendation(
+      for: chartInputIdentity)
     let pickerOptions = chartOwner.pickerOptions(
       analysis: analysis, selectedRecommendation: selectedRecommendation)
     let displayedRequestedMode = sessionDisplayedMode
@@ -352,6 +348,7 @@ struct ResultViewerView: View {
         {
           ResultChartExplorerContainer(recommendation: selectedRecommendation) {
             if chartSelectionLifecycle.pendingSourceRows == nil,
+              chartOwner.inputIdentity == chartInputIdentity,
               case .ready(_, let presented?) = session.state
             {
               AutoChartView(
@@ -429,7 +426,7 @@ struct ResultViewerView: View {
     .onChange(of: preference) { _, updated in
       chartOwner.setPreferenceIfNeeded(
         (updated ?? .automatic).packagePreference,
-        beforeRestart: prepareChartSelectionForSessionRestart)
+        onRestart: prepareChartSelectionForSessionRestart)
     }
     .onChange(of: searchText) { _, _ in
       guard effectiveResultMode == .table else { return }
@@ -446,10 +443,17 @@ struct ResultViewerView: View {
       guard let failure = selectedChartFailure else { return }
       chartOwner.recordFailure(failure, diagnostics: diagnostics)
     }
-    .task(id: migrationSuggestion) {
-      guard let migrationSuggestion, let analysis else { return }
-      applyResultPresentationMigration(
-        migrationSuggestion,
+    .task(id: migrationTaskID) {
+      guard let migrationTaskID, let analysis else { return }
+      guard let suggestion = await resultPresentationMigrationSuggestionOffMain(
+        analysis: analysis, preference: migrationTaskID.preference),
+        !Task.isCancelled,
+        chartOwner.inputIdentity == chartInputIdentity,
+        self.analysis?.id == migrationTaskID.analysisID,
+        (preference ?? .automatic) == migrationTaskID.preference
+      else { return }
+      await applyResultPresentationMigration(
+        suggestion,
         analysis: analysis,
         chartOwner: chartOwner,
         beforeSessionRestart: prepareChartSelectionForSessionRestart,
