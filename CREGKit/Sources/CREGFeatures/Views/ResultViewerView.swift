@@ -13,7 +13,7 @@ struct ResultViewerView: View {
   let question: String?
   let resultFingerprint: String
   let chartDataIdentity: String?
-  let preference: ResultPresentationPreference?
+  @Binding var preference: ResultPresentationPreference?
   let persistPreference: (ResultPresentationPreference) -> Void
   let migratePreference: ResultPresentationMigrationHandler
   let chartInputIdentity: CREGChartInputIdentity
@@ -60,7 +60,9 @@ struct ResultViewerView: View {
       cacheIdentity: nil,
       sql: sql,
       question: question,
-      preference: preference.wrappedValue,
+      preference: Binding(
+        get: { preference.wrappedValue },
+        set: { if let updated = $0 { preference.wrappedValue = updated } }),
       persistPreference: { preference.wrappedValue = $0 },
       migratePreference: { previous, updated in
         let authoritative = preference.wrappedValue
@@ -100,7 +102,7 @@ struct ResultViewerView: View {
         messageID: messageID, resultFingerprint: resultFingerprint),
       sql: sql,
       question: question,
-      preference: preference,
+      preference: .constant(preference),
       persistPreference: persistPreference,
       migratePreference: migratePreference,
       initialSearchText: initialSearchText,
@@ -116,7 +118,7 @@ struct ResultViewerView: View {
     cacheIdentity: CacheIdentity?,
     sql: String,
     question: String?,
-    preference: ResultPresentationPreference?,
+    preference: Binding<ResultPresentationPreference?>,
     persistPreference: @escaping (ResultPresentationPreference) -> Void,
     migratePreference: @escaping ResultPresentationMigrationHandler,
     initialSearchText: String,
@@ -135,7 +137,7 @@ struct ResultViewerView: View {
       CREGChartAdapter.resultDataIdentity(messageID: $0.messageID)
     }
     self.chartDataIdentity = dataIdentity
-    self.preference = preference
+    self._preference = preference
     self.persistPreference = persistPreference
     self.migratePreference = migratePreference
     self._textSize = textSize
@@ -245,16 +247,6 @@ struct ResultViewerView: View {
     chartSelectionLifecycle.clearTableSelectionLink()
   }
 
-  func chartPickerOptions(
-    for analysis: AutoChartAnalysis<Int>?,
-    selectedID: AutoChartRecommendationID?
-  ) -> [AutoChartPickerOption] {
-    resultChartPickerOptions(
-      catalog: analysis?.cregRecommendationCatalog,
-      selectedID: selectedID,
-      resolver: CREGChartAdapter.textResolver)
-  }
-
   func columnWidths() -> [CGFloat] {
     ResultTableColumnMetrics(
       characterWidth: baseCharacterWidth * textSize.metricScale,
@@ -270,6 +262,14 @@ struct ResultViewerView: View {
     searchText.trimmingCharacters(in: .whitespacesAndNewlines)
   }
   var searchIsActive: Bool { !normalizedSearchText.isEmpty }
+
+  private var sessionDisplayedMode: ResultPresentationMode {
+    if case .idle = chartOwner.session.state {
+      return (preference ?? .automatic).mode
+    }
+    if case .table = chartOwner.session.preference { return .table }
+    return .chart
+  }
 
   func selectedResultCell(
     in displayRows: [ResultViewerLogic.DisplayRow]
@@ -296,15 +296,18 @@ struct ResultViewerView: View {
     let migrationSuggestion = resultPresentationMigrationSuggestion(
       analysis: analysis,
       preference: currentPreference)
-    let resolvedPreference = migrationSuggestion?.updated ?? currentPreference
-    let preferenceResolution = analysis?.resolve(resolvedPreference.packagePreference)
-    let selectedRecommendation = preferenceResolution?.recommendation
-    let pickerOptions = chartPickerOptions(
-      for: analysis,
-      selectedID: resolvedPreference.specificationID)
+    let selectedRecommendation: AutoChartRecommendation? = {
+      if case .ready(_, let presented?) = session.state {
+        return presented.preparedChart.recommendation
+      }
+      return analysis?.resolve(session.preference).recommendation
+    }()
+    let pickerOptions = chartOwner.pickerOptions(
+      analysis: analysis, selectedRecommendation: selectedRecommendation)
+    let displayedRequestedMode = sessionDisplayedMode
     let selectedChartFailure = self.selectedChartFailure
     let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
-      requestedMode: currentPreference.mode,
+      requestedMode: displayedRequestedMode,
       hasChart: selectedRecommendation != nil,
       chartFailed: selectedChartFailure != nil)
     let chartSelection = self.chartSelection
@@ -332,7 +335,7 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-view-mode")
         }
 
-        if let failure = selectedChartFailure, currentPreference.mode == .chart {
+        if let failure = selectedChartFailure, displayedRequestedMode == .chart {
           ResultChartRecoveryControls(
             spacing: 12,
             keepTable: { selectMode(.table) },
@@ -401,7 +404,7 @@ struct ResultViewerView: View {
         ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
         ToolbarItemGroup(placement: .primaryAction) {
           if pickerOptions.count > 1,
-            currentPreference.mode == .chart || selectedChartFailure != nil
+            displayedRequestedMode == .chart || selectedChartFailure != nil
           {
             chartTypeMenu(
               selectedRecommendation: selectedRecommendation,
@@ -501,7 +504,7 @@ struct ResultViewerView: View {
     applyResultPresentationModeSelection(
       ResultViewerLogic.modeSelectionIntent(
         mode,
-        requestedMode: currentPreference.mode,
+        requestedMode: sessionDisplayedMode,
         preserving: currentPreference.specificationID,
         retryAvailable: selectedChartFailure?.isRetryable == true),
       chartOwner: chartOwner,

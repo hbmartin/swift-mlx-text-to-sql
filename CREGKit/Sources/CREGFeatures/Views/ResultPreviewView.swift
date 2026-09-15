@@ -74,6 +74,12 @@ struct ResultPreviewView: View {
     chartOwner.failure(for: chartInputIdentity)
   }
 
+  private var sessionDisplayedMode: ResultPresentationMode {
+    if case .idle = session.state { return (preference ?? .automatic).mode }
+    if case .table = session.preference { return .table }
+    return .chart
+  }
+
   private var renderedScale: CGFloat {
     reduceMotion ? 1 : ResultViewerLogic.previewScale(for: pinchMagnification)
   }
@@ -90,13 +96,17 @@ struct ResultPreviewView: View {
       let migrationSuggestion = resultPresentationMigrationSuggestion(
         analysis: analysis,
         preference: currentPreference)
-      let resolvedPreference = migrationSuggestion?.updated ?? currentPreference
-      let preferenceResolution = analysis?.resolve(resolvedPreference.packagePreference)
-      let selectedRecommendation = preferenceResolution?.recommendation
+      let selectedRecommendation: AutoChartRecommendation? = {
+        if case .ready(_, let presented?) = session.state {
+          return presented.preparedChart.recommendation
+        }
+        return analysis?.resolve(session.preference).recommendation
+      }()
       let failure = self.failure
       let hasChartOptions = analysis?.cregRecommendationCatalog?.primary != nil
+      let displayedRequestedMode = sessionDisplayedMode
       let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
-        requestedMode: currentPreference.mode,
+        requestedMode: displayedRequestedMode,
         hasChart: selectedRecommendation != nil,
         chartFailed: failure != nil)
       let selected = selectedRecommendation
@@ -117,7 +127,7 @@ struct ResultPreviewView: View {
           .accessibilityIdentifier("result-preview-mode")
         }
 
-        if let failure, currentPreference.mode == .chart {
+        if let failure, displayedRequestedMode == .chart {
           ResultChartRecoveryControls(
             spacing: 10,
             keepTable: { selectMode(.table) },
@@ -211,7 +221,7 @@ struct ResultPreviewView: View {
     applyResultPresentationModeSelection(
       ResultViewerLogic.modeSelectionIntent(
         mode,
-        requestedMode: currentPreference.mode,
+        requestedMode: sessionDisplayedMode,
         preserving: currentPreference.specificationID,
         retryAvailable: failure?.isRetryable == true),
       chartOwner: chartOwner,

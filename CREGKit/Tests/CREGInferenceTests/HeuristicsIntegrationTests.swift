@@ -202,7 +202,7 @@ import Testing
           suggestion: "Active"))
   }
 
-  @Test func nestedPredicateGroundingRequiresCompleteOuterStructure() async throws {
+  @Test func nestedPredicateGroundingRecoversValidUnsupportedOuterStructure() async throws {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("creg-failed-outer-grounding-\(UUID().uuidString).sqlite")
     let queue = try DatabaseQueue(path: url.path)
@@ -225,14 +225,41 @@ import Testing
           literal: "Actve",
           suggestion: "Active"))
 
-    let incompleteReport = await heuristics.inspectDetailed(
+    let unsupportedReport = await heuristics.inspectDetailed(
       sql: """
       VALUES ((
         SELECT l.status FROM leases l WHERE l.status = 'Actve'
       ))
       """,
       result: QueryResult(columns: ["matches"], rows: []))
-    #expect(incompleteReport.findings.first == .emptyResult)
+    #expect(unsupportedReport.findings.first == supportedReport.findings.first)
+
+    let valuesCTEReport = await heuristics.inspectDetailed(
+      sql: """
+        WITH unused(value) AS (VALUES (1))
+        SELECT l.status FROM leases l WHERE l.status = 'Actve'
+        """,
+      result: QueryResult(columns: ["status"], rows: []))
+    #expect(valuesCTEReport.findings.first == supportedReport.findings.first)
+
+    let compoundReport = await heuristics.inspectDetailed(
+      sql: """
+        SELECT l.status FROM leases l WHERE l.status = 'Actve'
+        UNION ALL VALUES ('Other')
+        """,
+      result: QueryResult(columns: ["status"], rows: []))
+    #expect(compoundReport.findings.first == supportedReport.findings.first)
+
+    for malformed in [
+      "WITH unused(value,) AS (VALUES (1)) SELECT l.status FROM leases l WHERE l.status = 'Actve'",
+      "SELECT l.status FROM leases l WHERE l.status = 'Actve' UNION ALL",
+      "VALUES ((SELECT l.status FROM leases l WHERE l.status = 'Actve')",
+    ] {
+      let report = await heuristics.inspectDetailed(
+        sql: malformed,
+        result: QueryResult(columns: ["status"], rows: []))
+      #expect(report.findings.first == .emptyResult)
+    }
   }
 
   @Test func derivedAliasesGroundThroughTheirExposedOutputLineage() async throws {

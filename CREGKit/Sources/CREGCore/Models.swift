@@ -142,7 +142,7 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
     columns: [SQLResultColumnLineage?],
     rowGrain: [String] = [],
     reads: [SQLSourceRead] = [],
-    completeness: Completeness = .complete,
+    completeness: Completeness = .incomplete,
     analysisVersion: Int = SQLQueryLineage.currentAnalysisVersion
   ) {
     self.analysisVersion = analysisVersion

@@ -73,9 +73,7 @@ enum CREGChartAdapter {
         provenance: columnProvenance(lineage),
         semantics: semantics(
           for: name,
-          sourceIdentifierName: sourceIdentifierName(
-            lineage: lineage,
-            aggregation: aggregation),
+          provenSourceName: orderedSourceName,
           aggregation: aggregation,
           categoryOrder: categoryOrder,
           values: result.rows.map { row in
@@ -235,7 +233,7 @@ enum CREGChartAdapter {
 
   static func semantics(
     for name: String,
-    sourceIdentifierName: String? = nil,
+    provenSourceName: String? = nil,
     aggregation: AutoChartAggregation?,
     categoryOrder: [AutoChartValue]?,
     values: @autoclosure () -> [SQLValue] = []
@@ -250,12 +248,14 @@ enum CREGChartAdapter {
       return .dimension(semanticType: .ordinal)
     }
 
-    if let sourceIdentifierName,
-      isIdentifierName(sourceIdentifierName)
+    if let provenSourceName,
+      isIdentifierName(provenSourceName)
     {
       return .identifier(semanticType: .identifier)
     }
-    if aggregation == nil, isIdentifierName(normalized) {
+    // Only proven direct projections can override the package's ID-name
+    // inference. A CAST or compound query has no such evidence.
+    if provenSourceName != nil, isIdentifierName(normalized) {
       return .dimension(semanticType: .nominal)
     }
     let style = PortfolioValueFormatting.style(forColumn: normalized)
@@ -332,17 +332,6 @@ enum CREGChartAdapter {
     }
     return .inferred(
       measureSemantics: measureSemantics(for: aggregation))
-  }
-
-  private static func sourceIdentifierName(
-    lineage: SQLResultColumnLineage?,
-    aggregation: AutoChartAggregation?
-  ) -> String? {
-    guard aggregation == nil,
-      lineage?.preservesSourceDomain == true,
-      lineage?.sourceColumns.count == 1
-    else { return nil }
-    return lineage?.sourceColumns.first?.column
   }
 
   private static func isIdentifierName(_ name: String) -> Bool {

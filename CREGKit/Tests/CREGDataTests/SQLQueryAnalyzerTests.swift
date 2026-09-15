@@ -1,9 +1,22 @@
 import CREGCore
+import Foundation
 import Testing
 
 @testable import CREGData
 
 @Suite struct SQLQueryAnalyzerTests {
+  @Test func lineageCompletenessDefaultsFailClosedInConstructorAndDecoder() throws {
+    let constructed = SQLQueryLineage(columns: [nil])
+    let decoded = try JSONDecoder().decode(
+      SQLQueryLineage.self,
+      from: Data(#"{"columns":[null],"rowGrain":[],"reads":[]}"#.utf8))
+    let analyzed = SQLQueryAnalyzer.lineage(
+      sql: "SELECT city FROM properties", outputColumnNames: ["city"])
+    #expect(constructed.completeness == .incomplete)
+    #expect(decoded.completeness == .incomplete)
+    #expect(analyzed.completeness == .complete)
+  }
+
   @Test func discoversUnaliasedAndCommaJoinsWithoutSkippingSources() throws {
     let joined = SQLQueryAnalyzer.lineage(
       sql: """
@@ -396,6 +409,24 @@ import Testing
     #expect(blocks.count == 2)
     #expect(blocks.contains { $0.scope.aliases["p"] == "properties" })
     #expect(blocks.contains { $0.scope.aliases["l"] == "leases" })
+  }
+
+  @Test func validUnsupportedOuterConstructRetainsProvenSelectScopes() {
+    for sql in [
+      "VALUES ((SELECT l.status FROM leases l WHERE l.status = 'Actve'))",
+      "WITH unused(value) AS (VALUES (1)) SELECT l.status FROM leases l WHERE l.status = 'Actve'",
+      "SELECT l.status FROM leases l WHERE l.status = 'Actve' UNION ALL VALUES ('Other')",
+    ] {
+      let blocks = SQLQueryAnalyzer.scopedQueryBlocks(in: sql)
+      #expect(blocks.contains { $0.scope.aliases["l"] == "leases" })
+    }
+    for malformed in [
+      "WITH unused(value,) AS (VALUES (1)) SELECT l.status FROM leases l WHERE l.status = 'Actve'",
+      "SELECT l.status FROM leases l WHERE l.status = 'Actve' UNION ALL",
+      "VALUES ((SELECT l.status FROM leases l WHERE l.status = 'Actve')",
+    ] {
+      #expect(SQLQueryAnalyzer.scopedQueryBlocks(in: malformed).isEmpty)
+    }
   }
 
   @Test func compoundSelectsDoNotBorrowClausesFromLaterArms() {

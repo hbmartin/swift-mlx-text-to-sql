@@ -83,6 +83,11 @@ final class CREGChartSessionOwner: ObservableObject {
   @Published private var request: AutoChartRequest<Int>?
   @Published private var requestFailure: AutoChartFailure?
   private var isSessionLoaded = false
+  private var pickerSnapshot: (
+    analysisID: AutoChartAnalysisID,
+    selectedID: AutoChartRecommendationID?,
+    options: [AutoChartPickerOption]
+  )?
 
   init(
     client: CREGChartAnalysisClient,
@@ -163,11 +168,39 @@ final class CREGChartSessionOwner: ObservableObject {
     beforeRestart: () -> Void = {}
   ) {
     guard session.preference != preference else { return }
-    if isSessionLoaded {
+    if isSessionLoaded && !hasReadyEquivalentChart(for: preference) {
       beforeRestart()
       selectionRestorationAttempt &+= 1
     }
     session.setPreference(preference)
+  }
+
+  private func hasReadyEquivalentChart(for preference: AutoChartPreference) -> Bool {
+    guard case .ready(let analysis, let presented?) = session.state,
+      !session.isPresentationPending
+    else { return false }
+    return analysis.resolve(preference).recommendation?.id
+      == presented.preparedChart.recommendation.id
+  }
+
+  func pickerOptions(
+    analysis: AutoChartAnalysis<Int>?,
+    selectedRecommendation: AutoChartRecommendation?
+  ) -> [AutoChartPickerOption] {
+    guard let analysis else { return [] }
+    let selectedID = selectedRecommendation?.id
+    if let pickerSnapshot,
+      pickerSnapshot.analysisID == analysis.id,
+      pickerSnapshot.selectedID == selectedID
+    {
+      return pickerSnapshot.options
+    }
+    let options = resultChartPickerOptions(
+      catalog: analysis.cregRecommendationCatalog,
+      selectedRecommendation: selectedRecommendation,
+      resolver: CREGChartAdapter.textResolver)
+    pickerSnapshot = (analysis.id, selectedID, options)
+    return options
   }
 
   /// Begins one retry attempt, optionally changing the preference atomically.
