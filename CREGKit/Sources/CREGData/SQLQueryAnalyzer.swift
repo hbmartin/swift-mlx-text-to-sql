@@ -680,6 +680,23 @@ private final class Analyzer {
         ctes[name] = opaqueRelation(
           name: name, outputNames: declaredOutputNames ?? [],
           externalOriginPolicy: .physicalOnly)
+        if declaredOutputNames == nil {
+          switch compoundArmRanges(in: body) {
+          case .arms(let arms):
+            guard let anchor = arms.first,
+              tokens[anchor.lowerBound].word == "select",
+              let anchorBlock = analyze(range: anchor, inheritedCTEs: ctes)
+            else { return nil }
+            ctes[name] = opaqueRelation(
+              name: name,
+              outputNames: anchorBlock.outputs.compactMap(\.name),
+              externalOriginPolicy: .physicalOnly)
+          case .none:
+            break
+          case .malformed:
+            return nil
+          }
+        }
         guard let block = analyze(range: body, inheritedCTEs: ctes)
         else { return nil }
         var parsed = relation(name: name, block: block)

@@ -499,9 +499,13 @@ import Testing
   }
 
   @Test func recursiveCTESelfReferenceShadowsPhysicalLeaseTable() {
-    for anchor in ["SELECT 'Pending'", "VALUES ('Pending')"] {
+    for (header, anchor) in [
+      ("leases(status)", "SELECT 'Pending'"),
+      ("leases(status)", "VALUES ('Pending')"),
+      ("leases", "SELECT 'Pending' AS status"),
+    ] {
       let sql = """
-        WITH RECURSIVE leases(status) AS (
+        WITH RECURSIVE \(header) AS (
           \(anchor)
           UNION ALL
           SELECT l.status FROM leases l WHERE l.status = 'Actve'
