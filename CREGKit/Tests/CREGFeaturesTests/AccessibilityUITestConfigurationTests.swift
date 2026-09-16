@@ -19,6 +19,7 @@ import Testing
         "result-chart-preparation",
         "result-chart-recovery",
         "result-chart-terminal-recovery",
+        "result-chart-unresolved-selection",
         "transient-banners",
       ]
 

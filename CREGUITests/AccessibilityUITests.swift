@@ -72,8 +72,7 @@ final class AccessibilityUITests: XCTestCase {
       XCTAssertTrue(selectedChartType.isSelected)
       XCTAssertFalse(app.buttons["Ranked dot"].isSelected)
       selectedChartType.tap()
-
-      XCTAssertTrue(app.staticTexts["No recovery action"].waitForExistence(timeout: 5))
+      XCTAssertTrue(app.staticTexts["Bar selected again"].waitForExistence(timeout: 5))
       app.descendants(matching: .any)["Keep Table"]
         .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
         .tap()
@@ -103,7 +102,16 @@ final class AccessibilityUITests: XCTestCase {
       assertAccessibleControl("Keep Table", in: app)
       XCTAssertFalse(app.descendants(matching: .any)["Retry Chart"].exists)
 
-      XCTAssertTrue(app.staticTexts["No recovery action"].waitForExistence(timeout: 5))
+      let chartType = app.descendants(matching: .any)["result-chart-type-retry"]
+      XCTAssertTrue(chartType.waitForExistence(timeout: 5))
+      chartType.tap()
+      let alternativeChartType = app.buttons["Ranked dot"]
+      XCTAssertTrue(alternativeChartType.waitForExistence(timeout: 5))
+      XCTAssertFalse(alternativeChartType.isSelected)
+      alternativeChartType.tap()
+      XCTAssertTrue(
+        app.staticTexts["Ranked dot selected"].waitForExistence(timeout: 5))
+
       app.descendants(matching: .any)["Keep Table"]
         .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
         .tap()
@@ -124,6 +132,23 @@ final class AccessibilityUITests: XCTestCase {
       }
       app.terminate()
     }
+  }
+
+  func testUnresolvedChartTypeDoesNotMarkTheFirstOptionSelected() {
+    let app = launch(scenario: "result-chart-unresolved-selection")
+    let chartType = app.descendants(matching: .any)["result-chart-type-retry"]
+    XCTAssertTrue(chartType.waitForExistence(timeout: 5))
+    chartType.tap()
+
+    let firstChartType = app.buttons["Bar"]
+    let secondChartType = app.buttons["Ranked dot"]
+    XCTAssertTrue(firstChartType.waitForExistence(timeout: 5))
+    XCTAssertFalse(firstChartType.isSelected)
+    XCTAssertFalse(secondChartType.isSelected)
+    firstChartType.tap()
+
+    XCTAssertTrue(app.staticTexts["Bar selected"].waitForExistence(timeout: 5))
+    app.terminate()
   }
 
   func testHighestRiskScreensAtAX5Landscape() throws {
@@ -182,6 +207,7 @@ final class AccessibilityUITests: XCTestCase {
     XCTAssertTrue(originalChart.waitForExistence(timeout: 10))
 
     app.buttons["Replace result"].tap()
+    XCTAssertFalse(originalChart.exists)
     let replacementTable = app.buttons["3 rows, Explore result"]
     XCTAssertTrue(replacementTable.waitForExistence(timeout: 10))
     XCTAssertFalse(app.buttons["auto-chart-bar"].exists)

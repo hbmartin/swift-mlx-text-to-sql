@@ -15,7 +15,8 @@ import Testing
       reads: [
         SQLSourceRead(
           table: "properties", column: "city", database: "main")
-      ])
+      ],
+      directOrigins: [.init(table: "properties", column: "city")])
     let result = QueryResult(
       columns: ["city"], rows: [[.text("Phoenix")]], lineage: lineage)
 
@@ -91,6 +92,26 @@ import Testing
       from: JSONSerialization.data(withJSONObject: object))
 
     #expect(decoded.lineage?.completeness == .incomplete)
+  }
+
+  @Test func lineageWithoutDirectOriginsDecodesWithNoExactEvidence() throws {
+    let result = QueryResult(
+      columns: ["city"], rows: [[.text("Phoenix")]],
+      lineage: SQLQueryLineage(
+        columns: [nil],
+        directOrigins: [.init(table: "properties", column: "city")]))
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(result))
+        as? [String: Any])
+    var lineage = try #require(object["lineage"] as? [String: Any])
+    lineage.removeValue(forKey: "directOrigins")
+    object["lineage"] = lineage
+
+    let decoded = try JSONDecoder().decode(
+      QueryResult.self,
+      from: JSONSerialization.data(withJSONObject: object))
+
+    #expect(decoded.lineage?.directOrigins == [])
   }
 
   @Test func presentationLineageDoesNotChangeResultContentFingerprint() {

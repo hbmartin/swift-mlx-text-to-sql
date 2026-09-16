@@ -195,6 +195,7 @@ final class CREGChartSessionOwner: ObservableObject {
     guard inputIdentity == expectedInputIdentity,
       session.preference != .table,
       let analysis,
+      analysis.request == request?.id,
       analysis.cregRecommendationCatalog?.primary != nil
     else { return false }
     switch session.state {

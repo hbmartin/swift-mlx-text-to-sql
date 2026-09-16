@@ -528,21 +528,22 @@ struct ResultViewerView: View {
       beforeSessionRestart: prepareChartSelectionForSessionRestart)
   }
 
-  func selectChartType(_ id: AutoChartRecommendationID) {
+  func selectChartType(
+    _ id: AutoChartRecommendationID,
+    currentlySelectedID: AutoChartRecommendationID?
+  ) {
     let currentPreference = preference ?? .automatic
-    let currentlySelectedID = chartOwner.displayedRecommendation(
-      for: chartInputIdentity)?.id ?? currentPreference.specificationID
-    let updated = currentPreference.selectingChart(id)
-    if selectedChartFailure?.isRetryable == true {
-      clearChartSelection()
-      let didRetry = chartOwner.retry(
-        preference: updated.packagePreference,
-        beforeRestart: prepareChartSelectionForSessionRestart)
-      if didRetry && updated != currentPreference { persistPreference(updated) }
-      return
-    }
-    guard id != currentlySelectedID else { return }
+    let intent = ResultViewerLogic.chartTypeSelectionIntent(
+      id,
+      currentlySelectedID: currentlySelectedID,
+      currentPreference: currentPreference,
+      failureRetryability: selectedChartFailure.map(\.isRetryable))
+    guard intent != .none else { return }
     clearChartSelection()
-    applyUserPreference(updated)
+    applyResultPresentationModeSelection(
+      intent,
+      chartOwner: chartOwner,
+      persistPreference: persistPreference,
+      beforeSessionRestart: prepareChartSelectionForSessionRestart)
   }
 }
