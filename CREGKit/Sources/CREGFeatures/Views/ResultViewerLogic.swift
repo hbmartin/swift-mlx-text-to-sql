@@ -278,7 +278,7 @@ public enum ResultViewerLogic {
     {
       return persistedSpecificationID
     }
-    return optionIDs.first
+    return nil
   }
 
   enum ModeSelectionIntent: Equatable {
@@ -313,6 +313,25 @@ public enum ResultViewerLogic {
       ResultPresentationPreference(
         mode: selectedMode,
         specificationID: specificationID))
+  }
+
+  /// Interprets a chart-type choice using the same resolved selection shown by
+  /// the menu. A terminal failure may recover through a different type, but it
+  /// cannot repeat the failed type. Every failure recovery starts a fresh
+  /// attempt so diagnostics receive a new episode.
+  static func chartTypeSelectionIntent(
+    _ selectedID: AutoChartRecommendationID,
+    currentlySelectedID: AutoChartRecommendationID?,
+    currentPreference: ResultPresentationPreference,
+    failureRetryability: Bool?
+  ) -> ModeSelectionIntent {
+    let updated = currentPreference.selectingChart(selectedID)
+    if let isRetryable = failureRetryability {
+      guard selectedID != currentlySelectedID || isRetryable else { return .none }
+      return .retryChart(updated == currentPreference ? nil : updated)
+    }
+    guard selectedID != currentlySelectedID else { return .none }
+    return .persist(updated)
   }
 
   /// Pinch arming uses hysteresis so tiny reversals around the activation

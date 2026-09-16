@@ -82,9 +82,11 @@ package enum SQLQueryAnalyzer {
     sql: String,
     outputColumnNames: [String],
     directOrigins: [SQLSourceColumn?] = [],
-    reads: [SQLSourceRead] = [],
-    fallbackColumns: [SQLResultColumnLineage?] = []
+    reads: [SQLSourceRead] = []
   ) -> SQLQueryLineage {
+    let alignedDirectOrigins = outputColumnNames.indices.map { index in
+      directOrigins.indices.contains(index) ? directOrigins[index] : nil
+    }
     let tokenization = SQLLexer.tokenize(sql)
     let analyzer = Analyzer(tokenization: tokenization)
     let readColumns = Set(
@@ -103,12 +105,10 @@ package enum SQLQueryAnalyzer {
           if directOrigins.indices.contains(index), let origin = directOrigins[index] {
             return directLineage(for: origin)
           }
-          return fallbackLineage(
-            at: index,
-            fallbackColumns: fallbackColumns,
-            readColumns: readColumns)
+          return nil
         },
         reads: reads,
+        directOrigins: alignedDirectOrigins,
         completeness: .incomplete)
     }
 
@@ -174,19 +174,13 @@ package enum SQLQueryAnalyzer {
             preservesSourceDomain: descriptor.preservesSourceDomain)
         }
       }
-      guard alignedOutput == nil,
-        block.externalOriginPolicy == .all,
-        let fallback = fallbackLineage(
-          at: index,
-          fallbackColumns: fallbackColumns,
-          readColumns: readColumns)
-      else { return nil }
-      return fallback
+      return nil
     }
     return SQLQueryLineage(
       columns: columns,
       rowGrain: block.rowGrain,
       reads: reads,
+      directOrigins: alignedDirectOrigins,
       completeness: .complete)
   }
 
@@ -300,25 +294,6 @@ package enum SQLQueryAnalyzer {
       preservesSourceDomain: true)
   }
 
-  private static func fallbackLineage(
-    at index: Int,
-    fallbackColumns: [SQLResultColumnLineage?],
-    readColumns: Set<SQLSourceColumn>
-  ) -> SQLResultColumnLineage? {
-    guard !readColumns.isEmpty,
-      fallbackColumns.indices.contains(index),
-      let fallback = fallbackColumns[index],
-      fallback.aggregation == nil,
-      !fallback.sourceColumns.isEmpty,
-      fallback.sourceColumns.allSatisfy(readColumns.contains)
-    else { return nil }
-    return SQLResultColumnLineage(
-      sourceColumns: fallback.sourceColumns,
-      sourceGrain: Analyzer.normalizedGrain(
-        for: fallback.sourceColumns,
-        schema: PortfolioSchemaCatalog.document),
-      preservesSourceDomain: false)
-  }
 }
 
 private enum SQLToken: Equatable {

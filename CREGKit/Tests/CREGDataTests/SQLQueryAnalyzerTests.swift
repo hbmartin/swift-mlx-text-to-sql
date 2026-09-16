@@ -815,11 +815,7 @@ import Testing
     #expect(withSingleton.columns[37] == nil)
   }
 
-  @Test func directOriginsAndLegacyFallbackAreRejectedForCompounds() {
-    let stale = SQLResultColumnLineage(
-      sourceColumns: [.init(table: "tenants", column: "credit_rating")],
-      sourceGrain: ["tenants"],
-      preservesSourceDomain: true)
+  @Test func directOriginsAreRejectedForCompounds() {
     let lineage = SQLQueryAnalyzer.lineage(
       sql: """
         SELECT credit_rating FROM tenants
@@ -831,8 +827,7 @@ import Testing
       reads: [
         .init(table: "tenants", column: "credit_rating"),
         .init(table: "leases", column: "status"),
-      ],
-      fallbackColumns: [stale])
+      ])
 
     #expect(lineage.columns == [nil])
 
@@ -860,8 +855,7 @@ import Testing
         reads: [
           .init(table: "tenants", column: "credit_rating"),
           .init(table: "leases", column: "status"),
-        ],
-        fallbackColumns: [stale])
+        ])
       #expect(nested.columns == [nil])
     }
 
@@ -874,75 +868,18 @@ import Testing
         """,
       outputColumnNames: ["credit_rating"],
       directOrigins: [.init(table: "leases", column: "status")],
-      reads: [.init(table: "tenants", column: "credit_rating")],
-      fallbackColumns: [stale])
+      reads: [.init(table: "tenants", column: "credit_rating")])
     #expect(failedCTE.columns == [nil])
   }
 
-  @Test func unmatchedLegacyFallbackIsConservativeAndReadChecked() throws {
-    let stale = SQLResultColumnLineage(
-      sourceColumns: [.init(table: "tenants", column: "credit_rating")],
-      sourceGrain: ["stale"],
-      preservesSourceDomain: true)
-    let accepted = SQLQueryAnalyzer.lineage(
-      sql: "SELECT city, state FROM properties",
-      outputColumnNames: ["city", "legacy_rating", "state"],
-      reads: [.init(table: "tenants", column: "credit_rating")],
-      fallbackColumns: [nil, stale, nil])
-    let fallback = try #require(accepted.columns[1])
+  @Test func directOriginEvidenceStaysAlignedWithRuntimeColumns() {
+    let city = SQLSourceColumn(table: "properties", column: "city")
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: "SELECT city, UPPER(state) FROM properties",
+      outputColumnNames: ["city", "UPPER(state)"],
+      directOrigins: [city])
 
-    #expect(fallback.sourceColumns == stale.sourceColumns)
-    #expect(fallback.sourceGrain == ["tenants"])
-    #expect(fallback.aggregation == nil)
-    #expect(!fallback.preservesSourceDomain)
-
-    let contradicted = SQLQueryAnalyzer.lineage(
-      sql: "SELECT city, state FROM properties",
-      outputColumnNames: ["city", "legacy_rating", "state"],
-      reads: [.init(table: "properties", column: "city")],
-      fallbackColumns: [nil, stale, nil])
-    #expect(contradicted.columns[1] == nil)
-
-    let noEvidence = SQLQueryAnalyzer.lineage(
-      sql: "SELECT city, state FROM properties",
-      outputColumnNames: ["city", "legacy_rating", "state"],
-      fallbackColumns: [nil, stale, nil])
-    #expect(noEvidence.columns[1] == nil)
-
-    let aggregate = SQLResultColumnLineage(
-      sourceColumns: stale.sourceColumns,
-      sourceGrain: ["stale"],
-      aggregation: .maximum,
-      preservesSourceDomain: true)
-    let rejectedAggregate = SQLQueryAnalyzer.lineage(
-      sql: "SELECT city, state FROM properties",
-      outputColumnNames: ["city", "legacy_rating", "state"],
-      reads: [.init(table: "tenants", column: "credit_rating")],
-      fallbackColumns: [nil, aggregate, nil])
-    #expect(rejectedAggregate.columns[1] == nil)
-  }
-
-  @Test func totalAnalysisFailureUsesOnlyReadProvenFallback() throws {
-    let stale = SQLResultColumnLineage(
-      sourceColumns: [.init(table: "legacy_table", column: "label")],
-      sourceGrain: ["stale"],
-      preservesSourceDomain: true)
-    let accepted = SQLQueryAnalyzer.lineage(
-      sql: "VALUES ('x')",
-      outputColumnNames: ["label"],
-      reads: [.init(table: "legacy_table", column: "label")],
-      fallbackColumns: [stale])
-    let column = try #require(accepted.columns[0])
-
-    #expect(column.sourceColumns == stale.sourceColumns)
-    #expect(column.sourceGrain == ["creg.opaque.legacy_table"])
-    #expect(!column.preservesSourceDomain)
-
-    let rejected = SQLQueryAnalyzer.lineage(
-      sql: "VALUES ('x')",
-      outputColumnNames: ["label"],
-      fallbackColumns: [stale])
-    #expect(rejected.columns == [nil])
+    #expect(lineage.directOrigins == [city, nil])
   }
 
   @Test func malformedCompoundsStayConservative() {

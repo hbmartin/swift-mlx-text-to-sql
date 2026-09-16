@@ -115,14 +115,23 @@ enum CREGChartAdapter {
     result: QueryResult,
     sql: String
   ) -> SQLQueryLineage {
-    let persistedLineage = result.lineage
-    return persistedLineage?.analysisVersion == SQLQueryLineage.currentAnalysisVersion
-      ? persistedLineage!
-      : SQLQueryAnalyzer.lineage(
+    guard let persistedLineage = result.lineage else {
+      return SQLQueryAnalyzer.lineage(
         sql: sql,
-        outputColumnNames: result.columns,
-        reads: persistedLineage?.reads ?? [],
-        fallbackColumns: persistedLineage?.columns ?? [])
+        outputColumnNames: result.columns)
+    }
+    if persistedLineage.analysisVersion == SQLQueryLineage.currentAnalysisVersion {
+      return persistedLineage
+    }
+    let hasReusableExactEvidence =
+      persistedLineage.analysisVersion >= 6
+      && persistedLineage.analysisVersion < SQLQueryLineage.currentAnalysisVersion
+      && persistedLineage.directOrigins.count == result.columns.count
+    return SQLQueryAnalyzer.lineage(
+      sql: sql,
+      outputColumnNames: result.columns,
+      directOrigins: hasReusableExactEvidence ? persistedLineage.directOrigins : [],
+      reads: hasReusableExactEvidence ? persistedLineage.reads : [])
   }
 
   private static func recommendationConstraints(

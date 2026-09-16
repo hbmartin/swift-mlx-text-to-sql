@@ -124,7 +124,7 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
 
   /// Bump whenever derived grain/domain decisions change incompatibly. Stored
   /// lineage from an older analyzer is re-derived instead of being trusted.
-  public static let currentAnalysisVersion = 5
+  public static let currentAnalysisVersion = 6
 
   public var analysisVersion: Int
   /// Whether the analyzer proved the full query-block structure. Incomplete
@@ -137,11 +137,15 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
   public var rowGrain: [String]
   /// Exact physical reads reported by SQLite's authorizer.
   public var reads: [SQLSourceRead]
+  /// Exact SQLite column origins aligned one-for-one with result columns.
+  /// Nil entries represent expressions or columns without a physical origin.
+  public var directOrigins: [SQLSourceColumn?]
 
   public init(
     columns: [SQLResultColumnLineage?],
     rowGrain: [String] = [],
     reads: [SQLSourceRead] = [],
+    directOrigins: [SQLSourceColumn?] = [],
     completeness: Completeness = .incomplete,
     analysisVersion: Int = SQLQueryLineage.currentAnalysisVersion
   ) {
@@ -150,10 +154,11 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
     self.columns = columns
     self.rowGrain = rowGrain
     self.reads = reads
+    self.directOrigins = directOrigins
   }
 
   enum CodingKeys: String, CodingKey {
-    case analysisVersion, completeness, columns, rowGrain, reads
+    case analysisVersion, completeness, columns, rowGrain, reads, directOrigins
   }
 
   public init(from decoder: Decoder) throws {
@@ -165,6 +170,8 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
     columns = try values.decode([SQLResultColumnLineage?].self, forKey: .columns)
     rowGrain = try values.decodeIfPresent([String].self, forKey: .rowGrain) ?? []
     reads = try values.decodeIfPresent([SQLSourceRead].self, forKey: .reads) ?? []
+    directOrigins =
+      try values.decodeIfPresent([SQLSourceColumn?].self, forKey: .directOrigins) ?? []
   }
 }
 

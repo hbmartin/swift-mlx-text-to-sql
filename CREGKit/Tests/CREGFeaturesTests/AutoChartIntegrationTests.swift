@@ -20,8 +20,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
 }
 
 @Suite struct CREGChartAdapterTests {
-  @Test func lineageAnalysisVersionIsFive() {
-    #expect(SQLQueryLineage.currentAnalysisVersion == 5)
+  @Test func lineageAnalysisVersionIsSix() {
+    #expect(SQLQueryLineage.currentAnalysisVersion == 6)
   }
 
   @Test func incompleteLineageAllowsOnlyUnaggregatedRawRecommendations() async throws {
@@ -799,31 +799,51 @@ private final class PickerLabelCounter: @unchecked Sendable {
         == ["A", "B", "C"].map(AutoChartValue.text))
   }
 
-  @Test func unalignableSavedColumnKeepsOnlyConservativeProvenance() throws {
+  @Test func versionFiveUnalignedLineageIsDropped() throws {
     let stale = SQLQueryLineage(
       columns: [
-        nil,
         SQLResultColumnLineage(
           sourceColumns: [.init(table: "tenants", column: "credit_rating")],
-          sourceGrain: ["stale"],
-          preservesSourceDomain: true),
-        nil,
+          sourceGrain: ["tenants"],
+          preservesSourceDomain: true)
       ],
       reads: [.init(table: "tenants", column: "credit_rating")],
-      analysisVersion: 2)
+      analysisVersion: 5)
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
-        columns: ["city", "legacy_rating", "state"],
-        rows: [[.text("Phoenix"), .text("AAA"), .text("AZ")]],
+        columns: ["runtime_rating"],
+        rows: [[.text("AAA")]],
         lineage: stale),
-      sql: "SELECT city, state FROM properties")
-    let legacy = dataset.chartColumns[1]
+      sql: "SELECT credit_rating FROM tenants")
+
+    #expect(dataset.chartColumns[0].provenance == nil)
+    #expect(dataset.chartColumns[0].categoryOrder == nil)
+  }
+
+  @Test func versionSixLineageRetainsRuntimeOriginSemantics() throws {
+    let origin = SQLSourceColumn(table: "tenants", column: "credit_rating")
+    let current = SQLQueryLineage(
+      columns: [
+        SQLResultColumnLineage(
+          sourceColumns: [origin],
+          sourceGrain: ["tenants"],
+          preservesSourceDomain: true)
+      ],
+      reads: [.init(table: origin.table, column: origin.column)],
+      directOrigins: [origin],
+      completeness: .complete)
+    let dataset = try CREGChartAdapter.analysisDataset(
+      result: QueryResult(
+        columns: ["runtime_rating"],
+        rows: [[.text("AAA")]],
+        lineage: current),
+      sql: "SELECT credit_rating FROM tenants")
 
     #expect(
-      legacy.provenance?.sourceColumns
+      dataset.chartColumns[0].provenance?.sourceColumns
         == [.init(entity: "tenants", name: "credit_rating")])
-    #expect(legacy.provenance?.sourceGrain == AutoChartGrain(entity: "tenants"))
-    #expect(legacy.categoryOrder == nil)
+    #expect(dataset.chartColumns[0].categoryOrder?.first == .text("AAA"))
+    #expect(dataset.chartColumns[0].categoryOrder?.last == .text("NR"))
   }
 
   @Test func staleCompoundLineageIsNotResurrected() throws {
@@ -1383,7 +1403,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       optionCount: 2, requestedMode: .table, hasFailure: false))
   }
 
-  @Test func chartPickerSelectionAlwaysMatchesAnOption() {
+  @Test func chartPickerSelectionRepresentsOnlyAnActualChoice() {
     let first = chartTestRecommendationID("first")
     let second = chartTestRecommendationID("second")
     let missing = chartTestRecommendationID("missing")
@@ -1400,15 +1420,57 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(ResultViewerLogic.chartPickerSelectionID(
       selectedRecommendationID: nil,
       persistedSpecificationID: missing,
-      optionIDs: options) == first)
+      optionIDs: options) == nil)
     #expect(ResultViewerLogic.chartPickerSelectionID(
       selectedRecommendationID: nil,
       persistedSpecificationID: nil,
-      optionIDs: options) == first)
+      optionIDs: options) == nil)
     #expect(ResultViewerLogic.chartPickerSelectionID(
       selectedRecommendationID: second,
       persistedSpecificationID: first,
       optionIDs: []) == nil)
+  }
+
+  @Test func chartTypeSelectionIntentDistinguishesPersistenceAndRecovery() {
+    let first = chartTestRecommendationID("first")
+    let second = chartTestRecommendationID("second")
+    let pinned = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: first)
+    let replacement = ResultPresentationPreference(
+      mode: .chart,
+      specificationID: second)
+
+    #expect(ResultViewerLogic.chartTypeSelectionIntent(
+      first,
+      currentlySelectedID: first,
+      currentPreference: pinned,
+      failureRetryability: nil) == .none)
+    #expect(ResultViewerLogic.chartTypeSelectionIntent(
+      second,
+      currentlySelectedID: first,
+      currentPreference: pinned,
+      failureRetryability: nil) == .persist(replacement))
+    #expect(ResultViewerLogic.chartTypeSelectionIntent(
+      first,
+      currentlySelectedID: first,
+      currentPreference: pinned,
+      failureRetryability: true) == .retryChart(nil))
+    #expect(ResultViewerLogic.chartTypeSelectionIntent(
+      first,
+      currentlySelectedID: first,
+      currentPreference: .automatic,
+      failureRetryability: true) == .retryChart(pinned))
+    #expect(ResultViewerLogic.chartTypeSelectionIntent(
+      first,
+      currentlySelectedID: first,
+      currentPreference: pinned,
+      failureRetryability: false) == .none)
+    #expect(ResultViewerLogic.chartTypeSelectionIntent(
+      second,
+      currentlySelectedID: first,
+      currentPreference: pinned,
+      failureRetryability: false) == .retryChart(replacement))
   }
 
   @MainActor
@@ -2247,6 +2309,37 @@ private final class PickerLabelCounter: @unchecked Sendable {
       chartFailed: false) == .chart)
   }
 
+  @Test func pendingChartRejectsAnalysisFromAnotherRequest() async throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "pending-current",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    var foreignIdentity = identity
+    foreignIdentity.resultFingerprint = "pending-foreign"
+    let cache = AutoChartCache()
+    let foreignRequest = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: foreignIdentity.sql,
+      question: foreignIdentity.question,
+      resultFingerprint: foreignIdentity.resultFingerprint)
+    let foreignAnalysis = try await AutoChartAnalyzer(cache: cache).analyze(
+      foreignRequest,
+      preparation: .none)
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: cache),
+      inputIdentity: identity,
+      result: result)
+
+    owner.load(result: result, inputIdentity: identity, preference: .automatic)
+
+    #expect(!owner.hasPendingChart(for: identity, analysis: foreignAnalysis))
+    owner.session.cancel()
+  }
+
   @Test func newIdentityCannotDisplayOldChartBeforeItsLoadTask() async throws {
     let result = QueryResult(
       columns: ["fund", "value"],
@@ -2284,6 +2377,74 @@ private final class PickerLabelCounter: @unchecked Sendable {
   }
 
   #if ATC_TEST_HOOKS
+  @Test func terminalFailureAlternativeStartsANewRetryEpisode() async throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "terminal-alternative",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let cache = AutoChartCache()
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: identity.sql,
+      question: identity.question,
+      resultFingerprint: identity.resultFingerprint)
+    let base = try await AutoChartAnalyzer(cache: cache).analyze(
+      request,
+      preparation: .none)
+    let catalog = try #require(base.cregRecommendationCatalog)
+    let selected = try #require(catalog.primary)
+    let alternative = try #require(catalog.cataloged.first { $0.id != selected.id })
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: cache),
+      inputIdentity: identity,
+      result: result)
+    let currentPreference = ResultPresentationPreference.chart(.specific(selected.id))
+    owner.load(
+      result: result,
+      inputIdentity: identity,
+      preference: currentPreference.packagePreference)
+    let firstFailure = AutoChartFailure(
+      stage: .chartPreparation,
+      kind: .invalidSpecification,
+      isRetryable: false,
+      diagnosticID: "ATC.test.terminalAlternative",
+      message: "The selected chart is invalid.")
+    owner.session.failCurrentAttemptForTesting(firstFailure)
+    var persisted: [ResultPresentationPreference] = []
+    let intent = ResultViewerLogic.chartTypeSelectionIntent(
+      alternative.id,
+      currentlySelectedID: selected.id,
+      currentPreference: currentPreference,
+      failureRetryability: false)
+
+    applyResultPresentationModeSelection(
+      intent,
+      chartOwner: owner,
+      persistPreference: { persisted.append($0) })
+
+    guard case .preparing = owner.session.state else {
+      Issue.record("A terminal failure alternative did not start a fresh attempt.")
+      return
+    }
+    let updatedPreference = ResultPresentationPreference.chart(
+      .specific(alternative.id))
+    #expect(persisted == [updatedPreference])
+    #expect(owner.session.preference == updatedPreference.packagePreference)
+    let secondFailure = AutoChartFailure(
+      stage: firstFailure.stage,
+      kind: firstFailure.kind,
+      isRetryable: false,
+      diagnosticID: firstFailure.diagnosticID,
+      message: firstFailure.message)
+    owner.session.failCurrentAttemptForTesting(secondFailure)
+    #expect(owner.failure(for: identity)?.episodeID == secondFailure.episodeID)
+    #expect(secondFailure.episodeID != firstFailure.episodeID)
+  }
+
   @Test func failedOffFeaturedChartStaysSelectedAndSameChoiceRetries()
     async throws
   {

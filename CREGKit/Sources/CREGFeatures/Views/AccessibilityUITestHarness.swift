@@ -19,6 +19,7 @@ import SwiftUI
       case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
       case resultChartTerminalRecovery = "result-chart-terminal-recovery"
+      case resultChartUnresolvedSelection = "result-chart-unresolved-selection"
       case transientBanners = "transient-banners"
     }
 
@@ -126,10 +127,15 @@ import SwiftUI
         ResultPreviewIdentityAccessibilityHarness()
 
       case .resultChartRecovery:
-        ResultChartRecoveryAccessibilityHarness(retryAvailable: true)
+        ResultChartTypeAccessibilityHarness(failureRetryability: true)
 
       case .resultChartTerminalRecovery:
-        ResultChartRecoveryAccessibilityHarness(retryAvailable: false)
+        ResultChartTypeAccessibilityHarness(failureRetryability: false)
+
+      case .resultChartUnresolvedSelection:
+        ResultChartTypeAccessibilityHarness(
+          failureRetryability: nil,
+          startsSelected: false)
 
       case .resultChartPreparation:
         ResultChartPreparationAccessibilityHarness()
@@ -232,53 +238,79 @@ import SwiftUI
   }
 
   @MainActor
-  private struct ResultChartRecoveryAccessibilityHarness: View {
-    private static let chartTypeOptions: [AutoChartPickerOption] = {
-      let recommendations = [
-        AutoChartRecommendation(
-          specification: .bar(category: "fund", measure: "value"),
-          score: 1,
-          rationale: []),
-        AutoChartRecommendation(
-          specification: .rankedDot(category: "fund", measure: "value"),
-          score: 0.9,
-          rationale: []),
-      ]
-      return AutoChartRecommendationCatalog(
-        featured: recommendations,
-        cataloged: recommendations
-      ).pickerOptions()
-    }()
+  private struct ResultChartTypeAccessibilityHarness: View {
+    private static let chartTypeRecommendations = [
+      AutoChartRecommendation(
+        specification: .bar(category: "fund", measure: "value"),
+        score: 1,
+        rationale: []),
+      AutoChartRecommendation(
+        specification: .rankedDot(category: "fund", measure: "value"),
+        score: 0.9,
+        rationale: []),
+    ]
+    private static let chartTypeCatalog = AutoChartRecommendationCatalog(
+      featured: chartTypeRecommendations,
+      cataloged: chartTypeRecommendations)
+    private static let chartTypeOptions = resultChartPickerOptions(
+      catalog: chartTypeCatalog,
+      selectedRecommendation: chartTypeRecommendations.first)
 
-    let retryAvailable: Bool
+    let failureRetryability: Bool?
     @State private var actionFeedback = "No recovery action"
     @State private var keepTableSelectionCount = 0
-    @State private var selectedChartTypeID =
-      ResultChartRecoveryAccessibilityHarness.chartTypeOptions.first?.id
+    @State private var selectedChartTypeID: AutoChartRecommendationID?
+
+    init(failureRetryability: Bool?, startsSelected: Bool = true) {
+      self.failureRetryability = failureRetryability
+      _selectedChartTypeID = State(
+        initialValue: startsSelected ? Self.chartTypeOptions.first?.id : nil)
+    }
+
+    private var retryAvailable: Bool {
+      failureRetryability == true
+    }
+
+    private var showsChartTypeMenu: Bool {
+      ResultViewerLogic.shouldShowChartTypeMenu(
+        optionCount: Self.chartTypeOptions.count,
+        requestedMode: .chart,
+        hasFailure: failureRetryability != nil)
+    }
+
+    private func selectChartType(_ id: AutoChartRecommendationID) {
+      let wasSelected = selectedChartTypeID == id
+      selectedChartTypeID = id
+      let label = Self.chartTypeOptions.first(where: { $0.id == id })?.label
+        ?? "Chart type"
+      actionFeedback = wasSelected ? "\(label) selected again" : "\(label) selected"
+    }
 
     var body: some View {
       VStack(spacing: 8) {
-        ResultChartRecoveryControls(
-          spacing: 12,
-          keepTable: {
-            keepTableSelectionCount += 1
-            actionFeedback =
-              keepTableSelectionCount == 1
-              ? "Keep Table selected" : "Keep Table selected again"
-          },
-          retryChart:
-            retryAvailable
-            ? { actionFeedback = "Retry Chart selected" } : nil
-        )
-        .padding(.horizontal)
-        .accessibilityIdentifier("result-chart-recovery")
-        if retryAvailable {
+        if failureRetryability != nil {
+          ResultChartRecoveryControls(
+            spacing: 12,
+            keepTable: {
+              keepTableSelectionCount += 1
+              actionFeedback =
+                keepTableSelectionCount == 1
+                ? "Keep Table selected" : "Keep Table selected again"
+            },
+            retryChart:
+              retryAvailable
+              ? { actionFeedback = "Retry Chart selected" } : nil
+          )
+          .padding(.horizontal)
+          .accessibilityIdentifier("result-chart-recovery")
+        }
+        if showsChartTypeMenu {
           Menu {
             resultChartTypeMenuContent(
               selectedID: selectedChartTypeID,
               options: Self.chartTypeOptions,
-              allowsReselection: true,
-              select: { selectedChartTypeID = $0 })
+              allowsReselection: retryAvailable,
+              select: selectChartType)
           } label: {
             Label("Chart type", systemImage: "chart.xyaxis.line")
           }

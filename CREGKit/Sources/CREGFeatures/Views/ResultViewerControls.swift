@@ -3,12 +3,13 @@ import CREGEngine
 import ComposableArchitecture
 import SwiftUI
 
+@MainActor
 @ViewBuilder
 func resultChartTypeMenuContent(
   selectedID: AutoChartRecommendationID?,
   options: [AutoChartPickerOption],
   allowsReselection: Bool,
-  select: @escaping @MainActor @Sendable (AutoChartRecommendationID) -> Void
+  select: @escaping @MainActor (AutoChartRecommendationID) -> Void
 ) -> some View {
   if allowsReselection {
     // Buttons deliver a tap even for the already selected type. A Picker can
@@ -32,7 +33,7 @@ func resultChartTypeMenuContent(
         get: { selectedID },
         set: { id in
           guard let id else { return }
-          MainActor.assumeIsolated { select(id) }
+          select(id)
         })
     ) {
       ForEach(options) { option in
@@ -199,7 +200,7 @@ extension ResultViewerView {
         selectedID: selectedID,
         options: options,
         allowsReselection: selectedChartFailure?.isRetryable == true,
-        select: selectChartType)
+        select: { selectChartType($0, currentlySelectedID: selectedID) })
     } label: {
       Image(systemName: "chart.xyaxis.line")
         .cregIconButtonTarget()
