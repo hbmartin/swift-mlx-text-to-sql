@@ -173,6 +173,9 @@ final class AccessibilityUITests: XCTestCase {
     XCTAssertTrue(originalChart.waitForExistence(timeout: 10))
 
     app.buttons["Replace result"].tap()
+    // Check the first observable frame after the identity changes, before
+    // waiting for the replacement table to settle.
+    XCTAssertFalse(originalChart.exists)
     let replacementTable = app.buttons["3 rows, Explore result"]
     XCTAssertTrue(replacementTable.waitForExistence(timeout: 10))
     XCTAssertFalse(app.buttons["auto-chart-bar"].exists)

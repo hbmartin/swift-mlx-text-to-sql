@@ -75,10 +75,21 @@ func resultPresentationMigrationSuggestion(
   preference: ResultPresentationPreference
 ) -> ResultPresentationMigrationSuggestion? {
   guard let analysis else { return nil }
+  return try? migrationSuggestion(
+    analysis: analysis,
+    preference: preference,
+    resolve: { analysis.resolve($0) })
+}
+
+private func migrationSuggestion(
+  analysis: AutoChartAnalysis<Int>,
+  preference: ResultPresentationPreference,
+  resolve: (AutoChartPreference) throws -> AutoChartPreferenceResolution
+) throws -> ResultPresentationMigrationSuggestion? {
   if let previousID = preference.specificationID {
     // Table keeps a latent chart ID, which the package's Table preference cannot
     // inspect. Resolve that ID as a shadow Chart choice, then preserve Table mode.
-    let resolution = analysis.resolve(.chart(.specific(previousID)))
+    let resolution = try resolve(.chart(.specific(previousID)))
     guard let replacement = resolution.replacementPreference else { return nil }
     let reboundID: AutoChartRecommendationID? = {
       if case .chart(.specific(let id)) = replacement { return id }
@@ -94,7 +105,7 @@ func resultPresentationMigrationSuggestion(
       updated: updated)
   }
 
-  let resolution = analysis.resolve(preference.packagePreference)
+  let resolution = try resolve(preference.packagePreference)
   guard let replacement = resolution.replacementPreference else { return nil }
   return ResultPresentationMigrationSuggestion(
     analysisID: analysis.id,
@@ -109,8 +120,10 @@ func resultPresentationMigrationSuggestionOffMain(
   preference: ResultPresentationPreference
 ) async -> ResultPresentationMigrationSuggestion? {
   let worker = Task.detached(priority: .utility) {
-    resultPresentationMigrationSuggestion(
-      analysis: analysis, preference: preference)
+    try? migrationSuggestion(
+      analysis: analysis,
+      preference: preference,
+      resolve: analysis.resolveCancellable)
   }
   return await withTaskCancellationHandler(
     operation: { await worker.value },
@@ -126,14 +139,23 @@ func applyResultPresentationMigration(
   analysis: AutoChartAnalysis<Int>,
   chartOwner: CREGChartSessionOwner,
   beforeSessionRestart: () -> Void = {},
+  isStillCurrent: () -> Bool = { true },
   migratePreference: ResultPresentationMigrationHandler
 ) async {
   var previous = suggestion.previous
   var updated = suggestion.updated
   var visited: Set<ResultPresentationPreference> = []
+  var latestAuthoritative: ResultPresentationPreference?
+
+  func synchronize(_ preference: ResultPresentationPreference?) {
+    guard let preference, !Task.isCancelled, isStillCurrent() else { return }
+    chartOwner.setPreferenceIfNeeded(
+      preference.packagePreference,
+      onRestart: beforeSessionRestart)
+  }
 
   while visited.insert(previous).inserted {
-    guard !Task.isCancelled else { return }
+    guard !Task.isCancelled, isStillCurrent() else { return }
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
       chartOwner.setPreferenceIfNeeded(
@@ -141,22 +163,56 @@ func applyResultPresentationMigration(
         onRestart: beforeSessionRestart)
       return
     case .retained(let authoritative):
-      chartOwner.setPreferenceIfNeeded(
-        authoritative.packagePreference,
-        onRestart: beforeSessionRestart)
-      guard authoritative != previous else { return }
+      latestAuthoritative = authoritative
+      guard authoritative != previous else {
+        synchronize(authoritative)
+        return
+      }
       guard let next = await resultPresentationMigrationSuggestionOffMain(
         analysis: analysis, preference: authoritative)
       else {
+        synchronize(authoritative)
         return
       }
-      guard !Task.isCancelled else { return }
+      guard !Task.isCancelled, isStillCurrent() else { return }
       previous = next.previous
       updated = next.updated
     case .messageMissing:
+      synchronize(latestAuthoritative)
       return
     }
   }
+  synchronize(latestAuthoritative)
+}
+
+/// Shared preview/viewer task gate. The caller supplies its own live
+/// preference check because the viewer has a binding and preview has a value.
+@MainActor
+func runResultPresentationMigrationTask(
+  id: ResultPresentationMigrationTaskID,
+  analysis: AutoChartAnalysis<Int>,
+  chartOwner: CREGChartSessionOwner,
+  isCurrentPreference: () -> Bool,
+  beforeSessionRestart: () -> Void = {},
+  migratePreference: ResultPresentationMigrationHandler
+) async {
+  func isCurrent() -> Bool {
+    !Task.isCancelled
+      && chartOwner.inputIdentity == id.inputIdentity
+      && chartOwner.analysis(for: id.inputIdentity)?.id == id.analysisID
+      && isCurrentPreference()
+  }
+  guard let suggestion = await resultPresentationMigrationSuggestionOffMain(
+    analysis: analysis, preference: id.preference),
+    isCurrent()
+  else { return }
+  await applyResultPresentationMigration(
+    suggestion,
+    analysis: analysis,
+    chartOwner: chartOwner,
+    beforeSessionRestart: beforeSessionRestart,
+    isStillCurrent: isCurrent,
+    migratePreference: migratePreference)
 }
 
 func resultChartPickerOptions(
