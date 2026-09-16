@@ -106,7 +106,8 @@ struct ResultPreviewView: View {
       let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
         requestedMode: displayedRequestedMode,
         hasChart: selectedRecommendation != nil
-          || chartOwner.hasPendingChart(for: chartInputIdentity),
+          || chartOwner.hasPendingChart(
+            for: chartInputIdentity, analysis: analysis),
         chartFailed: failure != nil)
       VStack(alignment: .leading, spacing: 8) {
         if hasChartOptions || failure?.isRetryable == true {

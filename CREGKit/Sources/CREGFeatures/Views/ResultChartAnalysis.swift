@@ -89,8 +89,7 @@ final class CREGChartSessionOwner: ObservableObject {
   private var isSessionLoaded = false
   private struct PickerMemoKey: Equatable {
     let analysisID: AutoChartAnalysisID
-    let catalog: AutoChartRecommendationCatalog
-    let selectedRecommendation: AutoChartRecommendation?
+    let selectedRecommendationID: AutoChartRecommendationID?
   }
   private var pickerMemo: (key: PickerMemoKey, options: [AutoChartPickerOption])?
 
@@ -190,11 +189,12 @@ final class CREGChartSessionOwner: ObservableObject {
   }
 
   func hasPendingChart(
-    for expectedInputIdentity: CREGChartInputIdentity
+    for expectedInputIdentity: CREGChartInputIdentity,
+    analysis: AutoChartAnalysis<Int>?
   ) -> Bool {
     guard inputIdentity == expectedInputIdentity,
       session.preference != .table,
-      let analysis = analysis(for: expectedInputIdentity),
+      let analysis,
       analysis.cregRecommendationCatalog?.primary != nil
     else { return false }
     switch session.state {
@@ -223,8 +223,7 @@ final class CREGChartSessionOwner: ObservableObject {
     else { return [] }
     let key = PickerMemoKey(
       analysisID: analysis.id,
-      catalog: catalog,
-      selectedRecommendation: selectedRecommendation)
+      selectedRecommendationID: selectedRecommendation?.id)
     if let pickerMemo, pickerMemo.key == key { return pickerMemo.options }
     let options = resultChartPickerOptions(
       catalog: catalog,

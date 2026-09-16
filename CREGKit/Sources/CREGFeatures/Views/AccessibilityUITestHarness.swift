@@ -1,3 +1,4 @@
+import AutoTableCharts
 import CREGEngine
 import SwiftUI
 
@@ -232,9 +233,28 @@ import SwiftUI
 
   @MainActor
   private struct ResultChartRecoveryAccessibilityHarness: View {
+    private static let chartTypeOptions: [AutoChartPickerOption] = {
+      let recommendations = [
+        AutoChartRecommendation(
+          specification: .bar(category: "fund", measure: "value"),
+          score: 1,
+          rationale: []),
+        AutoChartRecommendation(
+          specification: .rankedDot(category: "fund", measure: "value"),
+          score: 0.9,
+          rationale: []),
+      ]
+      return AutoChartRecommendationCatalog(
+        featured: recommendations,
+        cataloged: recommendations
+      ).pickerOptions()
+    }()
+
     let retryAvailable: Bool
     @State private var actionFeedback = "No recovery action"
     @State private var keepTableSelectionCount = 0
+    @State private var selectedChartTypeID =
+      ResultChartRecoveryAccessibilityHarness.chartTypeOptions.first?.id
 
     var body: some View {
       VStack(spacing: 8) {
@@ -252,6 +272,18 @@ import SwiftUI
         )
         .padding(.horizontal)
         .accessibilityIdentifier("result-chart-recovery")
+        if retryAvailable {
+          Menu {
+            resultChartTypeMenuContent(
+              selectedID: selectedChartTypeID,
+              options: Self.chartTypeOptions,
+              allowsReselection: true,
+              select: { selectedChartTypeID = $0 })
+          } label: {
+            Label("Chart type", systemImage: "chart.xyaxis.line")
+          }
+          .accessibilityIdentifier("result-chart-type-retry")
+        }
         Text(actionFeedback)
           .font(.caption2)
           .foregroundStyle(.secondary)

@@ -20,8 +20,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
 }
 
 @Suite struct CREGChartAdapterTests {
-  @Test func lineageAnalysisVersionIsFour() {
-    #expect(SQLQueryLineage.currentAnalysisVersion == 4)
+  @Test func lineageAnalysisVersionIsFive() {
+    #expect(SQLQueryLineage.currentAnalysisVersion == 5)
   }
 
   @Test func incompleteLineageAllowsOnlyUnaggregatedRawRecommendations() async throws {
@@ -749,7 +749,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
           preservesSourceDomain: true)
       ],
       rowGrain: ["funds"],
-      analysisVersion: 2)
+      analysisVersion: 4)
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
         columns: ["city"],
@@ -1368,6 +1368,47 @@ private final class PickerLabelCounter: @unchecked Sendable {
       resolver: resolver)
     #expect(bounded.count == 5)
     #expect(counter.calls == 5)
+  }
+
+  @Test func chartTypeMenuStaysAvailableAcrossChartFailures() {
+    #expect(ResultViewerLogic.shouldShowChartTypeMenu(
+      optionCount: 2, requestedMode: .chart, hasFailure: false))
+    #expect(ResultViewerLogic.shouldShowChartTypeMenu(
+      optionCount: 2, requestedMode: .chart, hasFailure: true))
+    #expect(ResultViewerLogic.shouldShowChartTypeMenu(
+      optionCount: 2, requestedMode: .table, hasFailure: true))
+    #expect(!ResultViewerLogic.shouldShowChartTypeMenu(
+      optionCount: 1, requestedMode: .chart, hasFailure: true))
+    #expect(!ResultViewerLogic.shouldShowChartTypeMenu(
+      optionCount: 2, requestedMode: .table, hasFailure: false))
+  }
+
+  @Test func chartPickerSelectionAlwaysMatchesAnOption() {
+    let first = chartTestRecommendationID("first")
+    let second = chartTestRecommendationID("second")
+    let missing = chartTestRecommendationID("missing")
+    let options = [first, second]
+
+    #expect(ResultViewerLogic.chartPickerSelectionID(
+      selectedRecommendationID: second,
+      persistedSpecificationID: first,
+      optionIDs: options) == second)
+    #expect(ResultViewerLogic.chartPickerSelectionID(
+      selectedRecommendationID: nil,
+      persistedSpecificationID: second,
+      optionIDs: options) == second)
+    #expect(ResultViewerLogic.chartPickerSelectionID(
+      selectedRecommendationID: nil,
+      persistedSpecificationID: missing,
+      optionIDs: options) == first)
+    #expect(ResultViewerLogic.chartPickerSelectionID(
+      selectedRecommendationID: nil,
+      persistedSpecificationID: nil,
+      optionIDs: options) == first)
+    #expect(ResultViewerLogic.chartPickerSelectionID(
+      selectedRecommendationID: second,
+      persistedSpecificationID: first,
+      optionIDs: []) == nil)
   }
 
   @MainActor
@@ -2198,10 +2239,11 @@ private final class PickerLabelCounter: @unchecked Sendable {
 
     #expect(owner.displayedMode(for: identity, fallback: .table) == .chart)
     #expect(owner.displayedRecommendation(for: identity)?.id == primary.id)
-    #expect(owner.hasPendingChart(for: identity))
+    let analysis = owner.analysis(for: identity)
+    #expect(owner.hasPendingChart(for: identity, analysis: analysis))
     #expect(ResultViewerLogic.effectivePresentationMode(
       requestedMode: .chart,
-      hasChart: owner.hasPendingChart(for: identity),
+      hasChart: owner.hasPendingChart(for: identity, analysis: analysis),
       chartFailed: false) == .chart)
   }
 
@@ -2237,7 +2279,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(owner.displayedRecommendation(for: replacement) == nil)
     #expect(owner.analysis(for: replacement)?.id == nil)
     #expect(owner.displayedMode(for: replacement, fallback: .table) == .table)
-    #expect(!owner.hasPendingChart(for: replacement))
+    #expect(!owner.hasPendingChart(
+      for: replacement, analysis: owner.analysis(for: replacement)))
   }
 
   #if ATC_TEST_HOOKS

@@ -3,6 +3,46 @@ import CREGEngine
 import ComposableArchitecture
 import SwiftUI
 
+@ViewBuilder
+func resultChartTypeMenuContent(
+  selectedID: AutoChartRecommendationID?,
+  options: [AutoChartPickerOption],
+  allowsReselection: Bool,
+  select: @escaping @MainActor @Sendable (AutoChartRecommendationID) -> Void
+) -> some View {
+  if allowsReselection {
+    // Buttons deliver a tap even for the already selected type. A Picker can
+    // omit that binding update, which would strand a failed chart.
+    ForEach(options) { option in
+      Button {
+        select(option.id)
+      } label: {
+        if option.id == selectedID {
+          Label(option.label, systemImage: "checkmark")
+        } else {
+          Text(option.label)
+        }
+      }
+      .accessibilityAddTraits(option.id == selectedID ? .isSelected : [])
+    }
+  } else {
+    Picker(
+      "Chart type",
+      selection: Binding(
+        get: { selectedID },
+        set: { id in
+          guard let id else { return }
+          MainActor.assumeIsolated { select(id) }
+        })
+    ) {
+      ForEach(options) { option in
+        Text(option.label)
+          .tag(Optional(option.id))
+      }
+    }
+  }
+}
+
 extension ResultViewerView {
   func footer(
     displayedRowCount: Int,
@@ -147,45 +187,19 @@ extension ResultViewerView {
     selectedRecommendation: AutoChartRecommendation?,
     options: [AutoChartPickerOption]
   ) -> some View {
-    Menu {
+    let selectedID = ResultViewerLogic.chartPickerSelectionID(
+      selectedRecommendationID: selectedRecommendation?.id,
+      persistedSpecificationID: (preference ?? .automatic).specificationID,
+      optionIDs: options.map(\.id))
+    return Menu {
       // The one user action that changes the chart specification: persist
       // the preference here, and clear the exact-mark selection whose row
       // indexes are meaningless under the newly picked chart.
-      if selectedChartFailure?.isRetryable == true {
-        // Buttons deliver a tap even for the already selected type. A Picker
-        // can omit that binding update, which would strand a failed chart.
-        ForEach(options) { option in
-          Button {
-            selectChartType(option.id)
-          } label: {
-            if option.id == (selectedRecommendation?.id
-              ?? (preference ?? .automatic).specificationID)
-            {
-              Label(option.label, systemImage: "checkmark")
-            } else {
-              Text(option.label)
-            }
-          }
-        }
-      } else {
-        Picker(
-          "Chart type",
-          selection: Binding(
-            get: {
-              selectedRecommendation?.id
-                ?? (preference ?? .automatic).specificationID
-            },
-            set: { id in
-              guard let id else { return }
-              selectChartType(id)
-            })
-        ) {
-          ForEach(options) { option in
-            Text(option.label)
-              .tag(Optional(option.id))
-          }
-        }
-      }
+      resultChartTypeMenuContent(
+        selectedID: selectedID,
+        options: options,
+        allowsReselection: selectedChartFailure?.isRetryable == true,
+        select: selectChartType)
     } label: {
       Image(systemName: "chart.xyaxis.line")
         .cregIconButtonTarget()

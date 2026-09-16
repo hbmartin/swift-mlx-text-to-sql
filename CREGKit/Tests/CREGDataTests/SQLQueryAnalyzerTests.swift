@@ -553,6 +553,17 @@ import Testing
       try #require(unaligned.columns[0]).sourceColumns
         == [.init(table: "properties", column: "city")])
 
+    let shapeMismatch = SQLQueryAnalyzer.lineage(
+      sql: """
+        WITH leases(status) AS (VALUES ('Pending'))
+        SELECT p.city, l.status
+        FROM properties p JOIN leases l ON 1 = 1
+        """,
+      outputColumnNames: ["renamed_at_runtime"],
+      directOrigins: [.init(table: "properties", column: "city")],
+      reads: [.init(table: "properties", column: "city")])
+    #expect(shapeMismatch.columns == [nil])
+
     let sameNamedPhysicalJoin = SQLQueryAnalyzer.lineage(
       sql: """
         WITH leases(status) AS (VALUES ('Pending'))

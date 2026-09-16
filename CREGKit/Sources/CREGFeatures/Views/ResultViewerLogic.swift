@@ -255,6 +255,32 @@ public enum ResultViewerLogic {
     return requestedMode
   }
 
+  static func shouldShowChartTypeMenu(
+    optionCount: Int,
+    requestedMode: ResultPresentationMode,
+    hasFailure: Bool
+  ) -> Bool {
+    optionCount > 1 && (requestedMode == .chart || hasFailure)
+  }
+
+  static func chartPickerSelectionID(
+    selectedRecommendationID: AutoChartRecommendationID?,
+    persistedSpecificationID: AutoChartRecommendationID?,
+    optionIDs: [AutoChartRecommendationID]
+  ) -> AutoChartRecommendationID? {
+    if let selectedRecommendationID,
+      optionIDs.contains(selectedRecommendationID)
+    {
+      return selectedRecommendationID
+    }
+    if let persistedSpecificationID,
+      optionIDs.contains(persistedSpecificationID)
+    {
+      return persistedSpecificationID
+    }
+    return optionIDs.first
+  }
+
   enum ModeSelectionIntent: Equatable {
     case none
     case persist(ResultPresentationPreference)

@@ -124,7 +124,7 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
 
   /// Bump whenever derived grain/domain decisions change incompatibly. Stored
   /// lineage from an older analyzer is re-derived instead of being trusted.
-  public static let currentAnalysisVersion = 4
+  public static let currentAnalysisVersion = 5
 
   public var analysisVersion: Int
   /// Whether the analyzer proved the full query-block structure. Incomplete
