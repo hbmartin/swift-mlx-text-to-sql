@@ -305,7 +305,8 @@ struct ResultViewerView: View {
     let effectiveResultMode = ResultViewerLogic.effectivePresentationMode(
       requestedMode: displayedRequestedMode,
       hasChart: selectedRecommendation != nil
-        || chartOwner.hasPendingChart(for: chartInputIdentity),
+        || chartOwner.hasPendingChart(
+          for: chartInputIdentity, analysis: analysis),
       chartFailed: selectedChartFailure != nil)
     let chartSelection = self.chartSelection
     let selectedSourceRows = self.selectedSourceRows
@@ -346,33 +347,33 @@ struct ResultViewerView: View {
         if effectiveResultMode == .chart {
           if let analysis, let selectedRecommendation {
             ResultChartExplorerContainer(recommendation: selectedRecommendation) {
-            if chartSelectionLifecycle.pendingSourceRows == nil,
-              case .ready(_, let presented?) = session.state
-            {
-              AutoChartView(
-                presentedChart: presented,
-                analysisID: analysis.id,
-                selection: interactiveChartSelection,
-                presentation: .explorer(
-                  plotHeight: ResultChartLayout.explorerPlotHeight),
-                formatters: CREGChartAdapter.formatters,
-                textResolver: CREGChartAdapter.textResolver
-              )
-              .id(
-                PresentedChartIdentity(
+              if chartSelectionLifecycle.pendingSourceRows == nil,
+                case .ready(_, let presented?) = session.state
+              {
+                AutoChartView(
+                  presentedChart: presented,
                   analysisID: analysis.id,
-                  preparedChartID: presented.preparedChart.id))
-            } else {
-              ResultChartExplorerPreparationView(
-                recommendation: selectedRecommendation,
-                selection: chartSelection.map { selection in
-                  ResultChartPreparationView.SelectionConfiguration(
-                    value: selection,
-                    columns: analysis.columnProfiles.map(\.column),
-                    clear: clearChartSelection)
-                })
+                  selection: interactiveChartSelection,
+                  presentation: .explorer(
+                    plotHeight: ResultChartLayout.explorerPlotHeight),
+                  formatters: CREGChartAdapter.formatters,
+                  textResolver: CREGChartAdapter.textResolver
+                )
+                .id(
+                  PresentedChartIdentity(
+                    analysisID: analysis.id,
+                    preparedChartID: presented.preparedChart.id))
+              } else {
+                ResultChartExplorerPreparationView(
+                  recommendation: selectedRecommendation,
+                  selection: chartSelection.map { selection in
+                    ResultChartPreparationView.SelectionConfiguration(
+                      value: selection,
+                      columns: analysis.columnProfiles.map(\.column),
+                      clear: clearChartSelection)
+                  })
+              }
             }
-          }
           } else {
             ScrollView {
               ResultChartNeutralPreparationView(
@@ -405,9 +406,10 @@ struct ResultViewerView: View {
       .toolbar {
         ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
         ToolbarItemGroup(placement: .primaryAction) {
-          if pickerOptions.count > 1,
-            (selectedChartFailure == nil && displayedRequestedMode == .chart)
-              || selectedChartFailure?.isRetryable == true
+          if ResultViewerLogic.shouldShowChartTypeMenu(
+            optionCount: pickerOptions.count,
+            requestedMode: displayedRequestedMode,
+            hasFailure: selectedChartFailure != nil)
           {
             chartTypeMenu(
               selectedRecommendation: selectedRecommendation,

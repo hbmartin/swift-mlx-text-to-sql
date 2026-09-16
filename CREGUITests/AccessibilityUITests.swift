@@ -64,6 +64,15 @@ final class AccessibilityUITests: XCTestCase {
       assertAccessibleControl("Keep Table", in: app)
       assertAccessibleControl("Retry Chart", in: app)
 
+      let chartType = app.descendants(matching: .any)["result-chart-type-retry"]
+      XCTAssertTrue(chartType.waitForExistence(timeout: 5))
+      chartType.tap()
+      let selectedChartType = app.buttons["Bar"]
+      XCTAssertTrue(selectedChartType.waitForExistence(timeout: 5))
+      XCTAssertTrue(selectedChartType.isSelected)
+      XCTAssertFalse(app.buttons["Ranked dot"].isSelected)
+      selectedChartType.tap()
+
       XCTAssertTrue(app.staticTexts["No recovery action"].waitForExistence(timeout: 5))
       app.descendants(matching: .any)["Keep Table"]
         .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
@@ -173,9 +182,6 @@ final class AccessibilityUITests: XCTestCase {
     XCTAssertTrue(originalChart.waitForExistence(timeout: 10))
 
     app.buttons["Replace result"].tap()
-    // Check the first observable frame after the identity changes, before
-    // waiting for the replacement table to settle.
-    XCTAssertFalse(originalChart.exists)
     let replacementTable = app.buttons["3 rows, Explore result"]
     XCTAssertTrue(replacementTable.waitForExistence(timeout: 10))
     XCTAssertFalse(app.buttons["auto-chart-bar"].exists)

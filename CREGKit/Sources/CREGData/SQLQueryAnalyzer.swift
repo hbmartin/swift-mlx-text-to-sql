@@ -117,8 +117,11 @@ package enum SQLQueryAnalyzer {
     let columns = outputColumnNames.indices.map { index -> SQLResultColumnLineage? in
       let alignedOutput = alignedOutputs[index]
       var descriptor = alignedOutput?.descriptor
+      let positionalOutput =
+        block.outputs.count == outputColumnNames.count
+        ? block.outputs[index] : nil
       let candidateOutput = alignedOutput
-        ?? (block.outputs.indices.contains(index) ? block.outputs[index] : nil)
+        ?? positionalOutput
       let permitsPhysicalOnlyOrigin = block.externalOriginPolicy != .physicalOnly
         || candidateOutput?.descriptor.hasOpaqueOrigin == false
       if permitsPhysicalOnlyOrigin,
@@ -487,6 +490,18 @@ private enum ExternalOriginPolicy: Equatable {
   case physicalOnly
   case none
 
+  static func mostRestrictive<S: Sequence>(
+    _ policies: S
+  ) -> ExternalOriginPolicy where S.Element == ExternalOriginPolicy {
+    policies.reduce(.all) { current, candidate in
+      switch (current, candidate) {
+      case (.none, _), (_, .none): .none
+      case (.physicalOnly, _), (_, .physicalOnly): .physicalOnly
+      case (.all, .all): .all
+      }
+    }
+  }
+
   func allows(_ origin: SQLSourceColumn?, physicalTables: Set<String>) -> Bool {
     guard let origin else { return false }
     switch self {
@@ -689,7 +704,7 @@ private final class Analyzer {
             else { return nil }
             ctes[name] = opaqueRelation(
               name: name,
-              outputNames: anchorBlock.outputs.compactMap(\.name),
+              outputNames: anchorBlock.outputs.map(\.name),
               externalOriginPolicy: .physicalOnly)
           case .none:
             break
@@ -841,11 +856,9 @@ private final class Analyzer {
   }
 
   func rejectsExternalOrigins(in range: Range<Int>) -> Bool {
-    switch outcomes[unwrapped(range)] {
-    case .success(let block): block.externalOriginPolicy == .none
-    case .failure(let rejectsExternalOrigins): rejectsExternalOrigins
-    case nil: false
-    }
+    guard case .failure(let rejectsExternalOrigins) = outcomes[unwrapped(range)]
+    else { return false }
+    return rejectsExternalOrigins
   }
 
   func analyze(
@@ -1074,11 +1087,8 @@ private final class Analyzer {
         qualifiedColumns: qualifiedColumns,
         unqualifiedColumns: unqualifiedColumns),
       physicalTables: tables,
-      externalOriginPolicy: relations.contains(where: {
-        $0.externalOriginPolicy == .none
-      }) ? .none : (relations.contains(where: {
-        $0.externalOriginPolicy == .physicalOnly
-      }) ? .physicalOnly : .all))
+      externalOriginPolicy: ExternalOriginPolicy.mostRestrictive(
+        relations.lazy.map(\.externalOriginPolicy)))
     return succeed(block)
   }
 
