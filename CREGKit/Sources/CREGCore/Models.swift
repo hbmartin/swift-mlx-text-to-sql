@@ -137,8 +137,9 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
   public var rowGrain: [String]
   /// Exact physical reads reported by SQLite's authorizer.
   public var reads: [SQLSourceRead]
-  /// Exact SQLite column origins aligned one-for-one with result columns.
-  /// Nil entries represent expressions or columns without a physical origin.
+  /// Analyzer-approved SQLite column origins aligned one-for-one with result columns.
+  /// Nil entries represent expressions, opaque outputs, rejected origins, or
+  /// columns without a physical origin.
   public var directOrigins: [SQLSourceColumn?]
 
   public init(

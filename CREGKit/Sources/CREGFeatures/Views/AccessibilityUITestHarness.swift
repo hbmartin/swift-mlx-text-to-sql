@@ -260,11 +260,17 @@ import SwiftUI
     @State private var actionFeedback = "No recovery action"
     @State private var keepTableSelectionCount = 0
     @State private var selectedChartTypeID: AutoChartRecommendationID?
+    @State private var preference: ResultPresentationPreference
 
     init(failureRetryability: Bool?, startsSelected: Bool = true) {
       self.failureRetryability = failureRetryability
+      let selectedID = startsSelected ? Self.chartTypeOptions.first?.id : nil
       _selectedChartTypeID = State(
-        initialValue: startsSelected ? Self.chartTypeOptions.first?.id : nil)
+        initialValue: selectedID)
+      _preference = State(
+        initialValue: selectedID.map {
+          ResultPresentationPreference.chart(.specific($0))
+        } ?? .automatic)
     }
 
     private var retryAvailable: Bool {
@@ -279,11 +285,26 @@ import SwiftUI
     }
 
     private func selectChartType(_ id: AutoChartRecommendationID) {
-      let wasSelected = selectedChartTypeID == id
-      selectedChartTypeID = id
       let label = Self.chartTypeOptions.first(where: { $0.id == id })?.label
         ?? "Chart type"
-      actionFeedback = wasSelected ? "\(label) selected again" : "\(label) selected"
+      let intent = ResultViewerLogic.chartTypeSelectionIntent(
+        id,
+        currentlySelectedID: selectedChartTypeID,
+        currentPreference: preference,
+        failureRetryability: failureRetryability)
+      switch intent {
+      case .none:
+        return
+      case .persist(let updated):
+        preference = updated
+        selectedChartTypeID = id
+        actionFeedback = "\(label) selected"
+      case .retryChart(let updated):
+        if let updated { preference = updated }
+        selectedChartTypeID = id
+        actionFeedback = updated == nil
+          ? "\(label) selected again" : "\(label) selected"
+      }
     }
 
     var body: some View {

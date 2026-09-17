@@ -4,6 +4,11 @@ import CREGEngine
 import Foundation
 
 enum CREGChartAdapter {
+  private struct QueryLineageResolution {
+    let lineage: SQLQueryLineage
+    let isChartEligible: Bool
+  }
+
   /// The one chart-data identity for a transcript message, shared by the
   /// inline preview and the full-screen viewer so analyzer caching keys off
   /// the same string everywhere.
@@ -18,17 +23,19 @@ enum CREGChartAdapter {
     resultFingerprint: String? = nil,
     dataIdentity: String? = nil
   ) throws -> AutoChartRequest<Int> {
-    let queryLineage = queryLineage(result: result, sql: sql)
+    let lineageResolution = queryLineageResolution(result: result, sql: sql)
     let dataset = try analysisDataset(
       result: result,
       sql: sql,
       resultFingerprint: resultFingerprint,
       dataIdentity: dataIdentity,
-      queryLineage: queryLineage)
+      queryLineage: lineageResolution.lineage)
     return try AutoChartRequest(
       table: dataset,
       context: analysisContext(question: question, sql: sql),
-      constraints: recommendationConstraints(for: queryLineage))
+      constraints: recommendationConstraints(
+        resultColumns: result.columns,
+        resolution: lineageResolution))
   }
 
   /// Exposed internally so adapter tests can verify CREG's row normalization,
@@ -45,7 +52,7 @@ enum CREGChartAdapter {
       sql: sql,
       resultFingerprint: resultFingerprint,
       dataIdentity: dataIdentity,
-      queryLineage: queryLineage(result: result, sql: sql))
+      queryLineage: queryLineageResolution(result: result, sql: sql).lineage)
   }
 
   private static func analysisDataset(
@@ -111,36 +118,55 @@ enum CREGChartAdapter {
     return dataset
   }
 
-  private static func queryLineage(
+  private static func queryLineageResolution(
     result: QueryResult,
     sql: String
-  ) -> SQLQueryLineage {
+  ) -> QueryLineageResolution {
     guard let persistedLineage = result.lineage else {
-      return SQLQueryAnalyzer.lineage(
-        sql: sql,
-        outputColumnNames: result.columns)
+      return QueryLineageResolution(
+        lineage: SQLQueryAnalyzer.lineage(
+          sql: sql,
+          outputColumnNames: result.columns),
+        isChartEligible: true)
     }
     if persistedLineage.analysisVersion == SQLQueryLineage.currentAnalysisVersion {
-      return persistedLineage
+      return QueryLineageResolution(
+        lineage: persistedLineage,
+        isChartEligible: true)
     }
-    let hasReusableExactEvidence =
-      persistedLineage.analysisVersion >= 6
-      && persistedLineage.analysisVersion < SQLQueryLineage.currentAnalysisVersion
-      && persistedLineage.directOrigins.count == result.columns.count
-    return SQLQueryAnalyzer.lineage(
-      sql: sql,
-      outputColumnNames: result.columns,
-      directOrigins: hasReusableExactEvidence ? persistedLineage.directOrigins : [],
-      reads: hasReusableExactEvidence ? persistedLineage.reads : [])
+    return QueryLineageResolution(
+      lineage: SQLQueryLineage(
+        columns: Array(repeating: nil, count: result.columns.count),
+        completeness: .incomplete),
+      isChartEligible: false)
   }
 
   private static func recommendationConstraints(
-    for lineage: SQLQueryLineage
+    resultColumns: [String],
+    resolution: QueryLineageResolution
   ) -> AutoChartRecommendationConstraints {
-    guard lineage.completeness == .incomplete else { return .init() }
+    guard resolution.isChartEligible else {
+      return AutoChartRecommendationConstraints(includedFamilies: [])
+    }
+    let lineage = resolution.lineage
+    let excludedColumns = Set(
+      resultColumns.indices.compactMap { index -> AutoChartColumnID? in
+        guard lineage.columns.indices.contains(index),
+          let columnLineage = lineage.columns[index],
+          !columnLineage.sourceGrain.isEmpty
+        else {
+          return columnID(index: index, name: resultColumns[index])
+        }
+        return nil
+      })
+    guard lineage.completeness == .incomplete else {
+      return AutoChartRecommendationConstraints(
+        excludedColumns: excludedColumns)
+    }
     return AutoChartRecommendationConstraints(
       includedFamilies: [.kpi, .scatter, .bubble, .range, .line, .pointLine, .area],
-      includedAggregations: [.none])
+      includedAggregations: [.none],
+      excludedColumns: excludedColumns)
   }
 
   static func analysisContext(

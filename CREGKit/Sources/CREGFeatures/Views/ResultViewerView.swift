@@ -520,14 +520,6 @@ struct ResultViewerView: View {
       beforeSessionRestart: prepareChartSelectionForSessionRestart)
   }
 
-  func applyUserPreference(_ updated: ResultPresentationPreference) {
-    applyResultPresentationPreference(
-      updated,
-      chartOwner: chartOwner,
-      persistPreference: persistPreference,
-      beforeSessionRestart: prepareChartSelectionForSessionRestart)
-  }
-
   func selectChartType(
     _ id: AutoChartRecommendationID,
     currentlySelectedID: AutoChartRecommendationID?

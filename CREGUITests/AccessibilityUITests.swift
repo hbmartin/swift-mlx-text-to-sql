@@ -207,9 +207,9 @@ final class AccessibilityUITests: XCTestCase {
     XCTAssertTrue(originalChart.waitForExistence(timeout: 10))
 
     app.buttons["Replace result"].tap()
-    XCTAssertFalse(originalChart.exists)
     let replacementTable = app.buttons["3 rows, Explore result"]
     XCTAssertTrue(replacementTable.waitForExistence(timeout: 10))
+    XCTAssertTrue(originalChart.waitForNonExistence(timeout: 10))
     XCTAssertFalse(app.buttons["auto-chart-bar"].exists)
     app.terminate()
   }

@@ -4,8 +4,8 @@ import GRDB
 
 /// GRDB-backed implementation. All schema changes flow through the versioned
 /// migrator; the pre-browser installed base (unversioned `conversation`/
-/// `message`/`event` tables) is adopted by the baseline migration and rebuilt
-/// with typed columns without losing a message.
+/// `message`/`event` tables) is adopted by the baseline migration before any
+/// later one-time compatibility resets are applied.
 final class HistoryStore: Sendable {
   let queue: DatabaseQueue
   static let encoder = JSONEncoder()
