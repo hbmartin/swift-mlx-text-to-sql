@@ -64,75 +64,72 @@ import Testing
 
   // MARK: Migration
 
-  @Test func legacyStoreMigratesPreservingConversationAndMessages() async throws {
+  @Test func lineageV6MigrationClearsEveryHistoryTableAndCRUDStillWorks() async throws {
     let url = temporaryDatabaseURL()
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-    // Recreate the pre-browser schema exactly as the old client wrote it.
+    let queue = try DatabaseQueue(path: url.path)
+    try HistoryStore.migrator.migrate(queue, upTo: "v4-prepared-follow-ups")
     let legacyID = UUID()
-    let encoder = JSONEncoder()
-    let legacyMessages = [
-      userMessage("Which properties have the highest vacancy?", at: 100),
-      answerMessage(narration: "Five properties found.", at: 160),
-    ]
-    do {
-      let queue = try DatabaseQueue(path: url.path)
-      try await queue.write { db in
-        try db.execute(
-          sql: """
-            CREATE TABLE IF NOT EXISTS conversation (
-              id TEXT PRIMARY KEY,
-              started_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS message (
-              id TEXT PRIMARY KEY,
-              conversation_id TEXT NOT NULL REFERENCES conversation(id),
-              position INTEGER NOT NULL,
-              payload TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS event (
-              conversation_id TEXT NOT NULL,
-              message_id TEXT NOT NULL,
-              seq INTEGER NOT NULL,
-              line TEXT NOT NULL
-            );
-            """)
-        try db.execute(
-          sql: "INSERT INTO conversation (id, started_at) VALUES (?, datetime('now'))",
-          arguments: [legacyID.uuidString])
-        for (index, message) in legacyMessages.enumerated() {
-          let payload = String(decoding: try encoder.encode(message), as: UTF8.self)
-          try db.execute(
-            sql: """
-              INSERT INTO message (id, conversation_id, position, payload)
-              VALUES (?, ?, ?, ?)
-              """,
-            arguments: [
-              message.id.uuidString, legacyID.uuidString, index + 1, payload,
-            ])
-        }
+    let legacyMessage = userMessage("Old lineage", at: 100)
+    let payload = String(
+      decoding: try JSONEncoder().encode(legacyMessage),
+      as: UTF8.self)
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          INSERT INTO conversation
+            (id, title, is_manually_titled, started_at, last_activity_at, draft, is_unread)
+          VALUES (?, 'Old', 0, 100, 100, '', 0);
+          INSERT INTO message (id, conversation_id, position, payload)
+          VALUES (?, ?, 1, ?);
+          INSERT INTO event (conversation_id, message_id, seq, line)
+          VALUES (?, ?, 1, '{}');
+          INSERT INTO feedback
+            (message_id, conversation_id, verdict, correction, updated_at,
+             runtime_mode, is_evaluated)
+          VALUES (?, ?, 'up', NULL, 100, 'evaluated', 1);
+          INSERT INTO turn_journal (conversation_id, question, started_at)
+          VALUES (?, 'Old question', 100);
+          INSERT INTO search_index (content, conversation_id, message_id, kind)
+          VALUES ('Old lineage', ?, ?, 'message');
+          INSERT INTO prepared_follow_up_batch
+            (conversation_id, source_message_id, updated_at, payload)
+          VALUES (?, ?, 100, '{}');
+          """,
+        arguments: [
+          legacyID.uuidString,
+          legacyMessage.id.uuidString, legacyID.uuidString, payload,
+          legacyID.uuidString, legacyMessage.id.uuidString,
+          legacyMessage.id.uuidString, legacyID.uuidString,
+          legacyID.uuidString,
+          legacyID.uuidString, legacyMessage.id.uuidString,
+          legacyID.uuidString, legacyMessage.id.uuidString,
+        ])
       }
-    }
 
     let client = try makeClient(url)
-    let summaries = try await client.bootstrap()
+    #expect(try await client.bootstrap().isEmpty)
+    let tables = [
+      "prepared_follow_up_batch", "turn_journal", "feedback", "event",
+      "message", "search_index", "conversation",
+    ]
+    let counts = try await queue.read { db in
+      try Dictionary(uniqueKeysWithValues: tables.map { table in
+        (table, try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? -1)
+      })
+    }
+    #expect(counts.values.allSatisfy { $0 == 0 })
 
-    #expect(summaries.count == 1)
-    #expect(summaries.first?.id == legacyID)
-    #expect(summaries.first?.title == "Which properties have the highest vacancy?")
-    #expect(summaries.first?.isManuallyTitled == false)
-    #expect(summaries.first?.messageCount == 2)
-    #expect(summaries.first?.latestMessagePreview == "Five properties found.")
-
-    let snapshot = try await client.loadConversation(legacyID)
-    #expect(snapshot.messages == legacyMessages)
-    #expect(snapshot.draft.isEmpty)
-    #expect(snapshot.interruptedTurn == nil)
-
-    // Migrated content is searchable.
-    let hits = try await client.search("vacancy")
-    #expect(hits.map(\.conversationID) == [legacyID])
+    let currentID = UUID()
+    _ = try await client.createConversation(
+      currentID,
+      Date(timeIntervalSince1970: 200))
+    let currentMessage = userMessage("Fresh lineage", at: 210)
+    try await client.appendMessage(currentID, currentMessage)
+    let snapshot = try await client.loadConversation(currentID)
+    #expect(snapshot.messages == [currentMessage])
   }
 
   // MARK: CRUD, titles, drafts, unread

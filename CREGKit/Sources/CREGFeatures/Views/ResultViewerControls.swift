@@ -11,7 +11,10 @@ func resultChartTypeMenuContent(
   allowsReselection: Bool,
   select: @escaping @MainActor (AutoChartRecommendationID) -> Void
 ) -> some View {
-  if allowsReselection {
+  let pickerSelection = selectedID.flatMap { selectedID in
+    options.contains { $0.id == selectedID } ? selectedID : nil
+  }
+  if allowsReselection || pickerSelection == nil {
     // Buttons deliver a tap even for the already selected type. A Picker can
     // omit that binding update, which would strand a failed chart.
     ForEach(options) { option in
@@ -26,19 +29,16 @@ func resultChartTypeMenuContent(
       }
       .accessibilityAddTraits(option.id == selectedID ? .isSelected : [])
     }
-  } else {
+  } else if let pickerSelection {
     Picker(
       "Chart type",
       selection: Binding(
-        get: { selectedID },
-        set: { id in
-          guard let id else { return }
-          select(id)
-        })
+        get: { pickerSelection },
+        set: { id in select(id) })
     ) {
       ForEach(options) { option in
         Text(option.label)
-          .tag(Optional(option.id))
+          .tag(option.id)
       }
     }
   }

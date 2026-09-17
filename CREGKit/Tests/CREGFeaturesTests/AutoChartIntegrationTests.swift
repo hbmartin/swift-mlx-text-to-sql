@@ -11,6 +11,20 @@ import Testing
 
 private let chartTestReadyTimeout: Duration = .seconds(10)
 
+private func chartTestCompleteLineage(
+  _ columns: [String]
+) -> SQLQueryLineage {
+  SQLQueryLineage(
+    columns: columns.map { name in
+      SQLResultColumnLineage(
+        sourceColumns: [.init(table: "chart_test", column: name)],
+        sourceGrain: ["chart_test"],
+        preservesSourceDomain: true)
+    },
+    rowGrain: ["chart_test"],
+    completeness: .complete)
+}
+
 private final class PickerLabelCounter: @unchecked Sendable {
   private let lock = NSLock()
   private var storedCalls = 0
@@ -72,7 +86,9 @@ private final class PickerLabelCounter: @unchecked Sendable {
     })
   }
 
-  @Test func incompleteLineageSuppressesTrendsWithDuplicateMarks() async throws {
+  @Test func missingGrainColumnsCannotParticipateInSensitiveRecommendations()
+    async throws
+  {
     let result = QueryResult(
       columns: ["period_end", "net_operating_income", "current_market_value"],
       rows: [
@@ -82,17 +98,23 @@ private final class PickerLabelCounter: @unchecked Sendable {
       lineage: SQLQueryLineage(
         columns: [nil, nil, nil],
         completeness: .incomplete))
-    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
-      CREGChartAdapter.analysisRequest(
-        result: result,
-        sql: "WITH unused(value) AS (VALUES (1)) SELECT period_end, net_operating_income, current_market_value FROM property_financials",
-        question: "Show the NOI trend"),
-      preparation: .none)
-    let catalog = try #require(analysis.cregRecommendationCatalog)
-    #expect(catalog.cataloged.contains { $0.specification.family == .scatter })
-    #expect(!catalog.cataloged.contains {
-      [.line, .pointLine, .area].contains($0.specification.family)
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "WITH unused(value) AS (VALUES (1)) SELECT period_end, net_operating_income, current_market_value FROM property_financials",
+      question: "Show the NOI trend")
+    let expectedExcludedColumns = Set(result.columns.indices.map {
+      CREGChartAdapter.columnID(index: $0, name: result.columns[$0])
     })
+    #expect(request.constraints.excludedColumns == expectedExcludedColumns)
+
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request,
+      preparation: .none)
+    guard case .tableFallback = analysis.outcome else {
+      Issue.record(
+        "Missing-grain columns produced a scatter, aggregate, fan-out, or chasm-sensitive chart.")
+      return
+    }
   }
 
   @Test func analysisDatasetUsesOffsetIDsTypedSemanticsAndStableDataKey() throws {
@@ -308,13 +330,15 @@ private final class PickerLabelCounter: @unchecked Sendable {
       preparation: .none)
     #expect(unionAnalysis.columnProfiles[0].semanticType == .identifier)
     #expect(castAnalysis.columnProfiles[0].semanticType == .identifier)
-    for analysis in [unionAnalysis, castAnalysis] {
-      let catalog = try #require(analysis.cregRecommendationCatalog)
-      #expect(!catalog.cataloged.contains {
-        $0.specification.family == .bar
-          && $0.specification.encoding.x == analysis.columnProfiles[0].column.id
-      })
+    guard case .tableFallback = unionAnalysis.outcome else {
+      Issue.record("Compound output without lineage remained chart-eligible.")
+      return
     }
+    let castCatalog = try #require(castAnalysis.cregRecommendationCatalog)
+    #expect(!castCatalog.cataloged.contains {
+      $0.specification.family == .bar
+        && $0.specification.encoding.x == castAnalysis.columnProfiles[0].column.id
+    })
   }
 
   @Test func fakeIdentifierAliasesRelyOnObservedGroupingUniqueness() async throws {
@@ -740,7 +764,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(derived.chartColumns[0].categoryOrder == nil)
   }
 
-  @Test func stalePersistedLineageIsReanalyzed() throws {
+  @Test func versionMismatchedLineageFallsBackToTable() async throws {
     let stale = SQLQueryLineage(
       columns: [
         SQLResultColumnLineage(
@@ -750,74 +774,29 @@ private final class PickerLabelCounter: @unchecked Sendable {
       ],
       rowGrain: ["funds"],
       analysisVersion: 4)
+    let result = QueryResult(
+      columns: ["city"],
+      rows: [[.text("Phoenix")]],
+      lineage: stale)
     let dataset = try CREGChartAdapter.analysisDataset(
-      result: QueryResult(
-        columns: ["city"],
-        rows: [[.text("Phoenix")]],
-        lineage: stale),
+      result: result,
       sql: "SELECT city FROM properties")
-
-    #expect(
-      dataset.chartColumns[0].provenance?.sourceColumns
-        == [.init(entity: "properties", name: "city")])
-    #expect(dataset.chartMetadata.rowGrain == AutoChartGrain(entity: "properties"))
-  }
-
-  @Test func savedWildcardUsingAnswerRegainsProvenOrdinalLineage() throws {
-    let stale = SQLQueryLineage(
-      columns: [
-        SQLResultColumnLineage(
-          sourceColumns: [.init(table: "properties", column: "property_id")]),
-        SQLResultColumnLineage(
-          sourceColumns: [.init(table: "properties", column: "building_class")],
-          preservesSourceDomain: true),
-        SQLResultColumnLineage(
-          sourceColumns: [.init(table: "leases", column: "status")],
-          preservesSourceDomain: true),
-      ],
-      analysisVersion: 2)
-    let dataset = try CREGChartAdapter.analysisDataset(
-      result: QueryResult(
-        columns: ["property_id", "building_class", "status"],
-        rows: [[.integer(1), .text("A"), .text("Active")]],
-        lineage: stale),
-      sql: """
-        SELECT *
-        FROM (
-          SELECT property_id, building_class FROM properties
-        ) p
-        JOIN (
-          SELECT property_id, status FROM leases
-        ) l USING (property_id)
-        """)
-
-    #expect(
-      dataset.chartColumns[1].provenance?.sourceColumns
-        == [.init(entity: "properties", name: "building_class")])
-    #expect(
-      dataset.chartColumns[1].categoryOrder
-        == ["A", "B", "C"].map(AutoChartValue.text))
-  }
-
-  @Test func versionFiveUnalignedLineageIsDropped() throws {
-    let stale = SQLQueryLineage(
-      columns: [
-        SQLResultColumnLineage(
-          sourceColumns: [.init(table: "tenants", column: "credit_rating")],
-          sourceGrain: ["tenants"],
-          preservesSourceDomain: true)
-      ],
-      reads: [.init(table: "tenants", column: "credit_rating")],
-      analysisVersion: 5)
-    let dataset = try CREGChartAdapter.analysisDataset(
-      result: QueryResult(
-        columns: ["runtime_rating"],
-        rows: [[.text("AAA")]],
-        lineage: stale),
-      sql: "SELECT credit_rating FROM tenants")
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT city FROM properties",
+      question: "Where are the properties?")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request,
+      preparation: .none)
 
     #expect(dataset.chartColumns[0].provenance == nil)
     #expect(dataset.chartColumns[0].categoryOrder == nil)
+    #expect(dataset.chartMetadata.rowGrain == nil)
+    #expect(request.constraints.includedFamilies == [])
+    guard case .tableFallback = analysis.outcome else {
+      Issue.record("Version-mismatched lineage remained chart-eligible.")
+      return
+    }
   }
 
   @Test func versionSixLineageRetainsRuntimeOriginSemantics() throws {
@@ -844,30 +823,6 @@ private final class PickerLabelCounter: @unchecked Sendable {
         == [.init(entity: "tenants", name: "credit_rating")])
     #expect(dataset.chartColumns[0].categoryOrder?.first == .text("AAA"))
     #expect(dataset.chartColumns[0].categoryOrder?.last == .text("NR"))
-  }
-
-  @Test func staleCompoundLineageIsNotResurrected() throws {
-    let stale = SQLQueryLineage(
-      columns: [
-        SQLResultColumnLineage(
-          sourceColumns: [.init(table: "tenants", column: "credit_rating")],
-          sourceGrain: ["tenants"],
-          preservesSourceDomain: true)
-      ],
-      analysisVersion: 2)
-    let dataset = try CREGChartAdapter.analysisDataset(
-      result: QueryResult(
-        columns: ["credit_rating"],
-        rows: [[.text("AAA")], [.text("Active")]],
-        lineage: stale),
-      sql: """
-        SELECT credit_rating FROM tenants
-        UNION ALL
-        SELECT status FROM leases
-        """)
-
-    #expect(dataset.chartColumns[0].provenance == nil)
-    #expect(dataset.chartColumns[0].categoryOrder == nil)
   }
 
   @Test func blobBearingOrdinalColumnsAreNotForcedIntoCategorySemantics() throws {
@@ -1207,9 +1162,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
     let result = QueryResult(
       columns: names,
       rows: rows,
-      lineage: SQLQueryLineage(
-        columns: Array(repeating: nil, count: names.count),
-        completeness: .complete))
+      lineage: chartTestCompleteLineage(names))
     let sql = "SELECT * FROM properties"
     let dataset = try CREGChartAdapter.analysisDataset(result: result, sql: sql)
     let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
@@ -1566,7 +1519,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       ])
     let request = try CREGChartAdapter.analysisRequest(
       result: result,
-      sql: "SELECT property_type, market_value FROM properties",
+      sql: "SELECT property_type, current_market_value AS market_value FROM properties",
       question: "Compare market value by property type")
     let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
       request, preparation: .primary)
@@ -1643,7 +1596,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       ])
     let request = try CREGChartAdapter.analysisRequest(
       result: result,
-      sql: "SELECT category, value FROM properties",
+      sql: "SELECT property_type AS category, current_market_value AS value FROM properties",
       question: "Compare value by category")
     let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
       request, preparation: .primary)
@@ -2281,7 +2234,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
     let identity = CREGChartInputIdentity(
       resultFingerprint: "cached-chart-mode",
       dataIdentity: nil,
-      sql: "SELECT fund, value FROM properties",
+      sql: "SELECT property_type AS fund, current_market_value AS value FROM properties",
       question: "Compare value by fund")
     let cache = AutoChartCache()
     let request = try CREGChartAdapter.analysisRequest(
@@ -2377,14 +2330,14 @@ private final class PickerLabelCounter: @unchecked Sendable {
   }
 
   #if ATC_TEST_HOOKS
-  @Test func terminalFailureAlternativeStartsANewRetryEpisode() async throws {
+  @Test func terminalFailureAlternativeRetriesAndPersistsSelection() async throws {
     let result = QueryResult(
       columns: ["fund", "value"],
       rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
     let identity = CREGChartInputIdentity(
       resultFingerprint: "terminal-alternative",
       dataIdentity: nil,
-      sql: "SELECT fund, value FROM properties",
+      sql: "SELECT property_type AS fund, current_market_value AS value FROM properties",
       question: "Compare value by fund")
     let cache = AutoChartCache()
     let request = try CREGChartAdapter.analysisRequest(
@@ -2420,6 +2373,10 @@ private final class PickerLabelCounter: @unchecked Sendable {
       currentlySelectedID: selected.id,
       currentPreference: currentPreference,
       failureRetryability: false)
+    let updatedPreference = ResultPresentationPreference.chart(
+      .specific(alternative.id))
+    #expect(intent == .retryChart(updatedPreference))
+    let attemptBeforeSelection = owner.selectionRestorationAttempt
 
     applyResultPresentationModeSelection(
       intent,
@@ -2430,19 +2387,9 @@ private final class PickerLabelCounter: @unchecked Sendable {
       Issue.record("A terminal failure alternative did not start a fresh attempt.")
       return
     }
-    let updatedPreference = ResultPresentationPreference.chart(
-      .specific(alternative.id))
     #expect(persisted == [updatedPreference])
     #expect(owner.session.preference == updatedPreference.packagePreference)
-    let secondFailure = AutoChartFailure(
-      stage: firstFailure.stage,
-      kind: firstFailure.kind,
-      isRetryable: false,
-      diagnosticID: firstFailure.diagnosticID,
-      message: firstFailure.message)
-    owner.session.failCurrentAttemptForTesting(secondFailure)
-    #expect(owner.failure(for: identity)?.episodeID == secondFailure.episodeID)
-    #expect(secondFailure.episodeID != firstFailure.episodeID)
+    #expect(owner.selectionRestorationAttempt == attemptBeforeSelection + 1)
   }
 
   @Test func failedOffFeaturedChartStaysSelectedAndSameChoiceRetries()
@@ -2458,7 +2405,10 @@ private final class PickerLabelCounter: @unchecked Sendable {
         .real(Double((column + 1) * (row + 1)))
       }
     }
-    let result = QueryResult(columns: names, rows: rows)
+    let result = QueryResult(
+      columns: names,
+      rows: rows,
+      lineage: chartTestCompleteLineage(names))
     let identity = CREGChartInputIdentity(
       resultFingerprint: "failed-off-featured-chart",
       dataIdentity: nil,
@@ -2632,7 +2582,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
       })
     #expect(missingAttempts == 2)
     #expect(owner.session.preference == other.packagePreference)
-    #expect(restarts == 1)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt)
+    #expect(restarts == 0)
     owner.setPreferenceIfNeeded(previous.packagePreference)
     restarts = 0
 
@@ -2842,7 +2793,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
       ])
     let request = try CREGChartAdapter.analysisRequest(
       result: result,
-      sql: "SELECT fund, value FROM properties",
+      sql: "SELECT property_type AS fund, current_market_value AS value FROM properties",
       question: "Compare value by fund")
     let previous = ResultPresentationPreference(
       mode: .chart,
@@ -2866,7 +2817,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
     let inputIdentity = CREGChartInputIdentity(
       resultFingerprint: "migration-result",
       dataIdentity: nil,
-      sql: "SELECT fund, value FROM properties",
+      sql: "SELECT property_type AS fund, current_market_value AS value FROM properties",
       question: "Compare value by fund")
     let chartOwner = CREGChartSessionOwner(
       client: .testValue,

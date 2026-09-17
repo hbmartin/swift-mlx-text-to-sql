@@ -209,11 +209,19 @@ final class CREGChartSessionOwner: ObservableObject {
     onRestart: () -> Void = {}
   ) {
     guard session.preference != preference else { return }
-    let didRestart = session.setPreference(preference)
-    if isSessionLoaded && didRestart {
+    let keepsPresentedRecommendation: Bool
+    if case .ready(let analysis, let presented?) = session.state {
+      keepsPresentedRecommendation =
+        analysis.resolve(preference).recommendation?.id
+        == presented.preparedChart.recommendation.id
+    } else {
+      keepsPresentedRecommendation = false
+    }
+    if isSessionLoaded && !keepsPresentedRecommendation {
       onRestart()
       selectionRestorationAttempt &+= 1
     }
+    session.setPreference(preference)
   }
 
   func pickerOptions(

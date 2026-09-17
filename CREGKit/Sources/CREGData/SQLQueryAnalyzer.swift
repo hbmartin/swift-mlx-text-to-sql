@@ -99,21 +99,28 @@ package enum SQLQueryAnalyzer {
     else {
       let rejectsExternalOrigins = analyzer.rejectsExternalOrigins(
         in: tokenization.tokens.indices)
+      let approvedDirectOrigins: [SQLSourceColumn?] = alignedDirectOrigins.map {
+        origin -> SQLSourceColumn? in
+        guard !rejectsExternalOrigins,
+          let origin,
+          readColumns.isEmpty || readColumns.contains(origin)
+        else { return nil }
+        return origin
+      }
       return SQLQueryLineage(
-        columns: outputColumnNames.indices.map { index in
-          guard !rejectsExternalOrigins else { return nil }
-          if directOrigins.indices.contains(index), let origin = directOrigins[index] {
-            return directLineage(for: origin)
-          }
-          return nil
+        columns: approvedDirectOrigins.map { origin in
+          origin.map { directLineage(for: $0) }
         },
         reads: reads,
-        directOrigins: alignedDirectOrigins,
+        directOrigins: approvedDirectOrigins,
         completeness: .incomplete)
     }
 
     let alignedOutputs = alignedOutputs(
       block.outputs, with: outputColumnNames)
+    var approvedDirectOrigins = Array<SQLSourceColumn?>(
+      repeating: nil,
+      count: outputColumnNames.count)
     let columns = outputColumnNames.indices.map { index -> SQLResultColumnLineage? in
       let alignedOutput = alignedOutputs[index]
       var descriptor = alignedOutput?.descriptor
@@ -124,13 +131,13 @@ package enum SQLQueryAnalyzer {
         ?? positionalOutput
       let permitsPhysicalOnlyOrigin = block.externalOriginPolicy != .physicalOnly
         || candidateOutput?.descriptor.hasOpaqueOrigin == false
+      let directOrigin = alignedDirectOrigins[index]
       if permitsPhysicalOnlyOrigin,
         descriptor?.hasOpaqueOrigin != true,
         block.externalOriginPolicy.allows(
-        directOrigins.indices.contains(index) ? directOrigins[index] : nil,
+        directOrigin,
         physicalTables: block.physicalTables),
-        directOrigins.indices.contains(index),
-        let origin = directOrigins[index],
+        let origin = directOrigin,
         descriptor == nil
           || descriptor?.preservesSourceDomain == true
           || descriptor.map({
@@ -151,6 +158,17 @@ package enum SQLQueryAnalyzer {
           preservesSourceDomain: true,
           isDirectReference: true)
       }
+      if let origin = directOrigin,
+        descriptor?.hasOpaqueOrigin != true,
+        block.externalOriginPolicy.allows(
+          origin,
+          physicalTables: block.physicalTables),
+        descriptor?.isDirectReference == true,
+        descriptor?.sourceColumns == [origin],
+        readColumns.isEmpty || readColumns.contains(origin)
+      {
+        approvedDirectOrigins[index] = origin
+      }
       if let descriptor {
         // The structured analyzer maps projection expressions to sources;
         // SQLite's authorizer independently proves those physical columns were
@@ -159,6 +177,7 @@ package enum SQLQueryAnalyzer {
         if !readColumns.isEmpty,
           !descriptor.sourceColumns.allSatisfy(readColumns.contains)
         {
+          approvedDirectOrigins[index] = nil
           guard let aggregation = descriptor.aggregation else { return nil }
           return SQLResultColumnLineage(
             aggregation: aggregation,
@@ -180,7 +199,7 @@ package enum SQLQueryAnalyzer {
       columns: columns,
       rowGrain: block.rowGrain,
       reads: reads,
-      directOrigins: alignedDirectOrigins,
+      directOrigins: approvedDirectOrigins,
       completeness: .complete)
   }
 
