@@ -464,7 +464,9 @@ struct ResultViewerView: View {
         migratePreference: migratePreference)
     }
     .task(id: presentedChartRestorationID) {
-      guard let rows = chartSelectionLifecycle.pendingSourceRows,
+      guard let rows = ResultViewerLogic.sourceRowsForChartRestoration(
+        pendingSourceRows: chartSelectionLifecycle.pendingSourceRows,
+        isChartUpdatePending: session.isChartUpdatePending),
         let analysis,
         case .ready(_, let presented?) = session.state
       else { return }
@@ -490,6 +492,7 @@ struct ResultViewerView: View {
 
   private var presentedChartRestorationID: PresentedChartRestorationID? {
     guard chartOwner.inputIdentity == chartInputIdentity else { return nil }
+    guard !session.isChartUpdatePending else { return nil }
     guard case .ready(_, let presented?) = session.state else { return nil }
     guard let analysis else { return nil }
     return PresentedChartRestorationID(

@@ -106,9 +106,7 @@ public struct SQLResultColumnLineage: Sendable, Equatable, Hashable, Codable {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     sourceColumns = try values.decode([SQLSourceColumn].self, forKey: .sourceColumns)
     sourceGrain = try values.decode([String].self, forKey: .sourceGrain)
-    // Lineage is advisory presentation metadata. A future aggregate operation
-    // must not make an otherwise readable stored answer undecodable.
-    aggregation = try? values.decodeIfPresent(
+    aggregation = try values.decodeIfPresent(
       SQLAggregateOperation.self, forKey: .aggregation)
     preservesSourceDomain =
       try values.decodeIfPresent(Bool.self, forKey: .preservesSourceDomain) ?? false
@@ -122,9 +120,11 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
     case incomplete
   }
 
-  /// Bump whenever derived grain/domain decisions change incompatibly. Stored
-  /// lineage from an older analyzer is re-derived instead of being trusted.
-  public static let currentAnalysisVersion = 6
+  /// Bump whenever derived grain/domain decisions change incompatibly. Only
+  /// current-version lineage is trusted; mismatches remain readable but table-only.
+  public static let currentAnalysisVersion = 7
+  /// Reserved version for lineage payloads that could not be decoded.
+  public static let unavailableAnalysisVersion = Int.max
 
   public var analysisVersion: Int
   /// Whether the analyzer proved the full query-block structure. Incomplete
@@ -137,16 +137,10 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
   public var rowGrain: [String]
   /// Exact physical reads reported by SQLite's authorizer.
   public var reads: [SQLSourceRead]
-  /// Analyzer-approved SQLite column origins aligned one-for-one with result columns.
-  /// Nil entries represent expressions, opaque outputs, rejected origins, or
-  /// columns without a physical origin.
-  public var directOrigins: [SQLSourceColumn?]
-
   public init(
     columns: [SQLResultColumnLineage?],
     rowGrain: [String] = [],
     reads: [SQLSourceRead] = [],
-    directOrigins: [SQLSourceColumn?] = [],
     completeness: Completeness = .incomplete,
     analysisVersion: Int = SQLQueryLineage.currentAnalysisVersion
   ) {
@@ -155,11 +149,10 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
     self.columns = columns
     self.rowGrain = rowGrain
     self.reads = reads
-    self.directOrigins = directOrigins
   }
 
   enum CodingKeys: String, CodingKey {
-    case analysisVersion, completeness, columns, rowGrain, reads, directOrigins
+    case analysisVersion, completeness, columns, rowGrain, reads
   }
 
   public init(from decoder: Decoder) throws {
@@ -171,8 +164,13 @@ public struct SQLQueryLineage: Sendable, Equatable, Hashable, Codable {
     columns = try values.decode([SQLResultColumnLineage?].self, forKey: .columns)
     rowGrain = try values.decodeIfPresent([String].self, forKey: .rowGrain) ?? []
     reads = try values.decodeIfPresent([SQLSourceRead].self, forKey: .reads) ?? []
-    directOrigins =
-      try values.decodeIfPresent([SQLSourceColumn?].self, forKey: .directOrigins) ?? []
+  }
+
+  package static func unavailable(columnCount: Int) -> Self {
+    Self(
+      columns: Array(repeating: nil, count: columnCount),
+      completeness: .incomplete,
+      analysisVersion: unavailableAnalysisVersion)
   }
 }
 
@@ -230,10 +228,19 @@ public struct QueryResult: Sendable, Equatable, Codable {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     columns = try values.decode([String].self, forKey: .columns)
     rows = try values.decode([[SQLValue]].self, forKey: .rows)
-    // Presentation lineage is optional and versioned independently from the
-    // answer payload. Corrupt or future lineage must not drop the whole stored
-    // answer message from history.
-    lineage = try? values.decode(SQLQueryLineage.self, forKey: .lineage)
+    // Preserve a genuinely absent key for SQL reanalysis. A present payload that
+    // cannot be decoded remains distinct and table-only after re-encoding.
+    if !values.contains(.lineage) {
+      lineage = nil
+    } else if try values.decodeNil(forKey: .lineage) {
+      lineage = nil
+    } else {
+      do {
+        lineage = try values.decode(SQLQueryLineage.self, forKey: .lineage)
+      } catch {
+        lineage = .unavailable(columnCount: columns.count)
+      }
+    }
     isTruncated = try values.decodeIfPresent(Bool.self, forKey: .isTruncated) ?? false
     if let microseconds = try values.decodeIfPresent(
       Int64.self, forKey: .elapsedMicroseconds)

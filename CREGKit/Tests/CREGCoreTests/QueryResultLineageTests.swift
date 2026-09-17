@@ -15,8 +15,7 @@ import Testing
       reads: [
         SQLSourceRead(
           table: "properties", column: "city", database: "main")
-      ],
-      directOrigins: [.init(table: "properties", column: "city")])
+      ])
     let result = QueryResult(
       columns: ["city"], rows: [[.text("Phoenix")]], lineage: lineage)
 
@@ -57,7 +56,14 @@ import Testing
     let decoded = try JSONDecoder().decode(QueryResult.self, from: data)
     #expect(decoded.columns == result.columns)
     #expect(decoded.rows == result.rows)
-    #expect(decoded.lineage?.columns[0]?.aggregation == nil)
+    #expect(decoded.lineage?.analysisVersion == .max)
+    #expect(decoded.lineage?.columns == [nil])
+    #expect(decoded.lineage?.completeness == .incomplete)
+
+    let reencoded = try JSONEncoder().encode(decoded)
+    let roundTripped = try JSONDecoder().decode(QueryResult.self, from: reencoded)
+    #expect(roundTripped.lineage?.analysisVersion == .max)
+    #expect(roundTripped.lineage?.columns == [nil])
   }
 
   @Test func lineageWithoutAVersionDecodesAsLegacy() throws {
@@ -76,6 +82,22 @@ import Testing
     #expect(decoded.lineage?.analysisVersion == 1)
   }
 
+  @Test(arguments: [6, SQLQueryLineage.currentAnalysisVersion + 1])
+  func versionMismatchedLineageRemainsReadable(analysisVersion: Int) throws {
+    let result = QueryResult(
+      columns: ["city"], rows: [[.text("Phoenix")]],
+      lineage: SQLQueryLineage(
+        columns: [nil],
+        analysisVersion: analysisVersion))
+
+    let decoded = try JSONDecoder().decode(
+      QueryResult.self, from: JSONEncoder().encode(result))
+
+    #expect(decoded.columns == result.columns)
+    #expect(decoded.rows == result.rows)
+    #expect(decoded.lineage?.analysisVersion == analysisVersion)
+  }
+
   @Test func lineageWithoutCompletenessDecodesConservatively() throws {
     let result = QueryResult(
       columns: ["city"], rows: [[.text("Phoenix")]],
@@ -92,26 +114,6 @@ import Testing
       from: JSONSerialization.data(withJSONObject: object))
 
     #expect(decoded.lineage?.completeness == .incomplete)
-  }
-
-  @Test func lineageWithoutDirectOriginsDecodesWithNoExactEvidence() throws {
-    let result = QueryResult(
-      columns: ["city"], rows: [[.text("Phoenix")]],
-      lineage: SQLQueryLineage(
-        columns: [nil],
-        directOrigins: [.init(table: "properties", column: "city")]))
-    var object = try #require(
-      JSONSerialization.jsonObject(with: JSONEncoder().encode(result))
-        as? [String: Any])
-    var lineage = try #require(object["lineage"] as? [String: Any])
-    lineage.removeValue(forKey: "directOrigins")
-    object["lineage"] = lineage
-
-    let decoded = try JSONDecoder().decode(
-      QueryResult.self,
-      from: JSONSerialization.data(withJSONObject: object))
-
-    #expect(decoded.lineage?.directOrigins == [])
   }
 
   @Test func presentationLineageDoesNotChangeResultContentFingerprint() {
