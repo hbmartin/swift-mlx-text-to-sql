@@ -3,7 +3,7 @@ rules:
     message: Core history tables must not be cleared unconditionally by a migration.
     severity: ERROR
     languages: [swift]
-    pattern-regex: '(?i)DELETE\s+FROM\s+(?:prepared_follow_up_batch|turn_journal|feedback|event|message|search_index|conversation)\s*;'
+    pattern-regex: '(?i)DELETE\s+FROM\s+(?:(?:\\)?["`]|\[)?(?:prepared_follow_up_batch|turn_journal|feedback|event|message|search_index|conversation)(?:(?:\\)?["`]|\])?\s*(?:;|"|$)'
   - id: creg-chart-loaders-require-explicit-diagnostics
     message: Require chart loaders and owners to choose their diagnostics sink explicitly.
     severity: ERROR

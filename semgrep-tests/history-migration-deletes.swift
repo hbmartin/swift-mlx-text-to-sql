@@ -2,6 +2,18 @@ struct HistoryMigrationSQL {
   // ruleid: creg-history-migrations-forbid-unconditional-deletes
   let destructive = "DELETE FROM message;"
 
+  // ruleid: creg-history-migrations-forbid-unconditional-deletes
+  let destructiveWithoutTerminator = "DELETE FROM message"
+
+  // ruleid: creg-history-migrations-forbid-unconditional-deletes
+  let destructiveEscapedQuoted = "DELETE FROM \"message\";"
+
+  // ruleid: creg-history-migrations-forbid-unconditional-deletes
+  let destructiveBracketQuoted = "DELETE FROM [message];"
+
+  // ruleid: creg-history-migrations-forbid-unconditional-deletes
+  let destructiveBacktickQuoted = "DELETE FROM `message`;"
+
   // ok: creg-history-migrations-forbid-unconditional-deletes
   let scoped = "DELETE FROM message WHERE conversation_id = ?;"
 
