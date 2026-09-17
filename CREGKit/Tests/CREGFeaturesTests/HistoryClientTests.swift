@@ -64,7 +64,74 @@ import Testing
 
   // MARK: Migration
 
-  @Test func lineageV6MigrationClearsEveryHistoryTableAndCRUDStillWorks() async throws {
+  @Test func legacyStoreMigratesPreservingConversationAndMessages() async throws {
+    let url = temporaryDatabaseURL()
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+    let legacyID = UUID()
+    let encoder = JSONEncoder()
+    let legacyMessages = [
+      userMessage("Which properties have the highest vacancy?", at: 100),
+      answerMessage(narration: "Five properties found.", at: 160),
+    ]
+    do {
+      let queue = try DatabaseQueue(path: url.path)
+      try await queue.write { db in
+        try db.execute(
+          sql: """
+            CREATE TABLE IF NOT EXISTS conversation (
+              id TEXT PRIMARY KEY,
+              started_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS message (
+              id TEXT PRIMARY KEY,
+              conversation_id TEXT NOT NULL REFERENCES conversation(id),
+              position INTEGER NOT NULL,
+              payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS event (
+              conversation_id TEXT NOT NULL,
+              message_id TEXT NOT NULL,
+              seq INTEGER NOT NULL,
+              line TEXT NOT NULL
+            );
+            """)
+        try db.execute(
+          sql: "INSERT INTO conversation (id, started_at) VALUES (?, datetime('now'))",
+          arguments: [legacyID.uuidString])
+        for (index, message) in legacyMessages.enumerated() {
+          let payload = String(decoding: try encoder.encode(message), as: UTF8.self)
+          try db.execute(
+            sql: """
+              INSERT INTO message (id, conversation_id, position, payload)
+              VALUES (?, ?, ?, ?)
+              """,
+            arguments: [
+              message.id.uuidString, legacyID.uuidString, index + 1, payload,
+            ])
+        }
+      }
+    }
+
+    let client = try makeClient(url)
+    let summaries = try await client.bootstrap()
+
+    #expect(summaries.count == 1)
+    #expect(summaries.first?.id == legacyID)
+    #expect(summaries.first?.title == "Which properties have the highest vacancy?")
+    #expect(summaries.first?.isManuallyTitled == false)
+    #expect(summaries.first?.messageCount == 2)
+    #expect(summaries.first?.latestMessagePreview == "Five properties found.")
+
+    let snapshot = try await client.loadConversation(legacyID)
+    #expect(snapshot.messages == legacyMessages)
+    #expect(snapshot.draft.isEmpty)
+    #expect(snapshot.interruptedTurn == nil)
+    #expect(try await client.search("vacancy").map(\.conversationID) == [legacyID])
+  }
+
+  @Test func versionFourStoreOpeningPreservesEveryHistoryTable() async throws {
     let url = temporaryDatabaseURL()
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -81,7 +148,7 @@ import Testing
         sql: """
           INSERT INTO conversation
             (id, title, is_manually_titled, started_at, last_activity_at, draft, is_unread)
-          VALUES (?, 'Old', 0, 100, 100, '', 0);
+          VALUES (?, 'Old', 0, 100, 100, 'saved draft', 0);
           INSERT INTO message (id, conversation_id, position, payload)
           VALUES (?, ?, 1, ?);
           INSERT INTO event (conversation_id, message_id, seq, line)
@@ -110,7 +177,11 @@ import Testing
       }
 
     let client = try makeClient(url)
-    #expect(try await client.bootstrap().isEmpty)
+    let summaries = try await client.bootstrap()
+    #expect(summaries.map(\.id) == [legacyID])
+    let snapshot = try await client.loadConversation(legacyID)
+    #expect(snapshot.messages == [legacyMessage])
+    #expect(snapshot.draft == "saved draft")
     let tables = [
       "prepared_follow_up_batch", "turn_journal", "feedback", "event",
       "message", "search_index", "conversation",
@@ -120,16 +191,8 @@ import Testing
         (table, try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? -1)
       })
     }
-    #expect(counts.values.allSatisfy { $0 == 0 })
-
-    let currentID = UUID()
-    _ = try await client.createConversation(
-      currentID,
-      Date(timeIntervalSince1970: 200))
-    let currentMessage = userMessage("Fresh lineage", at: 210)
-    try await client.appendMessage(currentID, currentMessage)
-    let snapshot = try await client.loadConversation(currentID)
-    #expect(snapshot.messages == [currentMessage])
+    #expect(counts.values.allSatisfy { $0 == 1 })
+    #expect(try await client.search("Old lineage").map(\.conversationID) == [legacyID])
   }
 
   // MARK: CRUD, titles, drafts, unread

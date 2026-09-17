@@ -50,7 +50,7 @@ extension DatabaseClient {
     #expect(!result.isTruncated)
   }
 
-  @Test func executionCapturesSQLiteReadsAndDirectColumnOrigins() async throws {
+  @Test func executionCapturesSQLiteReadsAndColumnLineage() async throws {
     let client = try DatabaseClient.live(url: makeDatabase())
     let result = try await client.execute(
       "SELECT id, name FROM t WHERE name != ''")
@@ -62,12 +62,6 @@ extension DatabaseClient {
     #expect(
       lineage.columns[1]?.sourceColumns
         == [.init(table: "t", column: "name")])
-    #expect(
-      lineage.directOrigins
-        == [
-          .init(table: "t", column: "id"),
-          .init(table: "t", column: "name"),
-        ])
     #expect(
       lineage.reads.contains {
         $0.table == "t" && $0.column == "id" && $0.database == "main"
@@ -180,7 +174,6 @@ extension DatabaseClient {
       lineage.columns[leaseStatus]?.sourceColumns
         == [.init(table: "leases", column: "status")])
     #expect(lineage.columns[today] == nil)
-    #expect(lineage.directOrigins[today] == nil)
   }
 
   @Test func writesAreDenied() async throws {

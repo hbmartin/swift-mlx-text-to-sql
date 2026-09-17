@@ -540,9 +540,6 @@ import Testing
       try #require(lineage.columns[0]).sourceColumns
         == [.init(table: "properties", column: "city")])
     #expect(lineage.columns[1] == nil)
-    #expect(
-      lineage.directOrigins
-        == [.init(table: "properties", column: "city"), nil])
 
     let unaligned = SQLQueryAnalyzer.lineage(
       sql: """
@@ -566,7 +563,6 @@ import Testing
       directOrigins: [.init(table: "properties", column: "city")],
       reads: [.init(table: "properties", column: "city")])
     #expect(shapeMismatch.columns == [nil])
-    #expect(shapeMismatch.directOrigins == [nil])
 
     let sameNamedPhysicalJoin = SQLQueryAnalyzer.lineage(
       sql: """
@@ -584,9 +580,6 @@ import Testing
     #expect(
       try #require(sameNamedPhysicalJoin.columns[1]).sourceColumns
         == [.init(table: "leases", column: "status")])
-    #expect(
-      sameNamedPhysicalJoin.directOrigins
-        == [nil, .init(table: "leases", column: "status")])
   }
 
   @Test func explicitlyQualifiedTableBypassesSameNamedCTE() {
@@ -634,7 +627,6 @@ import Testing
       outputColumnNames: ["city"])
 
     #expect(lineage.columns == [nil])
-    #expect(lineage.directOrigins == [nil])
     #expect(lineage.rowGrain.isEmpty)
   }
 
@@ -823,7 +815,7 @@ import Testing
     #expect(withSingleton.columns[37] == nil)
   }
 
-  @Test func directOriginsAreRejectedForCompounds() {
+  @Test func runtimeOriginsAreRejectedForCompounds() {
     let lineage = SQLQueryAnalyzer.lineage(
       sql: """
         SELECT credit_rating FROM tenants
@@ -865,7 +857,6 @@ import Testing
           .init(table: "leases", column: "status"),
         ])
       #expect(nested.columns == [nil])
-      #expect(nested.directOrigins == [nil])
     }
 
     let failedCTE = SQLQueryAnalyzer.lineage(
@@ -879,17 +870,17 @@ import Testing
       directOrigins: [.init(table: "leases", column: "status")],
       reads: [.init(table: "tenants", column: "credit_rating")])
     #expect(failedCTE.columns == [nil])
-    #expect(failedCTE.directOrigins == [nil])
   }
 
-  @Test func directOriginEvidenceStaysAlignedWithRuntimeColumns() {
+  @Test func directOriginInputStaysAlignedWithRuntimeColumns() throws {
     let city = SQLSourceColumn(table: "properties", column: "city")
     let lineage = SQLQueryAnalyzer.lineage(
       sql: "SELECT city, UPPER(state) FROM properties",
       outputColumnNames: ["city", "UPPER(state)"],
       directOrigins: [city])
 
-    #expect(lineage.directOrigins == [city, nil])
+    #expect(try #require(lineage.columns[0]).sourceColumns == [city])
+    #expect(lineage.columns[1]?.sourceColumns != [city])
   }
 
   @Test func malformedCompoundsStayConservative() {
@@ -900,10 +891,9 @@ import Testing
 
     #expect(SQLQueryAnalyzer.scope(in: "SELECT city FROM properties UNION ALL").tables.isEmpty)
     #expect(lineage.columns == [nil])
-    #expect(lineage.directOrigins == [nil])
   }
 
-  @Test func contradictoryReadsRemoveLineageAndDirectOriginEvidence() {
+  @Test func contradictoryReadsRemoveLineage() {
     let city = SQLSourceColumn(table: "properties", column: "city")
     let lineage = SQLQueryAnalyzer.lineage(
       sql: "SELECT city FROM properties",
@@ -912,7 +902,17 @@ import Testing
       reads: [.init(table: "properties", column: "state")])
 
     #expect(lineage.columns == [nil])
-    #expect(lineage.directOrigins == [nil])
+  }
+
+  @Test func nonemptyRuntimeReadsWithoutColumnEvidenceRejectInferredProvenance() {
+    let city = SQLSourceColumn(table: "properties", column: "city")
+    let lineage = SQLQueryAnalyzer.lineage(
+      sql: "SELECT city FROM properties",
+      outputColumnNames: ["city"],
+      directOrigins: [city],
+      reads: [.init(table: "properties")])
+
+    #expect(lineage.columns == [nil])
   }
 
   @Test func ambiguousLocalAggregatesDoNotInheritAnOperationFromTheirReference()

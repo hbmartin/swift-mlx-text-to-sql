@@ -151,22 +151,6 @@ extension HistoryStore {
           """)
     }
 
-    // Pre-release lineage before v6 is not safe to reuse for chart decisions.
-    // History is wholly conversation-owned, so reset it once instead of
-    // retaining messages whose persisted results can no longer be trusted.
-    migrator.registerMigration("v5-reset-lineage-v6") { db in
-      try db.execute(
-        sql: """
-          DELETE FROM prepared_follow_up_batch;
-          DELETE FROM turn_journal;
-          DELETE FROM feedback;
-          DELETE FROM event;
-          DELETE FROM message;
-          DELETE FROM search_index;
-          DELETE FROM conversation;
-          """)
-    }
-
     return migrator
   }
 }

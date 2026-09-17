@@ -18,6 +18,7 @@ import Testing
         "result-preview-identity",
         "result-chart-preparation",
         "result-chart-recovery",
+        "result-chart-rejected-retry",
         "result-chart-terminal-recovery",
         "result-chart-unresolved-selection",
         "transient-banners",

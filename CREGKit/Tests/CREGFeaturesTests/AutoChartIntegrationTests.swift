@@ -34,8 +34,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
 }
 
 @Suite struct CREGChartAdapterTests {
-  @Test func lineageAnalysisVersionIsSix() {
-    #expect(SQLQueryLineage.currentAnalysisVersion == 6)
+  @Test func lineageAnalysisVersionIsSeven() {
+    #expect(SQLQueryLineage.currentAnalysisVersion == 7)
   }
 
   @Test func incompleteLineageAllowsOnlyUnaggregatedRawRecommendations() async throws {
@@ -86,7 +86,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
     })
   }
 
-  @Test func missingGrainColumnsCannotParticipateInSensitiveRecommendations()
+  @Test func missingGrainColumnsReceiveRawOnlyRecommendations()
     async throws
   {
     let result = QueryResult(
@@ -102,19 +102,70 @@ private final class PickerLabelCounter: @unchecked Sendable {
       result: result,
       sql: "WITH unused(value) AS (VALUES (1)) SELECT period_end, net_operating_income, current_market_value FROM property_financials",
       question: "Show the NOI trend")
-    let expectedExcludedColumns = Set(result.columns.indices.map {
-      CREGChartAdapter.columnID(index: $0, name: result.columns[$0])
-    })
-    #expect(request.constraints.excludedColumns == expectedExcludedColumns)
+    let rawFamilies: Set<AutoChartFamily> = [
+      .kpi, .scatter, .bubble, .range, .line, .pointLine, .area,
+    ]
+    #expect(request.constraints.excludedColumns.isEmpty)
+    #expect(request.constraints.includedFamilies == rawFamilies)
+    #expect(request.constraints.includedAggregations == [.none])
 
     let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
       request,
       preparation: .none)
-    guard case .tableFallback = analysis.outcome else {
-      Issue.record(
-        "Missing-grain columns produced a scatter, aggregate, fan-out, or chasm-sensitive chart.")
-      return
-    }
+    let catalog = try #require(analysis.cregRecommendationCatalog)
+    #expect(catalog.cataloged.contains { $0.specification.family == .scatter })
+    #expect(!catalog.cataloged.contains {
+      [.line, .pointLine, .area].contains($0.specification.family)
+    })
+  }
+
+  @Test func unusualUnaliasedAggregateRetainsSafeRawRecommendations() async throws {
+    let result = QueryResult(
+      columns: ["COUNT(\"property_id\")", "SUM(current_market_value /* total */)"],
+      rows: [[.integer(2), .real(32_000_000)]])
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT COUNT(\"property_id\"), SUM(current_market_value /* total */) FROM properties",
+      question: "Summarize the portfolio")
+    let rawFamilies: Set<AutoChartFamily> = [
+      .kpi, .scatter, .bubble, .range, .line, .pointLine, .area,
+    ]
+
+    #expect(request.constraints.includedFamilies == rawFamilies)
+    #expect(request.constraints.includedAggregations == [.none])
+    #expect(request.constraints.excludedColumns.isEmpty)
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request, preparation: .none)
+    let catalog = try #require(analysis.cregRecommendationCatalog)
+    #expect(catalog.cataloged.contains {
+      $0.specification.family == .kpi
+        && $0.specification.aggregation == .none
+    })
+  }
+
+  @Test func duplicateTemporalPointsRejectContinuousRawChartsWithCompleteLineage()
+    async throws
+  {
+    let result = QueryResult(
+      columns: ["period_end", "net_operating_income"],
+      rows: [
+        [.text("2026-01-31"), .real(100)],
+        [.text("2026-01-31"), .real(120)],
+      ],
+      lineage: chartTestCompleteLineage(["period_end", "net_operating_income"]))
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT period_end, net_operating_income FROM property_financials",
+      question: "Show the NOI trend")
+
+    #expect(request.constraints.includedFamilies == nil)
+    #expect(request.constraints.includedAggregations == nil)
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request, preparation: .none)
+    let catalog = try #require(analysis.cregRecommendationCatalog)
+    #expect(!catalog.cataloged.contains {
+      [.line, .pointLine, .area].contains($0.specification.family)
+    })
   }
 
   @Test func analysisDatasetUsesOffsetIDsTypedSemanticsAndStableDataKey() throws {
@@ -330,10 +381,14 @@ private final class PickerLabelCounter: @unchecked Sendable {
       preparation: .none)
     #expect(unionAnalysis.columnProfiles[0].semanticType == .identifier)
     #expect(castAnalysis.columnProfiles[0].semanticType == .identifier)
-    guard case .tableFallback = unionAnalysis.outcome else {
-      Issue.record("Compound output without lineage remained chart-eligible.")
-      return
-    }
+    let unionCatalog = try #require(unionAnalysis.cregRecommendationCatalog)
+    #expect(unionCatalog.cataloged.contains {
+      $0.specification.family == .scatter
+        && $0.specification.aggregation == .none
+    })
+    #expect(!unionCatalog.cataloged.contains {
+      [.line, .pointLine, .area].contains($0.specification.family)
+    })
     let castCatalog = try #require(castAnalysis.cregRecommendationCatalog)
     #expect(!castCatalog.cataloged.contains {
       $0.specification.family == .bar
@@ -764,7 +819,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(derived.chartColumns[0].categoryOrder == nil)
   }
 
-  @Test func versionMismatchedLineageFallsBackToTable() async throws {
+  @Test(arguments: [6, SQLQueryLineage.currentAnalysisVersion + 1, Int.max])
+  func versionMismatchedLineageFallsBackToTable(analysisVersion: Int) async throws {
     let stale = SQLQueryLineage(
       columns: [
         SQLResultColumnLineage(
@@ -773,7 +829,7 @@ private final class PickerLabelCounter: @unchecked Sendable {
           preservesSourceDomain: true)
       ],
       rowGrain: ["funds"],
-      analysisVersion: 4)
+      analysisVersion: analysisVersion)
     let result = QueryResult(
       columns: ["city"],
       rows: [[.text("Phoenix")]],
@@ -799,7 +855,25 @@ private final class PickerLabelCounter: @unchecked Sendable {
     }
   }
 
-  @Test func versionSixLineageRetainsRuntimeOriginSemantics() throws {
+  @Test func missingLineageIsReanalyzedAndRemainsChartEligible() async throws {
+    let result = QueryResult(
+      columns: ["period_end", "net_operating_income"],
+      rows: [
+        [.text("2026-01-31"), .real(100)],
+        [.text("2026-02-28"), .real(120)],
+      ])
+    let request = try CREGChartAdapter.analysisRequest(
+      result: result,
+      sql: "SELECT period_end, net_operating_income FROM property_financials",
+      question: "Show the NOI trend")
+    let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
+      request, preparation: .none)
+
+    #expect(request.constraints.includedFamilies == nil)
+    #expect(analysis.cregRecommendationCatalog != nil)
+  }
+
+  @Test func currentLineageRetainsRuntimeOriginSemantics() throws {
     let origin = SQLSourceColumn(table: "tenants", column: "credit_rating")
     let current = SQLQueryLineage(
       columns: [
@@ -809,7 +883,6 @@ private final class PickerLabelCounter: @unchecked Sendable {
           preservesSourceDomain: true)
       ],
       reads: [.init(table: origin.table, column: origin.column)],
-      directOrigins: [origin],
       completeness: .complete)
     let dataset = try CREGChartAdapter.analysisDataset(
       result: QueryResult(
@@ -1112,7 +1185,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
       rows: [
         [.text("A"), .real(10)],
         [.text("B"), .real(20)],
-      ])
+      ],
+      lineage: chartTestCompleteLineage(["fund", "value"]))
     let analysis = try await AutoChartAnalyzer(cache: AutoChartCache()).analyze(
       CREGChartAdapter.analysisRequest(
         result: result,
@@ -1219,7 +1293,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
       CREGChartAdapter.analysisRequest(
         result: QueryResult(
           columns: ["fund", "value"],
-          rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]]),
+          rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]],
+          lineage: chartTestCompleteLineage(["fund", "value"])),
         sql: "SELECT fund, current_market_value AS value FROM properties",
         question: "Compare value by fund"),
       preparation: .none)
@@ -1622,6 +1697,17 @@ private final class PickerLabelCounter: @unchecked Sendable {
     #expect(lifecycle.pendingSourceRows == nil)
     #expect(lifecycle.restorableSourceRows == [2])
     #expect(session.selection.unionedSourceRows == [2])
+  }
+
+  @Test func pendingChartUpdateDefersSourceRowRestoration() {
+    #expect(
+      ResultViewerLogic.sourceRowsForChartRestoration(
+        pendingSourceRows: [1, 2],
+        isChartUpdatePending: true) == nil)
+    #expect(
+      ResultViewerLogic.sourceRowsForChartRestoration(
+        pendingSourceRows: [1, 2],
+        isChartUpdatePending: false) == [1, 2])
   }
 
   @Test func chartFailureDiagnosticsRetainPackageEpisodeProvenance() throws {
@@ -2582,8 +2668,8 @@ private final class PickerLabelCounter: @unchecked Sendable {
       })
     #expect(missingAttempts == 2)
     #expect(owner.session.preference == other.packagePreference)
-    #expect(owner.selectionRestorationAttempt == restorationAttempt)
-    #expect(restarts == 0)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt + 1)
+    #expect(restarts == 1)
     owner.setPreferenceIfNeeded(previous.packagePreference)
     restarts = 0
 

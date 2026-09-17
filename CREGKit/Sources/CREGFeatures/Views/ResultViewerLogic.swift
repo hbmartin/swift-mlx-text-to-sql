@@ -98,6 +98,14 @@ public enum ResultViewerLogic {
     }
   }
 
+  static func sourceRowsForChartRestoration(
+    pendingSourceRows: Set<Int>?,
+    isChartUpdatePending: Bool
+  ) -> Set<Int>? {
+    guard !isChartUpdatePending else { return nil }
+    return pendingSourceRows
+  }
+
   /// One-column typed sorting: a new column starts ascending; the active
   /// column toggles direction.
   public static func toggleSort(_ current: SortState?, column: Int) -> SortState {

@@ -18,6 +18,7 @@ import SwiftUI
       case resultPreviewIdentity = "result-preview-identity"
       case resultChartPreparation = "result-chart-preparation"
       case resultChartRecovery = "result-chart-recovery"
+      case resultChartRejectedRetry = "result-chart-rejected-retry"
       case resultChartTerminalRecovery = "result-chart-terminal-recovery"
       case resultChartUnresolvedSelection = "result-chart-unresolved-selection"
       case transientBanners = "transient-banners"
@@ -128,6 +129,11 @@ import SwiftUI
 
       case .resultChartRecovery:
         ResultChartTypeAccessibilityHarness(failureRetryability: true)
+
+      case .resultChartRejectedRetry:
+        ResultChartTypeAccessibilityHarness(
+          failureRetryability: true,
+          retryStarts: false)
 
       case .resultChartTerminalRecovery:
         ResultChartTypeAccessibilityHarness(failureRetryability: false)
@@ -257,13 +263,19 @@ import SwiftUI
       selectedRecommendation: chartTypeRecommendations.first)
 
     let failureRetryability: Bool?
+    let retryStarts: Bool
     @State private var actionFeedback = "No recovery action"
     @State private var keepTableSelectionCount = 0
     @State private var selectedChartTypeID: AutoChartRecommendationID?
     @State private var preference: ResultPresentationPreference
 
-    init(failureRetryability: Bool?, startsSelected: Bool = true) {
+    init(
+      failureRetryability: Bool?,
+      startsSelected: Bool = true,
+      retryStarts: Bool = true
+    ) {
       self.failureRetryability = failureRetryability
+      self.retryStarts = retryStarts
       let selectedID = startsSelected ? Self.chartTypeOptions.first?.id : nil
       _selectedChartTypeID = State(
         initialValue: selectedID)
@@ -300,6 +312,10 @@ import SwiftUI
         selectedChartTypeID = id
         actionFeedback = "\(label) selected"
       case .retryChart(let updated):
+        guard retryStarts else {
+          actionFeedback = "Chart retry unavailable"
+          return
+        }
         if let updated { preference = updated }
         selectedChartTypeID = id
         actionFeedback = updated == nil

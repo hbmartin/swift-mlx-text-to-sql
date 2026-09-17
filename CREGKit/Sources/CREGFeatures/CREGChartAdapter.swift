@@ -149,24 +149,18 @@ enum CREGChartAdapter {
       return AutoChartRecommendationConstraints(includedFamilies: [])
     }
     let lineage = resolution.lineage
-    let excludedColumns = Set(
-      resultColumns.indices.compactMap { index -> AutoChartColumnID? in
-        guard lineage.columns.indices.contains(index),
-          let columnLineage = lineage.columns[index],
-          !columnLineage.sourceGrain.isEmpty
-        else {
-          return columnID(index: index, name: resultColumns[index])
-        }
-        return nil
-      })
-    guard lineage.completeness == .incomplete else {
-      return AutoChartRecommendationConstraints(
-        excludedColumns: excludedColumns)
+    let hasUnprovenColumn = resultColumns.indices.contains { index in
+      guard lineage.columns.indices.contains(index),
+        let columnLineage = lineage.columns[index]
+      else { return true }
+      return columnLineage.sourceGrain.isEmpty
+    }
+    guard lineage.completeness == .incomplete || hasUnprovenColumn else {
+      return AutoChartRecommendationConstraints()
     }
     return AutoChartRecommendationConstraints(
       includedFamilies: [.kpi, .scatter, .bubble, .range, .line, .pointLine, .area],
-      includedAggregations: [.none],
-      excludedColumns: excludedColumns)
+      includedAggregations: [.none])
   }
 
   static func analysisContext(

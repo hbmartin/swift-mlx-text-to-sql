@@ -94,6 +94,7 @@ package enum SQLQueryAnalyzer {
         guard let column = read.column else { return nil }
         return SQLSourceColumn(table: read.table, column: column)
       })
+    let hasRuntimeReadEvidence = !reads.isEmpty
     guard let block = analyzer.analyze(
       range: tokenization.tokens.indices, inheritedCTEs: [:])
     else {
@@ -103,7 +104,7 @@ package enum SQLQueryAnalyzer {
         origin -> SQLSourceColumn? in
         guard !rejectsExternalOrigins,
           let origin,
-          readColumns.isEmpty || readColumns.contains(origin)
+          !hasRuntimeReadEvidence || readColumns.contains(origin)
         else { return nil }
         return origin
       }
@@ -112,15 +113,11 @@ package enum SQLQueryAnalyzer {
           origin.map { directLineage(for: $0) }
         },
         reads: reads,
-        directOrigins: approvedDirectOrigins,
         completeness: .incomplete)
     }
 
     let alignedOutputs = alignedOutputs(
       block.outputs, with: outputColumnNames)
-    var approvedDirectOrigins = Array<SQLSourceColumn?>(
-      repeating: nil,
-      count: outputColumnNames.count)
     let columns = outputColumnNames.indices.map { index -> SQLResultColumnLineage? in
       let alignedOutput = alignedOutputs[index]
       var descriptor = alignedOutput?.descriptor
@@ -158,26 +155,14 @@ package enum SQLQueryAnalyzer {
           preservesSourceDomain: true,
           isDirectReference: true)
       }
-      if let origin = directOrigin,
-        descriptor?.hasOpaqueOrigin != true,
-        block.externalOriginPolicy.allows(
-          origin,
-          physicalTables: block.physicalTables),
-        descriptor?.isDirectReference == true,
-        descriptor?.sourceColumns == [origin],
-        readColumns.isEmpty || readColumns.contains(origin)
-      {
-        approvedDirectOrigins[index] = origin
-      }
       if let descriptor {
         // The structured analyzer maps projection expressions to sources;
         // SQLite's authorizer independently proves those physical columns were
         // actually read. When runtime evidence contradicts the mapping, omit
         // provenance instead of presenting a guessed grain as authoritative.
-        if !readColumns.isEmpty,
+        if hasRuntimeReadEvidence,
           !descriptor.sourceColumns.allSatisfy(readColumns.contains)
         {
-          approvedDirectOrigins[index] = nil
           guard let aggregation = descriptor.aggregation else { return nil }
           return SQLResultColumnLineage(
             aggregation: aggregation,
@@ -199,7 +184,6 @@ package enum SQLQueryAnalyzer {
       columns: columns,
       rowGrain: block.rowGrain,
       reads: reads,
-      directOrigins: approvedDirectOrigins,
       completeness: .complete)
   }
 
