@@ -81,8 +81,8 @@ final class CREGChartSessionOwner: ObservableObject {
   private let requestFactory: RequestFactory?
   let session: AutoChartSession<Int>
   @Published private(set) var inputIdentity: CREGChartInputIdentity
-  /// Changes whenever the package may replace its prepared chart, including
-  /// retries that produce the same stable chart ID.
+  /// Changes whenever the package installs a replacement session pass,
+  /// including retries that produce the same stable chart ID.
   @Published private(set) var selectionRestorationAttempt: UInt64 = 0
   @Published private var request: AutoChartRequest<Int>?
   @Published private var requestFailure: AutoChartFailure?
@@ -208,19 +208,13 @@ final class CREGChartSessionOwner: ObservableObject {
     _ preference: AutoChartPreference,
     onRestart: () -> Void = {}
   ) {
-    guard session.preference != preference else { return }
-    session.setPreference(preference)
-    let mayReplacePreparedChart = switch session.state {
-    case .analyzing, .preparing:
-      true
-    case .ready:
-      session.isChartUpdatePending
-    case .idle, .fallback, .failed:
-      false
+    switch session.applyPreference(preference) {
+    case .startedReplacement:
+      onRestart()
+      selectionRestorationAttempt &+= 1
+    case .unchanged, .stored, .reusedPreparedChart, .superseded:
+      break
     }
-    guard mayReplacePreparedChart else { return }
-    onRestart()
-    selectionRestorationAttempt &+= 1
   }
 
   func pickerOptions(
