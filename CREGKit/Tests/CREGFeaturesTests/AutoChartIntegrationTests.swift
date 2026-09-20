@@ -3,6 +3,7 @@ import AutoTableChartsUI
 import CREGData
 import ComposableArchitecture
 import Foundation
+import Observation
 import SwiftUI
 import Testing
 
@@ -38,8 +39,10 @@ private final class ChartPresentationBlockingCallback: @unchecked Sendable {
   private let releaseGate = DispatchSemaphore(value: 0)
   private var didBlock = false
   private var blocked = false
+  private var timedOut = false
 
   var isBlocked: Bool { lock.withLock { blocked } }
+  var didTimeOut: Bool { lock.withLock { timedOut } }
 
   func invoke() {
     let shouldBlock = lock.withLock {
@@ -49,8 +52,11 @@ private final class ChartPresentationBlockingCallback: @unchecked Sendable {
       return true
     }
     guard shouldBlock else { return }
-    _ = releaseGate.wait(timeout: .now() + 5)
-    lock.withLock { blocked = false }
+    let result = releaseGate.wait(timeout: .now() + 15)
+    lock.withLock {
+      blocked = false
+      timedOut = result == .timedOut
+    }
   }
 
   func release() {
@@ -59,17 +65,73 @@ private final class ChartPresentationBlockingCallback: @unchecked Sendable {
 }
 
 @MainActor
-private func waitForChartTestCondition(
+private final class ChartTestObservationLoop {
+  private var isActive = true
+
+  func track(
+    _ values: @escaping @MainActor () -> Void,
+    onChange: @escaping @MainActor () -> Void
+  ) {
+    guard isActive else { return }
+    withObservationTracking {
+      values()
+    } onChange: { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self, self.isActive else { return }
+        self.track(values, onChange: onChange)
+        onChange()
+      }
+    }
+  }
+
+  func cancel() {
+    isActive = false
+  }
+}
+
+@MainActor
+@discardableResult
+private func waitForChartSessionState(
+  _ session: AutoChartSession<Int>,
   timeout: Duration = chartTestReadyTimeout,
-  _ condition: () -> Bool
-) async -> Bool {
+  until condition: (AutoChartSession<Int>.State) -> Bool
+) async throws -> AutoChartSession<Int>.State {
   let clock = ContinuousClock()
   let deadline = clock.now.advanced(by: timeout)
   while clock.now < deadline {
-    if condition() { return true }
-    try? await Task.sleep(for: .milliseconds(5))
+    try Task.checkCancellation()
+    let state = session.state
+    if case .failed(let failure) = state { throw failure }
+    if condition(state) { return state }
+    try await Task.sleep(for: .milliseconds(5))
   }
-  return condition()
+  try Task.checkCancellation()
+  let state = session.state
+  if case .failed(let failure) = state { throw failure }
+  if condition(state) { return state }
+  throw AutoChartFailure(
+    stage: .presentationPreparation,
+    kind: .transient,
+    isRetryable: true,
+    diagnosticID: "CREG.test.sessionTimeout",
+    message: "The chart session did not settle: \(state).")
+}
+
+@MainActor
+private func waitForReadyChart(
+  _ session: AutoChartSession<Int>,
+  timeout: Duration = chartTestReadyTimeout
+) async throws -> (
+  analysis: AutoChartAnalysis<Int>, presented: AutoChartPresentedChart<Int>
+) {
+  let state = try await waitForChartSessionState(session, timeout: timeout) {
+    if case .ready(_, _?) = $0 { return true }
+    return false
+  }
+  guard case .ready(let analysis, let presented?) = state else {
+    preconditionFailure("Ready-chart condition returned a non-ready state.")
+  }
+  return (analysis, presented)
 }
 
 @Suite struct CREGChartAdapterTests {
@@ -1573,24 +1635,18 @@ private func waitForChartTestCondition(
   private func readyAnalysis(
     from session: AutoChartSession<Int>
   ) async throws -> AutoChartAnalysis<Int> {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: chartTestReadyTimeout)
-    while clock.now < deadline {
-      switch session.state {
-      case .ready(let analysis, _), .fallback(let analysis, _):
-        return analysis
-      case .failed(let failure):
-        throw failure
-      case .idle, .analyzing, .preparing:
-        try await Task.sleep(for: .milliseconds(5))
+    let state = try await waitForChartSessionState(session) {
+      switch $0 {
+      case .ready, .fallback: true
+      case .idle, .analyzing, .preparing, .failed: false
       }
     }
-    throw AutoChartFailure(
-      stage: .presentationPreparation,
-      kind: .transient,
-      isRetryable: true,
-      diagnosticID: "CREG.test.sessionTimeout",
-      message: "The chart session did not settle: \(session.state).")
+    switch state {
+    case .ready(let analysis, _), .fallback(let analysis, _):
+      return analysis
+    case .idle, .analyzing, .preparing, .failed:
+      preconditionFailure("Settled condition returned an unsettled session state.")
+    }
   }
 }
 
@@ -2369,15 +2425,9 @@ private func waitForChartTestCondition(
       client: CREGChartAnalysisClient(cache: AutoChartCache()),
       inputIdentity: identity,
       result: result)
+    defer { owner.session.cancel() }
     owner.load(result: result, inputIdentity: identity, preference: .automatic)
-    #expect(await waitForChartTestCondition {
-      if case .ready(_, _?) = owner.session.state { return true }
-      return false
-    })
-    guard case .ready(_, let presented?) = owner.session.state else {
-      Issue.record("The chart session did not become ready.")
-      return
-    }
+    let (_, presented) = try await waitForReadyChart(owner.session)
 
     let callback = ChartPresentationBlockingCallback()
     defer { callback.release() }
@@ -2385,24 +2435,33 @@ private func waitForChartTestCondition(
       .init(identity: "pending-same-chart-rebind"),
       formatters: AutoChartFormatters(
         cacheIdentity: "pending-same-chart-rebind",
-        request: { _, _, _ in callback.invoke(); return nil }))
-    #expect(await waitForChartTestCondition(timeout: .seconds(5)) {
+        request: { _, _, _ in
+          callback.invoke()
+          return nil
+        }))
+    try await waitForChartSessionState(owner.session, timeout: .seconds(5)) { _ in
       callback.isBlocked
-    })
+    }
     #expect(owner.session.isChartUpdatePending)
     let restorationAttempt = owner.selectionRestorationAttempt
     var restarts = 0
 
-    owner.setPreferenceIfNeeded(
+    let application = owner.setPreferenceIfNeeded(
       .chart(.specific(presented.preparedChart.recommendation.id)),
       onRestart: { restarts += 1 })
 
+    #expect(application == .reusedPreparedChart)
     #expect(owner.session.isChartUpdatePending)
     #expect(owner.selectionRestorationAttempt == restorationAttempt)
     #expect(restarts == 0)
+    callback.release()
+    try await waitForChartSessionState(owner.session, timeout: .seconds(5)) { _ in
+      !callback.isBlocked
+    }
+    #expect(!callback.didTimeOut)
   }
 
-  @Test func preferenceReplacementRestartsRestorationExactlyOnce() async throws {
+  @Test func preferenceReplacementSignalsOneRestorationAttempt() async throws {
     let result = QueryResult(
       columns: ["property_type", "current_market_value"],
       rows: [
@@ -2419,30 +2478,224 @@ private func waitForChartTestCondition(
       client: CREGChartAnalysisClient(cache: AutoChartCache()),
       inputIdentity: identity,
       result: result)
+    defer { owner.session.cancel() }
     owner.load(result: result, inputIdentity: identity, preference: .automatic)
-    #expect(await waitForChartTestCondition {
-      if case .ready(_, _?) = owner.session.state { return true }
-      return false
-    })
-    guard case .ready(let analysis, let presented?) = owner.session.state,
-      let alternative = analysis.cregRecommendationCatalog?.cataloged.first(
-        where: { $0.id != presented.preparedChart.recommendation.id })
-    else {
-      Issue.record("The chart session did not expose an alternative chart.")
-      return
-    }
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.id != presented.preparedChart.recommendation.id
+      })
     let restorationAttempt = owner.selectionRestorationAttempt
     var restarts = 0
 
-    owner.setPreferenceIfNeeded(
+    let application = owner.setPreferenceIfNeeded(
       .chart(.specific(alternative.id)),
       onRestart: { restarts += 1 })
 
+    #expect(application == .startedReplacement)
     #expect(restarts == 1)
     #expect(owner.selectionRestorationAttempt == restorationAttempt + 1)
     #expect(owner.session.preference == .chart(.specific(alternative.id)))
-    owner.session.cancel()
   }
+
+  @Test func differentPreparedChartReuseSignalsRestoration() async throws {
+    let result = QueryResult(
+      columns: ["property_type", "current_market_value"],
+      rows: [
+        [.text("Office"), .real(20_000_000)],
+        [.text("Retail"), .real(12_000_000)],
+        [.text("Industrial"), .real(15_000_000)],
+      ])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "prepared-chart-reuse-restoration",
+      dataIdentity: nil,
+      sql: "SELECT property_type, current_market_value FROM properties",
+      question: "Compare value by type")
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: identity,
+      result: result,
+      preparation: .allCataloged)
+    defer { owner.session.cancel() }
+    owner.load(result: result, inputIdentity: identity, preference: .automatic)
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let presentedSpecificationID =
+      presented.preparedChart.recommendation.specification.id
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.specification.id != presentedSpecificationID
+          && analysis.preparedCharts[$0.id] != nil
+      })
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var restarts = 0
+
+    let application = owner.setPreferenceIfNeeded(
+      .chart(.specific(alternative.id)),
+      onRestart: { restarts += 1 })
+
+    #expect(application == .reusedPreparedChart)
+    #expect(restarts == 1)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt + 1)
+    #expect(owner.session.currentRecommendation?.specification.id
+      == alternative.specification.id)
+  }
+
+  @Test func reentrantReplacementCoalescesRestorationAndPersistsNewestChoice()
+    async throws
+  {
+    let result = QueryResult(
+      columns: ["property_type", "current_market_value"],
+      rows: [
+        [.text("Office"), .real(20_000_000)],
+        [.text("Retail"), .real(12_000_000)],
+        [.text("Industrial"), .real(15_000_000)],
+      ])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "reentrant-preference-persistence",
+      dataIdentity: nil,
+      sql: "SELECT property_type, current_market_value FROM properties",
+      question: "Compare value by type")
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: identity,
+      result: result)
+    defer { owner.session.cancel() }
+    owner.load(result: result, inputIdentity: identity, preference: .automatic)
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.id != presented.preparedChart.recommendation.id
+      })
+    let outerPreference = ResultPresentationPreference.chart(
+      .specific(alternative.id))
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var persisted: [ResultPresentationPreference] = []
+    var restarts = 0
+    let observation = ChartTestObservationLoop()
+    observation.track {
+      _ = owner.session.preference
+    } onChange: {
+      observation.cancel()
+      applyResultPresentationPreference(
+        .table,
+        chartOwner: owner,
+        persistPreference: { persisted.append($0) },
+        beforeSessionRestart: { restarts += 1 })
+    }
+
+    let application = applyResultPresentationPreference(
+      outerPreference,
+      chartOwner: owner,
+      persistPreference: { persisted.append($0) },
+      beforeSessionRestart: { restarts += 1 })
+
+    #expect(application == .superseded)
+    #expect(owner.session.preference == .table)
+    #expect(persisted == [.table])
+    #expect(restarts == 1)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt + 1)
+  }
+
+  @Test func cancellationSupersessionPersistsStillCurrentPreference() async throws {
+    let result = QueryResult(
+      columns: ["property_type", "current_market_value"],
+      rows: [
+        [.text("Office"), .real(20_000_000)],
+        [.text("Retail"), .real(12_000_000)],
+        [.text("Industrial"), .real(15_000_000)],
+      ])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "cancelled-preference-persistence",
+      dataIdentity: nil,
+      sql: "SELECT property_type, current_market_value FROM properties",
+      question: "Compare value by type")
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: identity,
+      result: result)
+    defer { owner.session.cancel() }
+    owner.load(result: result, inputIdentity: identity, preference: .automatic)
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.id != presented.preparedChart.recommendation.id
+      })
+    let updated = ResultPresentationPreference.chart(.specific(alternative.id))
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var persisted: [ResultPresentationPreference] = []
+    var restarts = 0
+    let observation = ChartTestObservationLoop()
+    observation.track {
+      _ = owner.session.preference
+    } onChange: {
+      observation.cancel()
+      owner.session.setPreference(updated.packagePreference)
+      owner.session.cancel()
+    }
+
+    let application = applyResultPresentationPreference(
+      updated,
+      chartOwner: owner,
+      persistPreference: { persisted.append($0) },
+      beforeSessionRestart: { restarts += 1 })
+
+    #expect(application == .superseded)
+    #expect(owner.session.preference == updated.packagePreference)
+    #expect(persisted == [updated])
+    #expect(restarts == 1)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt + 1)
+    guard case .idle = owner.session.state else {
+      Issue.record("Cancellation supersession did not leave the session idle.")
+      return
+    }
+  }
+
+  @Test func sessionWaitPropagatesCancellation() async {
+    let session = AutoChartSession<Int>(cache: AutoChartCache())
+    let waiter = Task {
+      try await waitForChartSessionState(session) { _ in false }
+    }
+    await Task.yield()
+
+    waiter.cancel()
+
+    await #expect(throws: CancellationError.self) {
+      _ = try await waiter.value
+    }
+  }
+
+  #if ATC_TEST_HOOKS
+  @Test func sessionWaitThrowsPackageFailureImmediately() async throws {
+    let result = QueryResult(
+      columns: ["fund", "value"],
+      rows: [[.text("A"), .real(10)], [.text("B"), .real(20)]])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "session-wait-failure",
+      dataIdentity: nil,
+      sql: "SELECT fund, value FROM properties",
+      question: "Compare value by fund")
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: identity,
+      result: result)
+    defer { owner.session.cancel() }
+    owner.load(result: result, inputIdentity: identity, preference: .automatic)
+    let failure = AutoChartFailure(
+      stage: .chartPreparation,
+      kind: .internalFailure,
+      isRetryable: true,
+      diagnosticID: "CREG.test.waitFailure",
+      message: "A controlled package failure.")
+    owner.session.failCurrentAttemptForTesting(failure)
+
+    do {
+      try await waitForChartSessionState(owner.session) { _ in false }
+      Issue.record("The session wait ignored a terminal package failure.")
+    } catch let received as AutoChartFailure {
+      #expect(received.diagnosticID == failure.diagnosticID)
+    }
+  }
+  #endif
 
   @Test func cachedChartPreparationKeepsChartModeThroughTableToChartChoice()
     async throws
@@ -2744,20 +2997,9 @@ private func waitForChartTestCondition(
       client: CREGChartAnalysisClient(cache: AutoChartCache()),
       inputIdentity: identity,
       result: result)
+    defer { owner.session.cancel() }
     owner.load(result: result, inputIdentity: identity, preference: .automatic)
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: chartTestReadyTimeout)
-    while clock.now < deadline {
-      if case .ready(_, _?) = owner.session.state {
-        break
-      }
-      if case .failed(let failure) = owner.session.state { throw failure }
-      try await Task.sleep(for: .milliseconds(5))
-    }
-    guard case .ready(let analysis, let drawn?) = owner.session.state else {
-      Issue.record("Chart session timed out: \(owner.session.state)")
-      return
-    }
+    let (analysis, drawn) = try await waitForReadyChart(owner.session)
     var replacementIdentity = identity
     replacementIdentity.resultFingerprint = "next-result"
     #expect(owner.displayedRecommendation(for: replacementIdentity) == nil)
