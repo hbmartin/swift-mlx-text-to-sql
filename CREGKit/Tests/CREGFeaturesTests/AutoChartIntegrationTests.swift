@@ -33,6 +33,45 @@ private final class PickerLabelCounter: @unchecked Sendable {
   var calls: Int { lock.withLock { storedCalls } }
 }
 
+private final class ChartPresentationBlockingCallback: @unchecked Sendable {
+  private let lock = NSLock()
+  private let releaseGate = DispatchSemaphore(value: 0)
+  private var didBlock = false
+  private var blocked = false
+
+  var isBlocked: Bool { lock.withLock { blocked } }
+
+  func invoke() {
+    let shouldBlock = lock.withLock {
+      guard !didBlock else { return false }
+      didBlock = true
+      blocked = true
+      return true
+    }
+    guard shouldBlock else { return }
+    _ = releaseGate.wait(timeout: .now() + 5)
+    lock.withLock { blocked = false }
+  }
+
+  func release() {
+    releaseGate.signal()
+  }
+}
+
+@MainActor
+private func waitForChartTestCondition(
+  timeout: Duration = chartTestReadyTimeout,
+  _ condition: () -> Bool
+) async -> Bool {
+  let clock = ContinuousClock()
+  let deadline = clock.now.advanced(by: timeout)
+  while clock.now < deadline {
+    if condition() { return true }
+    try? await Task.sleep(for: .milliseconds(5))
+  }
+  return condition()
+}
+
 @Suite struct CREGChartAdapterTests {
   @Test func lineageAnalysisVersionIsSeven() {
     #expect(SQLQueryLineage.currentAnalysisVersion == 7)
@@ -2311,6 +2350,100 @@ private final class PickerLabelCounter: @unchecked Sendable {
 
 @MainActor
 @Suite struct ResultPresentationMigrationHandlerTests {
+  @Test func pendingPresentationSameChartRebindDoesNotRestartRestoration()
+    async throws
+  {
+    let result = QueryResult(
+      columns: ["property_type", "current_market_value"],
+      rows: [
+        [.text("Office"), .real(20_000_000)],
+        [.text("Retail"), .real(12_000_000)],
+        [.text("Industrial"), .real(15_000_000)],
+      ])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "pending-presentation-same-chart-rebind",
+      dataIdentity: nil,
+      sql: "SELECT property_type, current_market_value FROM properties",
+      question: "Compare value by type")
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: identity,
+      result: result)
+    owner.load(result: result, inputIdentity: identity, preference: .automatic)
+    #expect(await waitForChartTestCondition {
+      if case .ready(_, _?) = owner.session.state { return true }
+      return false
+    })
+    guard case .ready(_, let presented?) = owner.session.state else {
+      Issue.record("The chart session did not become ready.")
+      return
+    }
+
+    let callback = ChartPresentationBlockingCallback()
+    defer { callback.release() }
+    owner.session.setPresentationContext(
+      .init(identity: "pending-same-chart-rebind"),
+      formatters: AutoChartFormatters(
+        cacheIdentity: "pending-same-chart-rebind",
+        request: { _, _, _ in callback.invoke(); return nil }))
+    #expect(await waitForChartTestCondition(timeout: .seconds(5)) {
+      callback.isBlocked
+    })
+    #expect(owner.session.isChartUpdatePending)
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var restarts = 0
+
+    owner.setPreferenceIfNeeded(
+      .chart(.specific(presented.preparedChart.recommendation.id)),
+      onRestart: { restarts += 1 })
+
+    #expect(owner.session.isChartUpdatePending)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt)
+    #expect(restarts == 0)
+  }
+
+  @Test func preferenceReplacementRestartsRestorationExactlyOnce() async throws {
+    let result = QueryResult(
+      columns: ["property_type", "current_market_value"],
+      rows: [
+        [.text("Office"), .real(20_000_000)],
+        [.text("Retail"), .real(12_000_000)],
+        [.text("Industrial"), .real(15_000_000)],
+      ])
+    let identity = CREGChartInputIdentity(
+      resultFingerprint: "preference-replacement-restoration",
+      dataIdentity: nil,
+      sql: "SELECT property_type, current_market_value FROM properties",
+      question: "Compare value by type")
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: identity,
+      result: result)
+    owner.load(result: result, inputIdentity: identity, preference: .automatic)
+    #expect(await waitForChartTestCondition {
+      if case .ready(_, _?) = owner.session.state { return true }
+      return false
+    })
+    guard case .ready(let analysis, let presented?) = owner.session.state,
+      let alternative = analysis.cregRecommendationCatalog?.cataloged.first(
+        where: { $0.id != presented.preparedChart.recommendation.id })
+    else {
+      Issue.record("The chart session did not expose an alternative chart.")
+      return
+    }
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var restarts = 0
+
+    owner.setPreferenceIfNeeded(
+      .chart(.specific(alternative.id)),
+      onRestart: { restarts += 1 })
+
+    #expect(restarts == 1)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt + 1)
+    #expect(owner.session.preference == .chart(.specific(alternative.id)))
+    owner.session.cancel()
+  }
+
   @Test func cachedChartPreparationKeepsChartModeThroughTableToChartChoice()
     async throws
   {
