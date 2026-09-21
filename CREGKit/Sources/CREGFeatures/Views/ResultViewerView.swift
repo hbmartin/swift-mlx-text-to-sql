@@ -158,7 +158,8 @@ struct ResultViewerView: View {
       wrappedValue: CREGChartSessionOwner(
         client: chartAnalysis,
         inputIdentity: inputIdentity,
-        result: result))
+        result: result,
+        preference: preference.wrappedValue ?? .automatic))
   }
 
   var session: AutoChartSession<Int> {
@@ -428,12 +429,12 @@ struct ResultViewerView: View {
       chartOwner.load(
         result: result,
         inputIdentity: chartInputIdentity,
-        preference: (preference ?? .automatic).packagePreference,
+        preference: preference ?? .automatic,
         beforeRestart: prepareChartSelectionForSessionRestart)
     }
     .onChange(of: preference) { _, updated in
       chartOwner.setPreferenceIfNeeded(
-        (updated ?? .automatic).packagePreference,
+        updated ?? .automatic,
         onRestart: prepareChartSelectionForSessionRestart)
     }
     .onChange(of: searchText) { _, _ in

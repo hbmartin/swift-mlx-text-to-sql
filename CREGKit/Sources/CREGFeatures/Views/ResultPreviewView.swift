@@ -59,7 +59,8 @@ struct ResultPreviewView: View {
       wrappedValue: CREGChartSessionOwner(
         client: chartAnalysis,
         inputIdentity: inputIdentity,
-        result: result))
+        result: result,
+        preference: preference ?? .automatic))
   }
 
   private var session: AutoChartSession<Int> {
@@ -176,11 +177,11 @@ struct ResultPreviewView: View {
         chartOwner.load(
           result: result,
           inputIdentity: chartInputIdentity,
-          preference: (preference ?? .automatic).packagePreference)
+          preference: preference ?? .automatic)
       }
       .onChange(of: preference) { _, updated in
         chartOwner.setPreferenceIfNeeded(
-          (updated ?? .automatic).packagePreference)
+          updated ?? .automatic)
       }
       .task(id: failure?.episodeID) {
         guard let failure else { return }
