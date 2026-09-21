@@ -16,16 +16,22 @@ typealias ResultPresentationMigrationHandler = (
 ) -> ResultPresentationMigrationOutcome
 
 @MainActor
+@discardableResult
 func applyResultPresentationPreference(
   _ updated: ResultPresentationPreference,
   chartOwner: CREGChartSessionOwner,
   persistPreference: (ResultPresentationPreference) -> Void,
   beforeSessionRestart: () -> Void = {}
-) {
-  chartOwner.setPreferenceIfNeeded(
+) -> AutoChartPreferenceApplication {
+  let application = chartOwner.setPreferenceIfNeeded(
     updated.packagePreference,
     onRestart: beforeSessionRestart)
+  guard
+    application != .superseded
+      || chartOwner.session.preference == updated.packagePreference
+  else { return application }
   persistPreference(updated)
+  return application
 }
 
 @MainActor

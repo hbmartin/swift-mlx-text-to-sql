@@ -1,12 +1,12 @@
 {
-  "originHash" : "fabc8b66aceb0d03376e185aa16a2ea6c3c56c7b3930fb383381c18870e46bcd",
+  "originHash" : "72baa74179d94a3f2b4dcf9275f35b80964a7a72dbab35040d919b08684a7a4e",
   "pins" : [
     {
       "identity" : "autotablecharts",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/hbmartin/AutoTableCharts.git",
       "state" : {
-        "revision" : "d01411f8f803c5a695594d5b2b59a6549e4f1506"
+        "revision" : "cd366c468cade420399bc73564662adab957069c"
       }
     },
     {

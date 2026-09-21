@@ -79,10 +79,12 @@ final class CREGChartSessionOwner: ObservableObject {
   ) -> (request: AutoChartRequest<Int>?, failure: AutoChartFailure?)
   private let client: CREGChartAnalysisClient
   private let requestFactory: RequestFactory?
+  private let preparationStrategy: AutoChartPreparationStrategy
   let session: AutoChartSession<Int>
   @Published private(set) var inputIdentity: CREGChartInputIdentity
-  /// Changes whenever the package installs a replacement session pass,
-  /// including retries that produce the same stable chart ID.
+  /// App-level invalidation token for restoring chart selection after a
+  /// lifecycle change that may clear or invalidate the package selection.
+  /// Synchronously nested owner applications coalesce into one invalidation.
   @Published private(set) var selectionRestorationAttempt: UInt64 = 0
   @Published private var request: AutoChartRequest<Int>?
   @Published private var requestFailure: AutoChartFailure?
@@ -97,10 +99,12 @@ final class CREGChartSessionOwner: ObservableObject {
     client: CREGChartAnalysisClient,
     inputIdentity: CREGChartInputIdentity,
     result: QueryResult,
+    preparation: AutoChartPreparationStrategy = .preferredOrPrimary,
     requestFactory: RequestFactory? = nil
   ) {
     self.client = client
     self.requestFactory = requestFactory
+    self.preparationStrategy = preparation
     self.session = client.makeSession()
     self.inputIdentity = inputIdentity
     let setup = requestFactory?(client, result, inputIdentity)
@@ -139,7 +143,7 @@ final class CREGChartSessionOwner: ObservableObject {
     session.load(
       request,
       preference: preference,
-      preparation: .preferredOrPrimary,
+      preparation: preparationStrategy,
       presentationContext: .init(identity: "creg-v3"),
       formatters: CREGChartAdapter.formatters,
       textResolver: CREGChartAdapter.textResolver)
@@ -204,17 +208,34 @@ final class CREGChartSessionOwner: ObservableObject {
     }
   }
 
+  @discardableResult
   func setPreferenceIfNeeded(
     _ preference: AutoChartPreference,
     onRestart: () -> Void = {}
-  ) {
-    switch session.applyPreference(preference) {
-    case .startedReplacement:
+  ) -> AutoChartPreferenceApplication {
+    let restorationAttempt = selectionRestorationAttempt
+    let wasSessionLoaded = isSessionLoaded
+    let previousSpecificationID = session.currentRecommendation?.specification.id
+    let application = session.applyPreference(preference)
+    let currentSpecificationID = session.currentRecommendation?.specification.id
+    let needsRestoration =
+      switch application {
+      case .startedReplacement:
+        true
+      case .reusedPreparedChart:
+        previousSpecificationID != currentSpecificationID
+      case .superseded:
+        wasSessionLoaded
+      case .unchanged, .stored:
+        false
+      }
+    if needsRestoration, selectionRestorationAttempt == restorationAttempt {
       onRestart()
-      selectionRestorationAttempt &+= 1
-    case .unchanged, .stored, .reusedPreparedChart, .superseded:
-      break
+      if selectionRestorationAttempt == restorationAttempt {
+        selectionRestorationAttempt &+= 1
+      }
     }
+    return application
   }
 
   func pickerOptions(
