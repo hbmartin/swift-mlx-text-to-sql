@@ -21,17 +21,15 @@ func applyResultPresentationPreference(
   _ updated: ResultPresentationPreference,
   chartOwner: CREGChartSessionOwner,
   persistPreference: (ResultPresentationPreference) -> Void,
-  beforeSessionRestart: () -> Void = {}
+  beforeSessionRestart: (() -> Void)? = nil
 ) -> AutoChartPreferenceApplication {
-  let application = chartOwner.setPreferenceIfNeeded(
-    updated.packagePreference,
+  let result = chartOwner.setPreferenceIfNeeded(
+    updated,
     onRestart: beforeSessionRestart)
-  guard
-    application != .superseded
-      || chartOwner.session.preference == updated.packagePreference
-  else { return application }
-  persistPreference(updated)
-  return application
+  if result.commandRemainsCurrent {
+    persistPreference(updated)
+  }
+  return result.application
 }
 
 @MainActor
@@ -39,7 +37,7 @@ func applyResultPresentationModeSelection(
   _ intent: ResultViewerLogic.ModeSelectionIntent,
   chartOwner: CREGChartSessionOwner,
   persistPreference: (ResultPresentationPreference) -> Void,
-  beforeSessionRestart: () -> Void = {}
+  beforeSessionRestart: (() -> Void)? = nil
 ) {
   switch intent {
   case .none:
@@ -52,10 +50,10 @@ func applyResultPresentationModeSelection(
       beforeSessionRestart: beforeSessionRestart)
   case .retryChart(let updated):
     if let updated {
-      let didStartRetry = chartOwner.retry(
-        preference: updated.packagePreference,
+      let result = chartOwner.retry(
+        preference: updated,
         beforeRestart: beforeSessionRestart)
-      if didStartRetry {
+      if result.application == .started, result.commandRemainsCurrent {
         persistPreference(updated)
       }
     } else {
@@ -144,7 +142,7 @@ func applyResultPresentationMigration(
   _ suggestion: ResultPresentationMigrationSuggestion,
   analysis: AutoChartAnalysis<Int>,
   chartOwner: CREGChartSessionOwner,
-  beforeSessionRestart: () -> Void = {},
+  beforeSessionRestart: (() -> Void)? = nil,
   isStillCurrent: () -> Bool = { true },
   migratePreference: ResultPresentationMigrationHandler
 ) async {
@@ -156,7 +154,7 @@ func applyResultPresentationMigration(
   func synchronize(_ preference: ResultPresentationPreference?) {
     guard let preference, !Task.isCancelled, isStillCurrent() else { return }
     chartOwner.setPreferenceIfNeeded(
-      preference.packagePreference,
+      preference,
       onRestart: beforeSessionRestart)
   }
 
@@ -165,7 +163,7 @@ func applyResultPresentationMigration(
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
       chartOwner.setPreferenceIfNeeded(
-        stored.packagePreference,
+        stored,
         onRestart: beforeSessionRestart)
       return
     case .retained(let authoritative):
@@ -199,7 +197,7 @@ func runResultPresentationMigrationTask(
   analysis: AutoChartAnalysis<Int>,
   chartOwner: CREGChartSessionOwner,
   isCurrentPreference: () -> Bool,
-  beforeSessionRestart: () -> Void = {},
+  beforeSessionRestart: (() -> Void)? = nil,
   migratePreference: ResultPresentationMigrationHandler
 ) async {
   func isCurrent() -> Bool {
