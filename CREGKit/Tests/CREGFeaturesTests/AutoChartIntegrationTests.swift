@@ -1,6 +1,7 @@
 import AutoTableCharts
 import AutoTableChartsUI
 import CREGData
+import Combine
 import ComposableArchitecture
 import Foundation
 import Observation
@@ -2549,6 +2550,229 @@ private func waitForReadyChart(
       == alternative.specification.id)
   }
 
+  @Test func reentrantSamePreferenceStillPersistsTheEffectiveOuterChoice()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "reentrant-same-preference")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.id != presented.preparedChart.recommendation.id
+      })
+    let updated = ResultPresentationPreference.chart(.specific(alternative.id))
+    var persisted: [ResultPresentationPreference] = []
+    let observation = ChartTestObservationLoop()
+    observation.track {
+      _ = owner.session.preference
+    } onChange: {
+      observation.cancel()
+      owner.setPreferenceIfNeeded(updated)
+    }
+
+    let application = applyResultPresentationPreference(
+      updated,
+      chartOwner: owner,
+      persistPreference: { persisted.append($0) })
+
+    #expect(application == .superseded)
+    #expect(persisted == [updated])
+    #expect(owner.resultPresentationPreference == updated)
+    #expect(owner.session.preference == updated.packagePreference)
+  }
+
+  @Test func restorationPublicationReentryStartsANewOwnerTransaction()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "restoration-publication-reentry")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.id != presented.preparedChart.recommendation.id
+      })
+    let attempt = owner.selectionRestorationAttempt
+    var outerRestarts = 0
+    var innerRestarts = 0
+    var cancellable: AnyCancellable?
+    cancellable = owner.$selectionRestorationAttempt
+      .dropFirst()
+      .prefix(1)
+      .sink { _ in
+        MainActor.assumeIsolated {
+          _ = owner.setPreferenceIfNeeded(
+            .table,
+            onRestart: { innerRestarts += 1 })
+        }
+      }
+
+    let outer = owner.setPreferenceIfNeeded(
+      .chart(.specific(alternative.id)),
+      onRestart: { outerRestarts += 1 })
+    withExtendedLifetime(cancellable) {}
+    cancellable = nil
+
+    #expect(!outer.preferenceRemainsCurrent)
+    #expect(outerRestarts == 1)
+    #expect(innerRestarts == 1)
+    #expect(owner.selectionRestorationAttempt == attempt + 2)
+    #expect(owner.resultPresentationPreference == .table)
+    #expect(owner.session.preference == .table)
+  }
+
+  @Test func identityLoadFoldsAReentrantPreferenceIntoTheNewRequest()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "identity-load-old")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    _ = try await waitForReadyChart(owner.session)
+    var replacement = fixture.identity
+    replacement.resultFingerprint = "identity-load-new"
+    let observation = ChartTestObservationLoop()
+    observation.track {
+      _ = owner.session.state
+    } onChange: {
+      observation.cancel()
+      owner.synchronizePreference(.table)
+    }
+
+    let load = owner.load(
+      result: fixture.result,
+      inputIdentity: replacement,
+      preference: .automatic)
+
+    #expect(load.application == .started)
+    #expect(!load.preferenceRemainsCurrent)
+    #expect(owner.inputIdentity == replacement)
+    #expect(owner.resultPresentationPreference == .table)
+    #expect(owner.session.preference == .table)
+  }
+
+  @Test func newerLoadFromRestartCallbackSurvivesTheOlderIdentityLoad()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "restart-load-old")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    _ = try await waitForReadyChart(owner.session)
+    var abandoned = fixture.identity
+    abandoned.resultFingerprint = "restart-load-abandoned"
+    var surviving = fixture.identity
+    surviving.resultFingerprint = "restart-load-surviving"
+    var nested: CREGChartMutationResult<CREGChartLoadApplication>?
+
+    let outer = owner.load(
+      result: fixture.result,
+      inputIdentity: abandoned,
+      preference: .automatic,
+      beforeRestart: {
+        nested = owner.load(
+          result: fixture.result,
+          inputIdentity: surviving,
+          preference: .table)
+      })
+
+    #expect(outer.application == .superseded)
+    #expect(nested?.application == .started)
+    #expect(owner.inputIdentity == surviving)
+    #expect(owner.resultPresentationPreference == .table)
+    #expect(owner.session.preference == .table)
+    #expect(owner.retry().application == .started)
+  }
+
+  @Test func repeatedlySupersededLoadNeverMarksTheOwnerLoaded() {
+    let fixture = makeOwnerFixture(identity: "superseded-owner-load")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    var unloads = 0
+    var isUnloading = false
+    let observation = ChartTestObservationLoop()
+    observation.track {
+      _ = owner.session.state
+    } onChange: {
+      guard !isUnloading else { return }
+      guard unloads < 2 else {
+        observation.cancel()
+        return
+      }
+      unloads += 1
+      isUnloading = true
+      owner.session.unload()
+      isUnloading = false
+    }
+
+    let load = owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+
+    #expect(unloads == 2)
+    #expect(load.application == .superseded)
+    #expect(load.preferenceRemainsCurrent)
+    #expect(owner.retry().application == .noRequest)
+  }
+
+  @Test func rollbackVerifiesAndRepairsItsOwnSupersededReconciliation()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "rollback-reconciliation")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.id != presented.preparedChart.recommendation.id
+      })
+    let updated = ResultPresentationPreference.chart(.specific(alternative.id))
+    var persisted: [ResultPresentationPreference] = []
+    var reconciliationSupersessions = 0
+    let rollbackObservation = ChartTestObservationLoop()
+
+    let application = applyResultPresentationPreference(
+      updated,
+      chartOwner: owner,
+      persistPreference: { persisted.append($0) },
+      beforeSessionRestart: {
+        owner.session.setPreference(.table)
+        rollbackObservation.track {
+          _ = owner.session.preference
+        } onChange: {
+          rollbackObservation.cancel()
+          reconciliationSupersessions += 1
+          owner.session.setPreference(.table)
+        }
+      })
+
+    #expect(application == .startedReplacement)
+    #expect(reconciliationSupersessions == 1)
+    #expect(persisted.isEmpty)
+    #expect(owner.resultPresentationPreference == .automatic)
+    #expect(owner.session.preference == .automatic)
+  }
+
   @Test func reentrantReplacementCoalescesRestorationAndPersistsNewestChoice()
     async throws
   {
@@ -2721,7 +2945,7 @@ private func waitForReadyChart(
     })
 
     #expect(retry.application == .superseded)
-    #expect(!retry.commandRemainsCurrent)
+    #expect(!retry.preferenceRemainsCurrent)
     #expect(restarts == 1)
     #expect(owner.selectionRestorationAttempt == attempt + 1)
     #expect(owner.resultPresentationPreference == .table)
@@ -3273,7 +3497,7 @@ private func waitForReadyChart(
       beforeRestart: { restartCount += 1 })
 
     #expect(retry.application == .started)
-    #expect(retry.commandRemainsCurrent)
+    #expect(retry.preferenceRemainsCurrent)
     #expect(restartCount == 1)
     #expect(chartOwner.selectionRestorationAttempt == previousAttempt + 1)
     #expect(chartOwner.session.preference == .chart(.recommended))
@@ -3468,7 +3692,86 @@ private func waitForReadyChart(
     #expect(
       chartOwner.selectionRestorationAttempt
         == restorationAttemptBeforeMigration)
+    #expect(chartOwner.resultPresentationPreference == .chart(.recommended))
     #expect(chartOwner.session.preference == .chart(.recommended))
+  }
+
+  @Test func completedMigrationAlignsPersistedOwnerAndPackagePreferences()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "completed-migration-alignment")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    let (analysis, _) = try await waitForReadyChart(owner.session)
+    let updated = ResultPresentationPreference.table
+    let suggestion = ResultPresentationMigrationSuggestion(
+      analysisID: analysis.id,
+      previous: .automatic,
+      updated: updated)
+    var persisted = ResultPresentationPreference.automatic
+
+    await applyResultPresentationMigration(
+      suggestion,
+      analysis: analysis,
+      chartOwner: owner
+    ) { _, migrated in
+      persisted = migrated
+      return .migrated(migrated)
+    }
+
+    #expect(persisted == updated)
+    #expect(owner.resultPresentationPreference == updated)
+    #expect(owner.session.preference == updated.packagePreference)
+  }
+
+  @Test func newerOwnerCommandWinsACompletedMigrationSynchronization()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "newer-command-during-migration")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    let (analysis, presented) = try await waitForReadyChart(owner.session)
+    let alternative = try #require(
+      analysis.cregRecommendationCatalog?.cataloged.first {
+        $0.id != presented.preparedChart.recommendation.id
+      })
+    let migrated = ResultPresentationPreference.chart(.specific(alternative.id))
+    let suggestion = ResultPresentationMigrationSuggestion(
+      analysisID: analysis.id,
+      previous: .automatic,
+      updated: migrated)
+    var persisted = ResultPresentationPreference.automatic
+    let observation = ChartTestObservationLoop()
+    observation.track {
+      _ = owner.session.preference
+    } onChange: {
+      observation.cancel()
+      applyResultPresentationPreference(
+        .table,
+        chartOwner: owner,
+        persistPreference: { persisted = $0 })
+    }
+
+    await applyResultPresentationMigration(
+      suggestion,
+      analysis: analysis,
+      chartOwner: owner
+    ) { _, updated in
+      persisted = updated
+      return .migrated(updated)
+    }
+
+    #expect(persisted == .table)
+    #expect(owner.resultPresentationPreference == .table)
+    #expect(owner.session.preference == .table)
   }
 
   @Test func retainedMigrationStopsWhenItsResultIdentityChanges() async throws {

@@ -26,7 +26,7 @@ func applyResultPresentationPreference(
   let result = chartOwner.setPreferenceIfNeeded(
     updated,
     onRestart: beforeSessionRestart)
-  if result.commandRemainsCurrent {
+  if result.preferenceRemainsCurrent {
     persistPreference(updated)
   }
   return result.application
@@ -53,7 +53,7 @@ func applyResultPresentationModeSelection(
       let result = chartOwner.retry(
         preference: updated,
         beforeRestart: beforeSessionRestart)
-      if result.application == .started, result.commandRemainsCurrent {
+      if result.application == .started, result.preferenceRemainsCurrent {
         persistPreference(updated)
       }
     } else {
@@ -151,20 +151,40 @@ func applyResultPresentationMigration(
   var visited: Set<ResultPresentationPreference> = []
   var latestAuthoritative: ResultPresentationPreference?
 
-  func synchronize(_ preference: ResultPresentationPreference?) {
-    guard let preference, !Task.isCancelled, isStillCurrent() else { return }
-    chartOwner.setPreferenceIfNeeded(
-      preference,
-      onRestart: beforeSessionRestart)
+  @discardableResult
+  func synchronize(
+    _ preference: ResultPresentationPreference?,
+    requiresOriginalPreference: Bool = true
+  ) -> Bool {
+    guard let preference, !Task.isCancelled else { return false }
+    if requiresOriginalPreference {
+      guard isStillCurrent() else { return false }
+    }
+    var authoritative = preference
+    for attempt in 0..<2 {
+      let result = chartOwner.synchronizePreference(
+        authoritative,
+        onRestart: beforeSessionRestart)
+      if result.preferenceRemainsCurrent { return true }
+      guard attempt == 0 else { return false }
+      authoritative = chartOwner.resultPresentationPreference
+    }
+    return false
   }
 
   while visited.insert(previous).inserted {
     guard !Task.isCancelled, isStillCurrent() else { return }
+    let ownerPreferenceBeforeMigration =
+      chartOwner.resultPresentationPreference
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
-      chartOwner.setPreferenceIfNeeded(
-        stored,
-        onRestart: beforeSessionRestart)
+      let currentOwnerPreference = chartOwner.resultPresentationPreference
+      let authoritative =
+        currentOwnerPreference == ownerPreferenceBeforeMigration
+          || currentOwnerPreference == stored
+        ? stored
+        : currentOwnerPreference
+      synchronize(authoritative, requiresOriginalPreference: false)
       return
     case .retained(let authoritative):
       latestAuthoritative = authoritative

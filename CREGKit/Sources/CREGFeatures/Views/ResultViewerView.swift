@@ -433,7 +433,7 @@ struct ResultViewerView: View {
         beforeRestart: prepareChartSelectionForSessionRestart)
     }
     .onChange(of: preference) { _, updated in
-      chartOwner.setPreferenceIfNeeded(
+      chartOwner.synchronizePreference(
         updated ?? .automatic,
         onRestart: prepareChartSelectionForSessionRestart)
     }
