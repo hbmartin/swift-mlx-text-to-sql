@@ -99,6 +99,8 @@ final class CREGChartSessionOwner: ObservableObject {
   private var request: AutoChartRequest<Int>?
   private var requestFailure: AutoChartFailure?
   private var commandRevision: UInt64 = 0
+  private var loadRevision: UInt64 = 0
+  private var isSessionLoaded = false
   private struct PickerMemoKey: Equatable {
     let analysisID: AutoChartAnalysisID
     let selectedRecommendationID: AutoChartRecommendationID?
@@ -134,25 +136,45 @@ final class CREGChartSessionOwner: ObservableObject {
     preference: ResultPresentationPreference,
     beforeRestart: (() -> Void)? = nil
   ) -> CREGChartMutationResult<CREGChartLoadApplication> {
-    let revision = beginCommand()
+    let commandRevision = beginCommand()
+    self.loadRevision &+= 1
+    let loadRevision = self.loadRevision
     let changesIdentity = inputIdentity != self.inputIdentity
-    if changesIdentity {
-      let setup =
+    let setup: (request: AutoChartRequest<Int>?, failure: AutoChartFailure?)? =
+      if changesIdentity {
         requestFactory?(client, result, inputIdentity)
-        ?? Self.makeRequest(
-          client: client,
-          result: result,
-          inputIdentity: inputIdentity)
-      guard commandRevision == revision else {
+          ?? Self.makeRequest(
+            client: client,
+            result: result,
+            inputIdentity: inputIdentity)
+      } else {
+        nil
+      }
+    guard self.loadRevision == loadRevision else {
+      return CREGChartMutationResult(
+        application: .superseded,
+        commandRemainsCurrent: false)
+    }
+
+    if isSessionLoaded {
+      requestSelectionRestoration(onRestart: beforeRestart)
+      guard self.loadRevision == loadRevision else {
         return CREGChartMutationResult(
           application: .superseded,
           commandRemainsCurrent: false)
       }
+    }
+
+    if changesIdentity {
+      isSessionLoaded = false
       session.unload()
-      guard commandRevision == revision else {
+      guard self.loadRevision == loadRevision else {
         return CREGChartMutationResult(
           application: .superseded,
           commandRemainsCurrent: false)
+      }
+      guard let setup else {
+        preconditionFailure("An identity change requires staged request state.")
       }
       objectWillChange.send()
       pickerMemo = nil
@@ -161,48 +183,75 @@ final class CREGChartSessionOwner: ObservableObject {
       self.inputIdentity = inputIdentity
     }
 
-    guard commandRevision == revision else {
+    guard self.loadRevision == loadRevision else {
       return CREGChartMutationResult(
         application: .superseded,
         commandRemainsCurrent: false)
     }
-    requestSelectionRestoration(onRestart: beforeRestart)
-    guard commandRevision == revision else {
-      return CREGChartMutationResult(
-        application: .superseded,
-        commandRemainsCurrent: false)
+    let effectivePreference: AutoChartPreference
+    if self.commandRevision == commandRevision {
+      effectivePreference = preference.packagePreference
+    } else {
+      effectivePreference = session.preference
     }
     guard let request else {
       _ = applyPackagePreference(
-        preference.packagePreference,
+        effectivePreference,
         onRestart: beforeRestart)
       return CREGChartMutationResult(
         application: .noRequest,
         commandRemainsCurrent: commandIsCurrent(
-          revision, preference: preference.packagePreference))
+          commandRevision, preference: preference.packagePreference))
     }
 
-    let packageApplication = session.load(
+    let packageCommandRevision = self.commandRevision
+    var packageApplication = session.load(
       request,
-      preference: preference.packagePreference,
+      preference: effectivePreference,
       preparation: preparationStrategy,
       presentationContext: .init(identity: "creg-v3"),
       formatters: CREGChartAdapter.formatters,
       textResolver: CREGChartAdapter.textResolver)
-    guard commandRevision == revision else {
+    guard self.loadRevision == loadRevision else {
       return CREGChartMutationResult(
         application: .superseded,
         commandRemainsCurrent: false)
     }
-    if session.preference != preference.packagePreference {
+
+    // A preference command may synchronously supersede the package load after
+    // it has retained the new request. Re-run once with that newer preference
+    // so the identity transition remains live without reviving stale intent.
+    if packageApplication == .superseded,
+      self.commandRevision != packageCommandRevision
+    {
+      packageApplication = session.load(
+        request,
+        preference: session.preference,
+        preparation: preparationStrategy,
+        presentationContext: .init(identity: "creg-v3"),
+        formatters: CREGChartAdapter.formatters,
+        textResolver: CREGChartAdapter.textResolver)
+      guard self.loadRevision == loadRevision else {
+        return CREGChartMutationResult(
+          application: .superseded,
+          commandRemainsCurrent: false)
+      }
+    }
+
+    if packageApplication == .started {
+      isSessionLoaded = true
+    }
+    if self.commandRevision == commandRevision,
+      session.preference != preference.packagePreference
+    {
       _ = applyPackagePreference(
         preference.packagePreference,
         onRestart: beforeRestart)
     }
     let remainsCurrent = commandIsCurrent(
-      revision, preference: preference.packagePreference)
+      commandRevision, preference: preference.packagePreference)
     let application: CREGChartLoadApplication =
-      packageApplication == .started && remainsCurrent ? .started : .superseded
+      packageApplication == .started ? .started : .superseded
     return CREGChartMutationResult(
       application: application,
       commandRemainsCurrent: remainsCurrent)
@@ -359,6 +408,11 @@ final class CREGChartSessionOwner: ObservableObject {
     let previous = session.preference
     let requestedPreference = preference?.packagePreference ?? previous
     let application = session.retry(preference: requestedPreference)
+    if application == .started {
+      isSessionLoaded = true
+    } else if application == .noRequest {
+      isSessionLoaded = false
+    }
     if application != .noRequest {
       requestSelectionRestoration(onRestart: beforeRestart)
     }
