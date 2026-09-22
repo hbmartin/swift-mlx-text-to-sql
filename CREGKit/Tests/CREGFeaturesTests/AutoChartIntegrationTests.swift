@@ -2642,7 +2642,7 @@ private func waitForReadyChart(
     #expect(owner.session.preference == .table)
   }
 
-  @Test func newerReentrantPreferenceSupersedesAnIdentityLoad()
+  @Test func identityLoadFoldsAReentrantPreferenceIntoTheNewRequest()
     async throws
   {
     let fixture = makeOwnerFixture(identity: "identity-load-old")
@@ -2671,11 +2671,123 @@ private func waitForReadyChart(
       inputIdentity: replacement,
       preference: .automatic)
 
-    #expect(load.application == .superseded)
+    #expect(load.application == .started)
     #expect(!load.commandRemainsCurrent)
     #expect(observationFires == 1)
-    #expect(owner.inputIdentity == fixture.identity)
+    #expect(owner.inputIdentity == replacement)
     #expect(owner.session.preference == .table)
+    _ = try await waitForChartSessionState(owner.session) { state in
+      if case .fallback = state { return true }
+      return false
+    }
+    #expect(owner.analysis(for: replacement) != nil)
+    #expect(owner.retry().application == .started)
+  }
+
+  @Test func identityLoadFoldsARequestFactoryPreferenceIntoTheNewRequest()
+    async throws
+  {
+    var ownerReference: CREGChartSessionOwner?
+    let replacementFingerprint = "request-factory-identity-new"
+    let fixture = makeOwnerFixture(
+      identity: "request-factory-identity-old",
+      requestFactory: { _, result, identity in
+        if identity.resultFingerprint == replacementFingerprint {
+          ownerReference?.synchronizePreference(.table)
+        }
+        let request = try! CREGChartAdapter.analysisRequest(
+          result: result,
+          sql: identity.sql,
+          question: identity.question,
+          resultFingerprint: identity.resultFingerprint,
+          dataIdentity: identity.dataIdentity)
+        return (request, nil)
+      })
+    let owner = fixture.owner
+    ownerReference = owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    _ = try await waitForReadyChart(owner.session)
+    var replacement = fixture.identity
+    replacement.resultFingerprint = replacementFingerprint
+
+    let load = owner.load(
+      result: fixture.result,
+      inputIdentity: replacement,
+      preference: .automatic)
+
+    #expect(load.application == .started)
+    #expect(!load.commandRemainsCurrent)
+    #expect(owner.inputIdentity == replacement)
+    #expect(owner.session.preference == .table)
+    _ = try await waitForChartSessionState(owner.session) { state in
+      if case .fallback = state { return true }
+      return false
+    }
+    #expect(owner.analysis(for: replacement) != nil)
+    #expect(owner.retry().application == .started)
+  }
+
+  @Test func firstLoadDoesNotInvokeTheRestartCallback() async throws {
+    let fixture = makeOwnerFixture(identity: "initial-load-restart-callback")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    var restarts = 0
+
+    let load = owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic,
+      beforeRestart: {
+        restarts += 1
+        owner.synchronizePreference(.table)
+      })
+
+    #expect(load.application == .started)
+    #expect(load.commandRemainsCurrent)
+    #expect(restarts == 0)
+    #expect(owner.session.preference == .automatic)
+    _ = try await waitForReadyChart(owner.session)
+  }
+
+  @Test func identityLoadFoldsAPreferenceFromTheRestartCallback()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "restart-preference-old")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    _ = try await waitForReadyChart(owner.session)
+    var replacement = fixture.identity
+    replacement.resultFingerprint = "restart-preference-new"
+    var restarts = 0
+
+    let load = owner.load(
+      result: fixture.result,
+      inputIdentity: replacement,
+      preference: .automatic,
+      beforeRestart: {
+        restarts += 1
+        owner.synchronizePreference(.table)
+      })
+
+    #expect(load.application == .started)
+    #expect(!load.commandRemainsCurrent)
+    #expect(restarts == 1)
+    #expect(owner.inputIdentity == replacement)
+    #expect(owner.session.preference == .table)
+    _ = try await waitForChartSessionState(owner.session) { state in
+      if case .fallback = state { return true }
+      return false
+    }
+    #expect(owner.analysis(for: replacement) != nil)
+    #expect(owner.retry().application == .started)
   }
 
   @Test func newerLoadFromRestartCallbackSurvivesTheOlderIdentityLoad()
@@ -3476,7 +3588,16 @@ private func waitForReadyChart(
       })
     defer { owner.session.cancel() }
     owner.load(result: result, inputIdentity: old, preference: .automatic)
-    owner.load(result: result, inputIdentity: replacement, preference: .automatic)
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var restarts = 0
+    let load = owner.load(
+      result: result,
+      inputIdentity: replacement,
+      preference: .automatic,
+      beforeRestart: { restarts += 1 })
+    #expect(load.application == .noRequest)
+    #expect(restarts == 0)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt)
     #expect(owner.failure(for: replacement) != nil)
     #expect(owner.analysis(for: replacement) == nil)
     owner.setPreferenceIfNeeded(.chart(.recommended))
@@ -3968,7 +4089,8 @@ private func waitForReadyChart(
 
   private func makeOwnerFixture(
     identity value: String,
-    preparation: AutoChartPreparationStrategy = .preferredOrPrimary
+    preparation: AutoChartPreparationStrategy = .preferredOrPrimary,
+    requestFactory: CREGChartSessionOwner.RequestFactory? = nil
   ) -> (
     owner: CREGChartSessionOwner,
     result: QueryResult,
@@ -3986,14 +4108,13 @@ private func waitForReadyChart(
       dataIdentity: nil,
       sql: "SELECT property_type, current_market_value FROM properties",
       question: "Compare value by type")
-    return (
-      CREGChartSessionOwner(
-        client: CREGChartAnalysisClient(cache: AutoChartCache()),
-        inputIdentity: identity,
-        result: result,
-        preparation: preparation),
-      result,
-      identity)
+    let owner = CREGChartSessionOwner(
+      client: CREGChartAnalysisClient(cache: AutoChartCache()),
+      inputIdentity: identity,
+      result: result,
+      preparation: preparation,
+      requestFactory: requestFactory)
+    return (owner, result, identity)
   }
 
   private func migrationStore(
