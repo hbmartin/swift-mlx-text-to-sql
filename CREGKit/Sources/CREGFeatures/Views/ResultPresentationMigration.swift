@@ -26,7 +26,7 @@ func applyResultPresentationPreference(
   let result = chartOwner.setPreferenceIfNeeded(
     updated,
     onRestart: beforeSessionRestart)
-  if result.preferenceRemainsCurrent {
+  if result.commandRemainsCurrent {
     persistPreference(updated)
   }
   return result.application
@@ -53,7 +53,7 @@ func applyResultPresentationModeSelection(
       let result = chartOwner.retry(
         preference: updated,
         beforeRestart: beforeSessionRestart)
-      if result.application == .started, result.preferenceRemainsCurrent {
+      if result.application == .started, result.commandRemainsCurrent {
         persistPreference(updated)
       }
     } else {
@@ -160,31 +160,17 @@ func applyResultPresentationMigration(
     if requiresOriginalPreference {
       guard isStillCurrent() else { return false }
     }
-    var authoritative = preference
-    for attempt in 0..<2 {
-      let result = chartOwner.synchronizePreference(
-        authoritative,
-        onRestart: beforeSessionRestart)
-      if result.preferenceRemainsCurrent { return true }
-      guard attempt == 0 else { return false }
-      authoritative = chartOwner.resultPresentationPreference
-    }
-    return false
+    return chartOwner.synchronizePreference(
+      preference,
+      onRestart: beforeSessionRestart
+    ).commandRemainsCurrent
   }
 
   while visited.insert(previous).inserted {
     guard !Task.isCancelled, isStillCurrent() else { return }
-    let ownerPreferenceBeforeMigration =
-      chartOwner.resultPresentationPreference
     switch migratePreference(previous, updated) {
     case .migrated(let stored):
-      let currentOwnerPreference = chartOwner.resultPresentationPreference
-      let authoritative =
-        currentOwnerPreference == ownerPreferenceBeforeMigration
-          || currentOwnerPreference == stored
-        ? stored
-        : currentOwnerPreference
-      synchronize(authoritative, requiresOriginalPreference: false)
+      synchronize(stored, requiresOriginalPreference: false)
       return
     case .retained(let authoritative):
       latestAuthoritative = authoritative

@@ -59,8 +59,7 @@ struct ResultPreviewView: View {
       wrappedValue: CREGChartSessionOwner(
         client: chartAnalysis,
         inputIdentity: inputIdentity,
-        result: result,
-        preference: preference ?? .automatic))
+        result: result))
   }
 
   private var session: AutoChartSession<Int> {
