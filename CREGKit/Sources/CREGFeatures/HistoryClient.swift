@@ -24,6 +24,12 @@ public struct HistoryClient: Sendable {
   public var clearFeedback:
     @Sendable (_ conversationID: UUID, _ messageID: UUID) async throws -> Void
   public var endTurnJournal: @Sendable (_ conversationID: UUID) async throws -> Void
+  public var markTurnInterrupted:
+    @Sendable (_ conversationID: UUID, _ executionID: UUID, _ ambiguous: Bool)
+      async throws -> Void
+  public var claimTurnRetry:
+    @Sendable (_ conversationID: UUID, _ executionID: UUID,
+      _ question: String, _ automatic: Bool) async throws -> Bool
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   /// Replaces an existing body/telemetry payload without changing transcript
@@ -129,6 +135,14 @@ extension HistoryClient {
       saveFeedback: { try await store.saveFeedback(conversationID: $0, feedback: $1) },
       clearFeedback: { try await store.clearFeedback(conversationID: $0, messageID: $1) },
       endTurnJournal: { try await store.endTurnJournal(conversationID: $0) },
+      markTurnInterrupted: {
+        try await store.markTurnInterrupted(
+          conversationID: $0, executionID: $1, ambiguous: $2)
+      },
+      claimTurnRetry: {
+        try await store.claimTurnRetry(
+          conversationID: $0, executionID: $1, question: $2, automatic: $3)
+      },
       appendMessage: { try await store.appendMessage(conversationID: $0, message: $1) },
       updateMessage: { try await store.updateMessage(conversationID: $0, message: $1) },
       updateResultPresentation: {

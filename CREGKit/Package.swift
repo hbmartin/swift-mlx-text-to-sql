@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "CREGKit",
-  platforms: [.iOS("26.0"), .macOS("15.0")],
+  platforms: [.iOS("27.0"), .macOS("15.0")],
   products: [
     .library(name: "CREGCore", targets: ["CREGCore"]),
     .library(name: "CREGData", targets: ["CREGData"]),
@@ -18,15 +18,15 @@ let package = Package(
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
       revision: "59b4080c58467dab72eeb98c2b1dbf291e38bec1"),
-    // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
-    // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
+    // The current structured-decoding integration is qualified against this
+    // pair. Upgrade the MLX family together for the Foundation Models bridge
+    // only after grammar parity and the full SQL safety corpus pass.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
     .package(
       url: "https://github.com/ml-explore/mlx-swift-lm",
       exact: "3.31.4"),
-    // The 0.2.0 tag raises MLX Swift to 0.31.5 (Swift tools 6.3). This is the
-    // last upstream structured-decoding revision compatible with MLX 0.31.4
-    // while retaining the 3.x MLXLM API used by CREG.
+    // This structured-decoding revision retains CREG's existing EBNF safety
+    // constraint. Do not drop it merely to resolve an MLX bridge upgrade.
     .package(
       url: "https://github.com/petrukha-ivan/mlx-swift-structured",
       revision: "747fe3117311e3de1e43fcbc5f8cb164227bd1f3"),

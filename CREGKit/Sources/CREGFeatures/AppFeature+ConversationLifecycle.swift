@@ -21,9 +21,18 @@ extension AppFeature {
     state.pendingDeletion = PendingDeletion(summary: summary, index: index)
     state.queue.removeAll { $0.conversationID == summary.id }
     if state.activeTurn?.conversationID == summary.id {
+      let executionID = state.activeTurn?.questionID
       state.activeTurn = nil
       effects.append(.cancel(id: CancelID.pipeline))
+      if let executionID {
+        effects.append(.run { _ in
+          await backgroundTurn.finish(executionID, false)
+        })
+      }
       effects.append(.send(.dispatchNextIfIdle))
+    }
+    if state.pendingInterruptedTurn?.conversationID == summary.id {
+      state.pendingInterruptedTurn = nil
     }
     if state.followUpPreparation?.conversationID == summary.id {
       state.followUpPreparation = nil
@@ -113,7 +122,10 @@ extension AppFeature {
     }
     if state.chat?.conversationID == conversationID {
       let messageIDs = Set(
-        [optimisticTurn.message.id, terminalMessageID].compactMap { $0 })
+        [
+          optimisticTurn.isExisting ? nil : optimisticTurn.message.id,
+          terminalMessageID,
+        ].compactMap { $0 })
       state.chat?.messages.removeAll { messageIDs.contains($0.id) }
       if state.chat?.isManuallyTitled == false,
         let previousChatTitle = optimisticTurn.previousChatTitle
@@ -122,7 +134,8 @@ extension AppFeature {
       }
     }
 
-    if var previousSummary = optimisticTurn.previousSummary,
+    if !optimisticTurn.isExisting,
+      var previousSummary = optimisticTurn.previousSummary,
       let currentSummary = state.conversations[id: conversationID]
     {
       if currentSummary.isManuallyTitled {
@@ -284,11 +297,14 @@ extension AppFeature {
       await preparationJournal.begin(
         mode,
         environment)
+      guard !Task.isCancelled else { return }
       do {
         let report = try await pipeline.prepare(mode)
+        guard !Task.isCancelled else { return }
         await preparationJournal.complete(report)
         await send(.modelPrepared(report))
       } catch {
+        guard !Task.isCancelled else { return }
         let failure: ModelPreparationFailure
         if let preparationFailure = error as? ModelPreparationFailure {
           failure = preparationFailure
@@ -309,6 +325,30 @@ extension AppFeature {
       }
     }
     .cancellable(id: CancelID.modelPreparation, cancelInFlight: true)
+  }
+
+  func suspendModelPreparation(state: inout State) -> Effect<Action> {
+    guard let mode = state.modelPreparationModeInFlight else { return .none }
+    state.modelPreparationModeInFlight = nil
+    state.modelPreparationInFlight = false
+    state.suspendedModelPreparationMode = mode
+    diagnostics.info(
+      category: .model,
+      code: "model_preparation_suspended",
+      summary: "Model preparation stopped before background GPU use.",
+      context: ["runtime_mode": mode.rawValue])
+    return .cancel(id: CancelID.modelPreparation)
+  }
+
+  func resumeSuspendedModelPreparation(state: inout State) -> Effect<Action> {
+    guard state.isSceneActive,
+      !state.modelPreparationInFlight,
+      let mode = state.suspendedModelPreparationMode
+    else { return .none }
+    state.suspendedModelPreparationMode = nil
+    state.modelPreparationModeInFlight = mode
+    state.modelPreparationInFlight = true
+    return preparationEffect(mode: mode)
   }
 
   /// A retained Scope Verdict memo deliberately does not gate preparation:

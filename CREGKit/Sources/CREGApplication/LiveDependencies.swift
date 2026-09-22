@@ -52,6 +52,7 @@ private actor SQLGenRuntimeRouter {
   }
 
   func runtimeMode() -> ModelRuntimeMode { activeMode }
+  func backendID() -> SQLBackendID { .mlx }
 
   func generate(
     _ request: SQLGenerationRequest
@@ -297,6 +298,7 @@ enum LiveDependencies {
         return try await runtimeRouter.prepare(mode)
       },
       runtimeMode: { await runtimeRouter.runtimeMode() },
+      backendID: { await runtimeRouter.backendID() },
       schemaPrompt: { try SQLGenClient.schemaPrompt() },
       generate: { try await runtimeRouter.generate($0) })
 
@@ -357,7 +359,7 @@ enum LiveDependencies {
         "source_dirty": String(runtimeContract.sourceDirty),
       ])
     return QueryPipeline.live(
-      fm: .live(),
+      fm: .live(diagnostics: diagnostics),
       sqlGen: sqlGen,
       db: db,
       serializer: serializer,
@@ -376,7 +378,7 @@ enum LiveDependencies {
     schemaPrompt: { try SQLGenClient.schemaPrompt() },
     policyVersion: FMClient.scopeVerdictPolicyVersion,
     judgeWithSchema: { question, schema in
-      let fm = FMClient.live()
+      let fm = FMClient.live(diagnostics: diagnostics)
       guard fm.availability() == .available else { return nil }
       guard
         var record = try? await withSerializedScopeVerdictDeadline(

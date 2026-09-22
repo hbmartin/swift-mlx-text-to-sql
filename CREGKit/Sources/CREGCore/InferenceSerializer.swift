@@ -16,6 +16,7 @@ public actor InferenceSerializer {
     case followUpSuggestion = "follow_up_suggestion"
     case sqlGeneration = "sql_generation"
     case narration
+    case semanticVerification = "semantic_verification"
     case scopeVerdict = "scope_verdict"
   }
 
@@ -30,6 +31,16 @@ public actor InferenceSerializer {
 
   public init(diagnostics: DiagnosticsClient = .noop) {
     self.diagnostics = diagnostics
+  }
+
+  /// Waits for queued and active raw model operations to settle. A cancelled
+  /// caller can return early, but its model operation retains the slot until
+  /// it actually stops; background GPU grants must not be released sooner.
+  public func waitUntilIdle() async {
+    while pendingCount > 0 {
+      let currentTail = tail
+      await currentTail?.value
+    }
   }
 
   public func run<T: Sendable>(

@@ -1,7 +1,11 @@
 import CREGFeatures
 import CREGInference
 import ComposableArchitecture
+import Combine
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// The production composition root. The store is initialized at most once
 /// and only after the feature shell has admitted the live-device path.
@@ -11,6 +15,9 @@ public struct RootView: View {
     AppFeature()
   } withDependencies: {
     $0.queryPipeline = LiveDependencies.pipeline
+    #if os(iOS)
+    $0.backgroundTurn = BackgroundTurnCoordinator.shared.client
+    #endif
     $0.historyClient = LiveDependencies.history
     $0.scopeDiagnosis = LiveDependencies.scopeDiagnosis
     $0.modelPreparationEnvironment = ModelPreparationEnvironmentClient {
@@ -23,6 +30,43 @@ public struct RootView: View {
   public init() {}
 
   public var body: some View {
+    #if os(iOS)
     CREGFeatures.RootView(storeFactory: { Self.store })
+      .onReceive(
+        NotificationCenter.default.publisher(for: .cregBackgroundTurnExpired)
+          .receive(on: DispatchQueue.main)
+      ) { notification in
+        guard let id = notification.object as? UUID else { return }
+        Self.store.send(.backgroundTurnExpired(executionID: id))
+      }
+      .onReceive(
+        NotificationCenter.default.publisher(
+          for: UIApplication.didReceiveMemoryWarningNotification)
+      ) { _ in
+        let context = ModelRuntimeDiagnostics.relievePressure()
+        LiveDependencies.diagnostics.info(
+          category: .model,
+          code: "memory_pressure_cache_evicted",
+          summary: "A memory warning evicted dispensable MLX cache.",
+          context: context)
+        Self.store.send(.resourcePressure)
+      }
+      .onReceive(
+        NotificationCenter.default.publisher(
+          for: ProcessInfo.thermalStateDidChangeNotification)
+      ) { _ in
+        let thermal = ProcessInfo.processInfo.thermalState
+        guard thermal == .serious || thermal == .critical else { return }
+        let context = ModelRuntimeDiagnostics.relievePressure()
+        LiveDependencies.diagnostics.info(
+          category: .model,
+          code: "thermal_pressure_cache_evicted",
+          summary: "Serious thermal pressure evicted dispensable MLX cache.",
+          context: context)
+        Self.store.send(.resourcePressure)
+      }
+    #else
+    CREGFeatures.RootView(storeFactory: { Self.store })
+    #endif
   }
 }

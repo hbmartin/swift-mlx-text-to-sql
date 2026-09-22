@@ -151,6 +151,18 @@ extension HistoryStore {
           """)
     }
 
+    migrator.registerMigration("v5-turn-execution-identity") { db in
+      try db.execute(
+        sql: """
+          ALTER TABLE turn_journal
+            ADD COLUMN execution_id TEXT NOT NULL DEFAULT '';
+          ALTER TABLE turn_journal
+            ADD COLUMN status TEXT NOT NULL DEFAULT 'running';
+          ALTER TABLE turn_journal
+            ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0;
+          """)
+    }
+
     return migrator
   }
 }
