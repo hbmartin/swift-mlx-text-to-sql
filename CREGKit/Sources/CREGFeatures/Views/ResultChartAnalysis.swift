@@ -156,7 +156,10 @@ final class CREGChartSessionOwner: ObservableObject {
         commandRemainsCurrent: false)
     }
 
-    if isSessionLoaded {
+    let hasRequestToLoad = changesIdentity
+      ? setup?.request != nil
+      : request != nil
+    if isSessionLoaded, hasRequestToLoad {
       requestSelectionRestoration(onRestart: beforeRestart)
       guard self.loadRevision == loadRevision else {
         return CREGChartMutationResult(

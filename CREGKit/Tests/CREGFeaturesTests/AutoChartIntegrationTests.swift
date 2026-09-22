@@ -3588,7 +3588,16 @@ private func waitForReadyChart(
       })
     defer { owner.session.cancel() }
     owner.load(result: result, inputIdentity: old, preference: .automatic)
-    owner.load(result: result, inputIdentity: replacement, preference: .automatic)
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var restarts = 0
+    let load = owner.load(
+      result: result,
+      inputIdentity: replacement,
+      preference: .automatic,
+      beforeRestart: { restarts += 1 })
+    #expect(load.application == .noRequest)
+    #expect(restarts == 0)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt)
     #expect(owner.failure(for: replacement) != nil)
     #expect(owner.analysis(for: replacement) == nil)
     owner.setPreferenceIfNeeded(.chart(.recommended))
