@@ -100,7 +100,6 @@ final class CREGChartSessionOwner: ObservableObject {
   private var requestFailure: AutoChartFailure?
   private var commandRevision: UInt64 = 0
   private var loadRevision: UInt64 = 0
-  private var isSessionLoaded = false
   private struct PickerMemoKey: Equatable {
     let analysisID: AutoChartAnalysisID
     let selectedRecommendationID: AutoChartRecommendationID?
@@ -159,7 +158,7 @@ final class CREGChartSessionOwner: ObservableObject {
     let hasRequestToLoad = changesIdentity
       ? setup?.request != nil
       : request != nil
-    if isSessionLoaded, hasRequestToLoad {
+    if session.hasRetainedRequest, hasRequestToLoad {
       requestSelectionRestoration(onRestart: beforeRestart)
       guard self.loadRevision == loadRevision else {
         return CREGChartMutationResult(
@@ -169,7 +168,6 @@ final class CREGChartSessionOwner: ObservableObject {
     }
 
     if changesIdentity {
-      isSessionLoaded = false
       session.unload()
       guard self.loadRevision == loadRevision else {
         return CREGChartMutationResult(
@@ -241,9 +239,6 @@ final class CREGChartSessionOwner: ObservableObject {
       }
     }
 
-    if packageApplication == .started {
-      isSessionLoaded = true
-    }
     if self.commandRevision == commandRevision,
       session.preference != preference.packagePreference
     {
@@ -411,11 +406,6 @@ final class CREGChartSessionOwner: ObservableObject {
     let previous = session.preference
     let requestedPreference = preference?.packagePreference ?? previous
     let application = session.retry(preference: requestedPreference)
-    if application == .started {
-      isSessionLoaded = true
-    } else if application == .noRequest {
-      isSessionLoaded = false
-    }
     if application != .noRequest {
       requestSelectionRestoration(onRestart: beforeRestart)
     }

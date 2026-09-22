@@ -2825,6 +2825,74 @@ private func waitForReadyChart(
     #expect(owner.retry().application == .started)
   }
 
+  @Test func doublySupersededIdentityLoadRetainsRestartRestoration()
+    async throws
+  {
+    let fixture = makeOwnerFixture(identity: "retained-request-old")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    let (initialAnalysis, initialPresentation) =
+      try await waitForReadyChart(owner.session)
+    owner.session.selection = initialPresentation.preparedChart.selections(
+      for: [0], analysisID: initialAnalysis.id)
+    var replacement = fixture.identity
+    replacement.resultFingerprint = "retained-request-new"
+    let unloadObserver = ChartTestObservationLoop()
+    let firstLoadObserver = ChartTestObservationLoop()
+    let secondLoadObserver = ChartTestObservationLoop()
+    defer {
+      unloadObserver.cancel()
+      firstLoadObserver.cancel()
+      secondLoadObserver.cancel()
+    }
+    unloadObserver.track {
+      _ = owner.session.selection
+    } onChange: {
+      unloadObserver.cancel()
+      owner.synchronizePreference(.table)
+      firstLoadObserver.track {
+        _ = owner.session.state
+      } onChange: {
+        firstLoadObserver.cancel()
+        owner.synchronizePreference(.automatic)
+        secondLoadObserver.track {
+          _ = owner.session.state
+        } onChange: {
+          secondLoadObserver.cancel()
+          owner.synchronizePreference(.chart(.recommended))
+        }
+      }
+    }
+
+    let superseded = owner.load(
+      result: fixture.result,
+      inputIdentity: replacement,
+      preference: .automatic)
+
+    #expect(superseded.application == .superseded)
+    #expect(owner.session.hasRetainedRequest)
+    let (retainedAnalysis, retainedPresentation) =
+      try await waitForReadyChart(owner.session)
+    owner.session.selection = retainedPresentation.preparedChart.selections(
+      for: [0], analysisID: retainedAnalysis.id)
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var restarts = 0
+
+    let reload = owner.load(
+      result: fixture.result,
+      inputIdentity: replacement,
+      preference: .table,
+      beforeRestart: { restarts += 1 })
+
+    #expect(reload.application == .started)
+    #expect(restarts == 1)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt + 1)
+  }
+
   @Test func loadSupersededByCancellationRetainsARetryablePackageRequest() {
     let fixture = makeOwnerFixture(identity: "cancelled-owner-load")
     let owner = fixture.owner
@@ -2884,6 +2952,44 @@ private func waitForReadyChart(
     #expect(load.application == .superseded)
     #expect(load.commandRemainsCurrent)
     #expect(owner.retry().application == .noRequest)
+  }
+
+  @Test func retrySupersededByUnloadDoesNotInventARestart() async throws {
+    let fixture = makeOwnerFixture(identity: "retry-unload-request-state")
+    let owner = fixture.owner
+    defer { owner.session.cancel() }
+    owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .automatic)
+    let (analysis, presentation) = try await waitForReadyChart(owner.session)
+    owner.session.selection = presentation.preparedChart.selections(
+      for: [0], analysisID: analysis.id)
+    let observation = ChartTestObservationLoop()
+    defer { observation.cancel() }
+    observation.track {
+      _ = owner.session.selection
+    } onChange: {
+      observation.cancel()
+      owner.session.unload()
+    }
+
+    let retry = owner.retry()
+
+    #expect(retry.application == .superseded)
+    #expect(!owner.session.hasRetainedRequest)
+    let restorationAttempt = owner.selectionRestorationAttempt
+    var restarts = 0
+
+    let load = owner.load(
+      result: fixture.result,
+      inputIdentity: fixture.identity,
+      preference: .chart(.recommended),
+      beforeRestart: { restarts += 1 })
+
+    #expect(load.application == .started)
+    #expect(restarts == 0)
+    #expect(owner.selectionRestorationAttempt == restorationAttempt)
   }
 
   @Test func packageOnlyLoadDivergenceGetsOneLightweightReconciliation() {

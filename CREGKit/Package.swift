@@ -17,7 +17,7 @@ let package = Package(
     // contract, so CREG deliberately pins the reviewed merged implementation.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "c1799be162f02a15ff01aaab56f271654dd86d15"),
+      revision: "59b4080c58467dab72eeb98c2b1dbf291e38bec1"),
     // 0.31.5+ requires Swift tools 6.3. Keep the MLX runtime compatible with
     // the project's Xcode 26.3 / Swift 6.2.4 toolchain.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
