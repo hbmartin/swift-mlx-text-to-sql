@@ -12,7 +12,10 @@ extension AppFeature {
   func dispatch(
     state: inout State,
     conversationID: UUID,
-    submission: QuestionSubmission
+    submission: QuestionSubmission,
+    existingUserMessage: ChatMessage? = nil,
+    autoRetryCount: Int = 0,
+    directlyUserStarted: Bool = true
   ) -> Effect<Action> {
     precondition(
       state.canDispatchTurn && state.fmAvailability == .available,
@@ -34,27 +37,31 @@ extension AppFeature {
     state.isCapturingAnswerability = false
     state.answerabilityCaptureID = nil
     let question = submission.question
-    let questionID = uuid()
     let startedAt = now
-    let userMessage = ChatMessage(
+    let userMessage = existingUserMessage ?? ChatMessage(
       id: uuid(), role: .user, body: .text(question), createdAt: startedAt)
+    let questionID = userMessage.id
     let optimisticTurn = OptimisticUserTurn(
       message: userMessage,
       previousSummary: state.conversations[id: conversationID],
       previousChatTitle:
         state.chat?.conversationID == conversationID
         ? state.chat?.title
-        : state.conversations[id: conversationID]?.title)
+        : state.conversations[id: conversationID]?.title,
+      isExisting: existingUserMessage != nil)
     var activeTurn = ActiveTurn(
       questionID: questionID,
       conversationID: conversationID,
       submission: submission,
       startedAt: startedAt)
+    activeTurn.autoRetryCount = autoRetryCount
     activeTurn.optimisticUserTurn = optimisticTurn
     state.activeTurn = activeTurn
 
     // Reflect the dispatch in whatever surfaces show this conversation.
-    if state.chat?.conversationID == conversationID {
+    if existingUserMessage == nil,
+      state.chat?.conversationID == conversationID
+    {
       state.chat?.messages.append(userMessage)
       if state.chat?.title.isEmpty == true,
         state.chat?.isManuallyTitled == false
@@ -62,7 +69,9 @@ extension AppFeature {
         state.chat?.title = HistoryStore.autoTitle(from: question)
       }
     }
-    if var summary = state.conversations[id: conversationID] {
+    if existingUserMessage == nil,
+      var summary = state.conversations[id: conversationID]
+    {
       if summary.title.isEmpty, !summary.isManuallyTitled {
         summary.title = HistoryStore.autoTitle(from: question)
       }
@@ -131,6 +140,18 @@ extension AppFeature {
         turns = ChatFeature.conversationTurns(from: snapshot?.messages ?? [])
       }
       guard !Task.isCancelled else { return }
+      let backgroundGranted = await backgroundTurn.begin(
+        questionID, directlyUserStarted)
+      if Task.isCancelled {
+        await backgroundTurn.finish(questionID, false)
+        return
+      }
+      await send(.backgroundTurnReady(
+        executionID: questionID, granted: backgroundGranted))
+      guard !Task.isCancelled else {
+        await backgroundTurn.finish(questionID, false)
+        return
+      }
       let events: AsyncStream<PipelineEvent> =
         switch submission.source {
         case .freeForm:
@@ -150,7 +171,9 @@ extension AppFeature {
             conversationID: conversationID,
             questionID: questionID,
             event: event))
+        await backgroundTurn.progress(questionID, event)
       }
+      await backgroundTurn.finish(questionID, terminalEventSeen && !Task.isCancelled)
       guard !Task.isCancelled, !terminalEventSeen else { return }
       await send(
         .pipelineStreamEnded(
@@ -161,6 +184,145 @@ extension AppFeature {
       .cancel(id: CancelID.scopeDiagnosis),
       .cancel(id: CancelID.answerabilityCapture),
       run.cancellable(id: CancelID.pipeline, cancelInFlight: true))
+  }
+
+  /// Without a granted background-GPU task, scene deactivation must stop
+  /// submitting Metal work. The journal write owns the scheduler barrier;
+  /// the serializer independently keeps any cancelled raw model call's slot
+  /// until it actually settles.
+  func interruptActiveTurn(
+    state: inout State,
+    ambiguous: Bool = false
+  ) -> Effect<Action> {
+    guard let active = state.activeTurn else { return .none }
+    state.activeTurn = nil
+    var interrupted = active
+    interrupted.interruptionAmbiguous = ambiguous
+    state.pendingInterruptedTurn = interrupted
+    syncSchedulerProjection(into: &state)
+    diagnostics.info(
+      category: .submission,
+      code: "chat_turn_interrupted",
+      summary: "A scene interruption stopped the active model turn.",
+      context: [
+        "execution_id": active.questionID.uuidString,
+        "ambiguous": String(ambiguous),
+      ])
+    return .concatenate(
+      .cancel(id: CancelID.pipeline),
+      .run { send in
+        await backgroundTurn.finish(active.questionID, false)
+        guard let optimistic = active.optimisticUserTurn else {
+          await send(.turnInterruptionRecorded(
+            questionID: active.questionID,
+            userPersisted: false, marked: false))
+          return
+        }
+        do {
+          let outcome = try await messageUpdateQueue.saveOnce(
+            conversationID: active.conversationID,
+            messageID: optimistic.message.id
+          ) {
+            try await history.persistUserTurn(
+              active.conversationID,
+              optimistic.message,
+              active.question,
+              active.startedAt)
+          }
+          guard outcome == .saved else {
+            await send(.turnInterruptionRecorded(
+              questionID: active.questionID,
+              userPersisted: false, marked: false))
+            return
+          }
+        } catch {
+          await send(.turnInterruptionRecorded(
+            questionID: active.questionID,
+            userPersisted: false, marked: false))
+          await send(.operationFailed(
+            .history(operation: .messageSave, error: error)))
+          return
+        }
+        do {
+          try await history.markTurnInterrupted(
+            active.conversationID, active.questionID, ambiguous)
+          await send(.turnInterruptionRecorded(
+            questionID: active.questionID,
+            userPersisted: true, marked: true))
+        } catch {
+          await send(.turnInterruptionRecorded(
+            questionID: active.questionID,
+            userPersisted: true, marked: false))
+          await send(.operationFailed(
+            .history(operation: .messageSave, error: error)))
+        }
+      })
+  }
+
+  func claimInterruptedRetry(
+    state: inout State,
+    automatic: Bool
+  ) -> Effect<Action> {
+    guard state.canDispatchTurn,
+      state.fmAvailability == .available,
+      let chat = state.chat,
+      let interrupted = chat.interruptedTurn,
+      !automatic || interrupted.canAutoRetry,
+      let userMessage = chat.messages.last,
+      userMessage.role == .user,
+      case .text(let savedQuestion) = userMessage.body,
+      savedQuestion == interrupted.question,
+      interrupted.executionID == nil
+        || interrupted.executionID == userMessage.id
+    else { return .none }
+    state.retryClaimInFlight = true
+    let conversationID = chat.conversationID
+    let executionID = userMessage.id
+    let question = interrupted.question
+    return .run { send in
+      do {
+        let claimed = try await history.claimTurnRetry(
+          conversationID, executionID, question, automatic)
+        await send(.interruptedRetryClaimed(
+          conversationID: conversationID,
+          executionID: executionID,
+          automatic: automatic,
+          claimed: claimed))
+      } catch {
+        await send(.interruptedRetryClaimed(
+          conversationID: conversationID,
+          executionID: executionID,
+          automatic: automatic,
+          claimed: false))
+        await send(.operationFailed(
+          .history(operation: .messageSave, error: error)))
+      }
+    }
+  }
+
+  func suspendLowPriorityInference(state: inout State) -> Effect<Action> {
+    let preparation = state.followUpPreparation
+    state.followUpPreparation = nil
+    state.isScopeDiagnosisInFlight = false
+    state.isCapturingAnswerability = false
+    state.answerabilityCaptureID = nil
+    let traceWrite: Effect<Action> =
+      if let preparation, !preparation.eventLines.isEmpty {
+        .run { _ in
+          try? await history.appendEvents(
+            preparation.conversationID,
+            preparation.context.sourceAssistantMessageID,
+            preparation.eventLines)
+        }
+      } else {
+        .none
+      }
+    return .merge(
+      .cancel(id: CancelID.followUpPreparation),
+      .cancel(id: CancelID.scopeDiagnosis),
+      .cancel(id: CancelID.answerabilityCapture),
+      .cancel(id: CancelID.fmAvailabilityWatch),
+      traceWrite)
   }
 
   /// Visible-conversation priority: the oldest Queued Question in the
@@ -185,7 +347,8 @@ extension AppFeature {
       dispatch(
         state: &state,
         conversationID: next.conversationID,
-        submission: next.submission))
+        submission: next.submission,
+        directlyUserStarted: false))
   }
 
   /// fmAvailability is the one gate with no action to hook when it reopens:
@@ -209,6 +372,7 @@ extension AppFeature {
       state.isSceneActive,
       state.fmAvailability != .available,
       !state.queue.isEmpty || state.pendingScopeDiagnosis != nil
+        || state.chat?.interruptedTurn?.canAutoRetry == true
         || state.resumableFollowUpBatch != nil
     else { return .none }
     return .run { send in
@@ -295,8 +459,9 @@ extension AppFeature {
         conversationID: active.conversationID,
         message: finalized,
         replacing: true)
-      return .merge(
+      return .concatenate(
         .cancel(id: CancelID.pipeline),
+        .run { _ in await backgroundTurn.finish(active.questionID, false) },
         stoppedTurnPersistenceEffect(
           active: active,
           terminalMessage: finalized,
@@ -317,14 +482,13 @@ extension AppFeature {
       code: "chat_turn_stopped",
       summary: "The user stopped the in-flight turn.",
       context: ["partial_event_count": String(active.eventLines.count)])
-    let effects: [Effect<Action>] = [
+    return .concatenate(
       .cancel(id: CancelID.pipeline),
+      .run { _ in await backgroundTurn.finish(active.questionID, false) },
       stoppedTurnPersistenceEffect(
         active: active,
         terminalMessage: stoppedMessage,
-        replacesExisting: false),
-    ]
-    return .merge(effects)
+        replacesExisting: false))
   }
 
   /// Stop may race the effect that persists the optimistic user message. Both

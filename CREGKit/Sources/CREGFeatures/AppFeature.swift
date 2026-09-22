@@ -26,15 +26,18 @@ public struct AppFeature: Sendable {
     public var message: ChatMessage
     public var previousSummary: ConversationSummary?
     public var previousChatTitle: String?
+    public var isExisting: Bool
 
     public init(
       message: ChatMessage,
       previousSummary: ConversationSummary?,
-      previousChatTitle: String?
+      previousChatTitle: String?,
+      isExisting: Bool = false
     ) {
       self.message = message
       self.previousSummary = previousSummary
       self.previousChatTitle = previousChatTitle
+      self.isExisting = isExisting
     }
   }
 
@@ -51,6 +54,9 @@ public struct AppFeature: Sendable {
     public var provisionalAssistantMessageID: UUID?
     public var resultPresentationPreference: ResultPresentationPreference?
     public var startedAt: Date
+    public var autoRetryCount = 0
+    public var backgroundGPUGranted = false
+    public var interruptionAmbiguous = false
     public var optimisticUserTurn: OptimisticUserTurn?
     /// Trace lines accumulating for the in-flight turn.
     public var trace: [String] = []
@@ -196,6 +202,9 @@ public struct AppFeature: Sendable {
     /// alongside `modelReadiness`.
     public var fmAvailability: FMAvailability = .available
     public var activeTurn: ActiveTurn?
+    /// Holds the scheduler while the cancelled turn's journal is made durable.
+    public var pendingInterruptedTurn: ActiveTurn?
+    public var retryClaimInFlight = false
     /// The completed turn whose history write currently gates queue dispatch.
     public var pendingTurnPersistence: PendingTurnPersistence?
     /// Compatibility projection used by diagnostics and reducer tests.
@@ -254,6 +263,8 @@ public struct AppFeature: Sendable {
     public var didRequestPreparationJournalInspection = false
     public var didHandlePreparationJournalInspection = false
     public var modelPreparationInFlight = false
+    public var modelPreparationModeInFlight: ModelRuntimeMode?
+    public var suspendedModelPreparationMode: ModelRuntimeMode?
     public var debugModelIdentity: DebugModelIdentity?
     /// Experimental physical-device benchmark input supplied at process
     /// launch. Ordinary Release builds always leave this nil.
@@ -302,7 +313,9 @@ public struct AppFeature: Sendable {
     /// The ADR 0008 idle core: no turn is active, queued, or holding the
     /// completed-turn persistence barrier.
     public var isTurnSchedulerIdle: Bool {
-      activeTurn == nil && queue.isEmpty && pendingTurnPersistence == nil
+      activeTurn == nil && pendingInterruptedTurn == nil
+        && !retryClaimInFlight && queue.isEmpty
+        && pendingTurnPersistence == nil
     }
 
     /// The idle core plus every lower-priority inference owner except the
@@ -336,6 +349,8 @@ public struct AppFeature: Sendable {
     public var canDispatchTurn: Bool {
       isSceneActive
         && activeTurn == nil
+        && pendingInterruptedTurn == nil
+        && !retryClaimInFlight
         && pendingTurnPersistence == nil
         && modelReadiness == .ready
     }
@@ -373,6 +388,7 @@ public struct AppFeature: Sendable {
     case appBecameActive
     case appBecameInactive
     case appEnteredBackground
+    case resourcePressure
     case preparationJournalLoaded(ModelPreparationJournalSnapshot?)
     case retryPreparation
     case retryCompatibilityPreparation
@@ -394,6 +410,12 @@ public struct AppFeature: Sendable {
     case answerReadyBannerTimedOut
     case pipelineEvent(conversationID: UUID, questionID: UUID, event: PipelineEvent)
     case pipelineStreamEnded(conversationID: UUID, questionID: UUID)
+    case turnInterruptionRecorded(
+      questionID: UUID, userPersisted: Bool, marked: Bool)
+    case interruptedRetryClaimed(
+      conversationID: UUID, executionID: UUID, automatic: Bool, claimed: Bool)
+    case backgroundTurnReady(executionID: UUID, granted: Bool)
+    case backgroundTurnExpired(executionID: UUID)
     case turnPersistenceFailed(
       conversationID: UUID, questionID: UUID, failure: FailurePresentation)
     case userTurnPersistenceFailed(
@@ -450,6 +472,7 @@ public struct AppFeature: Sendable {
   }
 
   @Dependency(\.queryPipeline) var pipeline
+  @Dependency(\.backgroundTurn) var backgroundTurn
   @Dependency(\.fmStatus) var fmStatus
   @Dependency(\.scopeDiagnosis) var scopeDiagnosis
   @Dependency(\.historyClient) var history
@@ -534,6 +557,8 @@ public struct AppFeature: Sendable {
       case .appBecameActive:
         state.isSceneActive = true
         refreshFMAvailability(state: &state)
+        let resumedModel = resumeSuspendedModelPreparation(state: &state)
+        let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
         // Readiness reached while the app was inactive — a prewarmed launch,
         // or a load that completed after backgrounding — leaves the benchmark
         // undispatched by the deactivation invariant. Activation is its only
@@ -544,20 +569,26 @@ public struct AppFeature: Sendable {
         let persistedPreparation = resumeFollowUpPreparationIfIdle(state: &state)
         let queuedTurn = dispatchNextIfIdle(state: &state)
         return .merge(
-          benchmark, interruptedRecovery, persistedPreparation, queuedTurn)
+          resumedModel, autoRetry, benchmark,
+          interruptedRecovery, persistedPreparation,
+          queuedTurn)
 
       case .appBecameInactive:
-        // A transient interruption — Control Center, an app-switcher peek, a
-        // Face ID or permission dialog — passes through `.inactive` without
-        // ever backgrounding. Destroying in-flight capture, diagnosis, or
-        // preparation for a one-second blip would force a full FM/MLX re-run
-        // on the paired reactivation, so this only gates *new* low-priority
-        // starts; `.appEnteredBackground` performs the real teardown.
+        // Inactive can be followed by background at any instant. Unless this
+        // turn has an actual continued-processing GPU grant, stop MLX work
+        // immediately and journal it for one foreground retry.
         state.isSceneActive = false
-        return .none
+        let active = state.activeTurn?.backgroundGPUGranted == true
+          ? Effect<Action>.none : interruptActiveTurn(state: &state)
+        return .merge(
+          active,
+          suspendLowPriorityInference(state: &state),
+          suspendModelPreparation(state: &state))
 
       case .appEnteredBackground:
         state.isSceneActive = false
+        let interrupted = state.activeTurn?.backgroundGPUGranted == true
+          ? Effect<Action>.none : interruptActiveTurn(state: &state)
         // The judge effect is cancelled below; the memo survives as an
         // interrupted diagnosis for activation to resume.
         state.isScopeDiagnosisInFlight = false
@@ -592,7 +623,10 @@ public struct AppFeature: Sendable {
           .cancel(id: CancelID.scopeDiagnosis),
           .cancel(id: CancelID.answerabilityCapture),
           .cancel(id: CancelID.fmAvailabilityWatch),
-          .merge(followOnEffects))
+          .merge(followOnEffects + [interrupted]))
+
+      case .resourcePressure:
+        return suspendLowPriorityInference(state: &state)
 
       case .preparationJournalLoaded(let previous):
         guard
@@ -625,11 +659,18 @@ public struct AppFeature: Sendable {
           return .none
         }
         setModelReadiness(.preparing, state: &state)
+        guard state.isSceneActive else {
+          state.suspendedModelPreparationMode = .evaluated
+          return .none
+        }
         state.modelPreparationInFlight = true
+        state.modelPreparationModeInFlight = .evaluated
         return preparationEffect(mode: .evaluated)
 
       case .retryPreparation:
-        guard canStartModelPreparation(state: state) else { return .none }
+        guard state.isSceneActive,
+          canStartModelPreparation(state: state)
+        else { return .none }
         switch state.modelReadiness {
         case .failed:
           break
@@ -648,10 +689,12 @@ public struct AppFeature: Sendable {
         setModelReadiness(.preparing, state: &state)
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
+        state.modelPreparationModeInFlight = .evaluated
         return .merge(abandonedDiagnosis, preparationEffect(mode: .evaluated))
 
       case .retryCompatibilityPreparation:
         guard
+          state.isSceneActive,
           canStartModelPreparation(state: state),
           state.developerMode,
           case .failed(let failure) = state.modelReadiness,
@@ -667,11 +710,14 @@ public struct AppFeature: Sendable {
         setModelReadiness(.preparing, state: &state)
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
+        state.modelPreparationModeInFlight = .compatibility
         return .merge(
           abandonedDiagnosis, preparationEffect(mode: .compatibility))
 
       case .modelPrepared(let report):
         state.modelPreparationInFlight = false
+        state.modelPreparationModeInFlight = nil
+        state.suspendedModelPreparationMode = nil
         setModelReadiness(.ready, state: &state)
         refreshFMAvailability(state: &state)
         state.modelPreparationReport = report
@@ -686,7 +732,9 @@ public struct AppFeature: Sendable {
         // A diagnosis memo retained while the model was preparing has no
         // other foreground re-check hook; give it the same interrupted-first
         // ordering activation uses.
+        let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
         return .merge(
+          autoRetry,
           startLaunchBenchmarkIfReady(state: &state),
           resumeInterruptedScopeDiagnosisIfIdle(state: &state),
           resumeFollowUpPreparationIfIdle(state: &state),
@@ -694,6 +742,7 @@ public struct AppFeature: Sendable {
 
       case .modelPreparationFailed(let failure):
         state.modelPreparationInFlight = false
+        state.modelPreparationModeInFlight = nil
         setModelReadiness(.failed(failure), state: &state)
         state.modelPreparationReport = nil
         diagnostics.record(
@@ -783,6 +832,7 @@ public struct AppFeature: Sendable {
           state.answerReadyBanner = nil
           effects.append(.cancel(id: CancelID.bannerTimeout))
         }
+        effects.append(claimInterruptedRetry(state: &state, automatic: true))
         effects.append(startLaunchBenchmarkIfReady(state: &state))
         // Loading can reveal a persisted `.preparing` batch after the scene's
         // activation action already ran. Refresh/arm first so an unavailable
@@ -871,6 +921,83 @@ public struct AppFeature: Sendable {
           conversationID: conversationID,
           questionID: questionID)
 
+      case .turnInterruptionRecorded(
+        let questionID, let userPersisted, let marked):
+        guard let interrupted = state.pendingInterruptedTurn,
+          interrupted.questionID == questionID
+        else { return .none }
+        state.pendingInterruptedTurn = nil
+        if !userPersisted {
+          if let optimistic = interrupted.optimisticUserTurn {
+            rollBackOptimisticUserTurn(
+              state: &state,
+              questionID: questionID,
+              conversationID: interrupted.conversationID,
+              optimisticTurn: optimistic)
+          }
+          return .send(.dispatchNextIfIdle)
+        }
+        if state.chat?.conversationID == interrupted.conversationID {
+          state.chat?.interruptedTurn = InterruptedTurn(
+            question: interrupted.question,
+            interruptedAt: now,
+            executionID: interrupted.questionID,
+            status: marked
+              ? (interrupted.interruptionAmbiguous
+                  ? .ambiguousInterruption : .knownInterruption)
+              : .running,
+            autoRetryCount: interrupted.autoRetryCount)
+        }
+        syncSchedulerProjection(into: &state)
+        let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
+        return .merge(
+          autoRetry,
+          watchFMAvailabilityIfStranded(state: &state),
+          dispatchNextIfIdle(state: &state))
+
+      case .interruptedRetryClaimed(
+        let conversationID, let executionID, let automatic, let claimed):
+        guard state.retryClaimInFlight else { return .none }
+        state.retryClaimInFlight = false
+        if state.chat?.conversationID == conversationID,
+          state.chat?.interruptedTurn?.executionID == executionID
+        {
+          state.chat?.interruptedTurn?.status =
+            claimed ? .running : .ambiguousInterruption
+          if claimed { state.chat?.interruptedTurn?.autoRetryCount = 1 }
+        }
+        guard claimed,
+          state.canDispatchTurn,
+          state.fmAvailability == .available,
+          let chat = state.chat,
+          chat.conversationID == conversationID,
+          let interrupted = chat.interruptedTurn,
+          let userMessage = chat.messages.last,
+          userMessage.id == executionID
+        else { return .send(.dispatchNextIfIdle) }
+        state.chat?.interruptedTurn = nil
+        return dispatch(
+          state: &state,
+          conversationID: conversationID,
+          submission: QuestionSubmission(question: interrupted.question),
+          existingUserMessage: userMessage,
+          autoRetryCount: 1,
+          directlyUserStarted: !automatic)
+
+      case .backgroundTurnReady(let executionID, let granted):
+        guard state.activeTurn?.questionID == executionID else {
+          return .run { _ in await backgroundTurn.finish(executionID, false) }
+        }
+        state.activeTurn?.backgroundGPUGranted = granted
+        return .none
+
+      case .backgroundTurnExpired(let executionID):
+        guard state.activeTurn?.questionID == executionID else {
+          return .run { _ in await backgroundTurn.finish(executionID, false) }
+        }
+        state.activeTurn?.backgroundGPUGranted = false
+        return interruptActiveTurn(state: &state, ambiguous: true)
+
       case .turnPersistenceFailed(
         let conversationID, let questionID, let failure):
         guard state.pendingTurnPersistence?.questionID == questionID else {
@@ -890,7 +1017,9 @@ public struct AppFeature: Sendable {
           // Coalesced writers can report the same failure after the first
           // action has already released scheduler ownership. Make stale
           // cleanup idempotent without rolling back newer summary state.
-          if state.chat?.conversationID == conversationID {
+          if !optimisticTurn.isExisting,
+            state.chat?.conversationID == conversationID
+          {
             state.chat?.messages.remove(id: optimisticTurn.message.id)
           }
           var effects: [Effect<Action>] = [
@@ -1023,8 +1152,10 @@ public struct AppFeature: Sendable {
         // diagnosis memo or persisted `.preparing` batch stranded behind the
         // same outage must get its chance alongside the queue; each resume
         // re-checks its own gates and no-ops when a turn dispatched.
+        let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
         let queuedTurn = dispatchNextIfIdle(state: &state)
         return .merge(
+          autoRetry,
           queuedTurn,
           resumeInterruptedScopeDiagnosisIfIdle(state: &state),
           resumeFollowUpPreparationIfIdle(state: &state))
@@ -1113,6 +1244,10 @@ public struct AppFeature: Sendable {
         return .concatenate(
           cancelPreparation,
           .merge(clearBatch, dispatchNextIfIdle(state: &state)))
+
+      case .chat(.delegate(.retryInterruptedTurn)):
+        refreshFMAvailability(state: &state)
+        return claimInterruptedRetry(state: &state, automatic: false)
 
       case .chat(.delegate(.stopActiveTurn)):
         return stopActiveTurn(state: &state)

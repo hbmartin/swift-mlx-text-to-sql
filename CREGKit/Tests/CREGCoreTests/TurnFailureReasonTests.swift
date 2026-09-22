@@ -170,14 +170,14 @@ import Testing
     #expect(telemetry.scopeVerdict == nil)
   }
 
-  @Test func schemaV7TelemetryRoundTripsReasonAndVerdict() throws {
+  @Test func currentTelemetryRoundTripsReasonAndVerdict() throws {
     var telemetry = TurnTelemetry(originalQuestion: "q")
     telemetry.failureReason = .generationExhausted
     telemetry.scopeVerdict = ScopeVerdictRecord(
       verdict: .likelyAnswerableModelFailed)
     let data = try JSONEncoder().encode(telemetry)
     let decoded = try JSONDecoder().decode(TurnTelemetry.self, from: data)
-    #expect(decoded.schemaVersion == 7)
+    #expect(decoded.schemaVersion == TurnTelemetry.currentSchemaVersion)
     #expect(decoded.failureReason == .generationExhausted)
     #expect(
       decoded.scopeVerdict

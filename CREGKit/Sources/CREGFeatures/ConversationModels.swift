@@ -42,15 +42,39 @@ public struct ConversationSummary: Identifiable, Equatable, Sendable, Codable {
   }
 }
 
-/// A turn that was active when the process terminated. It reopens with
-/// Ask Again and never auto-runs (ADR 0008).
+/// A journaled turn that did not reach a terminal transcript write. Known
+/// lifecycle interruptions may auto-retry once; ambiguous or exhausted
+/// entries remain behind the explicit Ask Again affordance.
 public struct InterruptedTurn: Equatable, Sendable, Codable {
+  public enum Status: String, Equatable, Sendable, Codable {
+    case running
+    case knownInterruption = "known_interruption"
+    case ambiguousInterruption = "ambiguous_interruption"
+  }
+
   public var question: String
   public var interruptedAt: Date
+  /// The durable execution/user-message ID. Older journals lack it and are
+  /// matched to the trailing unanswered user message when loaded.
+  public var executionID: UUID?
+  public var status: Status
+  public var autoRetryCount: Int
 
-  public init(question: String, interruptedAt: Date) {
+  public var canAutoRetry: Bool {
+    status == .knownInterruption && autoRetryCount == 0
+  }
+
+  public init(
+    question: String, interruptedAt: Date,
+    executionID: UUID? = nil,
+    status: Status = .running,
+    autoRetryCount: Int = 0
+  ) {
     self.question = question
     self.interruptedAt = interruptedAt
+    self.executionID = executionID
+    self.status = status
+    self.autoRetryCount = autoRetryCount
   }
 }
 

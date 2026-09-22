@@ -61,6 +61,32 @@ import Testing
     #expect(!recorder.contains("inference_finished"))
   }
 
+  @Test func idleWaitIncludesCancelledRawInferenceSettlement() async {
+    let serializer = InferenceSerializer()
+    let gate = CancellationInsensitiveInferenceGate()
+    let settled = AsyncFlag()
+    let first = Task {
+      try await serializer.run(operation: .sqlGeneration) {
+        await gate.holdUntilReleased()
+        return 1
+      }
+    }
+    await gate.waitUntilStarted()
+    first.cancel()
+    await #expect(throws: CancellationError.self) {
+      _ = try await first.value
+    }
+    let waiter = Task {
+      await serializer.waitUntilIdle()
+      await settled.set()
+    }
+    await Task.yield()
+    #expect(await settled.value == false)
+    await gate.release()
+    await waiter.value
+    #expect(await settled.value)
+  }
+
   @Test func modelFailureRemainsPrimaryWhenCallerCancellationRacesIt() async {
     let recorder = InferenceSerializerEventRecorder()
     let serializer = InferenceSerializer(diagnostics: recorder.client)

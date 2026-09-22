@@ -22,9 +22,11 @@ extension QueryPipeline {
           let task = Task {
             let turnStarted = ContinuousClock.now
             let runtimeMode = await sqlGen.runtimeMode()
+            let backendID = await sqlGen.backendID()
             var telemetry = TurnTelemetry(
               originalQuestion: question,
-              runtimeMode: runtimeMode)
+              runtimeMode: runtimeMode,
+              backendID: backendID)
             telemetry.repairPolicyVersion = configuration.repairPolicyVersion
             defer { continuation.finish() }
             continuation.yield(.turnStarted(question: question))
@@ -73,7 +75,8 @@ extension QueryPipeline {
 
             func generateAndExecute(
               _ request: SQLGenerationRequest,
-              attempt: Int
+              attempt: Int,
+              generationBudgetSeconds: Double? = nil
             ) async -> CandidateTelemetry {
               var candidate = CandidateTelemetry(request: request)
               continuation.yield(.generationStarted(request: request))
@@ -85,7 +88,9 @@ extension QueryPipeline {
                     stage: "turn", limitSeconds: remaining)
                 }
                 let generation = try await withPipelineDeadline(
-                  seconds: min(configuration.deadlines.generationSeconds, remaining),
+                  seconds: min(
+                    configuration.deadlines.generationSeconds,
+                    min(generationBudgetSeconds ?? remaining, remaining)),
                   stage: "generation"
                 ) {
                   try await serializer.run(operation: .sqlGeneration) {
@@ -528,7 +533,9 @@ extension QueryPipeline {
                 finish(.failed(reason: .noCandidateSelected))
                 return
               }
-              let grounding = try await inspectGrounding(
+              var finalResult = chosenResult
+              var finalSQL = chosenSQL
+              var grounding = try await inspectGrounding(
                 sql: chosenSQL, result: chosenResult)
               telemetry.selectedCandidateID = chosenCandidate.id
               if let selectedIndex = telemetry.candidates.firstIndex(
@@ -538,10 +545,108 @@ extension QueryPipeline {
               }
               telemetry.grounding = grounding
 
+              // An FM comparison can spot a semantically wrong but valid
+              // SELECT. It never replaces SQLite validation or grants a SQL
+              // execution path. A clear mismatch gets one bounded correction;
+              // the original validated result is retained unless the new
+              // candidate passes every existing check and verifies as aligned.
+              let semanticStarted = ContinuousClock.now
+              var alignment: SemanticAlignment = .uncertain
+              var semanticUsedFM = false
+              if remainingTurnSeconds() > 6 {
+                do {
+                  fmStage = "semantic_verification"
+                  let assessment = try await runFMStage(
+                    fm: fm,
+                    serializer: serializer,
+                    operation: .semanticVerification,
+                    deadlineSeconds: min(8, remainingTurnSeconds() - 5),
+                    stage: "semantic_verification"
+                  ) {
+                    try await $0.verifySemantic(
+                      question, standalone, chosenSQL, chosenResult)
+                  }
+                  alignment = assessment.value
+                  semanticUsedFM = assessment.usedFM
+                } catch is CancellationError {
+                  throw CancellationError()
+                } catch {
+                  alignment = .uncertain
+                }
+                fmStage = nil
+              }
+              telemetry.semanticAlignment = alignment
+              telemetry.semanticVerificationUsedFM = semanticUsedFM
+              telemetry.semanticCorrectionAttempted = false
+              telemetry.semanticCorrectionAccepted = false
+
+              if alignment == .mismatch {
+                telemetry.confidence = .unconfirmed
+                if remainingTurnSeconds() > 7 {
+                  telemetry.semanticCorrectionAttempted = true
+                  let attempt = telemetry.repairAttempts + 1
+                  let corrected = await generateAndExecute(
+                    request(
+                      id: "semantic-correction-1",
+                      role: .repair(attempt: attempt),
+                      repair: RepairContext(
+                        failedSQL: chosenSQL,
+                        errorMessage:
+                          "The SQL result did not answer the user's intended question. Correct the entity, time period, measure, or aggregation; keep the query read-only."),
+                      temperature: 0),
+                    attempt: attempt,
+                    generationBudgetSeconds: remainingTurnSeconds() - 6)
+                  telemetry.candidates.append(corrected)
+                  telemetry.repairAttempts += 1
+                  if let correctedSQL = corrected.sql,
+                    let correctedResult = corrected.result,
+                    remainingTurnSeconds() > 5
+                  {
+                    do {
+                      fmStage = "semantic_verification"
+                      let reassessment = try await runFMStage(
+                        fm: fm,
+                        serializer: serializer,
+                        operation: .semanticVerification,
+                        deadlineSeconds: min(8, remainingTurnSeconds() - 5),
+                        stage: "semantic_verification"
+                      ) {
+                        try await $0.verifySemantic(
+                          question, standalone, correctedSQL, correctedResult)
+                      }
+                      fmStage = nil
+                      if reassessment.value == .aligned {
+                        let correctedGrounding = try await inspectGrounding(
+                          sql: correctedSQL, result: correctedResult)
+                        finalSQL = correctedSQL
+                        finalResult = correctedResult
+                        grounding = correctedGrounding
+                        telemetry.grounding = correctedGrounding
+                        telemetry.semanticAlignment = .aligned
+                        telemetry.semanticCorrectionAccepted = true
+                        telemetry.selectedCandidateID = corrected.id
+                        if let previousIndex = telemetry.candidates.firstIndex(
+                          where: { $0.id == chosenCandidate.id })
+                        {
+                          telemetry.candidates[previousIndex].selected = false
+                        }
+                        telemetry.candidates[telemetry.candidates.count - 1].selected = true
+                      }
+                    } catch is CancellationError {
+                      throw CancellationError()
+                    } catch {
+                      fmStage = nil
+                    }
+                  }
+                }
+              }
+              telemetry.stageTimings.semanticVerificationMicroseconds =
+                semanticStarted.duration(to: .now).microseconds
+
               // 8. Narration.
               continuation.yield(.narrationStarted)
               let narrationStarted = ContinuousClock.now
-              let narrationResult = chosenResult
+              let narrationResult = finalResult
               fmStage = "narration"
               let narrationOutcome = try await runFMStage(
                 fm: fm,
@@ -564,15 +669,21 @@ extension QueryPipeline {
                   usedFM: narrationUsedFM,
                   elapsedMicroseconds: narrationElapsed))
 
-              let notices =
+              var notices =
                 grounding.findings.first.map(\.userNotice).map { [$0] }
                 ?? []
+              if alignment == .mismatch,
+                telemetry.semanticCorrectionAccepted != true
+              {
+                notices.append(
+                  "This answer may not fully match your question; the original validated result is shown.")
+              }
               let notice = notices.joined(separator: " ")
               finish(
                 .answered(
-                  result: chosenResult,
+                  result: finalResult,
                   narration: narration,
-                  sql: chosenSQL,
+                  sql: finalSQL,
                   notice: notice.isEmpty ? nil : notice))
             } catch {
               telemetry.terminalError = String(describing: error)

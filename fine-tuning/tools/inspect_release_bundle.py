@@ -293,6 +293,26 @@ def verify_code_signature(app: Path) -> dict[str, Any]:
     return {"status": "valid"}
 
 
+def verify_signed_background_gpu_entitlement(app: Path) -> dict[str, Any]:
+    """Fail a signed Beta/Release artifact if its GPU claim was not granted."""
+    completed = subprocess.run(
+        [str(CODESIGN), "-d", "--entitlements", "-", str(app)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SystemExit("cannot inspect the signed Background GPU Access entitlement")
+    try:
+        entitlements = plistlib.loads(completed.stdout)
+    except (ValueError, TypeError) as error:
+        raise SystemExit("signed app entitlements are not a readable plist") from error
+    key = "com.apple.developer.background-tasks.continued-processing.gpu"
+    if entitlements.get(key) is not True:
+        raise SystemExit("signed app is missing Background GPU Access entitlement")
+    return {"status": "granted", "key": key}
+
+
 def unsigned_executable_identity(executable: Path) -> dict[str, Any]:
     """Hash executable bytes after removing only the embedded signature."""
     with tempfile.TemporaryDirectory(prefix="creg-unsigned-executable-") as value:
@@ -468,7 +488,7 @@ def verify_app(
     ):
         raise SystemExit("model receipt disagrees with bundled SQLModel")
 
-    return {
+    report = {
         "app": str(app),
         "bundle_identifier": info.get("CFBundleIdentifier"),
         "marketing_version": info.get("CFBundleShortVersionString"),
@@ -497,6 +517,9 @@ def verify_app(
             "production_receipt_sha256": sha256_file(bundled_receipt),
         },
     }
+    if configuration in {"Beta", "Release"} and info.get("CREGBackgroundGPUAccess") is True:
+        report["background_gpu_entitlement"] = verify_signed_background_gpu_entitlement(app)
+    return report
 
 
 def main() -> None:

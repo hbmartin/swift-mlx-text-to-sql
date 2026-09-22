@@ -365,12 +365,34 @@ import Testing
       id, message, "Which loans mature soonest?", message.createdAt)
     var snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn?.question == "Which loans mature soonest?")
+    #expect(snapshot.interruptedTurn?.executionID == message.id)
     #expect(
       snapshot.interruptedTurn?.interruptedAt == Date(timeIntervalSince1970: 50))
 
     try await client.endTurnJournal(id)
     snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn == nil)
+  }
+
+  @Test func knownInterruptionCanBeAutomaticallyClaimedOnlyOnce() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let id = UUID()
+    _ = try await client.createConversation(id, Date(timeIntervalSince1970: 0))
+    let message = userMessage("Which loans mature soonest?", at: 50)
+    try await client.persistUserTurn(
+      id, message, "Which loans mature soonest?", message.createdAt)
+    try await client.markTurnInterrupted(id, message.id, false)
+    var snapshot = try await client.loadConversation(id)
+    #expect(snapshot.interruptedTurn?.canAutoRetry == true)
+
+    #expect(try await client.claimTurnRetry(
+      id, message.id, "Which loans mature soonest?", true))
+    #expect(!(try await client.claimTurnRetry(
+      id, message.id, "Which loans mature soonest?", true)))
+    snapshot = try await client.loadConversation(id)
+    #expect(snapshot.interruptedTurn?.autoRetryCount == 1)
+    #expect(snapshot.interruptedTurn?.canAutoRetry == false)
+    #expect(snapshot.messages == [message])
   }
 
   // MARK: Prepared follow-ups

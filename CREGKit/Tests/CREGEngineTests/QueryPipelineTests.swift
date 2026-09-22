@@ -104,6 +104,89 @@ private final class TestFMAvailability: @unchecked Sendable {
       })
   }
 
+  @Test func semanticMismatchAcceptsOneValidatedAlignedCorrection() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "Answer from the result." },
+      suggestFollowUps: { _, _ in [] },
+      verifySemantic: { _, _, sql, _ in
+        sql == "SELECT 2" ? .aligned : .mismatch
+      })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { request in
+        SQLGeneration(
+          sql: request.repair == nil ? "SELECT 1" : "SELECT 2",
+          tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
+        validate: { _ in SQLValidationReport() },
+        execute: { sql in
+          QueryResult(columns: ["n"], rows: [[.integer(sql == "SELECT 2" ? 2 : 1)]])
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.config())
+
+    let events = await Array(pipeline.run("How many properties?", []))
+    guard case .turnFinished(
+      .answered(let result, _, let sql, let notice), let telemetry) = events.last
+    else {
+      Issue.record("Expected an aligned corrected answer")
+      return
+    }
+    #expect(sql == "SELECT 2")
+    #expect(result.rows == [[.integer(2)]])
+    #expect(notice == nil)
+    #expect(telemetry.semanticCorrectionAttempted == true)
+    #expect(telemetry.semanticCorrectionAccepted == true)
+    #expect(telemetry.semanticAlignment == .aligned)
+    #expect(telemetry.repairAttempts == 1)
+    #expect(telemetry.selectedCandidateID?.rawValue == "semantic-correction-1")
+  }
+
+  @Test func failedSemanticCorrectionKeepsOriginalSafeResult() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { question, _ in question },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "Answer from the result." },
+      suggestFollowUps: { _, _ in [] },
+      verifySemantic: { _, _, _, _ in .mismatch })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { request in
+        SQLGeneration(
+          sql: request.repair == nil ? "SELECT 1" : "SELECT 2",
+          tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient(
+        fingerprint: "test-portfolio-database",
+        validate: { _ in SQLValidationReport() },
+        execute: { sql in
+          QueryResult(columns: ["n"], rows: [[.integer(sql == "SELECT 2" ? 2 : 1)]])
+        }),
+      serializer: InferenceSerializer(),
+      configuration: Self.config())
+
+    let events = await Array(pipeline.run("How many properties?", []))
+    guard case .turnFinished(
+      .answered(let result, _, let sql, let notice), let telemetry) = events.last
+    else {
+      Issue.record("Expected the original validated result")
+      return
+    }
+    #expect(sql == "SELECT 1")
+    #expect(result.rows == [[.integer(1)]])
+    #expect(notice?.contains("may not fully match") == true)
+    #expect(telemetry.confidence == .unconfirmed)
+    #expect(telemetry.semanticCorrectionAttempted == true)
+    #expect(telemetry.semanticCorrectionAccepted == false)
+    #expect(telemetry.selectedCandidateID?.rawValue == "initial")
+  }
+
   @Test func executionErrorTriggersRepair() async throws {
     let pipeline = Self.makePipeline(executeResults: { sql in
       if sql == "SELECT 1" {

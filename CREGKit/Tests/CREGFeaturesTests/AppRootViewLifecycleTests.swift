@@ -5,9 +5,8 @@ import Testing
 
 @MainActor
 @Suite struct AppRootViewLifecycleTests {
-  /// `.inactive` covers momentary interruptions (Control Center, an
-  /// app-switcher peek, a system dialog) and must only gate new starts;
-  /// only a real `.background` transition may tear down in-flight work.
+  /// `.inactive` is the safe GPU stop boundary when continued processing is
+  /// not granted; `.background` also tears down lower-priority work.
   @Test func scenePhasesSeparateTheGateFromTheBackgroundTeardown() {
     #expect(AppRootView.lifecycleAction(for: .active) == .appBecameActive)
     #expect(AppRootView.lifecycleAction(for: .inactive) == .appBecameInactive)

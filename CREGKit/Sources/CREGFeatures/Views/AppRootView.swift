@@ -74,10 +74,9 @@ struct AppRootView: View {
     min(containerWidth * 0.8, 340)
   }
 
-  /// `.inactive` covers momentary interruptions (Control Center, the app
-  /// switcher, system dialogs) as well as the instant before backgrounding,
-  /// so it only gates new low-priority starts; the destructive teardown of
-  /// in-flight inference waits for a real `.background` transition.
+  /// `.inactive` is the earliest reliable boundary before backgrounding.
+  /// Without signed background GPU access, active MLX inference is cancelled
+  /// there and its journaled question can be retried on activation.
   static func lifecycleAction(for phase: ScenePhase) -> AppFeature.Action? {
     switch phase {
     case .active:

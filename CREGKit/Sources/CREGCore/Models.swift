@@ -412,6 +412,14 @@ public enum AnswerConfidence: String, Sendable, Equatable, Codable {
   case unconfirmed
 }
 
+/// Advisory language-model comparison after deterministic SQL validation.
+/// It never authorizes execution or bypasses the read-only validator.
+public enum SemanticAlignment: String, Sendable, Equatable, Codable {
+  case aligned
+  case mismatch
+  case uncertain
+}
+
 public enum NoConsensusReason: String, Sendable, Equatable, Codable {
   case conflictingResults
   case insufficientNonEmptyEvidence
@@ -646,6 +654,16 @@ public enum QueryExecutionPath: String, Sendable, Equatable, Codable {
   case preparedFollowUp = "prepared_follow_up"
 }
 
+/// SQL-generator family, independent of MLX's evaluated/compatibility mode.
+/// Only `.mlx` is qualified for the ordinary production route; alternative
+/// IDs are reserved until their bundled assets and device gates pass.
+public enum SQLBackendID: String, Sendable, Equatable, Codable, CaseIterable {
+  case mlx
+  case coreAI = "core_ai"
+  case mlxFoundationModels = "mlx_foundation_models"
+  case typedPlan = "typed_plan"
+}
+
 public enum PreparedCacheMissReason: String, Sendable, Equatable, Codable {
   case schemaVersion = "schema_version"
   case modelKey = "model_key"
@@ -680,6 +698,7 @@ public struct StageTimings: Sendable, Equatable, Codable {
   public var groundingMicroseconds: Int64?
   public var votingMicroseconds: Int64?
   public var narrationMicroseconds: Int64?
+  public var semanticVerificationMicroseconds: Int64?
   public var totalMicroseconds: Int64
 
   public init(totalMicroseconds: Int64 = 0) {
@@ -688,7 +707,8 @@ public struct StageTimings: Sendable, Equatable, Codable {
 }
 
 public struct TurnTelemetry: Sendable, Equatable, Codable {
-  public static let currentSchemaVersion = 7
+  public static let currentSchemaVersion = 8
+  public static let semanticPolicyVersion = "semantic-roundtrip-v1"
 
   public var schemaVersion: Int
   public var originalQuestion: String
@@ -704,6 +724,11 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
   public var rewriteUsedFM: Bool
   public var gateUsedFM: Bool
   public var narrationUsedFM: Bool
+  public var semanticAlignment: SemanticAlignment?
+  public var semanticVerificationUsedFM: Bool?
+  public var semanticCorrectionAttempted: Bool?
+  public var semanticCorrectionAccepted: Bool?
+  public var semanticPolicyVersion: String?
   public var gateDecision: GateDecision?
   public var gateMode: AmbiguityGateMode?
   public var stageTimings: StageTimings
@@ -727,11 +752,13 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
   /// The Scope Verdict attached after the failure rendered (schema v7).
   public var scopeVerdict: ScopeVerdictRecord?
   public var runtimeMode: ModelRuntimeMode
+  public var backendID: SQLBackendID
   public var isEvaluated: Bool
 
   public init(
     originalQuestion: String,
-    runtimeMode: ModelRuntimeMode = .evaluated
+    runtimeMode: ModelRuntimeMode = .evaluated,
+    backendID: SQLBackendID = .mlx
   ) {
     self.schemaVersion = Self.currentSchemaVersion
     self.originalQuestion = originalQuestion
@@ -746,11 +773,13 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     self.rewriteUsedFM = false
     self.gateUsedFM = false
     self.narrationUsedFM = false
+    self.semanticPolicyVersion = Self.semanticPolicyVersion
     self.stageTimings = StageTimings()
     self.candidates = []
     self.repairAttempts = 0
     self.generatedCount = 0
     self.runtimeMode = runtimeMode
+    self.backendID = backendID
     self.isEvaluated = runtimeMode.isEvaluated
   }
 
@@ -769,6 +798,11 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case rewriteUsedFM
     case gateUsedFM
     case narrationUsedFM
+    case semanticAlignment
+    case semanticVerificationUsedFM
+    case semanticCorrectionAttempted
+    case semanticCorrectionAccepted
+    case semanticPolicyVersion
     case gateDecision
     case gateMode
     case stageTimings
@@ -789,6 +823,7 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     case failureReason
     case scopeVerdict
     case runtimeMode
+    case backendID
     case isEvaluated
   }
 
@@ -848,6 +883,16 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
       try values.decodeIfPresent(Bool.self, forKey: .gateUsedFM) ?? false
     narrationUsedFM =
       try values.decodeIfPresent(Bool.self, forKey: .narrationUsedFM) ?? false
+    semanticAlignment =
+      try values.decodeIfPresent(SemanticAlignment.self, forKey: .semanticAlignment)
+    semanticVerificationUsedFM =
+      try values.decodeIfPresent(Bool.self, forKey: .semanticVerificationUsedFM)
+    semanticCorrectionAttempted =
+      try values.decodeIfPresent(Bool.self, forKey: .semanticCorrectionAttempted)
+    semanticCorrectionAccepted =
+      try values.decodeIfPresent(Bool.self, forKey: .semanticCorrectionAccepted)
+    semanticPolicyVersion =
+      try values.decodeIfPresent(String.self, forKey: .semanticPolicyVersion)
     gateDecision =
       try values.decodeIfPresent(GateDecision.self, forKey: .gateDecision)
     gateMode =
@@ -897,6 +942,9 @@ public struct TurnTelemetry: Sendable, Equatable, Codable {
     runtimeMode =
       try values.decodeIfPresent(ModelRuntimeMode.self, forKey: .runtimeMode)
       ?? .evaluated
+    backendID =
+      try values.decodeIfPresent(SQLBackendID.self, forKey: .backendID)
+      ?? .mlx
     isEvaluated =
       try values.decodeIfPresent(Bool.self, forKey: .isEvaluated)
       ?? runtimeMode.isEvaluated

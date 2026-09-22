@@ -8,6 +8,7 @@ public struct SQLGenClient: Sendable {
   private var prepareMode:
     @Sendable (ModelRuntimeMode) async throws -> ModelPreparationReport
   private var readRuntimeMode: @Sendable () async -> ModelRuntimeMode
+  private var readBackendID: @Sendable () async -> SQLBackendID
   private var loadSchemaPrompt: @Sendable () throws -> String
   public var generate: @Sendable (SQLGenerationRequest) async throws -> SQLGeneration
 
@@ -27,6 +28,7 @@ public struct SQLGenClient: Sendable {
           Double(started.duration(to: .now).microseconds) / 1_000)
     }
     self.readRuntimeMode = { .evaluated }
+    self.readBackendID = { .mlx }
     self.loadSchemaPrompt = schemaPrompt
     self.generate = generate
   }
@@ -36,6 +38,7 @@ public struct SQLGenClient: Sendable {
       @escaping @Sendable (ModelRuntimeMode) async throws
       -> ModelPreparationReport,
     runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode,
+    backendID: @escaping @Sendable () async -> SQLBackendID = { .mlx },
     schemaPrompt: @escaping @Sendable () throws -> String,
     generate:
       @escaping @Sendable (SQLGenerationRequest) async throws
@@ -43,6 +46,7 @@ public struct SQLGenClient: Sendable {
   ) {
     self.prepareMode = prepareMode
     self.readRuntimeMode = runtimeMode
+    self.readBackendID = backendID
     self.loadSchemaPrompt = schemaPrompt
     self.generate = generate
   }
@@ -55,6 +59,10 @@ public struct SQLGenClient: Sendable {
 
   public func runtimeMode() async -> ModelRuntimeMode {
     await readRuntimeMode()
+  }
+
+  public func backendID() async -> SQLBackendID {
+    await readBackendID()
   }
 
   public func schemaPrompt() throws -> String {

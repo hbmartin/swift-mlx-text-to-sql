@@ -105,9 +105,15 @@ extension HistoryStore {
         db, sql: "SELECT * FROM turn_journal WHERE conversation_id = ?",
         arguments: [id.uuidString]
       ).map {
-        InterruptedTurn(
+        let executionID: String = $0["execution_id"]
+        let status: String = $0["status"]
+        let autoRetryCount: Int = $0["auto_retry_count"]
+        return InterruptedTurn(
           question: $0["question"],
-          interruptedAt: Date(timeIntervalSince1970: $0["started_at"]))
+          interruptedAt: Date(timeIntervalSince1970: $0["started_at"]),
+          executionID: UUID(uuidString: executionID),
+          status: InterruptedTurn.Status(rawValue: status) ?? .running,
+          autoRetryCount: autoRetryCount)
       }
       let followUpBatch = try String.fetchOne(
         db,

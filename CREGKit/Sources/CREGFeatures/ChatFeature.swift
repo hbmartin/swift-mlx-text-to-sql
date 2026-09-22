@@ -204,6 +204,7 @@ public struct ChatFeature: Sendable {
     /// Global work only ``AppFeature`` can perform.
     public enum Delegate: Sendable, Equatable {
       case submitQuestion(QuestionSubmission)
+      case retryInterruptedTurn
       case stopActiveTurn
       case cancelQueued(UUID)
       case openBrowser
@@ -382,16 +383,12 @@ public struct ChatFeature: Sendable {
 
       case .askAgainTapped:
         guard let interrupted = state.interruptedTurn else { return .none }
-        state.interruptedTurn = nil
-        state.composerText = interrupted.question
-        let conversationID = state.conversationID
         diagnostics.info(
           category: .submission,
           code: "chat_interrupted_turn_resubmitted",
-          summary: "An interrupted turn was resubmitted with Ask Again.")
-        return .merge(
-          .run { _ in try? await history.endTurnJournal(conversationID) },
-          commitSubmission(state: &state))
+          summary: "An interrupted turn was requested with Ask Again.",
+          context: ["has_execution_id": String(interrupted.executionID != nil)])
+        return .send(.delegate(.retryInterruptedTurn))
 
       case .interruptedDismissed:
         state.interruptedTurn = nil

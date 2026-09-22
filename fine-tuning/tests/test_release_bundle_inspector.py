@@ -148,6 +148,31 @@ def test_beta_app_gate_verifies_model_receipt_channel_and_metal(tmp_path):
     assert result["model_runtime_contract"]["source_revision"] == SOURCE_REVISION
 
 
+def test_background_gpu_gate_checks_signed_entitlement(monkeypatch, tmp_path):
+    app = tmp_path / "CREG.app"
+    app.mkdir()
+    key = "com.apple.developer.background-tasks.continued-processing.gpu"
+
+    def signed_result(entitlements):
+        return subprocess.CompletedProcess(
+            args=["codesign"], returncode=0,
+            stdout=plistlib.dumps(entitlements), stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        release_inspector.subprocess, "run",
+        lambda *args, **kwargs: signed_result({key: True}),
+    )
+    assert release_inspector.verify_signed_background_gpu_entitlement(app)["status"] == "granted"
+
+    monkeypatch.setattr(
+        release_inspector.subprocess, "run",
+        lambda *args, **kwargs: signed_result({}),
+    )
+    with pytest.raises(SystemExit, match="missing Background GPU Access"):
+        release_inspector.verify_signed_background_gpu_entitlement(app)
+
+
 def test_beta_app_gate_rejects_a_candidate_other_than_the_preflight_selection(
     tmp_path,
 ):

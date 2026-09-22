@@ -13,6 +13,46 @@ extension HistoryStore {
     }
   }
 
+  func markTurnInterrupted(
+    conversationID: UUID, executionID: UUID,
+    ambiguous: Bool
+  ) async throws {
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          UPDATE turn_journal SET status = ?
+          WHERE conversation_id = ? AND execution_id = ?
+          """,
+        arguments: [
+          ambiguous ? "ambiguous_interruption" : "known_interruption",
+          conversationID.uuidString, executionID.uuidString,
+        ])
+    }
+  }
+
+  /// Claims a journaled retry before model work is queued. A crash after this
+  /// transaction cannot trigger a second automatic retry on relaunch.
+  func claimTurnRetry(
+    conversationID: UUID, executionID: UUID, question: String,
+    automatic: Bool
+  ) async throws -> Bool {
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          UPDATE turn_journal
+          SET execution_id = ?, status = 'running', auto_retry_count = 1
+          WHERE conversation_id = ? AND question = ?
+            AND (execution_id = ? OR execution_id = '')
+            AND (? = 0 OR (status = 'known_interruption' AND auto_retry_count = 0))
+          """,
+        arguments: [
+          executionID.uuidString, conversationID.uuidString, question,
+          executionID.uuidString, automatic ? 1 : 0,
+        ])
+      return db.changesCount == 1
+    }
+  }
+
   // MARK: Messages and events
 
   func appendMessage(conversationID: UUID, message: ChatMessage) async throws {
@@ -364,11 +404,13 @@ extension HistoryStore {
       try db.execute(
         sql: """
           INSERT OR REPLACE INTO turn_journal
-            (conversation_id, question, started_at)
-          VALUES (?, ?, ?)
+            (conversation_id, question, started_at, execution_id,
+             status, auto_retry_count)
+          VALUES (?, ?, ?, ?, 'running', 0)
           """,
         arguments: [
           conversationID.uuidString, question, startedAt.timeIntervalSince1970,
+          message.id.uuidString,
         ])
     }
   }
