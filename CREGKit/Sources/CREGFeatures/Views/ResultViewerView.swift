@@ -158,8 +158,7 @@ struct ResultViewerView: View {
       wrappedValue: CREGChartSessionOwner(
         client: chartAnalysis,
         inputIdentity: inputIdentity,
-        result: result,
-        preference: preference.wrappedValue ?? .automatic))
+        result: result))
   }
 
   var session: AutoChartSession<Int> {

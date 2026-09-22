@@ -71,7 +71,7 @@ struct CREGChartInputIdentity: Hashable, Sendable {
 
 struct CREGChartMutationResult<Application> {
   var application: Application
-  var preferenceRemainsCurrent: Bool
+  var commandRemainsCurrent: Bool
 }
 
 enum CREGChartLoadApplication: Hashable, Sendable {
@@ -95,20 +95,10 @@ final class CREGChartSessionOwner: ObservableObject {
   private(set) var inputIdentity: CREGChartInputIdentity
   /// App-level invalidation token for restoring chart selection after a
   /// lifecycle change that may clear or invalidate the package selection.
-  /// Synchronously nested owner applications coalesce into one invalidation.
   @Published private(set) var selectionRestorationAttempt: UInt64 = 0
   private var request: AutoChartRequest<Int>?
   private var requestFailure: AutoChartFailure?
-  private var isSessionLoaded = false
-  private(set) var resultPresentationPreference: ResultPresentationPreference
-  private var mutationRevision: UInt64 = 0
-  private var loadRevision: UInt64 = 0
-  private var lifecycleTransactionDepth = 0
-  private var lifecycleNeedsRestoration = false
-  private var lifecycleRestartCallback: (() -> Void)?
-  private var lifecycleDidInvokeRestartCallback = false
-  private var isPublishingRestorationAttempt = false
-  private var pendingRestorationAttemptPublications = 0
+  private var commandRevision: UInt64 = 0
   private struct PickerMemoKey: Equatable {
     let analysisID: AutoChartAnalysisID
     let selectedRecommendationID: AutoChartRecommendationID?
@@ -119,7 +109,6 @@ final class CREGChartSessionOwner: ObservableObject {
     client: CREGChartAnalysisClient,
     inputIdentity: CREGChartInputIdentity,
     result: QueryResult,
-    preference: ResultPresentationPreference = .automatic,
     preparation: AutoChartPreparationStrategy = .preferredOrPrimary,
     requestFactory: RequestFactory? = nil
   ) {
@@ -128,8 +117,8 @@ final class CREGChartSessionOwner: ObservableObject {
     self.preparationStrategy = preparation
     self.session = client.makeSession()
     self.inputIdentity = inputIdentity
-    self.resultPresentationPreference = preference
-    let setup = requestFactory?(client, result, inputIdentity)
+    let setup =
+      requestFactory?(client, result, inputIdentity)
       ?? Self.makeRequest(
         client: client,
         result: result,
@@ -145,208 +134,106 @@ final class CREGChartSessionOwner: ObservableObject {
     preference: ResultPresentationPreference,
     beforeRestart: (() -> Void)? = nil
   ) -> CREGChartMutationResult<CREGChartLoadApplication> {
-    loadRevision &+= 1
-    let revision = loadRevision
+    let revision = beginCommand()
     let changesIdentity = inputIdentity != self.inputIdentity
-    let stagedSetup = changesIdentity
-      ? requestFactory?(client, result, inputIdentity)
+    if changesIdentity {
+      let setup =
+        requestFactory?(client, result, inputIdentity)
         ?? Self.makeRequest(
           client: client,
           result: result,
           inputIdentity: inputIdentity)
-      : nil
-    guard loadRevision == revision else {
+      guard commandRevision == revision else {
+        return CREGChartMutationResult(
+          application: .superseded,
+          commandRemainsCurrent: false)
+      }
+      session.unload()
+      guard commandRevision == revision else {
+        return CREGChartMutationResult(
+          application: .superseded,
+          commandRemainsCurrent: false)
+      }
+      objectWillChange.send()
+      pickerMemo = nil
+      request = setup.request
+      requestFailure = setup.failure
+      self.inputIdentity = inputIdentity
+    }
+
+    guard commandRevision == revision else {
       return CREGChartMutationResult(
         application: .superseded,
-        preferenceRemainsCurrent: preferenceIsEffective(preference))
+        commandRemainsCurrent: false)
     }
-    _ = beginPreferenceCommand(preference)
-    let application = withLifecycleTransaction(onRestart: beforeRestart) {
-      let wasSessionLoaded = isSessionLoaded
-      if wasSessionLoaded { requestSelectionRestoration() }
-      guard loadRevision == revision else {
-        return CREGChartLoadApplication.superseded
-      }
-
-      if changesIdentity {
-        isSessionLoaded = false
-        pickerMemo = nil
-        session.unload()
-        guard loadRevision == revision else {
-          return CREGChartLoadApplication.superseded
-        }
-        guard let stagedSetup else {
-          preconditionFailure("An identity change requires staged request state.")
-        }
-        request = stagedSetup.request
-        requestFailure = stagedSetup.failure
-        self.inputIdentity = inputIdentity
-        objectWillChange.send()
-      }
-
-      guard loadRevision == revision else {
-        return CREGChartLoadApplication.superseded
-      }
-      guard let request else {
-        isSessionLoaded = false
-        let command = currentPreferenceCommand()
-        _ = reconcilePackagePreference(for: command)
-        return .noRequest
-      }
-
-      for _ in 0..<2 {
-        guard loadRevision == revision else { return .superseded }
-        let command = currentPreferenceCommand()
-        let packageApplication = session.load(
-          request,
-          preference: command.preference.packagePreference,
-          preparation: preparationStrategy,
-          presentationContext: .init(identity: "creg-v3"),
-          formatters: CREGChartAdapter.formatters,
-          textResolver: CREGChartAdapter.textResolver)
-        guard loadRevision == revision else { return .superseded }
-        if packageApplication == .started,
-          preferenceCommandIsCurrent(command),
-          session.preference == command.preference.packagePreference
-        {
-          isSessionLoaded = true
-          return .started
-        }
-      }
-      isSessionLoaded = false
-      return .superseded
+    requestSelectionRestoration(onRestart: beforeRestart)
+    guard commandRevision == revision else {
+      return CREGChartMutationResult(
+        application: .superseded,
+        commandRemainsCurrent: false)
     }
-    let finalApplication: CREGChartLoadApplication =
-      loadRevision == revision ? application : .superseded
+    guard let request else {
+      _ = applyPackagePreference(
+        preference.packagePreference,
+        onRestart: beforeRestart)
+      return CREGChartMutationResult(
+        application: .noRequest,
+        commandRemainsCurrent: commandIsCurrent(
+          revision, preference: preference.packagePreference))
+    }
+
+    let packageApplication = session.load(
+      request,
+      preference: preference.packagePreference,
+      preparation: preparationStrategy,
+      presentationContext: .init(identity: "creg-v3"),
+      formatters: CREGChartAdapter.formatters,
+      textResolver: CREGChartAdapter.textResolver)
+    guard commandRevision == revision else {
+      return CREGChartMutationResult(
+        application: .superseded,
+        commandRemainsCurrent: false)
+    }
+    if session.preference != preference.packagePreference {
+      _ = applyPackagePreference(
+        preference.packagePreference,
+        onRestart: beforeRestart)
+    }
+    let remainsCurrent = commandIsCurrent(
+      revision, preference: preference.packagePreference)
+    let application: CREGChartLoadApplication =
+      packageApplication == .started && remainsCurrent ? .started : .superseded
     return CREGChartMutationResult(
-      application: finalApplication,
-      preferenceRemainsCurrent: preferenceIsEffective(preference))
+      application: application,
+      commandRemainsCurrent: remainsCurrent)
   }
 
-  private typealias PreferenceCommand = (
-    revision: UInt64,
-    previous: ResultPresentationPreference,
-    preference: ResultPresentationPreference
-  )
-
-  private func beginPreferenceCommand(
-    _ preference: ResultPresentationPreference
-  ) -> PreferenceCommand {
-    let previous = resultPresentationPreference
-    mutationRevision &+= 1
-    resultPresentationPreference = preference
-    return (mutationRevision, previous, preference)
+  private func beginCommand() -> UInt64 {
+    commandRevision &+= 1
+    return commandRevision
   }
 
-  private func preferenceCommandIsCurrent(_ command: PreferenceCommand) -> Bool {
-    mutationRevision == command.revision
-      && resultPresentationPreference == command.preference
-  }
-
-  private func currentPreferenceCommand() -> PreferenceCommand {
-    (
-      revision: mutationRevision,
-      previous: resultPresentationPreference,
-      preference: resultPresentationPreference
-    )
-  }
-
-  private func preferenceIsEffective(
-    _ preference: ResultPresentationPreference
+  private func commandIsCurrent(
+    _ revision: UInt64,
+    preference: AutoChartPreference
   ) -> Bool {
-    resultPresentationPreference == preference
-      && session.preference == preference.packagePreference
+    commandRevision == revision && session.preference == preference
   }
 
-  private func withLifecycleTransaction<Value>(
-    onRestart: (() -> Void)?,
-    _ operation: () -> Value
-  ) -> Value {
-    beginLifecycleTransaction(onRestart: onRestart)
-    defer { endLifecycleTransaction() }
-    return operation()
-  }
-
-  private func beginLifecycleTransaction(onRestart: (() -> Void)?) {
-    if lifecycleTransactionDepth == 0 {
-      lifecycleNeedsRestoration = false
-      lifecycleRestartCallback = nil
-      lifecycleDidInvokeRestartCallback = false
-    }
-    lifecycleTransactionDepth += 1
-    if lifecycleRestartCallback == nil, let onRestart {
-      lifecycleRestartCallback = onRestart
-    }
-    invokeLifecycleRestartCallbackIfNeeded()
-  }
-
-  private func requestSelectionRestoration() {
-    lifecycleNeedsRestoration = true
-    invokeLifecycleRestartCallbackIfNeeded()
-  }
-
-  private func invokeLifecycleRestartCallbackIfNeeded() {
-    guard lifecycleNeedsRestoration,
-      !lifecycleDidInvokeRestartCallback,
-      let lifecycleRestartCallback
-    else { return }
-    lifecycleDidInvokeRestartCallback = true
-    lifecycleRestartCallback()
-  }
-
-  private func endLifecycleTransaction() {
-    precondition(lifecycleTransactionDepth > 0)
-    guard lifecycleTransactionDepth == 1 else {
-      lifecycleTransactionDepth -= 1
-      return
-    }
-    let needsRestoration = lifecycleNeedsRestoration
-    lifecycleNeedsRestoration = false
-    lifecycleRestartCallback = nil
-    lifecycleDidInvokeRestartCallback = false
-    lifecycleTransactionDepth = 0
-    if needsRestoration { publishSelectionRestorationAttempt() }
-  }
-
-  private func publishSelectionRestorationAttempt() {
-    pendingRestorationAttemptPublications += 1
-    guard !isPublishingRestorationAttempt else { return }
-    isPublishingRestorationAttempt = true
-    defer { isPublishingRestorationAttempt = false }
-    while pendingRestorationAttemptPublications > 0 {
-      pendingRestorationAttemptPublications -= 1
-      selectionRestorationAttempt &+= 1
-    }
+  private func requestSelectionRestoration(onRestart: (() -> Void)?) {
+    selectionRestorationAttempt &+= 1
+    onRestart?()
   }
 
   private func applyPackagePreference(
-    _ preference: ResultPresentationPreference
+    _ preference: AutoChartPreference,
+    onRestart: (() -> Void)?
   ) -> AutoChartPreferenceApplicationResult {
-    let result = session.applyPreferenceResult(preference.packagePreference)
-    if result.changesVisibleChart { requestSelectionRestoration() }
-    return result
-  }
-
-  @discardableResult
-  private func reconcilePackagePreference(
-    for command: PreferenceCommand
-  ) -> AutoChartPreferenceApplicationResult? {
-    guard preferenceCommandIsCurrent(command) else { return nil }
-    var result = applyPackagePreference(command.preference)
-    if preferenceCommandIsCurrent(command),
-      session.preference != command.preference.packagePreference
-    {
-      result = applyPackagePreference(command.preference)
+    let result = session.applyPreferenceResult(preference)
+    if result.application == .startedReplacement || result.changesVisibleChart {
+      requestSelectionRestoration(onRestart: onRestart)
     }
     return result
-  }
-
-  @discardableResult
-  private func rollBackPreferenceCommand(_ command: PreferenceCommand) -> Bool {
-    guard preferenceCommandIsCurrent(command) else { return false }
-    let rollback = beginPreferenceCommand(command.previous)
-    _ = reconcilePackagePreference(for: rollback)
-    return preferenceIsEffective(command.previous)
   }
 
   private func cachedAnalysis() -> AutoChartAnalysis<Int>? {
@@ -412,24 +299,19 @@ final class CREGChartSessionOwner: ObservableObject {
     _ preference: ResultPresentationPreference,
     onRestart: (() -> Void)? = nil
   ) -> CREGChartMutationResult<AutoChartPreferenceApplication> {
-    let command = beginPreferenceCommand(preference)
-    let packageResult = withLifecycleTransaction(onRestart: onRestart) {
-      guard preferenceCommandIsCurrent(command) else {
-        return AutoChartPreferenceApplicationResult(
-          application: .superseded,
-          changesVisibleChart: false)
-      }
-      let result = applyPackagePreference(preference)
-      if preferenceCommandIsCurrent(command),
-        session.preference != preference.packagePreference
-      {
-        rollBackPreferenceCommand(command)
-      }
-      return result
+    let revision = beginCommand()
+    let previous = session.preference
+    let packageResult = applyPackagePreference(
+      preference.packagePreference,
+      onRestart: onRestart)
+    let remainsCurrent = commandIsCurrent(
+      revision, preference: preference.packagePreference)
+    if commandRevision == revision, !remainsCurrent {
+      _ = applyPackagePreference(previous, onRestart: onRestart)
     }
     return CREGChartMutationResult(
       application: packageResult.application,
-      preferenceRemainsCurrent: preferenceIsEffective(preference))
+      commandRemainsCurrent: remainsCurrent)
   }
 
   /// Reconciles an already-authoritative persisted or bound preference.
@@ -438,16 +320,14 @@ final class CREGChartSessionOwner: ObservableObject {
     _ preference: ResultPresentationPreference,
     onRestart: (() -> Void)? = nil
   ) -> CREGChartMutationResult<AutoChartPreferenceApplication> {
-    let command = beginPreferenceCommand(preference)
-    let packageResult = withLifecycleTransaction(onRestart: onRestart) {
-      return reconcilePackagePreference(for: command)
-        ?? AutoChartPreferenceApplicationResult(
-          application: .superseded,
-          changesVisibleChart: false)
-    }
+    let revision = beginCommand()
+    let packageResult = applyPackagePreference(
+      preference.packagePreference,
+      onRestart: onRestart)
     return CREGChartMutationResult(
       application: packageResult.application,
-      preferenceRemainsCurrent: preferenceIsEffective(preference))
+      commandRemainsCurrent: commandIsCurrent(
+        revision, preference: preference.packagePreference))
   }
 
   func pickerOptions(
@@ -475,32 +355,23 @@ final class CREGChartSessionOwner: ObservableObject {
     preference: ResultPresentationPreference? = nil,
     beforeRestart: (() -> Void)? = nil
   ) -> CREGChartMutationResult<AutoChartRetryApplication> {
-    guard isSessionLoaded else {
-      return CREGChartMutationResult(
-        application: .noRequest,
-        preferenceRemainsCurrent: false)
+    let revision = beginCommand()
+    let previous = session.preference
+    let requestedPreference = preference?.packagePreference ?? previous
+    let application = session.retry(preference: requestedPreference)
+    if application != .noRequest {
+      requestSelectionRestoration(onRestart: beforeRestart)
     }
-    let requestedPreference = preference ?? resultPresentationPreference
-    let command = beginPreferenceCommand(requestedPreference)
-    let application = withLifecycleTransaction(onRestart: beforeRestart) {
-      requestSelectionRestoration()
-      guard preferenceCommandIsCurrent(command) else {
-        return AutoChartRetryApplication.superseded
-      }
-      let application = session.retry(
-        preference: command.preference.packagePreference)
-      if application == .noRequest { isSessionLoaded = false }
-      if preferenceCommandIsCurrent(command),
-        application != .started
-          || session.preference != command.preference.packagePreference
-      {
-        rollBackPreferenceCommand(command)
-      }
-      return application
+    let remainsCurrent = application == .started
+      && commandIsCurrent(revision, preference: requestedPreference)
+    if commandRevision == revision, !remainsCurrent,
+      session.preference != previous
+    {
+      _ = applyPackagePreference(previous, onRestart: beforeRestart)
     }
     return CREGChartMutationResult(
       application: application,
-      preferenceRemainsCurrent: preferenceIsEffective(requestedPreference))
+      commandRemainsCurrent: remainsCurrent)
   }
 
   func recordFailure(
