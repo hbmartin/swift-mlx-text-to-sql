@@ -180,7 +180,7 @@ struct ResultPreviewView: View {
           preference: preference ?? .automatic)
       }
       .onChange(of: preference) { _, updated in
-        chartOwner.setPreferenceIfNeeded(
+        chartOwner.synchronizePreference(
           updated ?? .automatic)
       }
       .task(id: failure?.episodeID) {
