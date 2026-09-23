@@ -5,6 +5,16 @@ import Foundation
 extension AppFeature {
   // MARK: - Scheduler (ADR 0008)
 
+  func resumeAfterPressure(state: inout State) -> Effect<Action> {
+    guard state.isSceneActive else { return .none }
+    refreshFMAvailability(state: &state)
+    return .merge(
+      resumeSuspendedModelPreparation(state: &state),
+      resumeInterruptedScopeDiagnosisIfIdle(state: &state),
+      resumeFollowUpPreparationIfIdle(state: &state),
+      dispatchNextIfIdle(state: &state))
+  }
+
   /// Starts a turn immediately. Callers guarantee no turn is active and the
   /// scene is foregrounded; asserting `canDispatchTurn` here is what keeps
   /// the deactivation invariant from being a per-call-site convention a new
@@ -15,7 +25,8 @@ extension AppFeature {
     submission: QuestionSubmission,
     existingUserMessage: ChatMessage? = nil,
     autoRetryCount: Int = 0,
-    directlyUserStarted: Bool = true
+    directlyUserStarted: Bool = true,
+    replacingJournalID: UUID? = nil
   ) -> Effect<Action> {
     precondition(
       state.canDispatchTurn && state.fmAvailability == .available,
@@ -25,6 +36,10 @@ extension AppFeature {
     // older failure is abandoned rather than queued ahead of it.
     state.pendingScopeDiagnosis = nil
     state.isScopeDiagnosisInFlight = false
+    state.followUpPreparation = nil
+    if state.chat?.conversationID == conversationID {
+      state.chat?.followUpBatch = nil
+    }
     if state.isCapturingAnswerability {
       // Cancellation drops the effect's completion action, so this is the
       // only record that the capture died rather than finishing.
@@ -55,8 +70,17 @@ extension AppFeature {
       submission: submission,
       startedAt: startedAt)
     activeTurn.autoRetryCount = autoRetryCount
+    activeTurn.replacingJournalID = replacingJournalID
+    if let replacingJournalID {
+      activeTurn.replacedInterruptedTurn = state.chat?.interruptedTurns.first {
+        $0.journalID == replacingJournalID
+      }
+    }
     activeTurn.optimisticUserTurn = optimisticTurn
     state.activeTurn = activeTurn
+    if let replacingJournalID, state.chat?.conversationID == conversationID {
+      state.chat?.interruptedTurns.removeAll { $0.journalID == replacingJournalID }
+    }
 
     // Reflect the dispatch in whatever surfaces show this conversation.
     if existingUserMessage == nil,
@@ -103,7 +127,7 @@ extension AppFeature {
           messageID: userMessage.id
         ) {
           try await history.persistUserTurn(
-            conversationID, userMessage, question, startedAt)
+            conversationID, userMessage, submission, startedAt, replacingJournalID)
         }
       }
       let persistenceOutcome: MessageUpdateQueue.SaveOutcome
@@ -142,16 +166,10 @@ extension AppFeature {
       guard !Task.isCancelled else { return }
       let backgroundGranted = await backgroundTurn.begin(
         questionID, directlyUserStarted)
-      if Task.isCancelled {
-        await backgroundTurn.finish(questionID, false)
-        return
-      }
+      if Task.isCancelled { return }
       await send(.backgroundTurnReady(
         executionID: questionID, granted: backgroundGranted))
-      guard !Task.isCancelled else {
-        await backgroundTurn.finish(questionID, false)
-        return
-      }
+      guard !Task.isCancelled else { return }
       let events: AsyncStream<PipelineEvent> =
         switch submission.source {
         case .freeForm:
@@ -173,17 +191,19 @@ extension AppFeature {
             event: event))
         await backgroundTurn.progress(questionID, event)
       }
-      await backgroundTurn.finish(questionID, terminalEventSeen && !Task.isCancelled)
       guard !Task.isCancelled, !terminalEventSeen else { return }
       await send(
         .pipelineStreamEnded(
           conversationID: conversationID,
           questionID: questionID))
     }
-    return .merge(
-      .cancel(id: CancelID.scopeDiagnosis),
-      .cancel(id: CancelID.answerabilityCapture),
-      run.cancellable(id: CancelID.pipeline, cancelInFlight: true))
+    return .concatenate(
+      .cancel(id: CancelID.followUpPreparation),
+      .run { _ in try? await history.clearFollowUpBatch(conversationID) },
+      .merge(
+        .cancel(id: CancelID.scopeDiagnosis),
+        .cancel(id: CancelID.answerabilityCapture),
+        run.cancellable(id: CancelID.pipeline, cancelInFlight: true)))
   }
 
   /// Without a granted background-GPU task, scene deactivation must stop
@@ -195,6 +215,42 @@ extension AppFeature {
     ambiguous: Bool = false
   ) -> Effect<Action> {
     guard let active = state.activeTurn else { return .none }
+    if let provisionalID = active.provisionalAssistantMessageID,
+      case .preparedFollowUp(let prepared) = active.submission.source
+    {
+      state.activeTurn = nil
+      state.pendingTurnPersistence = PendingTurnPersistence(
+        questionID: active.questionID,
+        conversationID: active.conversationID)
+      state.pendingTurnPersistence?.userMessageID = active.optimisticUserTurn?.message.id
+      state.pendingTurnPersistence?.replacedInterruptedTurn = active.replacedInterruptedTurn
+      var telemetry = prepared.preparationTelemetry
+      telemetry.narrationUsedFM = false
+      telemetry.terminalError = "Prepared narration was interrupted; the validated result was retained."
+      let finalized = ChatMessage(
+        id: provisionalID, role: .assistant,
+        body: .answer(
+          result: prepared.result,
+          narration: PreparedAnswerFallback.narration(for: prepared.result),
+          sql: prepared.sql, notice: nil),
+        traceSteps: active.trace, createdAt: now,
+        devInfo: telemetry,
+        resultPresentation: active.resultPresentationPreference)
+      if state.chat?.conversationID == active.conversationID,
+        let index = state.chat?.messages.index(id: provisionalID)
+      {
+        state.chat?.messages[index] = finalized
+      }
+      state.pendingTurnPersistence?.terminalMessageID = provisionalID
+      updateSummaryAfterMessage(
+        state: &state, conversationID: active.conversationID,
+        message: finalized, replacing: true)
+      syncSchedulerProjection(into: &state)
+      return .concatenate(
+        .cancel(id: CancelID.pipeline),
+        stoppedTurnPersistenceEffect(
+          active: active, terminalMessage: finalized, replacesExisting: true))
+    }
     state.activeTurn = nil
     var interrupted = active
     interrupted.interruptionAmbiguous = ambiguous
@@ -226,8 +282,9 @@ extension AppFeature {
             try await history.persistUserTurn(
               active.conversationID,
               optimistic.message,
-              active.question,
-              active.startedAt)
+              active.submission,
+              active.startedAt,
+              active.replacingJournalID)
           }
           guard outcome == .saved else {
             await send(.turnInterruptionRecorded(
@@ -261,36 +318,68 @@ extension AppFeature {
 
   func claimInterruptedRetry(
     state: inout State,
-    automatic: Bool
+    automatic: Bool,
+    journalID requestedID: UUID? = nil
   ) -> Effect<Action> {
-    guard state.canDispatchTurn,
-      state.fmAvailability == .available,
-      let chat = state.chat,
-      let interrupted = chat.interruptedTurn,
-      !automatic || interrupted.canAutoRetry,
-      let userMessage = chat.messages.last,
-      userMessage.role == .user,
-      case .text(let savedQuestion) = userMessage.body,
-      savedQuestion == interrupted.question,
-      interrupted.executionID == nil
-        || interrupted.executionID == userMessage.id
+    guard let chat = state.chat,
+      let interrupted = chat.interruptedTurns.first(where: {
+        if let requestedID { return $0.journalID == requestedID }
+        if !automatic { return true }
+        return $0.canAutoRetry
+          && ($0.executionID == chat.messages.last?.id || $0.executionID == nil)
+      }),
+      !automatic || interrupted.canAutoRetry
     else { return .none }
+    let last = chat.messages.last
+    let trailingMessage: ChatMessage? = {
+      guard let last, last.role == .user,
+        case .text(let savedQuestion) = last.body,
+        savedQuestion == interrupted.question,
+        interrupted.executionID == nil || interrupted.executionID == last.id
+      else { return nil }
+      return last
+    }()
+    if automatic && trailingMessage == nil { return .none }
+    let resolvedJournalID = interrupted.journalID ?? interrupted.executionID
+      ?? trailingMessage?.id
+    guard let resolvedJournalID else { return .none }
+    let submission = QuestionSubmission(
+      question: interrupted.question, source: interrupted.source)
+    if !state.canDispatchTurn || state.fmAvailability != .available || !state.queue.isEmpty {
+      if state.retryClaimInFlight { return .none }
+      if !state.queue.contains(where: { $0.retryJournalID == resolvedJournalID }) {
+        state.queue.append(QueuedQuestion(
+          id: uuid(), conversationID: chat.conversationID,
+          submission: submission, retryJournalID: resolvedJournalID,
+          existingUserMessage: trailingMessage,
+          automaticRetry: automatic, submittedAt: now))
+        syncSchedulerProjection(into: &state)
+      }
+      return dispatchNextIfIdle(state: &state)
+    }
+    if trailingMessage == nil {
+      return dispatch(
+        state: &state, conversationID: chat.conversationID,
+        submission: submission, directlyUserStarted: true,
+        replacingJournalID: resolvedJournalID)
+    }
     state.retryClaimInFlight = true
     let conversationID = chat.conversationID
-    let executionID = userMessage.id
-    let question = interrupted.question
+    let executionID = trailingMessage!.id
     return .run { send in
       do {
         let claimed = try await history.claimTurnRetry(
-          conversationID, executionID, question, automatic)
+          conversationID, resolvedJournalID, executionID, automatic)
         await send(.interruptedRetryClaimed(
           conversationID: conversationID,
+          journalID: resolvedJournalID,
           executionID: executionID,
           automatic: automatic,
           claimed: claimed))
       } catch {
         await send(.interruptedRetryClaimed(
           conversationID: conversationID,
+          journalID: resolvedJournalID,
           executionID: executionID,
           automatic: automatic,
           claimed: false))
@@ -321,7 +410,6 @@ extension AppFeature {
       .cancel(id: CancelID.followUpPreparation),
       .cancel(id: CancelID.scopeDiagnosis),
       .cancel(id: CancelID.answerabilityCapture),
-      .cancel(id: CancelID.fmAvailabilityWatch),
       traceWrite)
   }
 
@@ -342,13 +430,38 @@ extension AppFeature {
       ?? state.queue.first
     guard let next else { return .none }
     state.queue.removeAll { $0.id == next.id }
+    if let journalID = next.retryJournalID, let userMessage = next.existingUserMessage {
+      if next.retryAlreadyClaimed {
+        state.chat?.interruptedTurns.removeAll {
+          ($0.journalID ?? $0.executionID) == journalID
+        }
+        return dispatch(
+          state: &state, conversationID: next.conversationID,
+          submission: next.submission, existingUserMessage: userMessage,
+          autoRetryCount: next.automaticRetry ? 1 : 0,
+          directlyUserStarted: !next.automaticRetry)
+      }
+      state.retryClaimInFlight = true
+      return .run { send in
+        do {
+          let claimed = try await history.claimTurnRetry(
+            next.conversationID, journalID, userMessage.id, next.automaticRetry)
+          await send(.queuedRetryClaimed(next, claimed))
+        } catch {
+          await send(.queuedRetryClaimed(next, false))
+          await send(.operationFailed(.history(operation: .messageSave, error: error)))
+        }
+      }
+    }
     return .merge(
       .cancel(id: CancelID.fmAvailabilityWatch),
       dispatch(
         state: &state,
         conversationID: next.conversationID,
         submission: next.submission,
-        directlyUserStarted: false))
+        existingUserMessage: next.existingUserMessage,
+        directlyUserStarted: false,
+        replacingJournalID: next.existingUserMessage == nil ? next.retryJournalID : nil))
   }
 
   /// fmAvailability is the one gate with no action to hook when it reopens:
@@ -395,8 +508,10 @@ extension AppFeature {
   ) -> Effect<Action> {
     .merge(
       .run { send in
+        var persisted = false
         do {
           try await operation()
+          persisted = true
         } catch {
           await send(
             .turnPersistenceFailed(
@@ -404,6 +519,7 @@ extension AppFeature {
               questionID: questionID,
               failure: .history(operation: .messageSave, error: error)))
         }
+        await backgroundTurn.finish(questionID, persisted)
         await send(.turnPersistenceFinished(questionID))
       },
       turnPersistenceWatchdog(questionID: questionID))
@@ -432,6 +548,7 @@ extension AppFeature {
       conversationID: active.conversationID)
     state.pendingTurnPersistence?.userMessageID =
       active.optimisticUserTurn?.message.id
+    state.pendingTurnPersistence?.replacedInterruptedTurn = active.replacedInterruptedTurn
     syncSchedulerProjection(into: &state)
     if let provisionalID = active.provisionalAssistantMessageID,
       case .preparedFollowUp(let prepared) = active.submission.source
@@ -461,7 +578,6 @@ extension AppFeature {
         replacing: true)
       return .concatenate(
         .cancel(id: CancelID.pipeline),
-        .run { _ in await backgroundTurn.finish(active.questionID, false) },
         stoppedTurnPersistenceEffect(
           active: active,
           terminalMessage: finalized,
@@ -484,7 +600,6 @@ extension AppFeature {
       context: ["partial_event_count": String(active.eventLines.count)])
     return .concatenate(
       .cancel(id: CancelID.pipeline),
-      .run { _ in await backgroundTurn.finish(active.questionID, false) },
       stoppedTurnPersistenceEffect(
         active: active,
         terminalMessage: stoppedMessage,
@@ -502,8 +617,9 @@ extension AppFeature {
     let conversationID = active.conversationID
     let questionID = active.questionID
     let optimisticTurn = active.optimisticUserTurn
-    let question = active.question
+    let submission = active.submission
     let startedAt = active.startedAt
+    let replacingJournalID = active.replacingJournalID
     let eventLines = active.eventLines
     return .merge(
       .run { send in
@@ -517,8 +633,9 @@ extension AppFeature {
               try await history.persistUserTurn(
                 conversationID,
                 optimisticTurn.message,
-                question,
-                startedAt)
+                submission,
+                startedAt,
+                replacingJournalID)
             }
           } catch {
             await send(
@@ -548,11 +665,14 @@ extension AppFeature {
           ) {
             try await history.persistTerminalTurn(
               conversationID,
+              questionID,
               terminalMessage,
               replacesExisting,
               eventLines)
           }
+          await backgroundTurn.finish(questionID, true)
         } catch {
+          await backgroundTurn.finish(questionID, false)
           await send(
             .turnPersistenceFailed(
               conversationID: conversationID,

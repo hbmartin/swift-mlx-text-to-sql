@@ -182,6 +182,8 @@ import Testing
     let snapshot = try await client.loadConversation(legacyID)
     #expect(snapshot.messages == [legacyMessage])
     #expect(snapshot.draft == "saved draft")
+    #expect(snapshot.interruptedTurn?.source == .freeForm)
+    #expect(snapshot.interruptedTurn?.journalID != nil)
     let tables = [
       "prepared_follow_up_batch", "turn_journal", "feedback", "event",
       "message", "search_index", "conversation",
@@ -362,37 +364,114 @@ import Testing
 
     let message = userMessage("Which loans mature soonest?", at: 50)
     try await client.persistUserTurn(
-      id, message, "Which loans mature soonest?", message.createdAt)
+      id, message, QuestionSubmission(question: "Which loans mature soonest?"), message.createdAt, nil)
     var snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn?.question == "Which loans mature soonest?")
     #expect(snapshot.interruptedTurn?.executionID == message.id)
     #expect(
       snapshot.interruptedTurn?.interruptedAt == Date(timeIntervalSince1970: 50))
 
-    try await client.endTurnJournal(id)
+    try await client.endTurnJournal(id, message.id)
     snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn == nil)
   }
 
   @Test func knownInterruptionCanBeAutomaticallyClaimedOnlyOnce() async throws {
-    let client = try makeClient(temporaryDatabaseURL())
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
     let id = UUID()
     _ = try await client.createConversation(id, Date(timeIntervalSince1970: 0))
     let message = userMessage("Which loans mature soonest?", at: 50)
     try await client.persistUserTurn(
-      id, message, "Which loans mature soonest?", message.createdAt)
+      id, message, QuestionSubmission(question: "Which loans mature soonest?"), message.createdAt, nil)
     try await client.markTurnInterrupted(id, message.id, false)
     var snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn?.canAutoRetry == true)
+    #expect(try await makeClient(url).loadConversation(id).interruptedTurn?.canAutoRetry == true)
 
     #expect(try await client.claimTurnRetry(
-      id, message.id, "Which loans mature soonest?", true))
+      id, message.id, message.id, true))
     #expect(!(try await client.claimTurnRetry(
-      id, message.id, "Which loans mature soonest?", true)))
+      id, message.id, message.id, true)))
     snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn?.autoRetryCount == 1)
     #expect(snapshot.interruptedTurn?.canAutoRetry == false)
+    #expect(try await makeClient(url).loadConversation(id).interruptedTurn?.canAutoRetry == false)
     #expect(snapshot.messages == [message])
+  }
+
+  @Test func twoInterruptionsRemainIndependentThroughOffscreenCompletionAndDismissal() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(conversationID, Date(timeIntervalSince1970: 0))
+    let first = userMessage("Which properties are vacant?", at: 10)
+    let prepared = preparedFollowUp(sourceMessageID: UUID())
+    let second = userMessage(prepared.question, at: 20)
+    try await client.persistUserTurn(
+      conversationID, first,
+      QuestionSubmission(question: first.previewText, source: .starter(.highestVacancyV1)),
+      first.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, first.id, false)
+    try await client.persistUserTurn(
+      conversationID, second,
+      QuestionSubmission(question: second.previewText, source: .preparedFollowUp(prepared)),
+      second.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, second.id, false)
+
+    var snapshot = try await client.loadConversation(conversationID)
+    #expect(snapshot.interruptedTurns.map(\.journalID) == [first.id, second.id])
+    #expect(snapshot.interruptedTurns.first?.source == .starter(.highestVacancyV1))
+    #expect(snapshot.interruptedTurns.last?.source == .preparedFollowUp(prepared))
+
+    // Completion of a queued turn while this conversation is offscreen must
+    // close only that execution's row.
+    let answer = answerMessage(narration: "A loan matures soon.", at: 30)
+    try await client.persistTerminalTurn(conversationID, second.id, answer, false, [])
+    snapshot = try await client.loadConversation(conversationID)
+    #expect(snapshot.interruptedTurns.map(\.journalID) == [first.id])
+
+    try await client.endTurnJournal(conversationID, first.id)
+    snapshot = try await client.loadConversation(conversationID)
+    #expect(snapshot.interruptedTurns.isEmpty)
+    #expect(snapshot.messages == [first, second, answer])
+  }
+
+  @Test func olderRetryTransfersJournalOnlyWithNewUserTurn() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(conversationID, Date(timeIntervalSince1970: 0))
+    let old = userMessage("Old question", at: 10)
+    let later = userMessage("Later question", at: 20)
+    try await client.persistUserTurn(
+      conversationID, old, QuestionSubmission(question: old.previewText), old.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, old.id, false)
+    try await client.persistUserTurn(
+      conversationID, later, QuestionSubmission(question: later.previewText), later.createdAt, nil)
+    try await client.persistTerminalTurn(
+      conversationID, later.id, answerMessage(narration: "Later answer", at: 25), false, [])
+
+    let beforeClaim = try await client.loadConversation(conversationID)
+    #expect(beforeClaim.interruptedTurns.map(\.journalID) == [old.id])
+    let retry = userMessage("Old question", at: 30)
+    try await client.persistUserTurn(
+      conversationID, retry, QuestionSubmission(question: retry.previewText),
+      retry.createdAt, old.id)
+    let afterClaim = try await client.loadConversation(conversationID)
+    #expect(afterClaim.interruptedTurns.map(\.journalID) == [retry.id])
+    #expect(afterClaim.messages.last == retry)
+    #expect(afterClaim.messages.map(\.id).prefix(2) == [old.id, later.id])
+
+    let duplicate = userMessage("Old question", at: 40)
+    var rejectedMissingSource = false
+    do {
+      try await client.persistUserTurn(
+        conversationID, duplicate, QuestionSubmission(question: duplicate.previewText),
+        duplicate.createdAt, old.id)
+    } catch {
+      rejectedMissingSource = true
+    }
+    #expect(rejectedMissingSource)
+    #expect(try await client.loadConversation(conversationID).messages.last == retry)
   }
 
   // MARK: Prepared follow-ups
@@ -553,7 +632,7 @@ import Testing
       sql: "SELECT 2",
       notice: nil)
     try await client.persistTerminalTurn(
-      conversationID, staleWholeMessage, true, [])
+      conversationID, original.id, staleWholeMessage, true, [])
 
     let stored = try #require(
       try await client.loadConversation(conversationID).messages.last)
@@ -665,7 +744,7 @@ import Testing
       conversationID, Date(timeIntervalSince1970: 0))
     let question = userMessage("Which fund leads?", at: 10)
     try await client.persistUserTurn(
-      conversationID, question, "Which fund leads?", question.createdAt)
+      conversationID, question, QuestionSubmission(question: "Which fund leads?"), question.createdAt, nil)
 
     var snapshot = try await client.loadConversation(conversationID)
     #expect(snapshot.messages == [question])
@@ -673,7 +752,7 @@ import Testing
 
     let answer = answerMessage(narration: "Core leads.", at: 20)
     try await client.persistTerminalTurn(
-      conversationID, answer, false, ["{\"turn\":\"finished\"}"])
+      conversationID, question.id, answer, false, ["{\"turn\":\"finished\"}"])
 
     snapshot = try await client.loadConversation(conversationID)
     #expect(snapshot.messages == [question, answer])
@@ -683,7 +762,7 @@ import Testing
     // of the original effect must remain idempotent and must not reopen the
     // journal that terminal persistence just closed.
     try await client.persistUserTurn(
-      conversationID, question, "Which fund leads?", question.createdAt)
+      conversationID, question, QuestionSubmission(question: "Which fund leads?"), question.createdAt, nil)
     snapshot = try await client.loadConversation(conversationID)
     #expect(snapshot.messages == [question, answer])
     #expect(snapshot.interruptedTurn == nil)
@@ -712,7 +791,7 @@ import Testing
       telemetry: telemetry
     ).jsonLine()
     try await client.persistTerminalTurn(
-      conversationID, message, false, [terminalLine])
+      conversationID, UUID(), message, false, [terminalLine])
 
     let verdict = ScopeVerdictRecord(
       verdict: .inDomainButNotTracked,

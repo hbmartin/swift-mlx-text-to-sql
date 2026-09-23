@@ -36,6 +36,7 @@ import Testing
     } withDependencies: { [history] in
       $0.historyClient = history
       $0.diagnostics = recorder.client
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
@@ -78,10 +79,10 @@ import Testing
   @Test func messageSaveFailureIsLoggedAndPresented() async {
     let recorder = DiagnosticEventRecorder()
     var history = HistoryClient.noop()
-    history.persistUserTurn = { _, _, _, _ in
+    history.persistUserTurn = { _, _, _, _, _ in
       throw DiagnosticsTestError.failed("message write failed")
     }
-    history.persistTerminalTurn = { _, _, _, _ in
+    history.persistTerminalTurn = { _, _, _, _, _ in
       throw DiagnosticsTestError.failed("message write failed")
     }
     let store = TestStore(initialState: Self.appState()) {

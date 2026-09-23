@@ -24,6 +24,10 @@ read-only SQLite query. Relative date boundaries use the Portfolio As-of Date
 versioned with the bundled data.
 
 The UI submits a Starter Query identifier, never an arbitrary starter string.
+The interruption journal persists that identifier with the submission; Ask
+Again dispatches the same typed path. A legacy journal without a typed source
+is treated as free form because display text cannot establish a Starter Query
+identity.
 The pipeline validates and executes its canonical SQL, performs grounding, and
 narrates the result. It does not invoke follow-up rewriting, the Ambiguity Gate,
 SQL generation, repair, or voting. Telemetry records the query origin, starter

@@ -44,10 +44,12 @@ the Apple Intelligence line.
    - `deviceNotEligible` → logged and rendered as unavailable. It should be
      unreachable in Release behind the floor, but Debug intentionally bypasses
      that floor for previews and simulator work.
-3. **`FMClient.fallback()` survives strictly as a mid-turn safety net**: a
-   turn already in flight when availability flips degrades gracefully
-   (templated narration) instead of crashing. No feature is designed around
-   it.
+3. **`FMClient.fallback()` survives as a mid-turn safety net**: a turn already
+   in flight when availability flips degrades gracefully. Invalid rewrite text
+   also uses the original question, and invalid narration text uses deterministic
+   narration while keeping the validated SQL result. These stages record
+   fallback in telemetry. Cancellation, deadlines, and typed Foundation Models
+   errors remain distinct from invalid text.
 
 ## Consequences
 

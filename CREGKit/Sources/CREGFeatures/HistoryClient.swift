@@ -23,13 +23,14 @@ public struct HistoryClient: Sendable {
     @Sendable (_ conversationID: UUID, _ feedback: AnswerFeedback) async throws -> Void
   public var clearFeedback:
     @Sendable (_ conversationID: UUID, _ messageID: UUID) async throws -> Void
-  public var endTurnJournal: @Sendable (_ conversationID: UUID) async throws -> Void
+  public var endTurnJournal:
+    @Sendable (_ conversationID: UUID, _ journalID: UUID) async throws -> Void
   public var markTurnInterrupted:
     @Sendable (_ conversationID: UUID, _ executionID: UUID, _ ambiguous: Bool)
       async throws -> Void
   public var claimTurnRetry:
-    @Sendable (_ conversationID: UUID, _ executionID: UUID,
-      _ question: String, _ automatic: Bool) async throws -> Bool
+    @Sendable (_ conversationID: UUID, _ journalID: UUID,
+      _ executionID: UUID, _ automatic: Bool) async throws -> Bool
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   /// Replaces an existing body/telemetry payload without changing transcript
@@ -57,15 +58,16 @@ public struct HistoryClient: Sendable {
   /// Atomically appends a user message and opens its interruption journal.
   public var persistUserTurn:
     @Sendable (
-      _ conversationID: UUID, _ message: ChatMessage, _ question: String,
-      _ startedAt: Date
+      _ conversationID: UUID, _ message: ChatMessage,
+      _ submission: QuestionSubmission, _ startedAt: Date,
+      _ replacingJournalID: UUID?
     ) async throws -> Void
   /// Atomically appends or finalizes an assistant message, records its events,
   /// and closes the interruption journal.
   public var persistTerminalTurn:
     @Sendable (
-      _ conversationID: UUID, _ message: ChatMessage, _ replacesExisting: Bool,
-      _ jsonLines: [String]
+      _ conversationID: UUID, _ executionID: UUID,
+      _ message: ChatMessage, _ replacesExisting: Bool, _ jsonLines: [String]
     ) async throws -> Void
   /// Writes the conversation's full JSONL event log to a temp file for export.
   public var exportJSONL: @Sendable (_ conversationID: UUID) async throws -> URL
@@ -134,14 +136,14 @@ extension HistoryClient {
       search: { try await store.search(query: $0) },
       saveFeedback: { try await store.saveFeedback(conversationID: $0, feedback: $1) },
       clearFeedback: { try await store.clearFeedback(conversationID: $0, messageID: $1) },
-      endTurnJournal: { try await store.endTurnJournal(conversationID: $0) },
+      endTurnJournal: { try await store.endTurnJournal(conversationID: $0, journalID: $1) },
       markTurnInterrupted: {
         try await store.markTurnInterrupted(
           conversationID: $0, executionID: $1, ambiguous: $2)
       },
       claimTurnRetry: {
         try await store.claimTurnRetry(
-          conversationID: $0, executionID: $1, question: $2, automatic: $3)
+          conversationID: $0, journalID: $1, executionID: $2, automatic: $3)
       },
       appendMessage: { try await store.appendMessage(conversationID: $0, message: $1) },
       updateMessage: { try await store.updateMessage(conversationID: $0, message: $1) },
@@ -157,11 +159,12 @@ extension HistoryClient {
       },
       persistUserTurn: {
         try await store.persistUserTurn(
-          conversationID: $0, message: $1, question: $2, startedAt: $3)
+          conversationID: $0, message: $1, submission: $2, startedAt: $3,
+          replacingJournalID: $4)
       },
       persistTerminalTurn: {
         try await store.persistTerminalTurn(
-          conversationID: $0, message: $1, replacesExisting: $2, lines: $3)
+          conversationID: $0, executionID: $1, message: $2, replacesExisting: $3, lines: $4)
       },
       exportJSONL: { try await store.exportJSONL(conversationID: $0) },
       supportBundleSource: { try await store.supportBundleSource() },

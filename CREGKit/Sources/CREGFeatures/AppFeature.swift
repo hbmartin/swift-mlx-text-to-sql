@@ -47,6 +47,8 @@ public struct AppFeature: Sendable {
     public var conversationID: UUID
     public var question: String
     public var submission: QuestionSubmission
+    public var replacingJournalID: UUID?
+    public var replacedInterruptedTurn: InterruptedTurn?
     public var starter: StarterQueryID? {
       guard case .starter(let starter) = submission.source else { return nil }
       return starter
@@ -76,6 +78,8 @@ public struct AppFeature: Sendable {
       self.submission = QuestionSubmission(
         question: question,
         source: starter.map(QuestionSubmissionSource.starter) ?? .freeForm)
+      self.replacingJournalID = nil
+      self.replacedInterruptedTurn = nil
       self.startedAt = startedAt
     }
 
@@ -89,6 +93,8 @@ public struct AppFeature: Sendable {
       self.conversationID = conversationID
       self.question = submission.question
       self.submission = submission
+      self.replacingJournalID = nil
+      self.replacedInterruptedTurn = nil
       self.startedAt = startedAt
     }
   }
@@ -103,6 +109,7 @@ public struct AppFeature: Sendable {
     public var followUpContext: FollowUpSuggestionContext?
     public var userMessageID: UUID?
     public var terminalMessageID: UUID?
+    public var replacedInterruptedTurn: InterruptedTurn?
 
     public init(questionID: UUID, conversationID: UUID) {
       self.questionID = questionID
@@ -264,7 +271,10 @@ public struct AppFeature: Sendable {
     public var didHandlePreparationJournalInspection = false
     public var modelPreparationInFlight = false
     public var modelPreparationModeInFlight: ModelRuntimeMode?
+    public var modelPreparationAttemptID: UUID?
     public var suspendedModelPreparationMode: ModelRuntimeMode?
+    public var pressureGeneration: UUID?
+    public var thermalPressure = false
     public var debugModelIdentity: DebugModelIdentity?
     /// Experimental physical-device benchmark input supplied at process
     /// launch. Ordinary Release builds always leave this nil.
@@ -359,13 +369,15 @@ public struct AppFeature: Sendable {
     /// — follow-up preparation, scope diagnosis, debug captures — may start
     /// only from here.
     public var canStartLowPriorityInference: Bool {
-      isSceneActive && isInferenceIdle
+      isSceneActive && pressureGeneration == nil && !thermalPressure
+        && isInferenceIdle
     }
 
     /// The variant for the paths that consume the pending Scope Verdict memo
     /// instead of waiting behind it.
     public var canStartLowPriorityInferenceIgnoringScopeDiagnosis: Bool {
-      isSceneActive && isInferenceIdleIgnoringScopeDiagnosis
+      isSceneActive && pressureGeneration == nil && !thermalPressure
+        && isInferenceIdleIgnoringScopeDiagnosis
     }
 
     /// The selected conversation's persisted batch when a resume can
@@ -389,6 +401,9 @@ public struct AppFeature: Sendable {
     case appBecameInactive
     case appEnteredBackground
     case resourcePressure
+    case thermalPressureBegan
+    case thermalPressureEnded
+    case pressureQuiet(UUID)
     case preparationJournalLoaded(ModelPreparationJournalSnapshot?)
     case retryPreparation
     case retryCompatibilityPreparation
@@ -413,7 +428,9 @@ public struct AppFeature: Sendable {
     case turnInterruptionRecorded(
       questionID: UUID, userPersisted: Bool, marked: Bool)
     case interruptedRetryClaimed(
-      conversationID: UUID, executionID: UUID, automatic: Bool, claimed: Bool)
+      conversationID: UUID, journalID: UUID, executionID: UUID,
+      automatic: Bool, claimed: Bool)
+    case queuedRetryClaimed(QueuedQuestion, Bool)
     case backgroundTurnReady(executionID: UUID, granted: Bool)
     case backgroundTurnExpired(executionID: UUID)
     case turnPersistenceFailed(
@@ -574,16 +591,10 @@ public struct AppFeature: Sendable {
           queuedTurn)
 
       case .appBecameInactive:
-        // Inactive can be followed by background at any instant. Unless this
-        // turn has an actual continued-processing GPU grant, stop MLX work
-        // immediately and journal it for one foreground retry.
+        // A brief inactive transition closes the dispatch gate while work
+        // already holding the serializer continues.
         state.isSceneActive = false
-        let active = state.activeTurn?.backgroundGPUGranted == true
-          ? Effect<Action>.none : interruptActiveTurn(state: &state)
-        return .merge(
-          active,
-          suspendLowPriorityInference(state: &state),
-          suspendModelPreparation(state: &state))
+        return .none
 
       case .appEnteredBackground:
         state.isSceneActive = false
@@ -623,10 +634,35 @@ public struct AppFeature: Sendable {
           .cancel(id: CancelID.scopeDiagnosis),
           .cancel(id: CancelID.answerabilityCapture),
           .cancel(id: CancelID.fmAvailabilityWatch),
-          .merge(followOnEffects + [interrupted]))
+          .merge(followOnEffects + [interrupted, suspendModelPreparation(state: &state)]))
 
       case .resourcePressure:
-        return suspendLowPriorityInference(state: &state)
+        let generation = uuid()
+        state.pressureGeneration = generation
+        return .merge(
+          suspendLowPriorityInference(state: &state),
+          suspendModelPreparation(state: &state),
+          .run { send in
+            try await clock.sleep(for: .seconds(5))
+            await send(.pressureQuiet(generation))
+          })
+
+      case .thermalPressureBegan:
+        state.thermalPressure = true
+        return .merge(
+          suspendLowPriorityInference(state: &state),
+          suspendModelPreparation(state: &state))
+
+      case .thermalPressureEnded:
+        state.thermalPressure = false
+        guard state.pressureGeneration == nil else { return .none }
+        return resumeAfterPressure(state: &state)
+
+      case .pressureQuiet(let generation):
+        guard state.pressureGeneration == generation else { return .none }
+        state.pressureGeneration = nil
+        guard !state.thermalPressure else { return .none }
+        return resumeAfterPressure(state: &state)
 
       case .preparationJournalLoaded(let previous):
         guard
@@ -665,7 +701,9 @@ public struct AppFeature: Sendable {
         }
         state.modelPreparationInFlight = true
         state.modelPreparationModeInFlight = .evaluated
-        return preparationEffect(mode: .evaluated)
+        let attemptID = uuid()
+        state.modelPreparationAttemptID = attemptID
+        return preparationEffect(mode: .evaluated, attemptID: attemptID)
 
       case .retryPreparation:
         guard state.isSceneActive,
@@ -690,7 +728,9 @@ public struct AppFeature: Sendable {
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
         state.modelPreparationModeInFlight = .evaluated
-        return .merge(abandonedDiagnosis, preparationEffect(mode: .evaluated))
+        let attemptID = uuid()
+        state.modelPreparationAttemptID = attemptID
+        return .merge(abandonedDiagnosis, preparationEffect(mode: .evaluated, attemptID: attemptID))
 
       case .retryCompatibilityPreparation:
         guard
@@ -711,12 +751,15 @@ public struct AppFeature: Sendable {
         state.modelPreparationReport = nil
         state.modelPreparationInFlight = true
         state.modelPreparationModeInFlight = .compatibility
+        let attemptID = uuid()
+        state.modelPreparationAttemptID = attemptID
         return .merge(
-          abandonedDiagnosis, preparationEffect(mode: .compatibility))
+          abandonedDiagnosis, preparationEffect(mode: .compatibility, attemptID: attemptID))
 
       case .modelPrepared(let report):
         state.modelPreparationInFlight = false
         state.modelPreparationModeInFlight = nil
+        state.modelPreparationAttemptID = nil
         state.suspendedModelPreparationMode = nil
         setModelReadiness(.ready, state: &state)
         refreshFMAvailability(state: &state)
@@ -743,6 +786,7 @@ public struct AppFeature: Sendable {
       case .modelPreparationFailed(let failure):
         state.modelPreparationInFlight = false
         state.modelPreparationModeInFlight = nil
+        state.modelPreparationAttemptID = nil
         setModelReadiness(.failed(failure), state: &state)
         state.modelPreparationReport = nil
         diagnostics.record(
@@ -818,7 +862,13 @@ public struct AppFeature: Sendable {
                 }
               }
               if !conversationOwnsActiveTurn {
-                try? await history.endTurnJournal(conversationID)
+                for message in recovered {
+                  if let interruption = snapshot.interruptedTurns.first(where: {
+                    $0.executionID == message.id
+                  }), let journalID = interruption.journalID {
+                    try? await history.endTurnJournal(conversationID, journalID)
+                  }
+                }
               }
             })
         }
@@ -938,15 +988,24 @@ public struct AppFeature: Sendable {
           return .send(.dispatchNextIfIdle)
         }
         if state.chat?.conversationID == interrupted.conversationID {
-          state.chat?.interruptedTurn = InterruptedTurn(
+          let entry = InterruptedTurn(
             question: interrupted.question,
             interruptedAt: now,
+            journalID: interrupted.questionID,
+            source: interrupted.submission.source,
             executionID: interrupted.questionID,
             status: marked
               ? (interrupted.interruptionAmbiguous
                   ? .ambiguousInterruption : .knownInterruption)
               : .running,
             autoRetryCount: interrupted.autoRetryCount)
+          if let index = state.chat?.interruptedTurns.firstIndex(where: {
+            $0.journalID == interrupted.questionID
+          }) {
+            state.chat?.interruptedTurns[index] = entry
+          } else {
+            state.chat?.interruptedTurns.append(entry)
+          }
         }
         syncSchedulerProjection(into: &state)
         let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
@@ -956,33 +1015,75 @@ public struct AppFeature: Sendable {
           dispatchNextIfIdle(state: &state))
 
       case .interruptedRetryClaimed(
-        let conversationID, let executionID, let automatic, let claimed):
+        let conversationID, let journalID, let executionID, let automatic, let claimed):
         guard state.retryClaimInFlight else { return .none }
         state.retryClaimInFlight = false
         if state.chat?.conversationID == conversationID,
-          state.chat?.interruptedTurn?.executionID == executionID
-        {
-          state.chat?.interruptedTurn?.status =
+          let index = state.chat?.interruptedTurns.firstIndex(where: {
+            ($0.journalID ?? $0.executionID) == journalID
+          }) {
+          state.chat?.interruptedTurns[index].status =
             claimed ? .running : .ambiguousInterruption
-          if claimed { state.chat?.interruptedTurn?.autoRetryCount = 1 }
+          if claimed && automatic { state.chat?.interruptedTurns[index].autoRetryCount = 1 }
         }
         guard claimed,
-          state.canDispatchTurn,
-          state.fmAvailability == .available,
           let chat = state.chat,
           chat.conversationID == conversationID,
-          let interrupted = chat.interruptedTurn,
+          let interrupted = chat.interruptedTurns.first(where: {
+            ($0.journalID ?? $0.executionID) == journalID
+          }),
           let userMessage = chat.messages.last,
           userMessage.id == executionID
         else { return .send(.dispatchNextIfIdle) }
-        state.chat?.interruptedTurn = nil
+        let submission = QuestionSubmission(
+          question: interrupted.question, source: interrupted.source)
+        if !state.canDispatchTurn || state.fmAvailability != .available
+          || !state.queue.isEmpty
+        {
+          state.queue.append(QueuedQuestion(
+            id: uuid(), conversationID: conversationID,
+            submission: submission, retryJournalID: journalID,
+            retryAlreadyClaimed: true, existingUserMessage: userMessage,
+            automaticRetry: automatic, submittedAt: now))
+          syncSchedulerProjection(into: &state)
+          return dispatchNextIfIdle(state: &state)
+        }
+        state.chat?.interruptedTurns.removeAll {
+          ($0.journalID ?? $0.executionID) == journalID
+        }
         return dispatch(
           state: &state,
           conversationID: conversationID,
-          submission: QuestionSubmission(question: interrupted.question),
+          submission: submission,
           existingUserMessage: userMessage,
-          autoRetryCount: 1,
+          autoRetryCount: automatic ? 1 : interrupted.autoRetryCount,
           directlyUserStarted: !automatic)
+
+      case .queuedRetryClaimed(let queued, let claimed):
+        state.retryClaimInFlight = false
+        guard claimed else { return dispatchNextIfIdle(state: &state) }
+        if !state.canDispatchTurn || state.fmAvailability != .available
+          || !state.queue.isEmpty
+        {
+          state.queue.append(QueuedQuestion(
+            id: queued.id, conversationID: queued.conversationID,
+            submission: queued.submission, retryJournalID: queued.retryJournalID,
+            retryAlreadyClaimed: true,
+            existingUserMessage: queued.existingUserMessage,
+            automaticRetry: queued.automaticRetry,
+            submittedAt: queued.submittedAt))
+          syncSchedulerProjection(into: &state)
+          return dispatchNextIfIdle(state: &state)
+        }
+        state.chat?.interruptedTurns.removeAll {
+          ($0.journalID ?? $0.executionID) == queued.retryJournalID
+        }
+        return dispatch(
+          state: &state, conversationID: queued.conversationID,
+          submission: queued.submission,
+          existingUserMessage: queued.existingUserMessage,
+          autoRetryCount: queued.automaticRetry ? 1 : 0,
+          directlyUserStarted: !queued.automaticRetry)
 
       case .backgroundTurnReady(let executionID, let granted):
         guard state.activeTurn?.questionID == executionID else {
@@ -1045,6 +1146,9 @@ public struct AppFeature: Sendable {
           }
           return .merge(effects)
         }
+        let replacedInterruptedTurn =
+          state.activeTurn?.replacedInterruptedTurn
+          ?? state.pendingTurnPersistence?.replacedInterruptedTurn
         rollBackOptimisticUserTurn(
           state: &state,
           questionID: questionID,
@@ -1059,6 +1163,11 @@ public struct AppFeature: Sendable {
           },
           .send(.dispatchNextIfIdle),
         ]
+        if let replacedInterruptedTurn,
+          state.chat?.conversationID == conversationID
+        {
+          state.chat?.interruptedTurns.append(replacedInterruptedTurn)
+        }
         if let failure {
           effects.append(
             handleConversationWriteFailure(
@@ -1215,9 +1324,18 @@ public struct AppFeature: Sendable {
             state: &state,
             conversationID: conversationID,
             submission: submission)
+          let appendPreparationEvents = Effect<Action>.run { _ in
+            if let preparation, !preparation.eventLines.isEmpty {
+              try? await history.appendEvents(
+                preparation.conversationID,
+                preparation.context.sourceAssistantMessageID,
+                preparation.eventLines)
+            }
+          }
           return .concatenate(
             cancelPreparation,
-            .merge(clearBatch, userTurn))
+            appendPreparationEvents,
+            userTurn)
         }
         // Never drop a committed submission: the composer is already cleared
         // and the draft overwritten. A submission that cannot dispatch —
@@ -1243,11 +1361,17 @@ public struct AppFeature: Sendable {
         // drains an already-idle queue after recovery.
         return .concatenate(
           cancelPreparation,
-          .merge(clearBatch, dispatchNextIfIdle(state: &state)))
+          clearBatch,
+          dispatchNextIfIdle(state: &state))
 
       case .chat(.delegate(.retryInterruptedTurn)):
         refreshFMAvailability(state: &state)
         return claimInterruptedRetry(state: &state, automatic: false)
+
+      case .chat(.delegate(.retryInterruptedTurnFor(let journalID))):
+        refreshFMAvailability(state: &state)
+        return claimInterruptedRetry(
+          state: &state, automatic: false, journalID: journalID)
 
       case .chat(.delegate(.stopActiveTurn)):
         return stopActiveTurn(state: &state)

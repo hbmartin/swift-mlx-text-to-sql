@@ -141,7 +141,7 @@ import Testing
       url: url,
       processSessionID: UUID(1))
 
-    try await store.begin(mode: .evaluated, environment: ["build": "test"])
+    try await store.begin(attemptID: UUID(3), mode: .evaluated, environment: ["build": "test"])
     try await store.stageStarted(.promptCache, mode: .evaluated)
     // A live attempt owned by this process is not crash recovery input.
     #expect(await store.unfinishedAttempt() == nil)
@@ -158,10 +158,86 @@ import Testing
     #expect(await completedRelaunch.unfinishedAttempt() == nil)
     #expect(await store.exportData() != nil)
   }
+
+  @Test func suspensionBeforeOrAfterJournalBeginIsACompletedOutcome() async throws {
+    for suspendFirst in [true, false] {
+      let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("creg-suspension-test-\(UUID().uuidString).json")
+      let owner = ModelPreparationJournalStore(url: url, processSessionID: UUID(11))
+      let attemptID = UUID()
+      if suspendFirst { try await owner.suspend(attemptID) }
+      try await owner.begin(
+        attemptID: attemptID, mode: .evaluated, environment: [:])
+      if !suspendFirst { try await owner.suspend(attemptID) }
+      try await owner.stageStarted(.promptCache, mode: .evaluated)
+      let data = try #require(await owner.exportData())
+      let decoder = JSONDecoder()
+      decoder.dateDecodingStrategy = .iso8601
+      let saved = try decoder.decode(ModelPreparationJournalSnapshot.self, from: data)
+      #expect(saved.attemptID == attemptID)
+      #expect(saved.completed)
+      #expect(saved.outcome == "suspended")
+      let relaunched = ModelPreparationJournalStore(url: url, processSessionID: UUID(12))
+      #expect(await relaunched.unfinishedAttempt() == nil)
+    }
+  }
+
+  @Test func lateSuspendedBeginCannotReplaceTheResumedAttempt() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-late-suspension-test-\(UUID().uuidString).json")
+    let owner = ModelPreparationJournalStore(url: url, processSessionID: UUID(13))
+    let suspendedID = UUID(14)
+    let resumedID = UUID(15)
+    try await owner.suspend(suspendedID)
+    try await owner.begin(
+      attemptID: resumedID, mode: .evaluated, environment: [:])
+    try await owner.begin(
+      attemptID: suspendedID, mode: .evaluated, environment: [:])
+    let data = try #require(await owner.exportData())
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let saved = try decoder.decode(ModelPreparationJournalSnapshot.self, from: data)
+    #expect(saved.attemptID == resumedID)
+    #expect(!saved.completed)
+  }
 }
 
 @MainActor
 @Suite struct ModelPreparationFeatureTests {
+  @Test func quietMemoryWindowResumesSuspendedPreparation() async {
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = AppFeature.State()
+    state.didHandlePreparationJournalInspection = true
+    state.suspendedModelPreparationMode = .evaluated
+    let clock = TestClock()
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = .noop
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+    }
+    store.exhaustivity = .off
+
+    await store.send(.resourcePressure)
+    await clock.advance(by: .seconds(4))
+    #expect(modes.value.isEmpty)
+    await store.send(.resourcePressure)
+    await clock.advance(by: .seconds(1))
+    #expect(modes.value.isEmpty)
+    await clock.advance(by: .seconds(4))
+    await store.finish()
+    await store.skipReceivedActions()
+    #expect(modes.value == [.evaluated])
+    #expect(store.state.modelReadiness == .ready)
+  }
+
   @Test func appearanceSynchronizesExistingChatWhilePreparing() async {
     var state = AppFeature.State()
     state.chat = ChatFeature.State(conversationID: UUID(9))
@@ -192,6 +268,7 @@ import Testing
     } withDependencies: {
       $0.queryPipeline = pipeline
       $0.modelPreparationJournal = .noop
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
@@ -238,6 +315,7 @@ import Testing
     } withDependencies: {
       $0.queryPipeline = pipeline
       $0.modelPreparationJournal = .noop
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
@@ -273,6 +351,7 @@ import Testing
     } withDependencies: {
       $0.queryPipeline = pipeline
       $0.modelPreparationJournal = journal
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 

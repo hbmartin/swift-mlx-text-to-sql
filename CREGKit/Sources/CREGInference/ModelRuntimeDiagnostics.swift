@@ -24,6 +24,11 @@ public enum ModelRuntimeDiagnostics {
     return memoryContext(prefix: "pressure")
   }
 
+  /// One worker owns cache eviction while warnings arrive in a burst.
+  public static func relievePressureAsync() async -> [String: String]? {
+    await PressureEviction.shared.run()
+  }
+
   public static func deviceContext() -> [String: String] {
     let info = GPU.deviceInfo()
     return [
@@ -65,5 +70,21 @@ public enum ModelRuntimeDiagnostics {
     case .critical: "critical"
     @unknown default: "unknown"
     }
+  }
+}
+
+private actor PressureEviction {
+  static let shared = PressureEviction()
+  private var inFlight = false
+  private var lastRelief = Date.distantPast
+
+  func run() async -> [String: String]? {
+    guard !inFlight, Date().timeIntervalSince(lastRelief) >= 5 else { return nil }
+    inFlight = true
+    lastRelief = Date()
+    defer { inFlight = false }
+    return await Task.detached(priority: .utility) {
+      ModelRuntimeDiagnostics.relievePressure()
+    }.value
   }
 }

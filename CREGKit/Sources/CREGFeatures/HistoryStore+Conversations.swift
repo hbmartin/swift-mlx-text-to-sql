@@ -101,16 +101,22 @@ extension HistoryStore {
             ?? .evaluated,
           isEvaluated: (feedbackRow["is_evaluated"] as Int64) != 0)
       }
-      let interrupted = try Row.fetchOne(
-        db, sql: "SELECT * FROM turn_journal WHERE conversation_id = ?",
+      let interrupted = try Row.fetchAll(
+        db, sql: "SELECT * FROM turn_journal WHERE conversation_id = ? ORDER BY started_at, journal_id",
         arguments: [id.uuidString]
       ).map {
         let executionID: String = $0["execution_id"]
         let status: String = $0["status"]
         let autoRetryCount: Int = $0["auto_retry_count"]
+        let sourcePayload: String? = $0["submission_source"]
+        let source = sourcePayload.flatMap {
+          try? Self.decoder.decode(QuestionSubmissionSource.self, from: Data($0.utf8))
+        } ?? .freeForm
         return InterruptedTurn(
           question: $0["question"],
           interruptedAt: Date(timeIntervalSince1970: $0["started_at"]),
+          journalID: UUID(uuidString: $0["journal_id"]),
+          source: source,
           executionID: UUID(uuidString: executionID),
           status: InterruptedTurn.Status(rawValue: status) ?? .running,
           autoRetryCount: autoRetryCount)
@@ -141,7 +147,7 @@ extension HistoryStore {
         draft: row["draft"],
         messages: messages,
         feedback: feedback,
-        interruptedTurn: interrupted,
+        interruptedTurns: interrupted,
         followUpBatch: followUpBatch)
     }
   }

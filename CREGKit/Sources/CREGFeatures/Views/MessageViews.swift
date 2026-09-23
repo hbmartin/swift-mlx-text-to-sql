@@ -179,7 +179,12 @@ struct MessageCell: View {
   }
 
   private var unconfirmedMessage: String {
-    switch message.devInfo?.noConsensusReason {
+    if message.devInfo?.semanticAlignment == .mismatch,
+      message.devInfo?.semanticCorrectionAccepted != true
+    {
+      return "This result may not fully match your question; the original validated result is shown."
+    }
+    return switch message.devInfo?.noConsensusReason {
     case .insufficientNonEmptyEvidence:
       "The corrected query ran, but there wasn’t enough matching non-empty evidence to confirm it."
     case .conflictingResults, .none:

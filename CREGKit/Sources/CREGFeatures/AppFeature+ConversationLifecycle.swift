@@ -284,52 +284,59 @@ extension AppFeature {
   }
 
   func preparationEffect(
-    mode: ModelRuntimeMode
+    mode: ModelRuntimeMode,
+    attemptID: UUID
   ) -> Effect<Action> {
     .run { send in
-      var environment = preparationEnvironment.snapshot()
-      environment["runtime_mode"] = mode.rawValue
-      diagnostics.info(
-        category: .model,
-        code: "model_preparation_attempt_started",
-        summary: "A SQL model preparation attempt started.",
-        context: environment)
-      await preparationJournal.begin(
-        mode,
-        environment)
-      guard !Task.isCancelled else { return }
-      do {
-        let report = try await pipeline.prepare(mode)
+      await ModelPreparationAttemptContext.$attemptID.withValue(attemptID) {
+        var environment = preparationEnvironment.snapshot()
+        environment["runtime_mode"] = mode.rawValue
+        diagnostics.info(
+          category: .model,
+          code: "model_preparation_attempt_started",
+          summary: "A SQL model preparation attempt started.",
+          context: environment)
+        await preparationJournal.begin(
+          attemptID,
+          mode,
+          environment)
         guard !Task.isCancelled else { return }
-        await preparationJournal.complete(report)
-        await send(.modelPrepared(report))
-      } catch {
-        guard !Task.isCancelled else { return }
-        let failure: ModelPreparationFailure
-        if let preparationFailure = error as? ModelPreparationFailure {
-          failure = preparationFailure
-        } else {
-          let nsError = error as NSError
-          failure = ModelPreparationFailure(
-            code: "model_preparation_unexpected",
-            stage: .containerLoad,
-            mode: mode,
-            userMessage:
-              "The SQL model could not be prepared. Restart CREG and try again.",
-            diagnostic: DiagnosticDetails.sanitizedDescription(error),
-            errorDomain: nsError.domain,
-            errorCode: nsError.code)
+        do {
+          let report = try await pipeline.prepare(mode)
+          guard !Task.isCancelled else { return }
+          await preparationJournal.complete(report)
+          await send(.modelPrepared(report))
+        } catch {
+          guard !Task.isCancelled else { return }
+          let failure: ModelPreparationFailure
+          if let preparationFailure = error as? ModelPreparationFailure {
+            failure = preparationFailure
+          } else {
+            let nsError = error as NSError
+            failure = ModelPreparationFailure(
+              code: "model_preparation_unexpected",
+              stage: .containerLoad,
+              mode: mode,
+              userMessage:
+                "The SQL model could not be prepared. Restart CREG and try again.",
+              diagnostic: DiagnosticDetails.sanitizedDescription(error),
+              errorDomain: nsError.domain,
+              errorCode: nsError.code)
+          }
+          await preparationJournal.fail(failure)
+          await send(.modelPreparationFailed(failure))
         }
-        await preparationJournal.fail(failure)
-        await send(.modelPreparationFailed(failure))
       }
     }
     .cancellable(id: CancelID.modelPreparation, cancelInFlight: true)
   }
 
   func suspendModelPreparation(state: inout State) -> Effect<Action> {
-    guard let mode = state.modelPreparationModeInFlight else { return .none }
+    guard let mode = state.modelPreparationModeInFlight,
+      let attemptID = state.modelPreparationAttemptID
+    else { return .none }
     state.modelPreparationModeInFlight = nil
+    state.modelPreparationAttemptID = nil
     state.modelPreparationInFlight = false
     state.suspendedModelPreparationMode = mode
     diagnostics.info(
@@ -337,18 +344,26 @@ extension AppFeature {
       code: "model_preparation_suspended",
       summary: "Model preparation stopped before background GPU use.",
       context: ["runtime_mode": mode.rawValue])
-    return .cancel(id: CancelID.modelPreparation)
+    return .concatenate(
+      .cancel(id: CancelID.modelPreparation),
+      .run { _ in await preparationJournal.suspend(attemptID) })
   }
 
   func resumeSuspendedModelPreparation(state: inout State) -> Effect<Action> {
     guard state.isSceneActive,
+      state.pressureGeneration == nil,
+      !state.thermalPressure,
       !state.modelPreparationInFlight,
+      state.isInferenceIdleIgnoringScopeDiagnosis,
+      state.modelReadiness == .preparing,
       let mode = state.suspendedModelPreparationMode
     else { return .none }
     state.suspendedModelPreparationMode = nil
     state.modelPreparationModeInFlight = mode
     state.modelPreparationInFlight = true
-    return preparationEffect(mode: mode)
+    let attemptID = uuid()
+    state.modelPreparationAttemptID = attemptID
+    return preparationEffect(mode: mode, attemptID: attemptID)
   }
 
   /// A retained Scope Verdict memo deliberately does not gate preparation:
@@ -357,7 +372,7 @@ extension AppFeature {
   /// request outranks the passive recovery memo.
   func canStartModelPreparation(state: State) -> Bool {
     !state.modelPreparationInFlight
-      && state.isInferenceIdleIgnoringScopeDiagnosis
+      && state.canStartLowPriorityInferenceIgnoringScopeDiagnosis
   }
 
   func outcomeName(_ outcome: TurnOutcome) -> String {

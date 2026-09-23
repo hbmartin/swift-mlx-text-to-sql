@@ -91,7 +91,18 @@ public struct ChatFeature: Sendable {
     /// Keyboard-candidate protection owned by the reducer so every cancel and
     /// commit path is deterministic and testable.
     public var isSubmissionPending = false
-    public var interruptedTurn: InterruptedTurn?
+    public var interruptedTurns: [InterruptedTurn] = []
+    public var interruptedTurn: InterruptedTurn? {
+      get { interruptedTurns.first }
+      set {
+        if let newValue {
+          if interruptedTurns.isEmpty { interruptedTurns = [newValue] }
+          else { interruptedTurns[0] = newValue }
+        } else if !interruptedTurns.isEmpty {
+          interruptedTurns.removeFirst()
+        }
+      }
+    }
     public var correctionContext: CorrectionContext?
     public var readAloud: ReadAloudState?
     /// Maintained by ``AppFeature``: the active turn when it belongs to this
@@ -148,9 +159,22 @@ public struct ChatFeature: Sendable {
           }),
         feedback: snapshot.feedback,
         composerText: snapshot.draft,
-        interruptedTurn:
-          recoveredPreparedAnswer || preservingActiveTurn
-          ? nil : snapshot.interruptedTurn)
+        interruptedTurn: nil)
+      self.interruptedTurns = snapshot.interruptedTurns.filter { interruption in
+        if preservingActiveTurn,
+          (interruption.executionID == snapshot.messages.last?.id
+            || (interruption.executionID == nil
+              && interruption.question == snapshot.messages.last?.previewText)) {
+          return false
+        }
+        if recoveredPreparedAnswer,
+          snapshot.messages.contains(where: {
+            guard case .preparedAnswer(let prepared) = $0.body else { return false }
+            return ($0.id == interruption.executionID || interruption.executionID == nil)
+              && prepared.question == interruption.question
+          }) { return false }
+        return true
+      }
       self.followUpBatch = snapshot.followUpBatch
     }
 
@@ -175,7 +199,9 @@ public struct ChatFeature: Sendable {
     case stopTapped
     case cancelQueuedTapped(UUID)
     case askAgainTapped
+    case askAgainTappedFor(UUID)
     case interruptedDismissed
+    case interruptedDismissedFor(UUID)
     case timelineExpansionToggled
     case feedbackHelpfulTapped(messageID: UUID)
     case feedbackNotRightTapped(messageID: UUID)
@@ -205,6 +231,7 @@ public struct ChatFeature: Sendable {
     public enum Delegate: Sendable, Equatable {
       case submitQuestion(QuestionSubmission)
       case retryInterruptedTurn
+      case retryInterruptedTurnFor(UUID)
       case stopActiveTurn
       case cancelQueued(UUID)
       case openBrowser
@@ -390,10 +417,23 @@ public struct ChatFeature: Sendable {
           context: ["has_execution_id": String(interrupted.executionID != nil)])
         return .send(.delegate(.retryInterruptedTurn))
 
+      case .askAgainTappedFor(let journalID):
+        guard state.interruptedTurns.contains(where: { $0.journalID == journalID })
+        else { return .none }
+        return .send(.delegate(.retryInterruptedTurnFor(journalID)))
+
       case .interruptedDismissed:
+        guard let interrupted = state.interruptedTurn else { return .none }
         state.interruptedTurn = nil
         let conversationID = state.conversationID
-        return .run { _ in try? await history.endTurnJournal(conversationID) }
+        guard let journalID = interrupted.journalID ?? interrupted.executionID
+        else { return .none }
+        return .run { _ in try? await history.endTurnJournal(conversationID, journalID) }
+
+      case .interruptedDismissedFor(let journalID):
+        state.interruptedTurns.removeAll { $0.journalID == journalID }
+        let conversationID = state.conversationID
+        return .run { _ in try? await history.endTurnJournal(conversationID, journalID) }
 
       case .timelineExpansionToggled:
         state.processing?.isTimelineExpanded.toggle()
