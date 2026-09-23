@@ -206,7 +206,7 @@ private final class TestFMAvailability: @unchecked Sendable {
     #expect(telemetry.semanticCorrectionAttempted == true)
     #expect(telemetry.semanticCorrectionAccepted == true)
     #expect(telemetry.semanticAlignment == .aligned)
-    #expect(telemetry.confidence == .confirmed)
+    #expect(telemetry.confidence == .unconfirmed)
     #expect(telemetry.voteOutcome != nil)
     #expect(telemetry.repairAttempts == 1)
     #expect(telemetry.selectedCandidateID?.rawValue == "semantic-correction-1")

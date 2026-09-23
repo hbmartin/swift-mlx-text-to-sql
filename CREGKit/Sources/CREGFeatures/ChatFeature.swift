@@ -239,6 +239,7 @@ public struct ChatFeature: Sendable {
       case submitQuestion(QuestionSubmission)
       case retryInterruptedTurn
       case retryInterruptedTurnFor(UUID)
+      case dismissInterruptedTurn(UUID)
       case stopActiveTurn
       case cancelQueued(UUID)
       case openBrowser
@@ -432,15 +433,13 @@ public struct ChatFeature: Sendable {
       case .interruptedDismissed:
         guard let interrupted = state.interruptedTurn else { return .none }
         state.interruptedTurn = nil
-        let conversationID = state.conversationID
         guard let journalID = interrupted.journalID ?? interrupted.executionID
         else { return .none }
-        return .run { _ in try? await history.endTurnJournal(conversationID, journalID) }
+        return .send(.delegate(.dismissInterruptedTurn(journalID)))
 
       case .interruptedDismissedFor(let journalID):
         state.interruptedTurns.removeAll { $0.journalID == journalID }
-        let conversationID = state.conversationID
-        return .run { _ in try? await history.endTurnJournal(conversationID, journalID) }
+        return .send(.delegate(.dismissInterruptedTurn(journalID)))
 
       case .timelineExpansionToggled:
         state.processing?.isTimelineExpanded.toggle()

@@ -212,6 +212,7 @@ public struct AppFeature: Sendable {
     /// Holds the scheduler while the cancelled turn's journal is made durable.
     public var pendingInterruptedTurn: ActiveTurn?
     public var retryClaimInFlight = false
+    public var dismissedRetryJournalIDs: Set<UUID> = []
     /// The completed turn whose history write currently gates queue dispatch.
     public var pendingTurnPersistence: PendingTurnPersistence?
     /// Compatibility projection used by diagnostics and reducer tests.
@@ -273,6 +274,8 @@ public struct AppFeature: Sendable {
     public var modelPreparationModeInFlight: ModelRuntimeMode?
     public var modelPreparationAttemptID: UUID?
     public var suspendedModelPreparationMode: ModelRuntimeMode?
+    public var drainingModelPreparationAttemptID: UUID?
+    public var pendingPreparationRetryMode: ModelRuntimeMode?
     public var pressureGeneration: UUID?
     public var thermalPressure = false
     public var debugModelIdentity: DebugModelIdentity?
@@ -337,6 +340,14 @@ public struct AppFeature: Sendable {
       isTurnSchedulerIdle
         && followUpPreparation == nil
         && !isCapturingAnswerability
+    }
+
+    /// Queued turns cannot run until a failed or suspended model is ready.
+    public var isModelRecoveryIdle: Bool {
+      activeTurn == nil && pendingInterruptedTurn == nil
+        && !retryClaimInFlight && pendingTurnPersistence == nil
+        && followUpPreparation == nil && !isCapturingAnswerability
+        && drainingModelPreparationAttemptID == nil
     }
 
     /// The idle core plus every lower-priority inference owner: no Scope
@@ -407,8 +418,9 @@ public struct AppFeature: Sendable {
     case preparationJournalLoaded(ModelPreparationJournalSnapshot?)
     case retryPreparation
     case retryCompatibilityPreparation
-    case modelPrepared(ModelPreparationReport)
-    case modelPreparationFailed(ModelPreparationFailure)
+    case modelPrepared(ModelPreparationReport, attemptID: UUID? = nil)
+    case modelPreparationFailed(ModelPreparationFailure, attemptID: UUID? = nil)
+    case modelPreparationSuspended(UUID)
     case bootstrapFinished([ConversationSummary])
     case conversationCreated(ConversationSummary)
     case conversationLoaded(ConversationSnapshot)
@@ -431,7 +443,9 @@ public struct AppFeature: Sendable {
       conversationID: UUID, journalID: UUID, executionID: UUID,
       automatic: Bool, claimed: Bool)
     case queuedRetryClaimed(QueuedQuestion, Bool)
+    case queuedRetryStaleChecked(QueuedQuestion, Bool)
     case backgroundTurnReady(executionID: UUID, granted: Bool)
+    case dispatchPreflightFinished(questionID: UUID, directlyUserStarted: Bool)
     case backgroundTurnExpired(executionID: UUID)
     case turnPersistenceFailed(
       conversationID: UUID, questionID: UUID, failure: FailurePresentation)
@@ -442,6 +456,7 @@ public struct AppFeature: Sendable {
       failure: FailurePresentation?)
     case conversationWriteFailed(
       conversationID: UUID, failure: FailurePresentation)
+    case turnPersistenceWriteSettled(UUID)
     case turnPersistenceFinished(UUID)
     case turnPersistenceTimedOut(UUID)
     case dispatchNextIfIdle
@@ -574,6 +589,7 @@ public struct AppFeature: Sendable {
       case .appBecameActive:
         state.isSceneActive = true
         refreshFMAvailability(state: &state)
+        let requestedModel = resumeRequestedModelPreparation(state: &state)
         let resumedModel = resumeSuspendedModelPreparation(state: &state)
         let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
         // Readiness reached while the app was inactive — a prewarmed launch,
@@ -586,15 +602,18 @@ public struct AppFeature: Sendable {
         let persistedPreparation = resumeFollowUpPreparationIfIdle(state: &state)
         let queuedTurn = dispatchNextIfIdle(state: &state)
         return .merge(
-          resumedModel, autoRetry, benchmark,
+          requestedModel, resumedModel, autoRetry, benchmark,
           interruptedRecovery, persistedPreparation,
           queuedTurn)
 
       case .appBecameInactive:
-        // A brief inactive transition closes the dispatch gate while work
-        // already holding the serializer continues.
         state.isSceneActive = false
-        return .none
+        let interrupted = state.activeTurn?.backgroundGPUGranted == true
+          ? Effect<Action>.none : interruptActiveTurn(state: &state)
+        return .merge(
+          interrupted,
+          suspendLowPriorityInference(state: &state),
+          suspendModelPreparation(state: &state))
 
       case .appEnteredBackground:
         state.isSceneActive = false
@@ -706,9 +725,6 @@ public struct AppFeature: Sendable {
         return preparationEffect(mode: .evaluated, attemptID: attemptID)
 
       case .retryPreparation:
-        guard state.isSceneActive,
-          canStartModelPreparation(state: state)
-        else { return .none }
         switch state.modelReadiness {
         case .failed:
           break
@@ -718,45 +734,39 @@ public struct AppFeature: Sendable {
         case .preparing:
           return .none
         }
-        let abandonedDiagnosis =
-          abandonScopeDiagnosisForModelMaintenance(state: &state)
         diagnostics.info(
           category: .submission,
           code: "model_preparation_retry_requested",
           summary: "The user requested another model preparation attempt.")
-        setModelReadiness(.preparing, state: &state)
-        state.modelPreparationReport = nil
-        state.modelPreparationInFlight = true
-        state.modelPreparationModeInFlight = .evaluated
-        let attemptID = uuid()
-        state.modelPreparationAttemptID = attemptID
-        return .merge(abandonedDiagnosis, preparationEffect(mode: .evaluated, attemptID: attemptID))
+        state.pendingPreparationRetryMode = .evaluated
+        return resumeRequestedModelPreparation(state: &state)
 
       case .retryCompatibilityPreparation:
         guard
-          state.isSceneActive,
-          canStartModelPreparation(state: state),
           state.developerMode,
           case .failed(let failure) = state.modelReadiness,
           failure.allowsCompatibilityRetry
         else { return .none }
-        let abandonedDiagnosis =
-          abandonScopeDiagnosisForModelMaintenance(state: &state)
         diagnostics.info(
           category: .submission,
           code: "model_compatibility_preparation_requested",
           summary: "The user requested compatibility model preparation.",
           context: ["failed_stage": failure.stage.rawValue])
-        setModelReadiness(.preparing, state: &state)
-        state.modelPreparationReport = nil
-        state.modelPreparationInFlight = true
-        state.modelPreparationModeInFlight = .compatibility
-        let attemptID = uuid()
-        state.modelPreparationAttemptID = attemptID
-        return .merge(
-          abandonedDiagnosis, preparationEffect(mode: .compatibility, attemptID: attemptID))
+        state.pendingPreparationRetryMode = .compatibility
+        return resumeRequestedModelPreparation(state: &state)
 
-      case .modelPrepared(let report):
+      case .modelPreparationSuspended(let attemptID):
+        guard state.drainingModelPreparationAttemptID == attemptID else {
+          return .none
+        }
+        state.drainingModelPreparationAttemptID = nil
+        return resumeAfterPressure(state: &state)
+
+      case .modelPrepared(let report, let attemptID):
+        if let attemptID,
+          (!state.modelPreparationInFlight
+            || state.modelPreparationAttemptID != attemptID)
+        { return .none }
         state.modelPreparationInFlight = false
         state.modelPreparationModeInFlight = nil
         state.modelPreparationAttemptID = nil
@@ -783,7 +793,11 @@ public struct AppFeature: Sendable {
           resumeFollowUpPreparationIfIdle(state: &state),
           dispatchNextIfIdle(state: &state))
 
-      case .modelPreparationFailed(let failure):
+      case .modelPreparationFailed(let failure, let attemptID):
+        if let attemptID,
+          (!state.modelPreparationInFlight
+            || state.modelPreparationAttemptID != attemptID)
+        { return .none }
         state.modelPreparationInFlight = false
         state.modelPreparationModeInFlight = nil
         state.modelPreparationAttemptID = nil
@@ -1016,13 +1030,32 @@ public struct AppFeature: Sendable {
         let conversationID, let journalID, let executionID, let automatic, let claimed):
         guard state.retryClaimInFlight else { return .none }
         state.retryClaimInFlight = false
+        if state.dismissedRetryJournalIDs.contains(journalID) {
+          return .send(.dispatchNextIfIdle)
+        }
+        if claimed && automatic,
+          (!state.isSceneActive || state.chat?.conversationID != conversationID
+            || state.modelReadiness != .ready)
+        {
+          return .merge(
+            .run { _ in
+              try? await history.releaseAutoRetryClaim(
+                conversationID, journalID, executionID)
+            },
+            .send(.dispatchNextIfIdle))
+        }
         if state.chat?.conversationID == conversationID,
           let index = state.chat?.interruptedTurns.firstIndex(where: {
             ($0.journalID ?? $0.executionID) == journalID
           }) {
           state.chat?.interruptedTurns[index].status =
-            claimed ? .running : .ambiguousInterruption
+            claimed ? .running : .manualRetryRequired
           if claimed && automatic { state.chat?.interruptedTurns[index].autoRetryCount = 1 }
+        }
+        if !claimed && automatic {
+          return .merge(
+            .run { _ in try? await history.declineAutoRetry(conversationID, journalID) },
+            .send(.dispatchNextIfIdle))
         }
         guard claimed,
           let chat = state.chat,
@@ -1036,7 +1069,6 @@ public struct AppFeature: Sendable {
         let submission = QuestionSubmission(
           question: interrupted.question, source: interrupted.source)
         if !state.canDispatchTurn || state.fmAvailability != .available
-          || !state.queue.isEmpty
         {
           state.queue.append(QueuedQuestion(
             id: uuid(), conversationID: conversationID,
@@ -1059,9 +1091,33 @@ public struct AppFeature: Sendable {
 
       case .queuedRetryClaimed(let queued, let claimed):
         state.retryClaimInFlight = false
-        guard claimed else { return dispatchNextIfIdle(state: &state) }
+        if let journalID = queued.retryJournalID,
+          state.dismissedRetryJournalIDs.contains(journalID)
+        { return .send(.dispatchNextIfIdle) }
+        if claimed && queued.automaticRetry,
+          (!state.isSceneActive
+            || state.chat?.conversationID != queued.conversationID
+            || state.modelReadiness != .ready),
+          let journalID = queued.retryJournalID,
+          let userMessage = queued.existingUserMessage
+        {
+          return .merge(
+            .run { _ in
+              try? await history.releaseAutoRetryClaim(
+                queued.conversationID, journalID, userMessage.id)
+            },
+            .send(.dispatchNextIfIdle))
+        }
+        guard claimed else {
+          return .run { send in
+            let snapshot = try? await history.loadConversation(queued.conversationID)
+            let exists = snapshot?.interruptedTurns.contains(where: {
+              $0.journalID == queued.retryJournalID
+            }) == true
+            await send(.queuedRetryStaleChecked(queued, exists))
+          }
+        }
         if !state.canDispatchTurn || state.fmAvailability != .available
-          || !state.queue.isEmpty
         {
           state.queue.append(QueuedQuestion(
             id: queued.id, conversationID: queued.conversationID,
@@ -1083,12 +1139,55 @@ public struct AppFeature: Sendable {
           autoRetryCount: queued.automaticRetry ? 1 : 0,
           directlyUserStarted: !queued.automaticRetry)
 
+      case .queuedRetryStaleChecked(let queued, let journalExists):
+        guard let journalID = queued.retryJournalID,
+          !state.dismissedRetryJournalIDs.contains(journalID)
+        else { return .send(.dispatchNextIfIdle) }
+        guard journalExists else { return .send(.dispatchNextIfIdle) }
+        if queued.automaticRetry {
+          if state.chat?.conversationID == queued.conversationID,
+            let index = state.chat?.interruptedTurns.firstIndex(where: {
+              $0.journalID == journalID
+            })
+          {
+            state.chat?.interruptedTurns[index].status = .manualRetryRequired
+          }
+          return .run { send in
+            try? await history.declineAutoRetry(queued.conversationID, journalID)
+            await send(.dispatchNextIfIdle)
+          }
+        }
+        let appended = QueuedQuestion(
+          id: queued.id, conversationID: queued.conversationID,
+          submission: queued.submission, retryJournalID: journalID,
+          existingUserMessage: nil, submittedAt: queued.submittedAt)
+        if !state.canDispatchTurn || state.fmAvailability != .available
+          || !state.queue.isEmpty
+        {
+          state.queue.insert(appended, at: 0)
+          syncSchedulerProjection(into: &state)
+          return .send(.dispatchNextIfIdle)
+        }
+        return dispatch(
+          state: &state, conversationID: queued.conversationID,
+          submission: queued.submission,
+          directlyUserStarted: true, replacingJournalID: journalID)
+
       case .backgroundTurnReady(let executionID, let granted):
         guard state.activeTurn?.questionID == executionID else {
           return .run { _ in await backgroundTurn.finish(executionID, false) }
         }
         state.activeTurn?.backgroundGPUGranted = granted
         return .none
+
+      case .dispatchPreflightFinished(let questionID, let directlyUserStarted):
+        guard let active = state.activeTurn,
+          active.questionID == questionID,
+          state.isSceneActive,
+          state.modelReadiness == .ready,
+          state.pendingDeletion?.summary.id != active.conversationID
+        else { return .none }
+        return runDispatchedTurn(active: active, directlyUserStarted: directlyUserStarted)
 
       case .backgroundTurnExpired(let executionID):
         guard state.activeTurn?.questionID == executionID else {
@@ -1180,6 +1279,12 @@ public struct AppFeature: Sendable {
           state: &state,
           conversationID: conversationID,
           failure: failure)
+
+      case .turnPersistenceWriteSettled(let questionID):
+        guard state.pendingTurnPersistence?.questionID == questionID else {
+          return .none
+        }
+        return .cancel(id: TurnPersistenceTimeoutID(questionID: questionID))
 
       case .turnPersistenceFinished(let questionID):
         guard let pending = state.pendingTurnPersistence,
@@ -1371,11 +1476,49 @@ public struct AppFeature: Sendable {
         return claimInterruptedRetry(
           state: &state, automatic: false, journalID: journalID)
 
+      case .chat(.delegate(.dismissInterruptedTurn(let journalID))):
+        guard let conversationID = state.chat?.conversationID else { return .none }
+        state.dismissedRetryJournalIDs.insert(journalID)
+        state.queue.removeAll {
+          $0.conversationID == conversationID && $0.retryJournalID == journalID
+        }
+        syncSchedulerProjection(into: &state)
+        return .run { send in
+          do {
+            try await history.endTurnJournal(conversationID, journalID)
+          } catch {
+            await send(.operationFailed(
+              .history(operation: .messageSave, error: error)))
+            await send(.conversationSelected(conversationID))
+          }
+        }
+
       case .chat(.delegate(.stopActiveTurn)):
         return stopActiveTurn(state: &state)
 
       case .chat(.delegate(.cancelQueued(let id))):
+        let cancelled = state.queue.first { $0.id == id }
         state.queue.removeAll { $0.id == id }
+        if let journalID = cancelled?.retryJournalID,
+          let conversationID = cancelled?.conversationID
+        {
+          if state.chat?.conversationID == conversationID,
+            let index = state.chat?.interruptedTurns.firstIndex(where: {
+              ($0.journalID ?? $0.executionID) == journalID
+            })
+          {
+            state.chat?.interruptedTurns[index].status = .manualRetryRequired
+          }
+          syncSchedulerProjection(into: &state)
+          return .run { send in
+            do {
+              try await history.declineAutoRetry(conversationID, journalID)
+            } catch {
+              await send(.operationFailed(
+                .history(operation: .messageSave, error: error)))
+            }
+          }
+        }
         syncSchedulerProjection(into: &state)
         diagnostics.info(
           category: .submission,

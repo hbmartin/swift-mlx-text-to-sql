@@ -50,6 +50,7 @@ public struct InterruptedTurn: Equatable, Sendable, Codable {
     case running
     case knownInterruption = "known_interruption"
     case ambiguousInterruption = "ambiguous_interruption"
+    case manualRetryRequired = "manual_retry_required"
   }
 
   public var question: String

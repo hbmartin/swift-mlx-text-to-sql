@@ -20,8 +20,8 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
   private let lock = NSLock()
   private let identifierPrefix: String
   private var registered = false
-  private var requested: Set<UUID> = []
-  private var finished: Set<UUID> = []
+  /// Execution IDs may be reused by Ask Again; each system request is unique.
+  private var requested = BackgroundTaskAttemptState()
   private var active: [UUID: BGContinuedProcessingTask] = [:]
   private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
@@ -70,19 +70,15 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
       return false
     }
 
-    let identifier = identifierPrefix + id.uuidString
+    let attemptID = lock.withLock { requested.begin(id) }
+    guard let attemptID else { return false }
+    let identifier = identifierPrefix + attemptID.uuidString
     let request = BGContinuedProcessingTaskRequest(
       identifier: identifier,
       title: "CREG answer",
       subtitle: "Analyzing your portfolio question")
     request.strategy = .fail
     request.requiredResources = .gpu
-    let maySubmit = lock.withLock { () -> Bool in
-      guard !finished.contains(id) else { return false }
-      requested.insert(id)
-      return true
-    }
-    guard maySubmit else { return false }
     do {
       try await BGTaskScheduler.shared.submitTaskRequest(request)
     } catch {
@@ -95,14 +91,14 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
       return false
     }
     recordState("submitted", id: id)
-    let wasFinished = lock.withLock { finished.contains(id) }
-    if wasFinished {
+    let wasReleased = lock.withLock { requested[id] != attemptID }
+    if wasReleased {
       BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
       return false
     }
     return await withCheckedContinuation { continuation in
       let (alreadyLaunched, alreadyFinished) = lock.withLock { () -> (Bool, Bool) in
-        if finished.contains(id) { return (false, true) }
+        if requested[id] != attemptID { return (false, true) }
         if active[id] != nil { return (true, false) }
         waiters[id] = continuation
         return (false, false)
@@ -114,49 +110,53 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
       } else {
         Task { [self] in
           try? await Task.sleep(for: .seconds(2))
-          timeOutStart(id)
+          timeOutStart(id, attemptID: attemptID)
         }
       }
     }
   }
 
   private func launched(_ task: BGContinuedProcessingTask) {
-    guard let id = UUID(uuidString: String(task.identifier.suffix(36))) else {
+    guard let attemptID = UUID(uuidString: String(task.identifier.suffix(36))) else {
       task.setTaskCompleted(success: false)
       return
     }
-    let launch = lock.withLock { () -> (Bool, CheckedContinuation<Bool, Never>?) in
-      guard requested.contains(id) else { return (false, nil) }
+    let launch = lock.withLock { () -> (UUID?, CheckedContinuation<Bool, Never>?) in
+      guard let id = requested.executionID(for: attemptID)
+      else { return (nil, nil) }
       active[id] = task
-      return (true, waiters.removeValue(forKey: id))
+      return (id, waiters.removeValue(forKey: id))
     }
-    guard launch.0 else {
+    guard let id = launch.0 else {
       task.setTaskCompleted(success: false)
       return
     }
     task.progress.totalUnitCount = 100
     task.progress.completedUnitCount = 5
-    task.expirationHandler = { [weak self] in self?.expired(id) }
+    task.expirationHandler = { [weak self] in
+      self?.expired(id, attemptID: attemptID)
+    }
     recordState("running", id: id)
     launch.1?.resume(returning: true)
   }
 
-  private func expired(_ id: UUID) {
+  private func expired(_ id: UUID, attemptID: UUID) {
+    guard lock.withLock({ requested[id] == attemptID }) else { return }
     recordState("expired_ambiguous", id: id)
     NotificationCenter.default.post(
       name: .cregBackgroundTurnExpired, object: id)
   }
 
-  private func timeOutStart(_ id: UUID) {
+  private func timeOutStart(_ id: UUID, attemptID: UUID) {
     let waiter = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
-      guard active[id] == nil else { return nil }
-      requested.remove(id)
+      guard active[id] == nil, requested[id] == attemptID else { return nil }
+      requested.end(id)
       return waiters.removeValue(forKey: id)
     }
     if let waiter {
       recordState("launch_timeout", id: id)
       BGTaskScheduler.shared.cancel(taskRequestWithIdentifier:
-        identifierPrefix + id.uuidString)
+        identifierPrefix + attemptID.uuidString)
       waiter.resume(returning: false)
     }
   }
@@ -184,15 +184,17 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
 
   private func finish(_ id: UUID, success: Bool) {
     let released = lock.withLock {
-      finished.insert(id)
-      requested.remove(id)
-      return (active.removeValue(forKey: id), waiters.removeValue(forKey: id))
+      let attemptID = requested.end(id)
+      return (attemptID, active.removeValue(forKey: id),
+        waiters.removeValue(forKey: id))
     }
-    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier:
-      identifierPrefix + id.uuidString)
-    released.1?.resume(returning: false)
-    released.0?.setTaskCompleted(success: success)
-    if released.0 != nil || released.1 != nil {
+    if let attemptID = released.0 {
+      BGTaskScheduler.shared.cancel(taskRequestWithIdentifier:
+        identifierPrefix + attemptID.uuidString)
+    }
+    released.2?.resume(returning: false)
+    released.1?.setTaskCompleted(success: success)
+    if released.1 != nil || released.2 != nil {
       recordState(success ? "completed" : "interrupted", id: id)
     }
   }

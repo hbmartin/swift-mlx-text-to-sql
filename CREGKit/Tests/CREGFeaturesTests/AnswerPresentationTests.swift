@@ -116,6 +116,17 @@ import Testing
 
     #expect(presentation.banner?.contains("enough matching non-empty evidence") == true)
   }
+
+  @Test func acceptedSemanticCorrectionExplainsMissingIndependentVote() {
+    var telemetry = TurnTelemetry(originalQuestion: "q")
+    telemetry.confidence = .unconfirmed
+    telemetry.semanticAlignment = .aligned
+    telemetry.semanticCorrectionAccepted = true
+
+    let presentation = AnswerWarningPresentation(telemetry: telemetry, notice: nil)
+
+    #expect(presentation.banner?.contains("not independently confirmed") == true)
+  }
 }
 
 @Suite struct PortfolioValueFormattingTests {

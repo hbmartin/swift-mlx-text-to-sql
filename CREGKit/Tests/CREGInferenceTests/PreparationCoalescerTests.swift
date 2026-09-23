@@ -22,6 +22,31 @@ import Testing
     }
   }
 
+  private actor SuspendedLoad {
+    private var started: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<Int, Never>?
+    private var didStart = false
+    private(set) var observedCancellation = false
+
+    func waitUntilStarted() async {
+      if didStart { return }
+      await withCheckedContinuation { started = $0 }
+    }
+
+    func load() async -> Int {
+      didStart = true
+      started?.resume()
+      let value = await withCheckedContinuation {
+        (continuation: CheckedContinuation<Int, Never>) in
+        release = continuation
+      }
+      observedCancellation = Task.isCancelled
+      return value
+    }
+
+    func finish() { release?.resume(returning: 42) }
+  }
+
   @Test func concurrentPreparationCoalescesAndFailureCanRetry() async throws {
     let probe = Probe()
     let coalescer = PreparationCoalescer<Int>()
@@ -44,5 +69,17 @@ import Testing
     #expect(
       try await retryCoalescer.value { try await retryProbe.load() } == 42)
     #expect(await retryProbe.attempts == 2)
+  }
+
+  @Test func completedAfterCancellationLoadIsNotCached() async throws {
+    let gate = SuspendedLoad()
+    let coalescer = PreparationCoalescer<Int>()
+    let caller = Task { try await coalescer.value { await gate.load() } }
+    await gate.waitUntilStarted()
+    caller.cancel()
+    await gate.finish()
+    await #expect(throws: CancellationError.self) { _ = try await caller.value }
+    #expect(await gate.observedCancellation)
+    #expect(try await coalescer.value { 43 } == 43)
   }
 }

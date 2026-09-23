@@ -9,12 +9,26 @@ actor PreparationCoalescer<Value: Sendable> {
   func value(
     loading: @escaping @Sendable () async throws -> Value
   ) async throws -> Value {
+    try Task.checkCancellation()
     if let loaded { return loaded }
-    if let inFlight { return try await inFlight.value }
-    let task = Task { try await loading() }
+    if let inFlight {
+      let result = try await inFlight.value
+      try Task.checkCancellation()
+      return result
+    }
+    let task = Task {
+      let value = try await loading()
+      try Task.checkCancellation()
+      return value
+    }
     inFlight = task
     do {
-      let result = try await task.value
+      let result = try await withTaskCancellationHandler {
+        try await task.value
+      } onCancel: {
+        task.cancel()
+      }
+      try Task.checkCancellation()
       loaded = result
       inFlight = nil
       return result

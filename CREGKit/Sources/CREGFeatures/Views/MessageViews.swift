@@ -198,6 +198,10 @@ struct AnswerWarningPresentation: Equatable {
       banner = nil
       return
     }
+    if telemetry?.semanticCorrectionAccepted == true {
+      banner = "The corrected query was validated, but its result was not independently confirmed."
+      return
+    }
     banner = switch telemetry?.noConsensusReason {
     case .insufficientNonEmptyEvidence:
       "The corrected query ran, but there wasn’t enough matching non-empty evidence to confirm it."

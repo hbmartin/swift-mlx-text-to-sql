@@ -114,11 +114,12 @@ extension MLXSQLGenerator {
       }
       let prefixInput = LMInput(tokens: MLXArray(prefixTokens))
       let parameters = GenerateParameters(maxTokens: 1)
-      let cache = context.model.newCache(parameters: parameters)
+      let cache = try context.model.newCache(parameters: parameters)
       switch try context.model.prepare(
         prefixInput,
         cache: cache,
-        windowSize: parameters.prefillStepSize)
+        state: nil,
+        prefill: parameters.prefill)
       {
       case .tokens(let tokens):
         let output = context.model(
@@ -182,7 +183,7 @@ extension MLXSQLGenerator {
       }
     guard !corpus.isEmpty else { return nil }
     let lexicalSources = [try Self.grammarEBNF(), try Self.schemaPrompt()]
-    let built = await container.perform { context in
+    let built = try await container.perform { context in
       guard
         let vocabularySize = CompiledQwen2ModelFactory.vocabularySize(
           of: context.model)
@@ -202,7 +203,7 @@ extension MLXSQLGenerator {
         let token = context.tokenizer.eosTokenId ?? 0
         for tokens in [[token], [token, token]] {
           let input = MLXArray(tokens).reshaped([1, -1])
-          let cache = model.newCache(
+          let cache = try model.newCache(
             parameters: GenerateParameters(maxTokens: 1))
           eval(model(input, cache: cache))
         }

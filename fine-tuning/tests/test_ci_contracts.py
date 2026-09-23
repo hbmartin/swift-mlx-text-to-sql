@@ -181,6 +181,45 @@ def test_real_workflow_passes_every_reviewed_ci_contract():
     assert check_ci_contracts.reviewed_ci_contract_failures(path, workflow) == []
 
 
+@pytest.mark.parametrize("job_name,build_step", [
+    ("swift", "Test Swift packages"),
+    ("accessibility", "Test focused accessibility UI contracts"),
+])
+@pytest.mark.parametrize("mutation", ["remove", "change"])
+def test_ci_metal_toolchain_bootstrap_is_required(job_name, build_step, mutation):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][job_name]["steps"]
+    install = next(step for step in steps if step.get("name") == "Install Metal Toolchain")
+    if mutation == "remove":
+        steps.remove(install)
+    else:
+        install["run"] = "xcodebuild -version"
+    contract = (
+        check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+        if job_name == "accessibility"
+        else check_ci_contracts.metal_toolchain_job_failures(
+            path, workflow, job_name=job_name, build_step_name=build_step
+        )
+    )
+    assert contract
+
+
+@pytest.mark.parametrize("mutation", ["remove", "change"])
+def test_documentation_metal_toolchain_bootstrap_is_required(mutation):
+    path = check_ci_contracts.WORKFLOWS / "documentation.yml"
+    workflow = yaml.safe_load(path.read_text())
+    steps = workflow["jobs"]["build"]["steps"]
+    install = next(step for step in steps if step.get("name") == "Install Metal Toolchain")
+    if mutation == "remove":
+        steps.remove(install)
+    else:
+        install["run"] = "xcodebuild -version"
+    assert check_ci_contracts.metal_toolchain_job_failures(
+        path, workflow, job_name="build",
+        build_step_name="Generate static documentation"
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

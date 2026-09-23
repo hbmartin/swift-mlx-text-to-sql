@@ -305,7 +305,7 @@ extension AppFeature {
           let report = try await pipeline.prepare(mode)
           guard !Task.isCancelled else { return }
           await preparationJournal.complete(report)
-          await send(.modelPrepared(report))
+          await send(.modelPrepared(report, attemptID: attemptID))
         } catch {
           guard !Task.isCancelled else { return }
           let failure: ModelPreparationFailure
@@ -324,7 +324,7 @@ extension AppFeature {
               errorCode: nsError.code)
           }
           await preparationJournal.fail(failure)
-          await send(.modelPreparationFailed(failure))
+          await send(.modelPreparationFailed(failure, attemptID: attemptID))
         }
       }
     }
@@ -339,14 +339,19 @@ extension AppFeature {
     state.modelPreparationAttemptID = nil
     state.modelPreparationInFlight = false
     state.suspendedModelPreparationMode = mode
+    state.drainingModelPreparationAttemptID = attemptID
     diagnostics.info(
       category: .model,
-      code: "model_preparation_suspended",
-      summary: "Model preparation stopped before background GPU use.",
+      code: "model_preparation_suspending",
+      summary: "Model preparation is waiting for raw model work to settle.",
       context: ["runtime_mode": mode.rawValue])
     return .concatenate(
       .cancel(id: CancelID.modelPreparation),
-      .run { _ in await preparationJournal.suspend(attemptID) })
+      .run { send in
+        await pipeline.waitUntilInferenceIdle()
+        await preparationJournal.suspend(attemptID)
+        await send(.modelPreparationSuspended(attemptID))
+      })
   }
 
   func resumeSuspendedModelPreparation(state: inout State) -> Effect<Action> {
@@ -354,7 +359,7 @@ extension AppFeature {
       state.pressureGeneration == nil,
       !state.thermalPressure,
       !state.modelPreparationInFlight,
-      state.isInferenceIdleIgnoringScopeDiagnosis,
+      state.isModelRecoveryIdle,
       state.modelReadiness == .preparing,
       let mode = state.suspendedModelPreparationMode
     else { return .none }
@@ -372,7 +377,27 @@ extension AppFeature {
   /// request outranks the passive recovery memo.
   func canStartModelPreparation(state: State) -> Bool {
     !state.modelPreparationInFlight
-      && state.canStartLowPriorityInferenceIgnoringScopeDiagnosis
+      && state.drainingModelPreparationAttemptID == nil
+      && state.isSceneActive && state.pressureGeneration == nil
+      && !state.thermalPressure
+      && (state.modelReadiness == .ready
+        ? state.isInferenceIdleIgnoringScopeDiagnosis
+        : state.isModelRecoveryIdle)
+  }
+
+  func resumeRequestedModelPreparation(state: inout State) -> Effect<Action> {
+    guard let mode = state.pendingPreparationRetryMode,
+      canStartModelPreparation(state: state)
+    else { return .none }
+    state.pendingPreparationRetryMode = nil
+    let abandonedDiagnosis = abandonScopeDiagnosisForModelMaintenance(state: &state)
+    setModelReadiness(.preparing, state: &state)
+    state.modelPreparationReport = nil
+    state.modelPreparationInFlight = true
+    state.modelPreparationModeInFlight = mode
+    let attemptID = uuid()
+    state.modelPreparationAttemptID = attemptID
+    return .merge(abandonedDiagnosis, preparationEffect(mode: mode, attemptID: attemptID))
   }
 
   func outcomeName(_ outcome: TurnOutcome) -> String {
