@@ -2,14 +2,18 @@ import CREGEngine
 import Foundation
 import GRDB
 
+private enum JournalTransferError: Error {
+  case missingSource
+}
+
 extension HistoryStore {
   // MARK: Interruption journal
 
-  func endTurnJournal(conversationID: UUID) async throws {
+  func endTurnJournal(conversationID: UUID, journalID: UUID) async throws {
     try await queue.write { db in
       try db.execute(
-        sql: "DELETE FROM turn_journal WHERE conversation_id = ?",
-        arguments: [conversationID.uuidString])
+        sql: "DELETE FROM turn_journal WHERE conversation_id = ? AND journal_id = ?",
+        arguments: [conversationID.uuidString, journalID.uuidString])
     }
   }
 
@@ -30,24 +34,24 @@ extension HistoryStore {
     }
   }
 
-  /// Claims a journaled retry before model work is queued. A crash after this
+  /// Claims a journaled retry before inference starts. A crash after this
   /// transaction cannot trigger a second automatic retry on relaunch.
   func claimTurnRetry(
-    conversationID: UUID, executionID: UUID, question: String,
+    conversationID: UUID, journalID: UUID, executionID: UUID,
     automatic: Bool
   ) async throws -> Bool {
     try await queue.write { db in
       try db.execute(
         sql: """
           UPDATE turn_journal
-          SET execution_id = ?, status = 'running', auto_retry_count = 1
-          WHERE conversation_id = ? AND question = ?
-            AND (execution_id = ? OR execution_id = '')
+          SET execution_id = ?, status = 'running',
+              auto_retry_count = CASE WHEN ? = 1 THEN 1 ELSE auto_retry_count END
+          WHERE conversation_id = ? AND journal_id = ?
             AND (? = 0 OR (status = 'known_interruption' AND auto_retry_count = 0))
           """,
         arguments: [
-          executionID.uuidString, conversationID.uuidString, question,
           executionID.uuidString, automatic ? 1 : 0,
+          conversationID.uuidString, journalID.uuidString, automatic ? 1 : 0,
         ])
       return db.changesCount == 1
     }
@@ -391,10 +395,12 @@ extension HistoryStore {
   func persistUserTurn(
     conversationID: UUID,
     message: ChatMessage,
-    question: String,
-    startedAt: Date
+    submission: QuestionSubmission,
+    startedAt: Date,
+    replacingJournalID: UUID?
   ) async throws {
     let payload = try Self.encodedPayload(for: message)
+    let sourcePayload = String(decoding: try Self.encoder.encode(submission.source), as: UTF8.self)
     try await queue.write { db in
       let inserted = try Self.appendMessage(
         db, conversationID: conversationID, message: message, payload: payload)
@@ -403,20 +409,27 @@ extension HistoryStore {
       guard inserted else { return }
       try db.execute(
         sql: """
-          INSERT OR REPLACE INTO turn_journal
-            (conversation_id, question, started_at, execution_id,
-             status, auto_retry_count)
-          VALUES (?, ?, ?, ?, 'running', 0)
+          INSERT INTO turn_journal
+            (journal_id, conversation_id, question, started_at, execution_id,
+             status, auto_retry_count, submission_source)
+          VALUES (?, ?, ?, ?, ?, 'running', 0, ?)
           """,
         arguments: [
-          conversationID.uuidString, question, startedAt.timeIntervalSince1970,
-          message.id.uuidString,
+          message.id.uuidString, conversationID.uuidString, submission.question,
+          startedAt.timeIntervalSince1970, message.id.uuidString, sourcePayload,
         ])
+      if let replacingJournalID {
+        try db.execute(
+          sql: "DELETE FROM turn_journal WHERE conversation_id = ? AND journal_id = ?",
+          arguments: [conversationID.uuidString, replacingJournalID.uuidString])
+        guard db.changesCount == 1 else { throw JournalTransferError.missingSource }
+      }
     }
   }
 
   func persistTerminalTurn(
     conversationID: UUID,
+    executionID: UUID,
     message: ChatMessage,
     replacesExisting: Bool,
     lines: [String]
@@ -436,8 +449,8 @@ extension HistoryStore {
       try Self.appendEvents(
         db, conversationID: conversationID, messageID: message.id, lines: lines)
       try db.execute(
-        sql: "DELETE FROM turn_journal WHERE conversation_id = ?",
-        arguments: [conversationID.uuidString])
+        sql: "DELETE FROM turn_journal WHERE conversation_id = ? AND execution_id = ?",
+        arguments: [conversationID.uuidString, executionID.uuidString])
     }
   }
 

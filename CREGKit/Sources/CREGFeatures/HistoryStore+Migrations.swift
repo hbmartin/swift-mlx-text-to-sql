@@ -163,6 +163,32 @@ extension HistoryStore {
           """)
     }
 
+    migrator.registerMigration("v6-multiple-interrupted-turns") { db in
+      try db.execute(sql: """
+        CREATE TABLE turn_journal_v6 (
+          journal_id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL REFERENCES conversation(id),
+          question TEXT NOT NULL,
+          started_at REAL NOT NULL,
+          execution_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          auto_retry_count INTEGER NOT NULL,
+          submission_source TEXT
+        );
+        INSERT INTO turn_journal_v6
+          (journal_id, conversation_id, question, started_at, execution_id,
+           status, auto_retry_count, submission_source)
+        SELECT CASE WHEN execution_id = '' THEN conversation_id ELSE execution_id END,
+               conversation_id, question, started_at, execution_id,
+               status, auto_retry_count, NULL
+        FROM turn_journal;
+        DROP TABLE turn_journal;
+        ALTER TABLE turn_journal_v6 RENAME TO turn_journal;
+        CREATE INDEX turn_journal_conversation_started
+          ON turn_journal(conversation_id, started_at, journal_id);
+        """)
+    }
+
     return migrator
   }
 }

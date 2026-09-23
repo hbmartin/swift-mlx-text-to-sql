@@ -24,6 +24,25 @@ automatically after termination. A turn that was active when the process ended i
 persisted as **Interrupted** and offers **Ask Again** on the next launch. Switching
 or background completion never automatically changes the visible Conversation.
 
+The interruption journal has one row per turn, keyed by a stable journal ID.
+Each row stores the full submission source: free form, a Starter Query ID, or
+the prepared follow-up payload. Terminal persistence and dismissal close only
+the corresponding row. A trailing unanswered user turn is retried in place;
+when later messages exist, Ask Again appends a new user turn and transfers the
+old journal row in the same transaction as that user write. A busy scheduler
+queues the retry without changing its journal until dispatch. The trailing
+retry is claimed before inference, so a crash cannot trigger a second automatic
+retry. Legacy rows with no typed source remain free form.
+
+A brief inactive scene prevents new dispatch while active work continues.
+Backgrounding interrupts work without a continued-processing GPU grant. A
+granted task remains open until its terminal history transaction succeeds.
+Model preparation journals identify each attempt; deliberate suspension is a
+completed outcome even when cancellation reaches the journal before creation.
+Memory warnings evict MLX cache off the main thread and suspend lower-priority
+inference. That work resumes after five warning-free seconds, or when thermal
+state returns to nominal or fair, after the scene and serializer gates pass.
+
 ## Consequences
 
 The user's current Conversation feels responsive without overlapping models or

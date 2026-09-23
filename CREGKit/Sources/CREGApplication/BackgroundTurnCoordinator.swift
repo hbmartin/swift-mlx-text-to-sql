@@ -21,6 +21,7 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
   private let identifierPrefix: String
   private var registered = false
   private var requested: Set<UUID> = []
+  private var finished: Set<UUID> = []
   private var active: [UUID: BGContinuedProcessingTask] = [:]
   private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
@@ -76,7 +77,12 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
       subtitle: "Analyzing your portfolio question")
     request.strategy = .fail
     request.requiredResources = .gpu
-    _ = lock.withLock { requested.insert(id) }
+    let maySubmit = lock.withLock { () -> Bool in
+      guard !finished.contains(id) else { return false }
+      requested.insert(id)
+      return true
+    }
+    guard maySubmit else { return false }
     do {
       try await BGTaskScheduler.shared.submitTaskRequest(request)
     } catch {
@@ -89,13 +95,21 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
       return false
     }
     recordState("submitted", id: id)
+    let wasFinished = lock.withLock { finished.contains(id) }
+    if wasFinished {
+      BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+      return false
+    }
     return await withCheckedContinuation { continuation in
-      let alreadyLaunched = lock.withLock { () -> Bool in
-        if active[id] != nil { return true }
+      let (alreadyLaunched, alreadyFinished) = lock.withLock { () -> (Bool, Bool) in
+        if finished.contains(id) { return (false, true) }
+        if active[id] != nil { return (true, false) }
         waiters[id] = continuation
-        return false
+        return (false, false)
       }
-      if alreadyLaunched {
+      if alreadyFinished {
+        continuation.resume(returning: false)
+      } else if alreadyLaunched {
         continuation.resume(returning: true)
       } else {
         Task { [self] in
@@ -170,6 +184,7 @@ final class BackgroundTurnCoordinator: @unchecked Sendable {
 
   private func finish(_ id: UUID, success: Bool) {
     let released = lock.withLock {
+      finished.insert(id)
       requested.remove(id)
       return (active.removeValue(forKey: id), waiters.removeValue(forKey: id))
     }

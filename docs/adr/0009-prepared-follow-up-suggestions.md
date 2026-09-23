@@ -25,7 +25,8 @@ older conversation turns are never included.
 
 Preparation is best-effort, progressive, and lower priority than user work. It
 runs only while no turn is active or queued and is cancelled immediately when a
-question is submitted or the app becomes inactive. Switching Conversations does
+question is submitted or the app enters the background. A brief inactive scene
+stops new preparation but allows a running preparation to finish. Switching Conversations does
 not cancel it. Each question gets one temperature-zero Candidate Query plus the
 existing maximum of two bounded repairs, followed by SQLite validation,
 read-only execution, and Grounding Checks. Rewriting, ambiguity gating, voting,

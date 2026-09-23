@@ -17,15 +17,12 @@ concurrency:
 jobs:
   swift:
     name: Swift tests
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
-      - name: Select Xcode 26.3
-        run: sudo xcode-select --switch /Applications/Xcode_26.3.app
 
       - name: Verify AutoTableCharts pin agreement
         run: python3 fine-tuning/tools/check_swift_package_pins.py
@@ -37,7 +34,7 @@ jobs:
             CREGKit/.build
             ${{ runner.temp }}/creg-derived-data
             ${{ runner.temp }}/creg-source-packages
-          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       - name: Verify checked-in Swift package resolutions
         run: |
@@ -56,15 +53,12 @@ jobs:
 
   accessibility:
     name: Accessibility UI contracts
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
-      - name: Select Xcode 26.3
-        run: sudo xcode-select --switch /Applications/Xcode_26.3.app
 
       - name: Cache Swift and Xcode build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -73,7 +67,7 @@ jobs:
             CREGKit/.build
             ${{ runner.temp }}/creg-derived-data
             ${{ runner.temp }}/creg-source-packages
-          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', 'CREG.xcodeproj/project.pbxproj', 'CREG/**', 'CREGUITests/**') }}
+          key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', 'CREG.xcodeproj/project.pbxproj', 'CREG/**', 'CREGUITests/**') }}
 
       - name: Test focused accessibility UI contracts
         timeout-minutes: 30
@@ -83,7 +77,7 @@ jobs:
           /usr/bin/xcodebuild test \
             -project CREG.xcodeproj \
             -scheme CREG \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
             -clonedSourcePackagesDirPath "${{ runner.temp }}/creg-source-packages" \
             -derivedDataPath "${{ runner.temp }}/creg-derived-data" \
             -resultBundlePath "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult" \
@@ -95,6 +89,7 @@ jobs:
             -only-testing:CREGUITests/AccessibilityUITests/testChartRecoveryControlsOwnFullLeadingTouchTargets \
             -only-testing:CREGUITests/AccessibilityUITests/testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget \
             -only-testing:CREGUITests/AccessibilityUITests/testPreviewShowsNewTableWhenChartInputIdentityChanges \
+            CODE_SIGNING_ALLOWED=NO \
             CREG_ACCESSIBILITY_HARNESS_BUILD=YES
 
       - name: Upload accessibility UI test results

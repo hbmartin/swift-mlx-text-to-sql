@@ -3,6 +3,7 @@ import json
 import plistlib
 import shutil
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -171,6 +172,33 @@ def test_background_gpu_gate_checks_signed_entitlement(monkeypatch, tmp_path):
     )
     with pytest.raises(SystemExit, match="missing Background GPU Access"):
         release_inspector.verify_signed_background_gpu_entitlement(app)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS codesign")
+def test_background_gpu_gate_reads_real_codesign_output(tmp_path):
+    key = "com.apple.developer.background-tasks.continued-processing.gpu"
+    executable = tmp_path / "signed-test-executable"
+    shutil.copyfile("/bin/echo", executable)
+    executable.chmod(0o755)
+    entitlements_path = tmp_path / "entitlements.plist"
+
+    for granted in (True, False):
+        entitlements_path.write_bytes(plistlib.dumps({key: granted}))
+        subprocess.run(
+            [
+                str(release_inspector.CODESIGN), "--force", "--sign", "-",
+                "--entitlements", str(entitlements_path), str(executable),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        if granted:
+            assert release_inspector.verify_signed_background_gpu_entitlement(
+                executable
+            )["status"] == "granted"
+        else:
+            with pytest.raises(SystemExit, match="missing Background GPU Access"):
+                release_inspector.verify_signed_background_gpu_entitlement(executable)
 
 
 def test_beta_app_gate_rejects_a_candidate_other_than_the_preflight_selection(

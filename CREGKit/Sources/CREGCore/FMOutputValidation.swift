@@ -63,16 +63,8 @@ public enum FMOutputValidation {
   public static func scopeSubject(
     _ value: String, verdict: ScopeVerdict
   ) throws -> String? {
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    if verdict == .inDomainButNotTracked {
-      return try cleaned(
-        trimmed, stage: "scope_verdict", maximumLength: 100)
-    }
-    guard trimmed.isEmpty else {
-      throw FMOutputValidationError(
-        stage: "scope_verdict", reason: .unsupported)
-    }
-    return nil
+    guard verdict == .inDomainButNotTracked else { return nil }
+    return try cleaned(value, stage: "scope_verdict", maximumLength: 100)
   }
 
   private static func cleaned(

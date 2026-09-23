@@ -39,10 +39,8 @@ import Testing
       == "property managers")
     #expect(try FMOutputValidation.scopeSubject(
       "", verdict: .likelyAnswerableModelFailed) == nil)
-    #expect(throws: FMOutputValidationError.self) {
-      try FMOutputValidation.scopeSubject(
-        "property managers", verdict: .likelyAnswerableModelFailed)
-    }
+    #expect(try FMOutputValidation.scopeSubject(
+      "property managers", verdict: .likelyAnswerableModelFailed) == nil)
     #expect(throws: FMOutputValidationError.self) {
       try FMOutputValidation.scopeSubject(
         "", verdict: .inDomainButNotTracked)

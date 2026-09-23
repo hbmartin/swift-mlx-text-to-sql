@@ -299,7 +299,8 @@ extension QueryPipeline {
                   serializer: serializer,
                   operation: .rewrite,
                   deadlineSeconds: remainingTurnSeconds(),
-                  stage: "rewrite"
+                  stage: "rewrite",
+                  recoverInvalidOutput: true
                 ) { try await $0.rewrite(question, history) }
                 standalone = outcome.value
                 rewriteUsedFM = outcome.usedFM
@@ -518,6 +519,7 @@ extension QueryPipeline {
               }
               let chosenCandidate = selection.candidate
               telemetry.confidence = selection.confidence
+              let votingConfidence = selection.confidence
               telemetry.selectionReason = selection.selectionReason
               telemetry.noConsensusReason = selection.noConsensusReason
               telemetry.voteOutcome = selection.outcome
@@ -624,6 +626,7 @@ extension QueryPipeline {
                         telemetry.grounding = correctedGrounding
                         telemetry.semanticAlignment = .aligned
                         telemetry.semanticCorrectionAccepted = true
+                        telemetry.confidence = votingConfidence
                         telemetry.selectedCandidateID = corrected.id
                         if let previousIndex = telemetry.candidates.firstIndex(
                           where: { $0.id == chosenCandidate.id })
@@ -653,7 +656,8 @@ extension QueryPipeline {
                 serializer: serializer,
                 operation: .narration,
                 deadlineSeconds: remainingTurnSeconds(),
-                stage: "narration"
+                stage: "narration",
+                recoverInvalidOutput: true
               ) { try await $0.narrate(standalone, narrationResult) }
               let narration = narrationOutcome.value
               let narrationUsedFM = narrationOutcome.usedFM

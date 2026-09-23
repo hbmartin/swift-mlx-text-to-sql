@@ -142,7 +142,8 @@ package func deterministicStarterStream(
           serializer: serializer,
           operation: .narration,
           deadlineSeconds: remainingSeconds(),
-          stage: "starter-narration"
+          stage: "starter-narration",
+          recoverInvalidOutput: true
         ) { try await $0.narrate(question, result) }
         let narration = narrationOutcome.value
         let narrationUsedFM = narrationOutcome.usedFM

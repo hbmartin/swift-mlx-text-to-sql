@@ -17,6 +17,7 @@ func runFMStage<Value: Sendable>(
   operation: InferenceSerializer.Operation,
   deadlineSeconds: Double,
   stage: String,
+  recoverInvalidOutput: Bool = false,
   perform: @escaping @Sendable (FMClient) async throws -> Value
 ) async throws -> (value: Value, usedFM: Bool) {
   guard fm.availability() == .available else {
@@ -35,6 +36,12 @@ func runFMStage<Value: Sendable>(
   } catch {
     if error is PipelineDeadlineExceeded || error is CancellationError {
       throw error
+    }
+    if recoverInvalidOutput,
+      error is FMOutputValidationError
+        || (error as? FMCallFailure)?.kind == .invalidOutput
+    {
+      return (try await perform(.fallback()), false)
     }
     guard fm.availability() != .available else { throw error }
     return (try await perform(.fallback()), false)

@@ -104,6 +104,69 @@ private final class TestFMAvailability: @unchecked Sendable {
       })
   }
 
+  @Test func invalidRewriteTextUsesOriginalQuestionAndRecordsFallback() async {
+    let fm = FMClient(
+      availability: { .available },
+      rewrite: { _, _ in throw FMCallFailure(stage: "rewrite", kind: .invalidOutput) },
+      gate: { _, _ in .proceed },
+      narrate: { _, _ in "One property found." },
+      suggestFollowUps: { _, _ in [] })
+    let pipeline = QueryPipeline.live(
+      fm: fm,
+      sqlGen: testSQLGenClient { request in
+        SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+      },
+      db: DatabaseClient { _ in
+        QueryResult(columns: ["n"], rows: [[.integer(1)]])
+      },
+      serializer: InferenceSerializer(), configuration: Self.config())
+    let events = await Array(pipeline.run(
+      "And those?", [ConversationTurn(question: "Prior", answerSummary: "One property")]))
+    guard case .turnFinished(.answered, let telemetry) = events.last else {
+      Issue.record("Expected answer after invalid rewrite text")
+      return
+    }
+    #expect(telemetry.standaloneQuestion == "And those?")
+    #expect(telemetry.rewriteApplied)
+    #expect(!telemetry.rewriteUsedFM)
+  }
+
+  @Test func invalidNarrationTextKeepsValidatedResultButTypedErrorFails() async {
+    func pipeline(for kind: FMCallFailure.Kind) -> QueryPipeline {
+      let fm = FMClient(
+        availability: { .available },
+        rewrite: { question, _ in question },
+        gate: { _, _ in .proceed },
+        narrate: { _, _ in throw FMCallFailure(stage: "narration", kind: kind) },
+        suggestFollowUps: { _, _ in [] })
+      return QueryPipeline.live(
+        fm: fm,
+        sqlGen: testSQLGenClient { _ in
+          SQLGeneration(sql: "SELECT 1", tokensPerSecond: 1, modelName: "test")
+        },
+        db: DatabaseClient { _ in
+          QueryResult(columns: ["n"], rows: [[.integer(1)]])
+        },
+        serializer: InferenceSerializer(), configuration: Self.config())
+    }
+    let invalid = await Array(pipeline(for: .invalidOutput).run("Count", []))
+    guard case .turnFinished(.answered(let result, let narration, _, _), let telemetry) =
+      invalid.last else {
+      Issue.record("Expected validated answer after malformed narration")
+      return
+    }
+    #expect(result.rows == [[.integer(1)]])
+    #expect(narration == PreparedAnswerFallback.narration(for: result))
+    #expect(!telemetry.narrationUsedFM)
+
+    let typed = await Array(pipeline(for: .decoding).run("Count", []))
+    guard case .turnFinished(.failed(let reason), _) = typed.last else {
+      Issue.record("Expected typed FM error to fail the turn")
+      return
+    }
+    #expect(reason == .languageServiceFailed(stage: "narration"))
+  }
+
   @Test func semanticMismatchAcceptsOneValidatedAlignedCorrection() async {
     let fm = FMClient(
       availability: { .available },
@@ -128,7 +191,7 @@ private final class TestFMAvailability: @unchecked Sendable {
           QueryResult(columns: ["n"], rows: [[.integer(sql == "SELECT 2" ? 2 : 1)]])
         }),
       serializer: InferenceSerializer(),
-      configuration: Self.config())
+      configuration: Self.config(selfConsistencyN: 3, alwaysVote: true))
 
     let events = await Array(pipeline.run("How many properties?", []))
     guard case .turnFinished(
@@ -143,6 +206,8 @@ private final class TestFMAvailability: @unchecked Sendable {
     #expect(telemetry.semanticCorrectionAttempted == true)
     #expect(telemetry.semanticCorrectionAccepted == true)
     #expect(telemetry.semanticAlignment == .aligned)
+    #expect(telemetry.confidence == .confirmed)
+    #expect(telemetry.voteOutcome != nil)
     #expect(telemetry.repairAttempts == 1)
     #expect(telemetry.selectedCandidateID?.rawValue == "semantic-correction-1")
   }

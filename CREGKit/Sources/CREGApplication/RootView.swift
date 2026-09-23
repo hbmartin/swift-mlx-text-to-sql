@@ -43,27 +43,36 @@ public struct RootView: View {
         NotificationCenter.default.publisher(
           for: UIApplication.didReceiveMemoryWarningNotification)
       ) { _ in
-        let context = ModelRuntimeDiagnostics.relievePressure()
-        LiveDependencies.diagnostics.info(
-          category: .model,
-          code: "memory_pressure_cache_evicted",
-          summary: "A memory warning evicted dispensable MLX cache.",
-          context: context)
         Self.store.send(.resourcePressure)
+        Task {
+          guard let context = await ModelRuntimeDiagnostics.relievePressureAsync()
+          else { return }
+          LiveDependencies.diagnostics.info(
+            category: .model,
+            code: "memory_pressure_cache_evicted",
+            summary: "A memory warning evicted dispensable MLX cache.",
+            context: context)
+        }
       }
       .onReceive(
         NotificationCenter.default.publisher(
           for: ProcessInfo.thermalStateDidChangeNotification)
       ) { _ in
         let thermal = ProcessInfo.processInfo.thermalState
-        guard thermal == .serious || thermal == .critical else { return }
-        let context = ModelRuntimeDiagnostics.relievePressure()
-        LiveDependencies.diagnostics.info(
-          category: .model,
-          code: "thermal_pressure_cache_evicted",
-          summary: "Serious thermal pressure evicted dispensable MLX cache.",
-          context: context)
-        Self.store.send(.resourcePressure)
+        if thermal == .serious || thermal == .critical {
+          Self.store.send(.thermalPressureBegan)
+          Task {
+            guard let context = await ModelRuntimeDiagnostics.relievePressureAsync()
+            else { return }
+            LiveDependencies.diagnostics.info(
+              category: .model,
+              code: "thermal_pressure_cache_evicted",
+              summary: "Serious thermal pressure evicted dispensable MLX cache.",
+              context: context)
+          }
+        } else {
+          Self.store.send(.thermalPressureEnded)
+        }
       }
     #else
     CREGFeatures.RootView(storeFactory: { Self.store })

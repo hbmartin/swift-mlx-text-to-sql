@@ -17,21 +17,18 @@ concurrency:
 jobs:
   build:
     name: Build DocC
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Select Xcode 26.3
-        run: sudo xcode-select --switch /Applications/Xcode_26.3.app
-
       - name: Cache SwiftPM build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: CREGKit/.build
-          key: docc-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-${{ hashFiles('CREGKit/Package.resolved') }}
+          key: docc-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('CREGKit/Package.resolved') }}
 
       - name: Stage Markdown documentation
         run: |

@@ -103,11 +103,12 @@ private actor UserPersistenceOrderingGate {
 private actor StopSettlementGate {
   private var events: [String] = []
   private var finishWaiters: [CheckedContinuation<Void, Never>] = []
+  private var terminalWaiters: [CheckedContinuation<Void, Never>] = []
   private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
   private var released = false
 
   func holdFinish() async {
-    if events.isEmpty {
+    if !events.contains("finish-started") {
       events.append("finish-started")
       for waiter in finishWaiters { waiter.resume() }
       finishWaiters.removeAll()
@@ -129,7 +130,15 @@ private actor StopSettlementGate {
     releaseContinuations.removeAll()
   }
 
-  func recordTerminalWrite() { events.append("terminal") }
+  func recordTerminalWrite() {
+    events.append("terminal")
+    for waiter in terminalWaiters { waiter.resume() }
+    terminalWaiters.removeAll()
+  }
+  func waitUntilTerminalWrite() async {
+    if events.contains("terminal") { return }
+    await withCheckedContinuation { terminalWaiters.append($0) }
+  }
   var recordedEvents: [String] { events }
 }
 
@@ -329,7 +338,7 @@ private func awaitArmedFMWatch(
     #expect(store.state.chat?.interruptedTurn == nil)
   }
 
-  @Test func inactiveTurnRetriesOnceWithoutDuplicatingTheUserMessage() async {
+  @Test func backgroundInterruptedTurnRetriesOnceWithoutDuplicatingTheUserMessage() async {
     let attempts = LockIsolated(0)
     let pipeline = QueryPipeline { question, _ in
       let attempt = attempts.withValue { value in
@@ -371,6 +380,8 @@ private func awaitArmedFMWatch(
       QuestionSubmission(question: "Which property leads?")))))
     #expect(store.state.chat?.messages.count == 1)
     await store.send(.appBecameInactive)
+    #expect(store.state.activeTurn != nil)
+    await store.send(.appEnteredBackground)
     await store.finish()
     await store.skipReceivedActions()
     #expect(store.state.chat?.interruptedTurn?.canAutoRetry == true)
@@ -383,6 +394,113 @@ private func awaitArmedFMWatch(
     #expect(attempts.value == 2)
     #expect(store.state.chat?.messages.count == 2)
     #expect(store.state.chat?.interruptedTurn == nil)
+  }
+
+  @Test func busyAskAgainQueuesOriginalSourceAndCancellationKeepsJournal() async {
+    let oldID = UUID(701)
+    let old = ChatMessage(
+      id: oldID, role: .user, body: .text("Which properties are vacant?"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    let later = ChatMessage(
+      id: UUID(702), role: .user, body: .text("Later question"),
+      createdAt: Date(timeIntervalSince1970: 2))
+    var state = Self.appState()
+    state.chat?.messages = IdentifiedArray(uniqueElements: [old, later])
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: old.previewText, interruptedAt: old.createdAt,
+      journalID: oldID, source: .starter(.highestVacancyV1),
+      executionID: oldID, status: .knownInterruption)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: later.id, conversationID: Self.conversationA,
+      question: later.previewText, startedAt: later.createdAt)
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.retryInterruptedTurnFor(oldID))))
+    #expect(store.state.queue.count == 1)
+    #expect(store.state.queue.first?.retryJournalID == oldID)
+    #expect(store.state.queue.first?.submission.source == .starter(.highestVacancyV1))
+    #expect(store.state.queue.first?.existingUserMessage == nil)
+    let queuedID = try? #require(store.state.queue.first?.id)
+    if let queuedID { await store.send(.chat(.delegate(.cancelQueued(queuedID)))) }
+    #expect(store.state.queue.isEmpty)
+    #expect(store.state.chat?.interruptedTurn?.journalID == oldID)
+  }
+
+  @Test func claimedRetryRequeuedDuringInactivityKeepsItsJournalIfCancelled() async {
+    let questionID = UUID(703)
+    let user = ChatMessage(
+      id: questionID, role: .user, body: .text("Which property leads?"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.isSceneActive = false
+    state.retryClaimInFlight = true
+    state.chat?.messages = IdentifiedArray(uniqueElements: [user])
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: user.previewText, interruptedAt: user.createdAt,
+      journalID: questionID, executionID: questionID,
+      status: .knownInterruption)
+    let queued = QueuedQuestion(
+      id: UUID(704), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: user.previewText),
+      retryJournalID: questionID, existingUserMessage: user,
+      submittedAt: Date(timeIntervalSince1970: 2))
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.queuedRetryClaimed(queued, true))
+    #expect(store.state.queue.first?.retryAlreadyClaimed == true)
+    #expect(store.state.chat?.interruptedTurn?.journalID == questionID)
+    await store.send(.chat(.delegate(.cancelQueued(queued.id))))
+    #expect(store.state.queue.isEmpty)
+    #expect(store.state.chat?.interruptedTurn?.journalID == questionID)
+  }
+
+  @Test func retryDispatchRetiresOldFollowUpPreparation() async {
+    let questionID = UUID(711)
+    let question = "Which property leads?"
+    let user = ChatMessage(
+      id: questionID, role: .user, body: .text(question),
+      createdAt: Date(timeIntervalSince1970: 1))
+    let prepared = Self.preparedFollowUp()
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: question, standaloneQuestion: question,
+      narration: "One property found.", result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context, suggestions: [prepared],
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.chat?.messages = IdentifiedArray(uniqueElements: [user])
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: question, interruptedAt: user.createdAt,
+      journalID: questionID, executionID: questionID,
+      status: .knownInterruption)
+    state.followUpPreparation = AppFeature.FollowUpPreparationState(
+      conversationID: Self.conversationA, context: context, batch: batch)
+    let runs = CallRecorder()
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.retryInterruptedTurnFor(questionID))))
+    await store.finish()
+    await store.skipReceivedActions()
+    #expect(store.state.followUpPreparation?.batch.updatedAt == Date(timeIntervalSince1970: 2))
+    #expect(runs.recorded == [question])
   }
 
   @Test func expiredBackgroundGrantRequiresExplicitRetry() async throws {
@@ -425,7 +543,7 @@ private func awaitArmedFMWatch(
   @Test func failedUserTurnPersistenceDoesNotStartThePipeline() async {
     let runs = CallRecorder()
     var history = HistoryClient.noop()
-    history.persistUserTurn = { _, _, _, _ in
+    history.persistUserTurn = { _, _, _, _, _ in
       throw SchedulerPersistenceTestError.failed
     }
     let store = TestStore(initialState: Self.appState()) {
@@ -471,7 +589,7 @@ private func awaitArmedFMWatch(
         submittedAt: Date(timeIntervalSince1970: 1))
     ]
     var history = HistoryClient.noop()
-    history.persistUserTurn = { _, _, _, _ in
+    history.persistUserTurn = { _, _, _, _, _ in
       await gate.holdUserWrite()
       throw SchedulerPersistenceTestError.failed
     }
@@ -626,10 +744,10 @@ private func awaitArmedFMWatch(
   @Test func stopWaitsForTheUserWriteBeforePersistingItsTerminalMessage() async {
     let gate = UserPersistenceOrderingGate()
     var history = HistoryClient.noop()
-    history.persistUserTurn = { _, _, _, _ in
+    history.persistUserTurn = { _, _, _, _, _ in
       await gate.holdUserWrite()
     }
-    history.persistTerminalTurn = { _, _, _, _ in
+    history.persistTerminalTurn = { _, _, _, _, _ in
       await gate.recordTerminalWrite()
     }
     let clock = TestClock()
@@ -664,14 +782,14 @@ private func awaitArmedFMWatch(
     #expect(store.state.pendingTurnPersistence == nil)
   }
 
-  @Test func stopWaitsForRawInferenceSettlementBeforeTerminalPersistence() async {
+  @Test func stopKeepsBackgroundTaskUntilTerminalPersistence() async {
     let gate = StopSettlementGate()
     var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, _, _, _ in
+    history.persistTerminalTurn = { _, _, _, _, _ in
       await gate.recordTerminalWrite()
     }
     let background = BackgroundTurnClient(
-      begin: { _, _ in false },
+      begin: { _, _ in true },
       progress: { _, _ in },
       finish: { _, _ in await gate.holdFinish() })
     let store = TestStore(initialState: Self.appState()) {
@@ -689,26 +807,29 @@ private func awaitArmedFMWatch(
     await store.send(
       .chat(.delegate(.submitQuestion(
         QuestionSubmission(question: "Settle before persisting")))))
+    let questionID = store.state.activeTurn!.questionID
+    await store.receive(.backgroundTurnReady(executionID: questionID, granted: true))
     await store.send(.chat(.delegate(.stopActiveTurn)))
+    await gate.waitUntilTerminalWrite()
     await gate.waitUntilFinishStarts()
-    #expect(await gate.recordedEvents == ["finish-started"])
+    #expect(await gate.recordedEvents == ["terminal", "finish-started"])
 
     await gate.release()
     await store.finish()
     await store.skipReceivedActions()
     #expect(await gate.recordedEvents == [
-      "finish-started", "finish-settled", "terminal",
+      "terminal", "finish-started", "finish-settled",
     ])
   }
 
   @Test func stopRollsBackItsTranscriptWhenTheUserWriteFails() async {
     let gate = UserPersistenceOrderingGate()
     var history = HistoryClient.noop()
-    history.persistUserTurn = { _, _, _, _ in
+    history.persistUserTurn = { _, _, _, _, _ in
       await gate.holdUserWrite()
       throw SchedulerPersistenceTestError.failed
     }
-    history.persistTerminalTurn = { _, _, _, _ in
+    history.persistTerminalTurn = { _, _, _, _, _ in
       await gate.recordTerminalWrite()
     }
     let clock = TestClock()
@@ -1036,10 +1157,10 @@ private func awaitArmedFMWatch(
         }
       writes.record("append:\(kind):\(message.id.uuidString)")
     }
-    history.persistUserTurn = { _, message, _, _ in
+    history.persistUserTurn = { _, message, _, _, _ in
       writes.record("append:user:\(message.id.uuidString)")
     }
-    history.persistTerminalTurn = { _, message, replacesExisting, _ in
+    history.persistTerminalTurn = { _, _, message, replacesExisting, _ in
       writes.record(
         "\(replacesExisting ? "update:final" : "append:assistant"):\(message.id.uuidString)")
     }
@@ -1122,7 +1243,7 @@ private func awaitArmedFMWatch(
       startedAt: Date(timeIntervalSince1970: 1))
     let writes = CallRecorder()
     var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, message, _, _ in
+    history.persistTerminalTurn = { _, _, message, _, _ in
       if case .answer = message.body {
         writes.record(message.resultPresentation.mode.rawValue)
       }
@@ -1206,7 +1327,7 @@ private func awaitArmedFMWatch(
         resultPresentation: preference))
     let writes = CallRecorder()
     var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, message, _, _ in
+    history.persistTerminalTurn = { _, _, message, _, _ in
       writes.record(message.resultPresentation.mode.rawValue)
     }
     let store = TestStore(initialState: state) {
@@ -1270,9 +1391,8 @@ private func awaitArmedFMWatch(
     #expect(eventWrites.recorded == ["{\"prepared\":true}"])
   }
 
-  /// No background GPU grant protects low-priority work, so it is suspended
-  /// at the earliest `.inactive` boundary.
-  @Test func transientInactivitySuspendsLowPriorityWork() async {
+  /// A brief inactive transition closes dispatch while existing work continues.
+  @Test func transientInactivityKeepsLowPriorityWork() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
       sourceAssistantMessageID: prepared.sourceAssistantMessageID,
@@ -1303,8 +1423,8 @@ private func awaitArmedFMWatch(
     await store.finish()
 
     #expect(store.state.isSceneActive == false)
-    #expect(store.state.followUpPreparation == nil)
-    #expect(store.state.isCapturingAnswerability == false)
+    #expect(store.state.followUpPreparation != nil)
+    #expect(store.state.isCapturingAnswerability == true)
     #expect(store.state.chat?.followUpBatch == batch)
   }
 
@@ -1432,6 +1552,7 @@ private func awaitArmedFMWatch(
     } withDependencies: { [pipeline] in
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
@@ -2197,7 +2318,7 @@ private func awaitArmedFMWatch(
     ]
     let clock = TestClock()
     var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, _, _, _ in
+    history.persistTerminalTurn = { _, _, _, _, _ in
       try await clock.sleep(for: .seconds(30))
     }
     let store = TestStore(initialState: state) {
@@ -2323,6 +2444,38 @@ private func awaitArmedFMWatch(
     await store.finish()
   }
 
+  @Test func backgroundTaskFinishesAfterTerminalWriteSettles() async {
+    let gate = AssistantPersistenceGate()
+    let finishes = CallRecorder()
+    let activeID = UUID(903)
+    var state = Self.appState()
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID, conversationID: Self.conversationA,
+      question: "Which property leads?", startedAt: Date(timeIntervalSince1970: 1))
+    var history = HistoryClient.noop()
+    history.persistTerminalTurn = { _, _, _, _, _ in await gate.holdFirstAssistant() }
+    let background = BackgroundTurnClient(
+      begin: { _, _ in true }, progress: { _, _ in },
+      finish: { _, success in finishes.record(String(success)) })
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+      $0.backgroundTurn = background
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = TestClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pipelineEvent(
+      conversationID: Self.conversationA, questionID: activeID,
+      event: Self.finishedEvent()))
+    await gate.waitUntilHeld()
+    #expect(finishes.recorded.isEmpty)
+    await gate.release()
+    await store.finish()
+    #expect(finishes.recorded == ["true"])
+  }
+
   @Test func selectingUnreadConversationClearsUnread() async {
     var state = Self.appState(selected: Self.conversationA)
     state.conversations[id: Self.conversationB]?.isUnread = true
@@ -2384,7 +2537,7 @@ private func awaitArmedFMWatch(
     let recoveryWrites = CallRecorder()
     var history = HistoryClient.noop()
     history.updateMessage = { _, _ in recoveryWrites.record("update") }
-    history.endTurnJournal = { _ in recoveryWrites.record("end") }
+    history.endTurnJournal = { _, _ in recoveryWrites.record("end") }
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -2704,7 +2857,7 @@ private func awaitArmedFMWatch(
     let runs = CallRecorder()
     let clock = TestClock()
     var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, message, _, _ in
+    history.persistTerminalTurn = { _, _, message, _, _ in
       if message.role == .assistant {
         await gate.holdFirstAssistant()
       }
@@ -3022,7 +3175,7 @@ private func awaitArmedFMWatch(
     let preparations = CallRecorder()
     let clock = TestClock()
     var history = HistoryClient.noop()
-    history.persistTerminalTurn = { _, _, _, _ in
+    history.persistTerminalTurn = { _, _, _, _, _ in
       await gate.holdFirstAssistant()
     }
     let pipeline = QueryPipeline(

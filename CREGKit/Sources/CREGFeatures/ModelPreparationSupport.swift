@@ -69,6 +69,10 @@ extension BuildChannel.Error: CustomStringConvertible {
   }
 }
 
+enum ModelPreparationAttemptContext {
+  @TaskLocal static var attemptID: UUID?
+}
+
 public struct ModelPreparationJournalSnapshot:
   Sendable, Equatable, Codable
 {
@@ -81,6 +85,7 @@ public struct ModelPreparationJournalSnapshot:
   public var startedAt: Date
   public var stageStartedAt: Date
   public var completed: Bool
+  public var outcome: String?
   public var failure: ModelPreparationFailure?
   public var environment: [String: String]
 }
@@ -91,6 +96,7 @@ actor ModelPreparationJournalStore {
   private let url: URL
   private let processSessionID: UUID
   private var current: ModelPreparationJournalSnapshot?
+  private var suspendedAttempts: Set<UUID> = []
 
   init(url: URL? = nil, processSessionID: UUID = UUID()) {
     self.url =
@@ -111,18 +117,25 @@ actor ModelPreparationJournalStore {
   }
 
   func begin(
+    attemptID: UUID,
     mode: ModelRuntimeMode,
     environment: [String: String]
   ) throws {
+    // A cancelled effect can reach this actor after its replacement has begun.
+    // Keep the replacement's journal instead of restoring the stale attempt.
+    if suspendedAttempts.contains(attemptID),
+      let current, current.attemptID != attemptID
+    { return }
     let now = Date()
     current = ModelPreparationJournalSnapshot(
-      attemptID: UUID(),
+      attemptID: attemptID,
       processSessionID: processSessionID,
       mode: mode,
       stage: .buildPolicy,
       startedAt: now,
       stageStartedAt: now,
-      completed: false,
+      completed: suspendedAttempts.contains(attemptID),
+      outcome: suspendedAttempts.contains(attemptID) ? "suspended" : nil,
       failure: nil,
       environment: environment)
     try persist()
@@ -130,9 +143,11 @@ actor ModelPreparationJournalStore {
 
   func stageStarted(
     _ stage: ModelPreparationStage,
-    mode: ModelRuntimeMode
+    mode: ModelRuntimeMode,
+    attemptID: UUID? = nil
   ) throws {
-    guard var snapshot = current ?? load() else { return }
+    guard var snapshot = current ?? load(), !snapshot.completed,
+      attemptID == nil || snapshot.attemptID == attemptID else { return }
     snapshot.mode = mode
     snapshot.stage = stage
     snapshot.stageStartedAt = Date()
@@ -144,30 +159,46 @@ actor ModelPreparationJournalStore {
 
   func stageFinished(
     _ stage: ModelPreparationStage,
-    mode: ModelRuntimeMode
+    mode: ModelRuntimeMode,
+    attemptID: UUID? = nil
   ) throws {
-    guard var snapshot = current ?? load() else { return }
+    guard var snapshot = current ?? load(), !snapshot.completed,
+      attemptID == nil || snapshot.attemptID == attemptID else { return }
     snapshot.mode = mode
     snapshot.stage = stage
     current = snapshot
     try persist()
   }
 
-  func fail(_ failure: ModelPreparationFailure) throws {
-    guard var snapshot = current ?? load() else { return }
+  func fail(_ failure: ModelPreparationFailure, attemptID: UUID? = nil) throws {
+    guard var snapshot = current ?? load(), !snapshot.completed,
+      attemptID == nil || snapshot.attemptID == attemptID else { return }
     snapshot.stage = failure.stage
     snapshot.mode = failure.mode
     snapshot.failure = failure
     snapshot.completed = true
+    snapshot.outcome = "failed"
     current = snapshot
     try persist()
   }
 
-  func complete(_ report: ModelPreparationReport) throws {
-    guard var snapshot = current ?? load() else { return }
+  func complete(_ report: ModelPreparationReport, attemptID: UUID? = nil) throws {
+    guard var snapshot = current ?? load(), !snapshot.completed,
+      attemptID == nil || snapshot.attemptID == attemptID else { return }
     snapshot.mode = report.mode
     snapshot.completed = true
+    snapshot.outcome = "succeeded"
     snapshot.failure = nil
+    current = snapshot
+    try persist()
+  }
+
+  func suspend(_ attemptID: UUID) throws {
+    suspendedAttempts.insert(attemptID)
+    guard var snapshot = current ?? load(), snapshot.attemptID == attemptID,
+      !snapshot.completed else { return }
+    snapshot.completed = true
+    snapshot.outcome = "suspended"
     current = snapshot
     try persist()
   }
@@ -203,7 +234,8 @@ actor ModelPreparationJournalStore {
 
 public struct ModelPreparationJournalClient: Sendable {
   public var unfinishedAttempt: @Sendable () async -> ModelPreparationJournalSnapshot?
-  public var begin: @Sendable (ModelRuntimeMode, [String: String]) async -> Void
+  public var begin: @Sendable (UUID, ModelRuntimeMode, [String: String]) async -> Void
+  public var suspend: @Sendable (UUID) async -> Void
   public var stageStarted: @Sendable (ModelPreparationStage, ModelRuntimeMode) async -> Void
   public var stageFinished: @Sendable (ModelPreparationStage, ModelRuntimeMode) async -> Void
   public var fail: @Sendable (ModelPreparationFailure) async -> Void
@@ -215,23 +247,29 @@ public struct ModelPreparationJournalClient: Sendable {
   ) -> ModelPreparationJournalClient {
     ModelPreparationJournalClient(
       unfinishedAttempt: { await store.unfinishedAttempt() },
-      begin: { mode, environment in
-        try? await store.begin(mode: mode, environment: environment)
+      begin: { id, mode, environment in
+        try? await store.begin(attemptID: id, mode: mode, environment: environment)
       },
+      suspend: { try? await store.suspend($0) },
       stageStarted: { stage, mode in
-        try? await store.stageStarted(stage, mode: mode)
+        try? await store.stageStarted(
+          stage, mode: mode, attemptID: ModelPreparationAttemptContext.attemptID)
       },
       stageFinished: { stage, mode in
-        try? await store.stageFinished(stage, mode: mode)
+        try? await store.stageFinished(
+          stage, mode: mode, attemptID: ModelPreparationAttemptContext.attemptID)
       },
-      fail: { try? await store.fail($0) },
-      complete: { try? await store.complete($0) },
+      fail: { try? await store.fail(
+        $0, attemptID: ModelPreparationAttemptContext.attemptID) },
+      complete: { try? await store.complete(
+        $0, attemptID: ModelPreparationAttemptContext.attemptID) },
       exportData: { await store.exportData() })
   }
 
   public static let noop = ModelPreparationJournalClient(
     unfinishedAttempt: { nil },
-    begin: { _, _ in },
+    begin: { _, _, _ in },
+    suspend: { _ in },
     stageStarted: { _, _ in },
     stageFinished: { _, _ in },
     fail: { _ in },

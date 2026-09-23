@@ -296,7 +296,7 @@ def verify_code_signature(app: Path) -> dict[str, Any]:
 def verify_signed_background_gpu_entitlement(app: Path) -> dict[str, Any]:
     """Fail a signed Beta/Release artifact if its GPU claim was not granted."""
     completed = subprocess.run(
-        [str(CODESIGN), "-d", "--entitlements", "-", str(app)],
+        [str(CODESIGN), "-d", "--entitlements", "-", "--xml", str(app)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,

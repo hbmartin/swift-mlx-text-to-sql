@@ -264,11 +264,17 @@ struct ChatView: View {
       }
       readinessBanner
       fmAvailabilityBanner
-      if let interrupted = store.interruptedTurn {
+      ForEach(Array(store.interruptedTurns.enumerated()), id: \.offset) { _, interrupted in
         InterruptedTurnBanner(
           interrupted: interrupted,
-          askAgain: { store.send(.askAgainTapped) },
-          dismiss: { store.send(.interruptedDismissed) })
+          askAgain: {
+            if let id = interrupted.journalID { store.send(.askAgainTappedFor(id)) }
+            else { store.send(.askAgainTapped) }
+          },
+          dismiss: {
+            if let id = interrupted.journalID { store.send(.interruptedDismissedFor(id)) }
+            else { store.send(.interruptedDismissed) }
+          })
       }
       if let context = store.correctionContext {
         CorrectionContextBanner(

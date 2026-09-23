@@ -53,6 +53,8 @@ public struct InterruptedTurn: Equatable, Sendable, Codable {
   }
 
   public var question: String
+  public var journalID: UUID?
+  public var source: QuestionSubmissionSource
   public var interruptedAt: Date
   /// The durable execution/user-message ID. Older journals lack it and are
   /// matched to the trailing unanswered user message when loaded.
@@ -66,15 +68,36 @@ public struct InterruptedTurn: Equatable, Sendable, Codable {
 
   public init(
     question: String, interruptedAt: Date,
+    journalID: UUID? = nil,
+    source: QuestionSubmissionSource = .freeForm,
     executionID: UUID? = nil,
     status: Status = .running,
     autoRetryCount: Int = 0
   ) {
     self.question = question
+    self.journalID = journalID
+    self.source = source
     self.interruptedAt = interruptedAt
     self.executionID = executionID
     self.status = status
     self.autoRetryCount = autoRetryCount
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case question, journalID, source, interruptedAt, executionID, status,
+      autoRetryCount
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    question = try values.decode(String.self, forKey: .question)
+    journalID = try values.decodeIfPresent(UUID.self, forKey: .journalID)
+    source = try values.decodeIfPresent(QuestionSubmissionSource.self, forKey: .source)
+      ?? .freeForm
+    interruptedAt = try values.decode(Date.self, forKey: .interruptedAt)
+    executionID = try values.decodeIfPresent(UUID.self, forKey: .executionID)
+    status = try values.decode(Status.self, forKey: .status)
+    autoRetryCount = try values.decode(Int.self, forKey: .autoRetryCount)
   }
 }
 
@@ -85,7 +108,8 @@ public struct ConversationSnapshot: Equatable, Sendable {
   public var messages: [ChatMessage]
   /// Feedback keyed by the assistant message it judges.
   public var feedback: [UUID: AnswerFeedback]
-  public var interruptedTurn: InterruptedTurn?
+  public var interruptedTurns: [InterruptedTurn]
+  public var interruptedTurn: InterruptedTurn? { interruptedTurns.first }
   public var followUpBatch: PreparedFollowUpBatch?
 
   public init(
@@ -94,26 +118,28 @@ public struct ConversationSnapshot: Equatable, Sendable {
     messages: [ChatMessage] = [],
     feedback: [UUID: AnswerFeedback] = [:],
     interruptedTurn: InterruptedTurn? = nil,
+    interruptedTurns: [InterruptedTurn] = [],
     followUpBatch: PreparedFollowUpBatch? = nil
   ) {
     self.summary = summary
     self.draft = draft
     self.messages = messages
     self.feedback = feedback
-    self.interruptedTurn = interruptedTurn
+    self.interruptedTurns = interruptedTurns.isEmpty
+      ? interruptedTurn.map { [$0] } ?? [] : interruptedTurns
     self.followUpBatch = followUpBatch
   }
 }
 
 /// The execution contract carried from submission through the global queue.
 /// Only a tapped prepared follow-up contains cached SQL and result data.
-public enum QuestionSubmissionSource: Equatable, Sendable {
+public enum QuestionSubmissionSource: Equatable, Sendable, Codable {
   case freeForm
   case starter(StarterQueryID)
   case preparedFollowUp(PreparedFollowUp)
 }
 
-public struct QuestionSubmission: Equatable, Sendable {
+public struct QuestionSubmission: Equatable, Sendable, Codable {
   public var question: String
   public var source: QuestionSubmissionSource
 
@@ -155,6 +181,10 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
   public var id: UUID
   public var conversationID: UUID
   public var submission: QuestionSubmission
+  public var retryJournalID: UUID?
+  public var retryAlreadyClaimed: Bool = false
+  public var existingUserMessage: ChatMessage?
+  public var automaticRetry: Bool = false
   public var question: String { submission.question }
   public var starter: StarterQueryID? {
     guard case .starter(let starter) = submission.source else { return nil }
@@ -174,6 +204,10 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     self.submission = QuestionSubmission(
       question: question,
       source: starter.map(QuestionSubmissionSource.starter) ?? .freeForm)
+    self.retryJournalID = nil
+    self.retryAlreadyClaimed = false
+    self.existingUserMessage = nil
+    self.automaticRetry = false
     self.submittedAt = submittedAt
   }
 
@@ -181,11 +215,19 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     id: UUID,
     conversationID: UUID,
     submission: QuestionSubmission,
+    retryJournalID: UUID? = nil,
+    retryAlreadyClaimed: Bool = false,
+    existingUserMessage: ChatMessage? = nil,
+    automaticRetry: Bool = false,
     submittedAt: Date
   ) {
     self.id = id
     self.conversationID = conversationID
     self.submission = submission
+    self.retryJournalID = retryJournalID
+    self.retryAlreadyClaimed = retryAlreadyClaimed
+    self.existingUserMessage = existingUserMessage
+    self.automaticRetry = automaticRetry
     self.submittedAt = submittedAt
   }
 }

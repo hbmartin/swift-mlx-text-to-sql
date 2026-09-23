@@ -119,7 +119,7 @@ extension AppFeature {
           messageID: assistantMessage.id
         ) {
           try await history.persistTerminalTurn(
-            conversationID, assistantMessage, replacesProvisional, lines)
+            conversationID, active.questionID, assistantMessage, replacesProvisional, lines)
         }
       }
     ]
