@@ -71,6 +71,53 @@ import Testing
   }
 }
 
+@Suite struct AnswerWarningPresentationTests {
+  @Test func pipelineSemanticNoticeAppearsOnlyInline() {
+    var telemetry = TurnTelemetry(originalQuestion: "q")
+    telemetry.confidence = .unconfirmed
+    telemetry.semanticAlignment = .mismatch
+    telemetry.semanticCorrectionAccepted = false
+    let notice = "Value check incomplete. \(QueryPipeline.semanticMismatchNotice)"
+
+    let presentation = AnswerWarningPresentation(
+      telemetry: telemetry, notice: notice)
+
+    #expect(presentation.banner == nil)
+    #expect(presentation.notice == notice)
+  }
+
+  @Test func missingSemanticNoticeUsesFallbackBanner() {
+    var telemetry = TurnTelemetry(originalQuestion: "q")
+    telemetry.confidence = .unconfirmed
+    telemetry.semanticAlignment = .mismatch
+    telemetry.semanticCorrectionAccepted = false
+
+    let noNotice = AnswerWarningPresentation(
+      telemetry: telemetry, notice: nil)
+    let unrelatedNotice = AnswerWarningPresentation(
+      telemetry: telemetry, notice: "Value check incomplete.")
+
+    #expect(noNotice.banner == QueryPipeline.semanticMismatchNotice)
+    #expect(unrelatedNotice.banner == QueryPipeline.semanticMismatchNotice)
+    #expect(unrelatedNotice.notice == "Value check incomplete.")
+
+    telemetry.confidence = nil
+    #expect(AnswerWarningPresentation(telemetry: telemetry, notice: nil).banner
+      == QueryPipeline.semanticMismatchNotice)
+  }
+
+  @Test func otherUnconfirmedWarningStillUsesBanner() {
+    var telemetry = TurnTelemetry(originalQuestion: "q")
+    telemetry.confidence = .unconfirmed
+    telemetry.noConsensusReason = .insufficientNonEmptyEvidence
+
+    let presentation = AnswerWarningPresentation(
+      telemetry: telemetry, notice: nil)
+
+    #expect(presentation.banner?.contains("enough matching non-empty evidence") == true)
+  }
+}
+
 @Suite struct PortfolioValueFormattingTests {
   private func fmt(_ value: SQLValue, _ column: String) -> String {
     PortfolioValueFormatting.displayString(for: value, column: column)

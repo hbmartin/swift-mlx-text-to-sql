@@ -841,34 +841,32 @@ public struct AppFeature: Sendable {
         // benchmark's dispatch, the stranded-work watch, and the resume.
         refreshFMAvailability(state: &state)
         var effects: [Effect<Action>] = []
-        let recovered = snapshot.messages.compactMap { message -> ChatMessage? in
-          guard message.id != activePreparedAnswerID else { return nil }
-          return message.finalizedInterruptedPreparedAnswer
-        }
+        let recovered = snapshot.recoveredPreparedAnswers(
+          excluding: activePreparedAnswerID)
         if !recovered.isEmpty {
           let conversationID = snapshot.summary.id
           if let latest = recovered.last {
             state.conversations[id: conversationID]?.latestMessagePreview =
-              latest.previewText
+              latest.message.previewText
           }
           effects.append(
             .run { _ in
-              for message in recovered {
-                _ = try? await messageUpdateQueue.save(
+              for answer in recovered {
+                let saved = try? await messageUpdateQueue.save(
                   conversationID: conversationID,
-                  messageID: message.id
+                  messageID: answer.message.id
                 ) {
-                  try await history.updateMessage(conversationID, message)
+                  try await history.updateMessage(conversationID, answer.message)
                 }
-              }
-              if !conversationOwnsActiveTurn {
-                for message in recovered {
-                  if let interruption = snapshot.interruptedTurns.first(where: {
-                    $0.executionID == message.id
-                  }), let journalID = interruption.journalID {
-                    try? await history.endTurnJournal(conversationID, journalID)
-                  }
-                }
+                guard saved == .saved,
+                  let userMessageID = answer.precedingUserMessageID,
+                  let interruption = snapshot.interruptedTurns.first(where: {
+                    $0.executionID == userMessageID
+                      && $0.question == answer.question
+                  }),
+                  let journalID = interruption.journalID ?? interruption.executionID
+                else { continue }
+                try? await history.endTurnJournal(conversationID, journalID)
               }
             })
         }

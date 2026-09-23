@@ -34,14 +34,14 @@ SETUP_UV_ENV: Mapping[str, str] = MappingProxyType(
 )
 ACCESSIBILITY_WORKFLOW_NAME = "CI"
 ACCESSIBILITY_UI_JOB = "accessibility"
-ACCESSIBILITY_UI_RUNNER = "macos-26"
+ACCESSIBILITY_UI_RUNNER = "xcode-27"
 ACCESSIBILITY_CACHE_PATHS = (
     "CREGKit/.build\n"
     "${{ runner.temp }}/creg-derived-data\n"
     "${{ runner.temp }}/creg-source-packages\n"
 )
 ACCESSIBILITY_CACHE_KEY = (
-    "swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-"
+    "swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-"
     "${{ hashFiles('CREGKit/Package.resolved', "
     "'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', "
     "'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', "
@@ -77,7 +77,7 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "-scheme",
     "CREG",
     "-destination",
-    "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+    "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
     *(
         token
         for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
@@ -97,6 +97,7 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testPreviewShowsNewTableWhenChartInputIdentityChanges",
+    "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
 TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"
@@ -175,10 +176,6 @@ def accessibility_ui_bootstrap_steps() -> tuple[dict[str, object], ...]:
             "name": "Check out repository",
             "uses": CHECKOUT_ACTION,
             "with": {"persist-credentials": False},
-        },
-        {
-            "name": "Select Xcode 26.3",
-            "run": "sudo xcode-select --switch /Applications/Xcode_26.3.app",
         },
         {
             "name": "Cache Swift and Xcode build artifacts",

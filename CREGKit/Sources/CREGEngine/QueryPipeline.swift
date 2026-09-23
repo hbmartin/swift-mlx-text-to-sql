@@ -10,6 +10,9 @@ import Foundation
 /// to share one `InferenceSerializer` so the two inference stacks
 /// never overlap.
 public struct QueryPipeline: Sendable {
+  public static let semanticMismatchNotice =
+    "This answer may not fully match your question; the original validated result is shown."
+
   public struct Configuration: Sendable, Equatable {
     public var model: ModelReference
     public var gcd: GCDMode

@@ -143,11 +143,19 @@ public struct ChatFeature: Sendable {
       preservingActiveTurn: Bool = false,
       preservingPreparedAnswerID: UUID? = nil
     ) {
-      let recoveredPreparedAnswer = snapshot.messages.contains {
-        guard $0.id != preservingPreparedAnswerID else { return false }
-        if case .preparedAnswer = $0.body { return true }
-        return false
-      }
+      let recovered = snapshot.recoveredPreparedAnswers(
+        excluding: preservingPreparedAnswerID)
+      let activeUserMessage: ChatMessage? = {
+        if let preservingPreparedAnswerID {
+          guard let index = snapshot.messages.firstIndex(where: {
+            $0.id == preservingPreparedAnswerID
+          }), index > 0, snapshot.messages[index - 1].role == .user
+          else { return nil }
+          return snapshot.messages[index - 1]
+        }
+        guard snapshot.messages.last?.role == .user else { return nil }
+        return snapshot.messages.last
+      }()
       self.init(
         conversationID: snapshot.summary.id,
         title: snapshot.summary.title,
@@ -161,18 +169,17 @@ public struct ChatFeature: Sendable {
         composerText: snapshot.draft,
         interruptedTurn: nil)
       self.interruptedTurns = snapshot.interruptedTurns.filter { interruption in
-        if preservingActiveTurn,
-          (interruption.executionID == snapshot.messages.last?.id
+        if preservingActiveTurn, let activeUserMessage,
+          (interruption.executionID == activeUserMessage.id
             || (interruption.executionID == nil
-              && interruption.question == snapshot.messages.last?.previewText)) {
+              && interruption.question == activeUserMessage.previewText)) {
           return false
         }
-        if recoveredPreparedAnswer,
-          snapshot.messages.contains(where: {
-            guard case .preparedAnswer(let prepared) = $0.body else { return false }
-            return ($0.id == interruption.executionID || interruption.executionID == nil)
-              && prepared.question == interruption.question
-          }) { return false }
+        if recovered.contains(where: { answer in
+          guard answer.question == interruption.question else { return false }
+          guard let executionID = interruption.executionID else { return true }
+          return answer.precedingUserMessageID == executionID
+        }) { return false }
         return true
       }
       self.followUpBatch = snapshot.followUpBatch

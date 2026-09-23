@@ -679,8 +679,7 @@ extension QueryPipeline {
               if alignment == .mismatch,
                 telemetry.semanticCorrectionAccepted != true
               {
-                notices.append(
-                  "This answer may not fully match your question; the original validated result is shown.")
+                notices.append(Self.semanticMismatchNotice)
               }
               let notice = notices.joined(separator: " ")
               finish(

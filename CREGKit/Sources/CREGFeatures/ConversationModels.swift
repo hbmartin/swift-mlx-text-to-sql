@@ -131,6 +131,35 @@ public struct ConversationSnapshot: Equatable, Sendable {
   }
 }
 
+struct RecoveredPreparedAnswer: Sendable {
+  let message: ChatMessage
+  let question: String
+  let precedingUserMessageID: UUID?
+}
+
+extension ConversationSnapshot {
+  func recoveredPreparedAnswers(excluding preservedMessageID: UUID? = nil)
+    -> [RecoveredPreparedAnswer]
+  {
+    messages.enumerated().compactMap { index, message in
+      guard message.id != preservedMessageID,
+        case .preparedAnswer(let prepared) = message.body,
+        let finalized = message.finalizedInterruptedPreparedAnswer
+      else { return nil }
+      let precedingUserID: UUID?
+      if index > 0, messages[index - 1].role == .user {
+        precedingUserID = messages[index - 1].id
+      } else {
+        precedingUserID = nil
+      }
+      return RecoveredPreparedAnswer(
+        message: finalized,
+        question: prepared.question,
+        precedingUserMessageID: precedingUserID)
+    }
+  }
+}
+
 /// The execution contract carried from submission through the global queue.
 /// Only a tapped prepared follow-up contains cached SQL and result data.
 public enum QuestionSubmissionSource: Equatable, Sendable, Codable {

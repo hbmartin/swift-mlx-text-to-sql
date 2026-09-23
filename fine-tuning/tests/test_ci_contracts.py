@@ -157,6 +157,24 @@ def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
     assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
 
 
+def test_accessibility_ui_contract_requires_signing_disabled():
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_ALLOWED=YES"
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "UI test command argument errors" in failures[0]
+
+
 def test_real_workflow_passes_every_reviewed_ci_contract():
     path, workflow = accessibility_workflow()
 
@@ -480,14 +498,14 @@ def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
         ("-scheme CREG", "-scheme Decoy", "CREG"),
         ("-scheme CREG", "-scheme CREGPreview", "CREG"),
         (
-            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
-            "platform=macOS,name=iPhone 17 Pro,OS=26.5",
-            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+            "platform=macOS,name=iPhone 18 Pro,OS=27.0",
+            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
         ),
         (
-            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
-            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5beta",
-            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0beta",
+            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
         ),
     ],
 )
@@ -584,7 +602,7 @@ def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
     )
     reviewed_prefix = (
         "/usr/bin/xcodebuild test -project CREG.xcodeproj -scheme CREG "
-        "-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5'"
+        "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'"
     )
     ui_test["run"] = (
         f"{reviewed_prefix} # {inert_fragments}"
@@ -605,7 +623,7 @@ def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
         ("-project CREG.xcodeproj", "-project Decoy.xcodeproj", "-project"),
         ("-scheme CREG", "-scheme Decoy", "-scheme"),
         (
-            "-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5'",
+            "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'",
             "-destination 'platform=macOS'",
             "-destination",
         ),
@@ -904,14 +922,14 @@ def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():
     )
     reviewed_arguments = (
         "/usr/bin/xcodebuild test -project CREG.xcodeproj -scheme CREG "
-        "-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5'"
+        "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'"
     )
     decoy_command = (
         ui_test["run"]
         .replace("CREG.xcodeproj", "Decoy.xcodeproj")
         .replace("-scheme CREG", "-scheme Decoy")
         .replace(
-            "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
             "platform=macOS",
         )
     )

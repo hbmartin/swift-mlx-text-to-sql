@@ -87,11 +87,13 @@ struct MessageCell: View {
             devInfo: prepared.preparationTelemetry)
         }
       case .answer(let result, let narration, let sql, let notice):
+        let warning = AnswerWarningPresentation(
+          telemetry: message.devInfo, notice: notice)
         Text(narration)
           .frame(maxWidth: .infinity, alignment: .leading)
-        if message.devInfo?.confidence == .unconfirmed {
+        if let banner = warning.banner {
           Label(
-            unconfirmedMessage,
+            banner,
             systemImage: "exclamationmark.triangle.fill"
           )
           .font(.caption.weight(.semibold))
@@ -105,7 +107,7 @@ struct MessageCell: View {
         if let summary = ConfidenceSummary(telemetry: message.devInfo) {
           ConfidenceChipView(summary: summary)
         }
-        if let notice {
+        if let notice = warning.notice {
           Label(notice, systemImage: "lightbulb")
             .font(.caption)
             .foregroundStyle(.orange)
@@ -177,14 +179,26 @@ struct MessageCell: View {
       return nil
     }
   }
+}
 
-  private var unconfirmedMessage: String {
-    if message.devInfo?.semanticAlignment == .mismatch,
-      message.devInfo?.semanticCorrectionAccepted != true
+struct AnswerWarningPresentation: Equatable {
+  let banner: String?
+  let notice: String?
+
+  init(telemetry: TurnTelemetry?, notice: String?) {
+    self.notice = notice
+    if telemetry?.semanticAlignment == .mismatch,
+      telemetry?.semanticCorrectionAccepted != true
     {
-      return "This result may not fully match your question; the original validated result is shown."
+      banner = notice?.contains(QueryPipeline.semanticMismatchNotice) == true
+        ? nil : QueryPipeline.semanticMismatchNotice
+      return
     }
-    return switch message.devInfo?.noConsensusReason {
+    guard telemetry?.confidence == .unconfirmed else {
+      banner = nil
+      return
+    }
+    banner = switch telemetry?.noConsensusReason {
     case .insufficientNonEmptyEvidence:
       "The corrected query ran, but there wasn’t enough matching non-empty evidence to confirm it."
     case .conflictingResults, .none:
