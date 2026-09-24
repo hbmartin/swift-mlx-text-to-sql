@@ -1,0 +1,162 @@
+{
+  "balancedLossesAgainstQualified": null,
+  "balancedLossesAgainstRemainder": {
+    "ex": [],
+    "validSQL": []
+  },
+  "binarySHA256": "b4dcabcc929cdfaf5308ac6b4e45e52be4420c7912d7ec4b3ef69b53d9abcff5",
+  "changedSQL": [
+    {
+      "balanced": {
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM properties WHERE property_type = 'Self-Storage' AND status != 'Sold'",
+        "validSQL": true
+      },
+      "id": "G-120",
+      "qualified": null,
+      "remainder": {
+        "ex": true,
+        "sql": "SELECT COUNT(*) FROM properties WHERE status != 'Sold' AND property_type = 'Self-Storage'",
+        "validSQL": true
+      }
+    },
+    {
+      "balanced": {
+        "ex": true,
+        "sql": "SELECT SUM(current_market_value) FROM properties WHERE status != 'Sold' AND market = 'Denver'",
+        "validSQL": true
+      },
+      "id": "G-130",
+      "qualified": null,
+      "remainder": {
+        "ex": true,
+        "sql": "SELECT SUM(current_market_value) FROM properties WHERE status != 'Sold' AND market = 'Denver' AND status != 'Sold'",
+        "validSQL": true
+      }
+    },
+    {
+      "balanced": {
+        "ex": false,
+        "sql": "SELECT p.name, ln.lender, ln.maturity_date FROM loans ln JOIN properties p ON p.property_id = ln.property_id WHERE ln.maturity_date >= '2027-01-01' AND ln.maturity_date <= '2027-12-31'",
+        "validSQL": true
+      },
+      "id": "G-215",
+      "qualified": null,
+      "remainder": {
+        "ex": false,
+        "sql": "SELECT p.name, l.lender, f.maturity_date FROM loans l JOIN properties p ON p.property_id = l.property_id JOIN property_financials f ON f.property_id = p.property_id WHERE f.maturity_date >= '2027-01-01' AND f.maturity_date <= '2027-12-31'",
+        "validSQL": false
+      }
+    },
+    {
+      "balanced": {
+        "ex": false,
+        "sql": "SELECT name, SUM(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end > '2025-06-30' AND f.period_end <= '2026-06-30' GROUP BY p.name ORDER BY SUM(f.net_operating_income) DESC LIMIT 5",
+        "validSQL": true
+      },
+      "id": "G-224",
+      "qualified": null,
+      "remainder": {
+        "ex": false,
+        "sql": "SELECT name, SUM(f.net_operating_income) FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end > '2025-06-30' AND f.period_end <= '2026-06-30' GROUP BY p.name ORDER BY trailing_noi DESC LIMIT 5",
+        "validSQL": false
+      }
+    },
+    {
+      "balanced": {
+        "ex": true,
+        "sql": "SELECT name FROM tenants WHERE is_national_tenant = 1 AND credit_rating = 'AA'",
+        "validSQL": true
+      },
+      "id": "T1-12",
+      "qualified": null,
+      "remainder": {
+        "ex": true,
+        "sql": "SELECT name FROM tenants WHERE credit_rating = 'AA' AND is_national_tenant = 1",
+        "validSQL": true
+      }
+    },
+    {
+      "balanced": {
+        "ex": false,
+        "sql": "SELECT MIN(l.leased_sqft) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.status != 'Sold'",
+        "validSQL": true
+      },
+      "id": "T1-18",
+      "qualified": null,
+      "remainder": {
+        "ex": false,
+        "sql": "SELECT MIN(l.leased_sqft) FROM leases l JOIN properties p ON p.property_id = l.property_id WHERE p.status != 'Sold' AND l.status = 'Active'",
+        "validSQL": true
+      }
+    },
+    {
+      "balanced": {
+        "ex": false,
+        "sql": "SELECT t.name FROM tenants t JOIN leases l ON l.tenant_id = t.tenant_id WHERE l.status IN ('Active', 'Holdover') ORDER BY l.leased_sqft DESC LIMIT 5",
+        "validSQL": true
+      },
+      "id": "T2-25",
+      "qualified": null,
+      "remainder": {
+        "ex": false,
+        "sql": "SELECT t.name, l.leased_sqft FROM leases l JOIN tenants t ON t.tenant_id = l.tenant_id WHERE l.status IN ('Active', 'Holdover') ORDER BY l.leased_sqft DESC LIMIT 5",
+        "validSQL": true
+      }
+    },
+    {
+      "balanced": {
+        "ex": false,
+        "sql": "SELECT p.name, ln.ltv FROM loans ln JOIN properties p ON p.property_id = ln.property_id WHERE ln.debt != 0",
+        "validSQL": false
+      },
+      "id": "T2-33",
+      "qualified": null,
+      "remainder": {
+        "ex": false,
+        "sql": "SELECT p.name, ln.ltv FROM loans ln JOIN properties p ON p.property_id = ln.property_id WHERE ln.status != 'Sold' AND ln.ltv > 0",
+        "validSQL": false
+      }
+    },
+    {
+      "balanced": {
+        "ex": false,
+        "sql": "SELECT p.market, SUM(gross_potential_rent) AS total_gross_potential_rent, SUM(f.net_operating_income) AS total_effective_gross_income FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end <= '2026-12-31' GROUP BY p.market",
+        "validSQL": true
+      },
+      "id": "T2-42",
+      "qualified": null,
+      "remainder": {
+        "ex": false,
+        "sql": "SELECT p.market, SUM(gross_potential_rent) AS total_gross_potential_rent, SUM(f.net_operating_income) AS total_effective_gross_income FROM property_financials f JOIN properties p ON p.property_id = f.property_id WHERE f.period_end <= '2026-06-30' GROUP BY p.market",
+        "validSQL": true
+      }
+    }
+  ],
+  "itemCount": 200,
+  "qualifiedIdentityMismatches": [
+    "qualified.artifactMissing"
+  ],
+  "runs": {
+    "balanced": {
+      "outcomes": {
+        "ex": 136,
+        "validSQL": 189
+      },
+      "path": "eval/runs/prefill-chunking-2026-09-24/device-balanced.json",
+      "sha256": "de16f8f501a259b29c4eba821681318d480b8e93f2ce4a9f7201f94f4bb5092f"
+    },
+    "qualified": null,
+    "remainder": {
+      "outcomes": {
+        "ex": 136,
+        "validSQL": 187
+      },
+      "path": "eval/runs/prefill-chunking-2026-09-24/device-remainder.json",
+      "sha256": "814a0c192ac19cbd7a1c50354ba6c0a2860cce10c35c33f45c54eb8275973fac"
+    }
+  },
+  "sameBinaryControlIdentityMismatches": [],
+  "schemaVersion": 1,
+  "status": "blocked"
+}

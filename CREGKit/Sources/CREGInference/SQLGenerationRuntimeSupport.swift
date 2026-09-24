@@ -16,11 +16,7 @@ actor PreparationCoalescer<Value: Sendable> {
       try Task.checkCancellation()
       return result
     }
-    let task = Task {
-      let value = try await loading()
-      try Task.checkCancellation()
-      return value
-    }
+    let task = Task { try await loading() }
     inFlight = task
     do {
       let result = try await withTaskCancellationHandler {
@@ -28,9 +24,9 @@ actor PreparationCoalescer<Value: Sendable> {
       } onCancel: {
         task.cancel()
       }
-      try Task.checkCancellation()
       loaded = result
       inFlight = nil
+      try Task.checkCancellation()
       return result
     } catch {
       inFlight = nil

@@ -33,6 +33,7 @@ actor MLXSQLGenerator {
   let ngramAdaptiveDraftMinimumSupport: Int
   let ngramOrder: Int
   let enablePromptPrefixCache: Bool
+  let prefillChunking: SQLPrefillChunking
   let runtimeMode: ModelRuntimeMode
   let preparationProgress: ModelPreparationProgress
   let containerLoader = PreparationCoalescer<ModelContainer>()
@@ -69,6 +70,7 @@ actor MLXSQLGenerator {
     experimentalNGramSerialPrefixTokens: Int = 0,
     experimentalNGramAdaptiveDraftMinimumSupport: Int = 0,
     enablePromptPrefixCache: Bool = true,
+    prefillChunking: SQLPrefillChunking = .balanced,
     runtimeMode: ModelRuntimeMode = .evaluated,
     preparationProgress: ModelPreparationProgress = .noop
   ) {
@@ -102,6 +104,7 @@ actor MLXSQLGenerator {
       ?? experimentalNGramAdaptiveDraftMinimumSupport
     self.ngramOrder = productionNGramSpeculation?.order ?? 6
     self.enablePromptPrefixCache = enablePromptPrefixCache
+    self.prefillChunking = prefillChunking
     self.runtimeMode = runtimeMode
     self.preparationProgress = preparationProgress
   }
@@ -163,6 +166,9 @@ actor MLXSQLGenerator {
       await preparationProgress.stageFinished(stage, mode)
       return value
     } catch {
+      if error is CancellationError || Task.isCancelled {
+        throw CancellationError()
+      }
       let nsError = error as NSError
       let failure = ModelPreparationFailure(
         code: "model_\(stage.rawValue)_failed",
@@ -295,13 +301,14 @@ actor MLXSQLGenerator {
           code: "mlx_decoder_setup_started",
           summary: "MLX decoder setup started.",
           context: baseContext)
-        let parameters = GenerateParameters(
+        var parameters = GenerateParameters(
           maxTokens: request.maxTokens,
           kvBits: experimentalKVBits,
           temperature: Float(request.temperature),
           topP: 1.0,
           topK: 0,
           seed: request.seed)
+        parameters.prefill.chunking = prefillChunking.mlxValue
         if let questionOutputVocabulary,
           request.repair == nil,
           request.gcd == .off,

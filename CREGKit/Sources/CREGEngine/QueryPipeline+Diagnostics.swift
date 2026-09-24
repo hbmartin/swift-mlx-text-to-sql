@@ -120,6 +120,7 @@ extension QueryPipeline {
     return QueryPipeline(
       prepareMode: { try await self.prepare($0) },
       runtimeMode: { await self.runtimeMode() },
+      waitUntilInferenceIdle: { await self.waitUntilInferenceIdle() },
       run: { question, history in
         reported(
           question: question,

@@ -4,7 +4,7 @@ import Foundation
 
 /// The platform BGContinuedProcessingTask boundary. A successful `begin`
 /// means the system has actually launched the task, not just accepted a
-/// request. Without that active GPU grant the reducer cancels on `.inactive`.
+/// request. Without that active GPU grant the reducer cancels on background entry.
 public struct BackgroundTurnClient: Sendable {
   public var begin: @Sendable (_ executionID: UUID, _ directlyUserStarted: Bool)
     async -> Bool

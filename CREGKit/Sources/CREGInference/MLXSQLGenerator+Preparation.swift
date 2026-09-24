@@ -113,7 +113,8 @@ extension MLXSQLGenerator {
           + suffixTokens == tokens
       }
       let prefixInput = LMInput(tokens: MLXArray(prefixTokens))
-      let parameters = GenerateParameters(maxTokens: 1)
+      var parameters = GenerateParameters(maxTokens: 1)
+      parameters.prefill.chunking = prefillChunking.mlxValue
       let cache = try context.model.newCache(parameters: parameters)
       switch try context.model.prepare(
         prefixInput,

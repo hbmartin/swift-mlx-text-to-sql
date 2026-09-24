@@ -10,6 +10,17 @@ import Testing
 @testable import CREGInference
 
 @Suite struct DiagnosticsAndFailurePresentationTests {
+  @Test func shippingPipelineDecoratorsForwardInferenceDrain() async {
+    let drains = LockIsolated(0)
+    let pipeline = QueryPipeline(
+      waitUntilInferenceIdle: { drains.withValue { $0 += 1 } },
+      run: { _, _ in AsyncStream { $0.finish() } })
+      .reportingOperations(to: .noop)
+
+    await pipeline.waitUntilInferenceIdle()
+    #expect(drains.value == 1)
+  }
+
   private struct ManifestProbe: Decodable {
     struct Model: Decodable {
       struct Quantization: Decodable {

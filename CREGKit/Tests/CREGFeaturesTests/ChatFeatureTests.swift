@@ -379,10 +379,14 @@ private func awaitArmedFMWatch(
     await store.send(.chat(.delegate(.submitQuestion(
       QuestionSubmission(question: "Which property leads?")))))
     #expect(store.state.chat?.messages.count == 1)
+    let questionID = store.state.chat!.messages[0].id
+    await store.receive(.dispatchPreflightFinished(
+      questionID: questionID, directlyUserStarted: true))
     await store.send(.appBecameInactive)
-    #expect(store.state.activeTurn == nil)
+    #expect(store.state.activeTurn?.questionID == questionID)
     await store.send(.appEnteredBackground)
     await store.finish()
+    await store.skipReceivedActions()
     #expect(store.state.chat?.interruptedTurn?.canAutoRetry == true)
     #expect(store.state.chat?.messages.count == 1)
     #expect(marks.recorded.count == 1)
@@ -420,12 +424,130 @@ private func awaitArmedFMWatch(
     await store.send(.dispatchNextIfIdle)
     #expect(store.state.retryClaimInFlight)
     #expect(store.state.queue.map(\.question) == ["Second question"])
-    await store.receive(.interruptedRetryClaimed(
-      conversationID: Self.conversationA, journalID: first.id,
-      executionID: first.id, automatic: true, claimed: true))
+    await store.skipReceivedActions()
     #expect(store.state.activeTurn?.question == "First question")
     #expect(store.state.queue.map(\.question) == ["Second question"])
     await store.skipInFlightEffects()
+  }
+
+  @Test func deletedConversationPreflightClearsUnstartedTurnAndDispatchesQueue() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let deleted = state.conversations[id: Self.conversationB]!
+    state.conversations.remove(id: Self.conversationB)
+    state.pendingDeletion = AppFeature.PendingDeletion(summary: deleted, index: 1)
+    let questionID = UUID(720)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: questionID, conversationID: Self.conversationB,
+      question: "Deleted question", startedAt: Date(timeIntervalSince1970: 1))
+    state.queue = [QueuedQuestion(
+      id: UUID(721), conversationID: Self.conversationA,
+      question: "Eligible question", submittedAt: Date(timeIntervalSince1970: 2))]
+    let runs = CallRecorder()
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.dispatchPreflightFinished(
+      questionID: questionID, directlyUserStarted: true))
+    await store.finish()
+    await store.skipReceivedActions()
+    #expect(!runs.recorded.contains("Deleted question"))
+    #expect(runs.recorded == ["Eligible question"])
+    #expect(store.state.queue.isEmpty)
+  }
+
+  @Test func submissionToPendingDeletionConversationIsRejected() async {
+    var state = Self.appState(selected: Self.conversationB)
+    let deleted = state.conversations[id: Self.conversationB]!
+    state.pendingDeletion = AppFeature.PendingDeletion(summary: deleted, index: 1)
+    let store = TestStore(initialState: state) { AppFeature() }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.submitQuestion(
+      QuestionSubmission(question: "Too late")))))
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.queue.isEmpty)
+    #expect(store.state.chat?.messages.isEmpty == true)
+  }
+
+  @Test func offscreenAutomaticRetryDispatchesAsGloballyOldestQueueItem() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let user = ChatMessage(
+      id: UUID(722), role: .user, body: .text("Retry elsewhere"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    state.queue = [QueuedQuestion(
+      id: UUID(723), conversationID: Self.conversationB,
+      submission: QuestionSubmission(question: user.previewText),
+      retryJournalID: user.id, existingUserMessage: user,
+      automaticRetry: true, submittedAt: user.createdAt)]
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.dispatchNextIfIdle)
+    await store.skipReceivedActions()
+    #expect(store.state.activeTurn?.conversationID == Self.conversationB)
+    #expect(store.state.activeTurn?.isAutomaticRetry == true)
+    #expect(store.state.queue.isEmpty)
+    await store.skipInFlightEffects()
+  }
+
+  @Test func unavailableAppleIntelligenceQueuesTrailingRetryAndWatchesRecovery() async {
+    let user = ChatMessage(
+      id: UUID(724), role: .user, body: .text("Retry when ready"),
+      createdAt: Date(timeIntervalSince1970: 2))
+    var state = Self.appState()
+    state.fmAvailability = .unavailable(reason: .modelNotReady)
+    state.chat?.messages.append(user)
+    state.chat?.interruptedTurns = [
+      InterruptedTurn(
+        question: "Older", interruptedAt: Date(timeIntervalSince1970: 1),
+        journalID: UUID(725), status: .manualRetryRequired),
+      InterruptedTurn(
+        question: user.previewText, interruptedAt: user.createdAt,
+        journalID: user.id, executionID: user.id,
+        status: .knownInterruption),
+    ]
+    let availability = LockIsolated<FMAvailability>(
+      .unavailable(reason: .modelNotReady))
+    let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
+    let runs = CallRecorder()
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.fmStatus = FMStatusClient(
+        availability: { availability.value },
+        availabilityUpdates: {
+          AsyncStream { continuation in
+            watchers.withValue { $0.append(continuation) }
+            continuation.yield(availability.value)
+          }
+        })
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.dispatchNextIfIdle)
+    #expect(store.state.queue.first?.automaticRetry == true)
+    await awaitArmedFMWatch(watchers)
+    availability.setValue(.available)
+    watchers.value.forEach { $0.yield(.available); $0.finish() }
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(runs.recorded == ["Retry when ready"])
+    #expect(store.state.queue.isEmpty)
   }
 
   @Test func claimedAutomaticRetryIsReleasedAfterConversationSwitch() async {
@@ -515,6 +637,55 @@ private func awaitArmedFMWatch(
     await store.finish()
     #expect(store.state.activeTurn == nil)
     #expect(endings.recorded == [questionID.uuidString])
+  }
+
+  @Test func failedDismissalSettlesOverlappingClaimAndReloadsSelectedChat() async {
+    let questionID = UUID(709)
+    let user = ChatMessage(
+      id: questionID, role: .user, body: .text("Retry"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    let interruption = InterruptedTurn(
+      question: "Retry", interruptedAt: user.createdAt,
+      journalID: questionID, executionID: questionID,
+      status: .manualRetryRequired, autoRetryCount: 1)
+    let reloads = CallRecorder()
+    let declines = CallRecorder()
+    let summary = Self.appState().conversations[id: Self.conversationA]!
+    var history = HistoryClient.noop()
+    history.loadConversation = { id in
+      reloads.record(id.uuidString)
+      return ConversationSnapshot(
+        summary: summary,
+        messages: [user], interruptedTurn: interruption)
+    }
+    history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
+    var state = Self.appState()
+    state.retryClaimInFlight = true
+    state.retryClaimJournalID = questionID
+    state.dismissedRetryJournalIDs.insert(questionID)
+    let failure = FailurePresentation(
+      code: "history_message_save_failed", title: "Dismiss failed",
+      message: "Try again.", diagnostic: "test")
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+    }
+    store.exhaustivity = .off
+
+    await store.send(.interruptedDismissalFinished(
+      conversationID: Self.conversationA, journalID: questionID,
+      failure: failure))
+    #expect(store.state.failedDismissalAwaitingClaim?.journalID == questionID)
+    await store.send(.interruptedRetryClaimed(
+      conversationID: Self.conversationA, journalID: questionID,
+      executionID: questionID, automatic: true, claimed: true))
+    await store.finish()
+    await store.skipReceivedActions()
+
+    #expect(declines.recorded == [questionID.uuidString])
+    #expect(reloads.recorded == [Self.conversationA.uuidString])
+    #expect(!store.state.dismissedRetryJournalIDs.contains(questionID))
+    #expect(store.state.retryClaimCleanupJournalID == nil)
+    #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
   }
 
   @Test func queuedClaimRechecksPersistedTrailingUserBeforeInference() async throws {
@@ -630,8 +801,98 @@ private func awaitArmedFMWatch(
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(questionID))))
     await store.finish()
     await store.skipReceivedActions()
-    #expect(store.state.followUpPreparation?.batch.updatedAt == Date(timeIntervalSince1970: 2))
+    #expect(store.state.followUpPreparation == nil)
     #expect(runs.recorded == [question])
+  }
+
+  @Test func deferredModelRetryStartsWhenFollowUpPreparationFinishes() async {
+    let prepared = Self.preparedFollowUp()
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      question: prepared.question, standaloneQuestion: prepared.question,
+      narration: "One property found.", result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: prepared.sourceAssistantMessageID,
+      context: context, updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.modelReadiness = .failed(ModelPreparationFailure(
+      code: "model_load_failed", stage: .containerLoad, mode: .evaluated,
+      userMessage: "failed", diagnostic: "safe"))
+    state.followUpPreparation = AppFeature.FollowUpPreparationState(
+      conversationID: Self.conversationA, context: context, batch: batch)
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = .noop
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.retryPreparation)
+    #expect(store.state.pendingPreparationRetryMode == .evaluated)
+    #expect(modes.value.isEmpty)
+    await store.send(.followUpPreparationEvent(
+      conversationID: Self.conversationA,
+      sourceMessageID: prepared.sourceAssistantMessageID,
+      event: .finished))
+    await store.finish()
+    await store.skipReceivedActions()
+    #expect(modes.value == [.evaluated])
+    #expect(store.state.pendingPreparationRetryMode == nil)
+    #expect(store.state.modelReadiness == .ready)
+  }
+
+  @Test func deferredModelRetryStartsWhenFollowUpStreamEndsUnexpectedly() async {
+    let sourceID = UUID(730)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: sourceID,
+      question: "Question", standaloneQuestion: "Question",
+      narration: "Answer", result: answer)
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: sourceID, context: context,
+      updatedAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.modelReadiness = .failed(ModelPreparationFailure(
+      code: "model_load_failed", stage: .containerLoad, mode: .evaluated,
+      userMessage: "failed", diagnostic: "safe"))
+    state.pendingPreparationRetryMode = .evaluated
+    state.followUpPreparation = AppFeature.FollowUpPreparationState(
+      conversationID: Self.conversationA, context: context, batch: batch)
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.historyClient = .noop()
+      $0.modelPreparationJournal = .noop
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.followUpPreparationStreamEnded(
+      conversationID: Self.conversationA, sourceMessageID: sourceID))
+    await store.finish()
+    await store.skipReceivedActions()
+    #expect(modes.value == [.evaluated])
+    #expect(store.state.pendingPreparationRetryMode == nil)
+    #expect(store.state.chat?.followUpBatch?.status == .completed)
   }
 
   @Test func expiredBackgroundGrantRequiresExplicitRetry() async throws {
@@ -1522,8 +1783,8 @@ private func awaitArmedFMWatch(
     #expect(eventWrites.recorded == ["{\"prepared\":true}"])
   }
 
-  /// Scene inactivity suspends lower-priority model work immediately.
-  @Test func transientInactivitySuspendsLowPriorityWork() async {
+  /// Brief scene inactivity preserves work already running in the foreground.
+  @Test func transientInactivityPreservesLowPriorityWork() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
       sourceAssistantMessageID: prepared.sourceAssistantMessageID,
@@ -1554,8 +1815,8 @@ private func awaitArmedFMWatch(
     await store.finish()
 
     #expect(store.state.isSceneActive == false)
-    #expect(store.state.followUpPreparation == nil)
-    #expect(store.state.isCapturingAnswerability == false)
+    #expect(store.state.followUpPreparation?.batch == batch)
+    #expect(store.state.isCapturingAnswerability == true)
     #expect(store.state.chat?.followUpBatch == batch)
   }
 
@@ -1581,8 +1842,12 @@ private func awaitArmedFMWatch(
     await store.send(.appBecameInactive)
     await clear.release()
     await store.finish()
-    #expect(store.state.activeTurn == nil)
+    #expect(store.state.activeTurn?.pipelineStarted == false)
     #expect(runs.recorded.isEmpty)
+
+    await store.send(.appBecameActive)
+    await store.finish()
+    #expect(runs.recorded == ["Question"])
   }
 
   @Test func transientInactivityQueuesNewQuestionUntilReactivation() async {
@@ -2608,6 +2873,7 @@ private func awaitArmedFMWatch(
       questionID: activeID, conversationID: Self.conversationB,
       question: "Retry elsewhere", startedAt: Date(timeIntervalSince1970: 0))
     state.activeTurn?.autoRetryCount = 1
+    state.activeTurn?.isAutomaticRetry = true
     let haptics = CallRecorder()
     let unreadWrites = CallRecorder()
     var history = HistoryClient.noop()
@@ -2628,9 +2894,37 @@ private func awaitArmedFMWatch(
       event: Self.finishedEvent()))
     await store.finish()
     #expect(store.state.answerReadyBanner == nil)
-    #expect(store.state.conversations[id: Self.conversationB]?.isUnread == false)
+    #expect(store.state.conversations[id: Self.conversationB]?.isUnread == true)
     #expect(haptics.count == 0)
-    #expect(unreadWrites.recorded.isEmpty)
+    #expect(unreadWrites.recorded == ["\(Self.conversationB.uuidString):true"])
+  }
+
+  @Test func offscreenManualRetryAfterAutomaticAttemptStillNotifies() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let activeID = UUID(902)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID, conversationID: Self.conversationB,
+      question: "Ask again elsewhere", startedAt: Date(timeIntervalSince1970: 0))
+    state.activeTurn?.autoRetryCount = 1
+    state.activeTurn?.isAutomaticRetry = false
+    let haptics = CallRecorder()
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.continuousClock = TestClock()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.haptics = HapticsClient(answerReady: { haptics.record("haptic") })
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pipelineEvent(
+      conversationID: Self.conversationB, questionID: activeID,
+      event: Self.finishedEvent()))
+    #expect(store.state.conversations[id: Self.conversationB]?.isUnread == true)
+    #expect(store.state.answerReadyBanner?.conversationID == Self.conversationB)
+    await store.skipReceivedActions()
+    #expect(haptics.count == 1)
+    await store.skipInFlightEffects()
   }
 
   @Test func backgroundTaskFinishesAfterTerminalWriteSettles() async {
@@ -2665,7 +2959,7 @@ private func awaitArmedFMWatch(
     #expect(finishes.recorded == ["true"])
   }
 
-  @Test func savedTurnDoesNotWarnWhileBackgroundCleanupWaits() async {
+  @Test func savedTurnReportsDrainStallWithoutReleasingQueuedWork() async {
     let cleanup = AssistantPersistenceGate()
     let clock = TestClock()
     let activeID = UUID(904)
@@ -2673,6 +2967,9 @@ private func awaitArmedFMWatch(
     state.activeTurn = AppFeature.ActiveTurn(
       questionID: activeID, conversationID: Self.conversationA,
       question: "Which property leads?", startedAt: Date(timeIntervalSince1970: 1))
+    state.queue = [QueuedQuestion(
+      id: UUID(905), conversationID: Self.conversationA,
+      question: "Next question", submittedAt: Date(timeIntervalSince1970: 2))]
     let background = BackgroundTurnClient(
       begin: { _, _ in true }, progress: { _, _ in },
       finish: { _, _ in await cleanup.holdFirstAssistant() })
@@ -2691,11 +2988,52 @@ private func awaitArmedFMWatch(
     await store.receive(.turnPersistenceWriteSettled(activeID))
     await cleanup.waitUntilHeld()
     await clock.advance(by: .seconds(5))
+    await store.receive(.turnPersistenceDrainTimedOut(activeID))
     #expect(store.state.pendingTurnPersistenceID == activeID)
     #expect(store.state.pendingTurnPersistence?.didTimeOut == false)
-    #expect(store.state.presentedFailure == nil)
+    #expect(store.state.pendingTurnPersistence?.didDrainTimeOut == true)
+    #expect(store.state.presentedFailure?.code == "turn_inference_drain_timed_out")
+    #expect(store.state.queue.map(\.question) == ["Next question"])
     await cleanup.release()
     await store.finish()
+  }
+
+  @Test func stoppedTurnUsesDrainWatchdogAfterTerminalWrite() async {
+    let cleanup = AssistantPersistenceGate()
+    let clock = TestClock()
+    let activeID = UUID(906)
+    var state = Self.appState()
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID, conversationID: Self.conversationA,
+      question: "Stop this", startedAt: Date(timeIntervalSince1970: 1))
+    state.queue = [QueuedQuestion(
+      id: UUID(907), conversationID: Self.conversationA,
+      question: "Wait for stop", submittedAt: Date(timeIntervalSince1970: 2))]
+    let background = BackgroundTurnClient(
+      begin: { _, _ in true }, progress: { _, _ in },
+      finish: { _, _ in await cleanup.holdFirstAssistant() })
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.backgroundTurn = background
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.stopActiveTurn)))
+    await store.receive(.turnPersistenceWriteSettled(activeID))
+    await cleanup.waitUntilHeld()
+    await clock.advance(by: .seconds(5))
+    await store.receive(.turnPersistenceDrainTimedOut(activeID))
+    #expect(store.state.pendingTurnPersistence?.phase == .drainingInference)
+    #expect(store.state.pendingTurnPersistence?.didTimeOut == false)
+    #expect(store.state.presentedFailure?.code == "turn_inference_drain_timed_out")
+    #expect(store.state.queue.map(\.question) == ["Wait for stop"])
+    await cleanup.release()
+    await store.skipReceivedActions()
+    await store.skipInFlightEffects()
   }
 
   @Test func selectingUnreadConversationClearsUnread() async {
@@ -2787,6 +3125,35 @@ private func awaitArmedFMWatch(
     #expect(store.state.chat?.processing?.questionID == active.questionID)
     #expect(store.state.chat?.interruptedTurn == nil)
     #expect(recoveryWrites.recorded.isEmpty)
+  }
+
+  @Test func snapshotBeforeProvisionalPersistenceKeepsActiveTurnRunning() async {
+    let prepared = Self.preparedFollowUp()
+    let questionID = UUID(903)
+    var state = Self.appState(selected: Self.conversationB)
+    var active = AppFeature.ActiveTurn(
+      questionID: questionID, conversationID: Self.conversationA,
+      submission: QuestionSubmission(
+        question: prepared.question, source: .preparedFollowUp(prepared)),
+      startedAt: Date(timeIntervalSince1970: 1))
+    active.provisionalAssistantMessageID = UUID(904)
+    state.activeTurn = active
+    let user = ChatMessage(
+      id: questionID, role: .user, body: .text(prepared.question),
+      createdAt: active.startedAt)
+    let snapshot = ConversationSnapshot(
+      summary: state.conversations[id: Self.conversationA]!,
+      messages: [user],
+      interruptedTurn: InterruptedTurn(
+        question: prepared.question, interruptedAt: active.startedAt,
+        journalID: questionID, executionID: questionID))
+    let store = TestStore(initialState: state) { AppFeature() }
+    store.exhaustivity = .off
+
+    await store.send(.conversationLoaded(snapshot))
+    #expect(store.state.chat?.processing?.questionID == questionID)
+    #expect(store.state.chat?.interruptedTurn == nil)
+    #expect(store.state.chat?.messages.last?.id == questionID)
   }
 
   @Test func recoveredPreparedAnswerEndsOnlyItsMatchingJournal() async {
