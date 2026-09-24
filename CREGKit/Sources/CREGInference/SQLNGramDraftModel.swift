@@ -179,7 +179,7 @@ private struct SQLNGramSpeculativeTokenIterator: TokenIteratorProtocol {
     precondition(serialPrefixTokens >= 0)
     self.y = input.text
     self.mainModel = mainModel
-    self.mainCache = mainCache ?? mainModel.newCache(parameters: parameters)
+    self.mainCache = try mainCache ?? mainModel.newCache(parameters: parameters)
     guard canTrimPromptCache(self.mainCache) else {
       throw SQLNGramSpeculationError(
         message: "SQL n-gram speculation requires trimmable target caches.")
@@ -218,7 +218,7 @@ private struct SQLNGramSpeculativeTokenIterator: TokenIteratorProtocol {
     self.kvScheme = parameters.kvScheme
 
     let started = Date.timeIntervalSinceReferenceDate
-    try prepare(input: input, windowSize: parameters.prefillStepSize)
+    try prepare(input: input, prefill: parameters.prefill)
     self.promptPrefillTime = Date.timeIntervalSinceReferenceDate - started
   }
 
@@ -228,13 +228,14 @@ private struct SQLNGramSpeculativeTokenIterator: TokenIteratorProtocol {
 
   private mutating func prepare(
     input: LMInput,
-    windowSize: Int?
+    prefill: PrefillParameters
   ) throws {
     processor?.prompt(input.text.tokens)
     switch try mainModel.prepare(
       input,
       cache: mainCache,
-      windowSize: windowSize)
+      state: nil,
+      prefill: prefill)
     {
     case .tokens(let tokens):
       y = tokens

@@ -31,6 +31,11 @@ public struct HistoryClient: Sendable {
   public var claimTurnRetry:
     @Sendable (_ conversationID: UUID, _ journalID: UUID,
       _ executionID: UUID, _ automatic: Bool) async throws -> Bool
+  public var declineAutoRetry:
+    @Sendable (_ conversationID: UUID, _ journalID: UUID) async throws -> Void
+  public var releaseAutoRetryClaim:
+    @Sendable (_ conversationID: UUID, _ journalID: UUID,
+      _ executionID: UUID) async throws -> Void
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   /// Replaces an existing body/telemetry payload without changing transcript
@@ -144,6 +149,13 @@ extension HistoryClient {
       claimTurnRetry: {
         try await store.claimTurnRetry(
           conversationID: $0, journalID: $1, executionID: $2, automatic: $3)
+      },
+      declineAutoRetry: {
+        try await store.declineAutoRetry(conversationID: $0, journalID: $1)
+      },
+      releaseAutoRetryClaim: {
+        try await store.releaseAutoRetryClaim(
+          conversationID: $0, journalID: $1, executionID: $2)
       },
       appendMessage: { try await store.appendMessage(conversationID: $0, message: $1) },
       updateMessage: { try await store.updateMessage(conversationID: $0, message: $1) },

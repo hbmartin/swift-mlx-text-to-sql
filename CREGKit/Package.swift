@@ -18,13 +18,14 @@ let package = Package(
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
       revision: "59b4080c58467dab72eeb98c2b1dbf291e38bec1"),
-    // The current structured-decoding integration is qualified against this
-    // pair. Upgrade the MLX family together for the Foundation Models bridge
-    // only after grammar parity and the full SQL safety corpus pass.
-    .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
+    // The pinned MLX revision includes the upstream Metal command-buffer
+    // callback fix. Keep the language-model integration pinned alongside it.
+    .package(
+      url: "https://github.com/ml-explore/mlx-swift",
+      revision: "901941965d82e4a216d4d117231d847d194c563d"),
     .package(
       url: "https://github.com/ml-explore/mlx-swift-lm",
-      exact: "3.31.4"),
+      revision: "ee673d6a71d76e67b532dc7eaf91d92edc3bb8bb"),
     // This structured-decoding revision retains CREG's existing EBNF safety
     // constraint. Do not drop it merely to resolve an MLX bridge upgrade.
     .package(

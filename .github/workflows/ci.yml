@@ -24,6 +24,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Verify AutoTableCharts pin agreement
         run: python3 fine-tuning/tools/check_swift_package_pins.py
 
@@ -59,6 +62,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      - name: Install Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Cache Swift and Xcode build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

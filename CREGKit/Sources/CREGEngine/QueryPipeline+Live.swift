@@ -519,7 +519,6 @@ extension QueryPipeline {
               }
               let chosenCandidate = selection.candidate
               telemetry.confidence = selection.confidence
-              let votingConfidence = selection.confidence
               telemetry.selectionReason = selection.selectionReason
               telemetry.noConsensusReason = selection.noConsensusReason
               telemetry.voteOutcome = selection.outcome
@@ -626,7 +625,10 @@ extension QueryPipeline {
                         telemetry.grounding = correctedGrounding
                         telemetry.semanticAlignment = .aligned
                         telemetry.semanticCorrectionAccepted = true
-                        telemetry.confidence = votingConfidence
+                        // The vote selected the original SQL. Semantic
+                        // alignment validates the correction, but does not
+                        // provide an independent vote for its result.
+                        telemetry.confidence = .unconfirmed
                         telemetry.selectedCandidateID = corrected.id
                         if let previousIndex = telemetry.candidates.firstIndex(
                           where: { $0.id == chosenCandidate.id })
@@ -679,8 +681,7 @@ extension QueryPipeline {
               if alignment == .mismatch,
                 telemetry.semanticCorrectionAccepted != true
               {
-                notices.append(
-                  "This answer may not fully match your question; the original validated result is shown.")
+                notices.append(Self.semanticMismatchNotice)
               }
               let notice = notices.joined(separator: " ")
               finish(
@@ -717,6 +718,7 @@ extension QueryPipeline {
         }
       },
       runtimeMode: { await sqlGen.runtimeMode() },
+      waitUntilInferenceIdle: { await serializer.waitUntilIdle() },
       run: runFreeForm,
       runStarter: { starter in
         deterministicStarterStream(

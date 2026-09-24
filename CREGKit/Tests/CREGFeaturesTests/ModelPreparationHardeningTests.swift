@@ -5,6 +5,25 @@ import Testing
 @testable import CREGEngine
 @testable import CREGFeatures
 
+private actor PreparationDrainGate {
+  private var arrived = false
+  private var arrivalWaiter: CheckedContinuation<Void, Never>?
+  private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+  func waitForDrain() async {
+    arrived = true
+    arrivalWaiter?.resume()
+    await withCheckedContinuation { releaseWaiter = $0 }
+  }
+
+  func waitUntilDraining() async {
+    if arrived { return }
+    await withCheckedContinuation { arrivalWaiter = $0 }
+  }
+
+  func release() { releaseWaiter?.resume() }
+}
+
 @Suite struct BuildChannelTests {
   private func configuration(
     debugIdentity: DebugModelIdentity? = nil,
@@ -204,6 +223,57 @@ import Testing
 
 @MainActor
 @Suite struct ModelPreparationFeatureTests {
+  @Test func suspendedJournalWaitsForRawPreparationDrain() async throws {
+    let attemptID = UUID()
+    let file = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString + ".json")
+    let journalStore = ModelPreparationJournalStore(url: file)
+    try await journalStore.begin(
+      attemptID: attemptID, mode: .evaluated, environment: [:])
+    let drain = PreparationDrainGate()
+    let pipeline = QueryPipeline(
+      waitUntilInferenceIdle: { await drain.waitForDrain() },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = AppFeature.State()
+    state.modelPreparationInFlight = true
+    state.modelPreparationModeInFlight = .evaluated
+    state.modelPreparationAttemptID = attemptID
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = .live(store: journalStore)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.appBecameInactive)
+    await drain.waitUntilDraining()
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let before = try #require(await journalStore.exportData())
+    #expect(try decoder.decode(ModelPreparationJournalSnapshot.self, from: before).completed == false)
+    #expect(store.state.drainingModelPreparationAttemptID == attemptID)
+    await drain.release()
+    await store.receive(.modelPreparationSuspended(attemptID))
+    let after = try #require(await journalStore.exportData())
+    #expect(try decoder.decode(ModelPreparationJournalSnapshot.self, from: after).outcome == "suspended")
+    #expect(store.state.drainingModelPreparationAttemptID == nil)
+    await store.finish()
+  }
+
+  @Test func cancelledPreparationCompletionCannotReplaceDrainingAttempt() async {
+    let oldID = UUID()
+    var state = AppFeature.State()
+    state.drainingModelPreparationAttemptID = oldID
+    state.suspendedModelPreparationMode = .evaluated
+    let store = TestStore(initialState: state) { AppFeature() }
+    store.exhaustivity = .off
+
+    await store.send(.modelPrepared(
+      ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 0),
+      attemptID: oldID))
+    #expect(store.state.modelReadiness == .preparing)
+    #expect(store.state.drainingModelPreparationAttemptID == oldID)
+  }
+
   @Test func quietMemoryWindowResumesSuspendedPreparation() async {
     let modes = LockIsolated<[ModelRuntimeMode]>([])
     let pipeline = QueryPipeline(
@@ -236,6 +306,44 @@ import Testing
     await store.skipReceivedActions()
     #expect(modes.value == [.evaluated])
     #expect(store.state.modelReadiness == .ready)
+  }
+
+  @Test func explicitRetryDuringPressureStartsOnceAfterQuietEvenWithQueuedQuestion() async {
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    let pressureID = UUID()
+    var state = AppFeature.State()
+    state.modelReadiness = .failed(ModelPreparationFailure(
+      code: "model_load_failed", stage: .containerLoad, mode: .evaluated,
+      userMessage: "failed", diagnostic: "safe"))
+    state.pressureGeneration = pressureID
+    state.queue = [QueuedQuestion(
+      id: UUID(), conversationID: UUID(), question: "Waiting question",
+      submittedAt: Date(timeIntervalSince1970: 1))]
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = .noop
+      $0.historyClient = .noop()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.retryPreparation)
+    await store.send(.retryPreparation)
+    #expect(store.state.pendingPreparationRetryMode == .evaluated)
+    #expect(modes.value.isEmpty)
+    await store.send(.pressureQuiet(pressureID))
+    await store.receive(\.modelPrepared)
+    #expect(modes.value == [.evaluated])
+    #expect(store.state.pendingPreparationRetryMode == nil)
   }
 
   @Test func appearanceSynchronizesExistingChatWhilePreparing() async {

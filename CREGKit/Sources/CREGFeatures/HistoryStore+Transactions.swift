@@ -17,6 +17,32 @@ extension HistoryStore {
     }
   }
 
+  func declineAutoRetry(conversationID: UUID, journalID: UUID) async throws {
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          UPDATE turn_journal SET status = 'manual_retry_required'
+          WHERE conversation_id = ? AND journal_id = ?
+          """,
+        arguments: [conversationID.uuidString, journalID.uuidString])
+    }
+  }
+
+  func releaseAutoRetryClaim(
+    conversationID: UUID, journalID: UUID, executionID: UUID
+  ) async throws {
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          UPDATE turn_journal SET status = 'known_interruption', auto_retry_count = 0
+          WHERE conversation_id = ? AND journal_id = ? AND execution_id = ?
+            AND status = 'running' AND auto_retry_count = 1
+          """,
+        arguments: [conversationID.uuidString, journalID.uuidString,
+          executionID.uuidString])
+    }
+  }
+
   func markTurnInterrupted(
     conversationID: UUID, executionID: UUID,
     ambiguous: Bool
@@ -47,11 +73,14 @@ extension HistoryStore {
           SET execution_id = ?, status = 'running',
               auto_retry_count = CASE WHEN ? = 1 THEN 1 ELSE auto_retry_count END
           WHERE conversation_id = ? AND journal_id = ?
+            AND (SELECT id FROM message WHERE conversation_id = ?
+                 ORDER BY position DESC LIMIT 1) = ?
             AND (? = 0 OR (status = 'known_interruption' AND auto_retry_count = 0))
           """,
         arguments: [
           executionID.uuidString, automatic ? 1 : 0,
-          conversationID.uuidString, journalID.uuidString, automatic ? 1 : 0,
+          conversationID.uuidString, journalID.uuidString,
+          conversationID.uuidString, executionID.uuidString, automatic ? 1 : 0,
         ])
       return db.changesCount == 1
     }

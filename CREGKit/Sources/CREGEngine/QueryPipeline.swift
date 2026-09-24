@@ -10,6 +10,9 @@ import Foundation
 /// to share one `InferenceSerializer` so the two inference stacks
 /// never overlap.
 public struct QueryPipeline: Sendable {
+  public static let semanticMismatchNotice =
+    "This answer may not fully match your question; the original validated result is shown."
+
   public struct Configuration: Sendable, Equatable {
     public var model: ModelReference
     public var gcd: GCDMode
@@ -64,6 +67,7 @@ public struct QueryPipeline: Sendable {
 
   private var prepareMode: @Sendable (ModelRuntimeMode) async throws -> ModelPreparationReport
   private var readRuntimeMode: @Sendable () async -> ModelRuntimeMode
+  public var waitUntilInferenceIdle: @Sendable () async -> Void
   public var run:
     @Sendable (_ question: String, _ history: [ConversationTurn])
       -> AsyncStream<PipelineEvent>
@@ -77,6 +81,7 @@ public struct QueryPipeline: Sendable {
 
   public init(
     prepare: @escaping @Sendable () async throws -> Void = {},
+    waitUntilInferenceIdle: @escaping @Sendable () async -> Void = {},
     run:
       @escaping @Sendable (String, [ConversationTurn])
       -> AsyncStream<PipelineEvent>,
@@ -101,6 +106,7 @@ public struct QueryPipeline: Sendable {
           Double(started.duration(to: .now).microseconds) / 1_000)
     }
     self.readRuntimeMode = { .evaluated }
+    self.waitUntilInferenceIdle = waitUntilInferenceIdle
     self.run = run
     self.runStarter =
       runStarter ?? { starter in
@@ -121,6 +127,7 @@ public struct QueryPipeline: Sendable {
       @escaping @Sendable (ModelRuntimeMode) async throws
       -> ModelPreparationReport,
     runtimeMode: @escaping @Sendable () async -> ModelRuntimeMode,
+    waitUntilInferenceIdle: @escaping @Sendable () async -> Void = {},
     run:
       @escaping @Sendable (String, [ConversationTurn])
       -> AsyncStream<PipelineEvent>,
@@ -138,6 +145,7 @@ public struct QueryPipeline: Sendable {
   ) {
     self.prepareMode = prepareMode
     self.readRuntimeMode = runtimeMode
+    self.waitUntilInferenceIdle = waitUntilInferenceIdle
     self.run = run
     self.runStarter =
       runStarter ?? { starter in

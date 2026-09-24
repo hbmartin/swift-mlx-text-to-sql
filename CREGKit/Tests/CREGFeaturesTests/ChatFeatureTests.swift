@@ -380,10 +380,9 @@ private func awaitArmedFMWatch(
       QuestionSubmission(question: "Which property leads?")))))
     #expect(store.state.chat?.messages.count == 1)
     await store.send(.appBecameInactive)
-    #expect(store.state.activeTurn != nil)
+    #expect(store.state.activeTurn == nil)
     await store.send(.appEnteredBackground)
     await store.finish()
-    await store.skipReceivedActions()
     #expect(store.state.chat?.interruptedTurn?.canAutoRetry == true)
     #expect(store.state.chat?.messages.count == 1)
     #expect(marks.recorded.count == 1)
@@ -394,6 +393,63 @@ private func awaitArmedFMWatch(
     #expect(attempts.value == 2)
     #expect(store.state.chat?.messages.count == 2)
     #expect(store.state.chat?.interruptedTurn == nil)
+  }
+
+  @Test func interruptedQ1ClaimsBeforeQueuedQ2Dispatches() async {
+    let first = ChatMessage(
+      id: UUID(705), role: .user, body: .text("First question"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    var state = Self.appState()
+    state.chat?.messages = IdentifiedArray(uniqueElements: [first])
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: first.previewText, interruptedAt: first.createdAt,
+      journalID: first.id, executionID: first.id,
+      status: .knownInterruption)
+    state.queue = [QueuedQuestion(
+      id: UUID(706), conversationID: Self.conversationA,
+      question: "Second question", submittedAt: Date(timeIntervalSince1970: 2))]
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+      $0.continuousClock = TestClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.dispatchNextIfIdle)
+    #expect(store.state.retryClaimInFlight)
+    #expect(store.state.queue.map(\.question) == ["Second question"])
+    await store.receive(.interruptedRetryClaimed(
+      conversationID: Self.conversationA, journalID: first.id,
+      executionID: first.id, automatic: true, claimed: true))
+    #expect(store.state.activeTurn?.question == "First question")
+    #expect(store.state.queue.map(\.question) == ["Second question"])
+    await store.skipInFlightEffects()
+  }
+
+  @Test func claimedAutomaticRetryIsReleasedAfterConversationSwitch() async {
+    let questionID = UUID(707)
+    let releases = CallRecorder()
+    var history = HistoryClient.noop()
+    history.releaseAutoRetryClaim = { conversationID, journalID, executionID in
+      releases.record("\(conversationID):\(journalID):\(executionID)")
+    }
+    var state = Self.appState(selected: Self.conversationB)
+    state.retryClaimInFlight = true
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+    }
+    store.exhaustivity = .off
+
+    await store.send(.interruptedRetryClaimed(
+      conversationID: Self.conversationA, journalID: questionID,
+      executionID: questionID, automatic: true, claimed: true))
+    await store.finish()
+    #expect(store.state.activeTurn == nil)
+    #expect(releases.recorded == [
+      "\(Self.conversationA):\(questionID):\(questionID)"
+    ])
   }
 
   @Test func busyAskAgainQueuesOriginalSourceAndCancellationKeepsJournal() async {
@@ -429,6 +485,81 @@ private func awaitArmedFMWatch(
     if let queuedID { await store.send(.chat(.delegate(.cancelQueued(queuedID)))) }
     #expect(store.state.queue.isEmpty)
     #expect(store.state.chat?.interruptedTurn?.journalID == oldID)
+    #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
+  }
+
+  @Test func dismissalRemovesQueuedRetryAndIgnoresLateClaim() async {
+    let questionID = UUID(708)
+    let endings = CallRecorder()
+    var history = HistoryClient.noop()
+    history.endTurnJournal = { _, journalID in
+      endings.record(journalID.uuidString)
+    }
+    var state = Self.appState()
+    state.retryClaimInFlight = true
+    state.queue = [QueuedQuestion(
+      id: UUID(709), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: "Retry"),
+      retryJournalID: questionID,
+      submittedAt: Date(timeIntervalSince1970: 2))]
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(questionID))))
+    #expect(store.state.queue.isEmpty)
+    await store.send(.interruptedRetryClaimed(
+      conversationID: Self.conversationA, journalID: questionID,
+      executionID: questionID, automatic: true, claimed: true))
+    await store.finish()
+    #expect(store.state.activeTurn == nil)
+    #expect(endings.recorded == [questionID.uuidString])
+  }
+
+  @Test func queuedClaimRechecksPersistedTrailingUserBeforeInference() async throws {
+    let first = ChatMessage(
+      id: UUID(710), role: .user, body: .text("First question"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    let later = ChatMessage(
+      id: UUID(711), role: .user, body: .text("Later question"),
+      createdAt: Date(timeIntervalSince1970: 2))
+    var state = Self.appState()
+    let interrupted = InterruptedTurn(
+      question: first.previewText, interruptedAt: first.createdAt,
+      journalID: first.id, executionID: first.id,
+      status: .running, autoRetryCount: 1)
+    state.chat?.messages = IdentifiedArray(uniqueElements: [first])
+    state.chat?.interruptedTurn = interrupted
+    state.queue = [QueuedQuestion(
+      id: UUID(712), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: first.previewText),
+      retryJournalID: first.id, retryAlreadyClaimed: true,
+      existingUserMessage: first, automaticRetry: true,
+      submittedAt: Date(timeIntervalSince1970: 3))]
+    let declines = CallRecorder()
+    var history = HistoryClient.noop()
+    let summary = try #require(state.conversations[id: Self.conversationA])
+    history.loadConversation = { _ in
+      ConversationSnapshot(
+        summary: summary, messages: [first, later],
+        interruptedTurn: interrupted)
+    }
+    history.declineAutoRetry = { _, journalID in
+      declines.record(journalID.uuidString)
+    }
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+      $0.queryPipeline = Self.hangingPipeline()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.dispatchNextIfIdle)
+    await store.finish()
+    await store.skipReceivedActions()
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
+    #expect(declines.recorded == [first.id.uuidString])
   }
 
   @Test func claimedRetryRequeuedDuringInactivityKeepsItsJournalIfCancelled() async {
@@ -1391,8 +1522,8 @@ private func awaitArmedFMWatch(
     #expect(eventWrites.recorded == ["{\"prepared\":true}"])
   }
 
-  /// A brief inactive transition closes dispatch while existing work continues.
-  @Test func transientInactivityKeepsLowPriorityWork() async {
+  /// Scene inactivity suspends lower-priority model work immediately.
+  @Test func transientInactivitySuspendsLowPriorityWork() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
       sourceAssistantMessageID: prepared.sourceAssistantMessageID,
@@ -1423,9 +1554,35 @@ private func awaitArmedFMWatch(
     await store.finish()
 
     #expect(store.state.isSceneActive == false)
-    #expect(store.state.followUpPreparation != nil)
-    #expect(store.state.isCapturingAnswerability == true)
+    #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.isCapturingAnswerability == false)
     #expect(store.state.chat?.followUpBatch == batch)
+  }
+
+  @Test func inactiveSceneDuringBatchClearDoesNotStartPipeline() async {
+    let clear = AssistantPersistenceGate()
+    let runs = CallRecorder()
+    var history = HistoryClient.noop()
+    history.clearFollowUpBatch = { _ in await clear.holdFirstAssistant() }
+    let store = TestStore(initialState: Self.appState()) {
+      AppFeature()
+    } withDependencies: {
+      $0.historyClient = history
+      $0.queryPipeline = Self.scriptedPipeline(runs: runs)
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 3))
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.delegate(.submitQuestion(
+      QuestionSubmission(question: "Question")))))
+    await clear.waitUntilHeld()
+    await store.send(.appBecameInactive)
+    await clear.release()
+    await store.finish()
+    #expect(store.state.activeTurn == nil)
+    #expect(runs.recorded.isEmpty)
   }
 
   @Test func transientInactivityQueuesNewQuestionUntilReactivation() async {
@@ -2444,6 +2601,38 @@ private func awaitArmedFMWatch(
     await store.finish()
   }
 
+  @Test func offscreenAutomaticRetryFinishesWithoutBannerOrHaptic() async {
+    var state = Self.appState(selected: Self.conversationA)
+    let activeID = UUID(901)
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID, conversationID: Self.conversationB,
+      question: "Retry elsewhere", startedAt: Date(timeIntervalSince1970: 0))
+    state.activeTurn?.autoRetryCount = 1
+    let haptics = CallRecorder()
+    let unreadWrites = CallRecorder()
+    var history = HistoryClient.noop()
+    history.setUnread = { id, isUnread in
+      unreadWrites.record("\(id.uuidString):\(isUnread)")
+    }
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.continuousClock = TestClock()
+      $0.haptics = HapticsClient(answerReady: { haptics.record("haptic") })
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pipelineEvent(
+      conversationID: Self.conversationB, questionID: activeID,
+      event: Self.finishedEvent()))
+    await store.finish()
+    #expect(store.state.answerReadyBanner == nil)
+    #expect(store.state.conversations[id: Self.conversationB]?.isUnread == false)
+    #expect(haptics.count == 0)
+    #expect(unreadWrites.recorded.isEmpty)
+  }
+
   @Test func backgroundTaskFinishesAfterTerminalWriteSettles() async {
     let gate = AssistantPersistenceGate()
     let finishes = CallRecorder()
@@ -2474,6 +2663,39 @@ private func awaitArmedFMWatch(
     await gate.release()
     await store.finish()
     #expect(finishes.recorded == ["true"])
+  }
+
+  @Test func savedTurnDoesNotWarnWhileBackgroundCleanupWaits() async {
+    let cleanup = AssistantPersistenceGate()
+    let clock = TestClock()
+    let activeID = UUID(904)
+    var state = Self.appState()
+    state.activeTurn = AppFeature.ActiveTurn(
+      questionID: activeID, conversationID: Self.conversationA,
+      question: "Which property leads?", startedAt: Date(timeIntervalSince1970: 1))
+    let background = BackgroundTurnClient(
+      begin: { _, _ in true }, progress: { _, _ in },
+      finish: { _, _ in await cleanup.holdFirstAssistant() })
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.backgroundTurn = background
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pipelineEvent(
+      conversationID: Self.conversationA, questionID: activeID,
+      event: Self.finishedEvent()))
+    await store.receive(.turnPersistenceWriteSettled(activeID))
+    await cleanup.waitUntilHeld()
+    await clock.advance(by: .seconds(5))
+    #expect(store.state.pendingTurnPersistenceID == activeID)
+    #expect(store.state.pendingTurnPersistence?.didTimeOut == false)
+    #expect(store.state.presentedFailure == nil)
+    await cleanup.release()
+    await store.finish()
   }
 
   @Test func selectingUnreadConversationClearsUnread() async {
@@ -2515,9 +2737,10 @@ private func awaitArmedFMWatch(
   @Test func switchingBackDoesNotRecoverThisProcessesLivePreparedAnswer() async {
     let prepared = Self.preparedFollowUp()
     let provisionalID = UUID(88)
+    let questionID = UUID(90)
     var state = Self.appState(selected: Self.conversationB)
     var active = AppFeature.ActiveTurn(
-      questionID: UUID(90),
+      questionID: questionID,
       conversationID: Self.conversationA,
       submission: QuestionSubmission(
         question: prepared.question,
@@ -2529,11 +2752,19 @@ private func awaitArmedFMWatch(
       summary: state.conversations[id: Self.conversationA]!,
       messages: [
         ChatMessage(
+          id: questionID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 1)),
+        ChatMessage(
           id: provisionalID,
           role: .assistant,
           body: .preparedAnswer(prepared),
           createdAt: Date(timeIntervalSince1970: 2))
-      ])
+      ],
+      interruptedTurn: InterruptedTurn(
+        question: prepared.question,
+        interruptedAt: Date(timeIntervalSince1970: 1),
+        journalID: questionID,
+        executionID: questionID))
     let recoveryWrites = CallRecorder()
     var history = HistoryClient.noop()
     history.updateMessage = { _, _ in recoveryWrites.record("update") }
@@ -2549,12 +2780,210 @@ private func awaitArmedFMWatch(
     await store.send(.conversationLoaded(snapshot))
     await store.finish()
 
-    guard case .preparedAnswer? = store.state.chat?.messages.first?.body else {
+    guard case .preparedAnswer? = store.state.chat?.messages[id: provisionalID]?.body else {
       Issue.record("Expected the live provisional answer to remain provisional")
       return
     }
     #expect(store.state.chat?.processing?.questionID == active.questionID)
+    #expect(store.state.chat?.interruptedTurn == nil)
     #expect(recoveryWrites.recorded.isEmpty)
+  }
+
+  @Test func recoveredPreparedAnswerEndsOnlyItsMatchingJournal() async {
+    let prepared = Self.preparedFollowUp()
+    let firstUserID = UUID(81)
+    let firstAnswerID = UUID(82)
+    let secondUserID = UUID(83)
+    let firstJournalID = UUID(84)
+    let secondJournalID = UUID(85)
+    let state = Self.appState(selected: Self.conversationB)
+    let snapshot = ConversationSnapshot(
+      summary: state.conversations[id: Self.conversationA]!,
+      messages: [
+        ChatMessage(
+          id: firstUserID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 1)),
+        ChatMessage(
+          id: firstAnswerID, role: .assistant, body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2)),
+        ChatMessage(
+          id: secondUserID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 3)),
+      ],
+      interruptedTurns: [
+        InterruptedTurn(
+          question: prepared.question,
+          interruptedAt: Date(timeIntervalSince1970: 1),
+          journalID: firstJournalID, executionID: firstUserID),
+        InterruptedTurn(
+          question: prepared.question,
+          interruptedAt: Date(timeIntervalSince1970: 3),
+          journalID: secondJournalID, executionID: secondUserID,
+          status: .ambiguousInterruption),
+      ])
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, message in writes.record("update:\(message.id)") }
+    history.endTurnJournal = { _, journalID in writes.record("end:\(journalID)") }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.conversationLoaded(snapshot))
+    await store.finish()
+
+    #expect(writes.recorded == ["update:\(firstAnswerID)", "end:\(firstJournalID)"])
+    #expect(store.state.chat?.interruptedTurns.map(\.journalID) == [secondJournalID])
+    guard case .answer? = store.state.chat?.messages[id: firstAnswerID]?.body else {
+      Issue.record("Expected the recovered answer to be finalized")
+      return
+    }
+  }
+
+  @Test func recoveredOlderAnswerEndsJournalWhileAnotherAnswerIsActive() async {
+    let prepared = Self.preparedFollowUp()
+    let oldUserID = UUID(81)
+    let oldAnswerID = UUID(82)
+    let oldJournalID = UUID(83)
+    let activeUserID = UUID(90)
+    let activeAnswerID = UUID(91)
+    let activeJournalID = UUID(92)
+    var state = Self.appState(selected: Self.conversationB)
+    var active = AppFeature.ActiveTurn(
+      questionID: activeUserID, conversationID: Self.conversationA,
+      submission: QuestionSubmission(
+        question: prepared.question, source: .preparedFollowUp(prepared)),
+      startedAt: Date(timeIntervalSince1970: 3))
+    active.provisionalAssistantMessageID = activeAnswerID
+    state.activeTurn = active
+    let snapshot = ConversationSnapshot(
+      summary: state.conversations[id: Self.conversationA]!,
+      messages: [
+        ChatMessage(
+          id: oldUserID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 1)),
+        ChatMessage(
+          id: oldAnswerID, role: .assistant, body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2)),
+        ChatMessage(
+          id: activeUserID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 3)),
+        ChatMessage(
+          id: activeAnswerID, role: .assistant, body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 4)),
+      ],
+      interruptedTurns: [
+        InterruptedTurn(
+          question: prepared.question,
+          interruptedAt: Date(timeIntervalSince1970: 1),
+          journalID: oldJournalID, executionID: oldUserID),
+        InterruptedTurn(
+          question: prepared.question,
+          interruptedAt: Date(timeIntervalSince1970: 3),
+          journalID: activeJournalID, executionID: activeUserID),
+      ])
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, message in writes.record("update:\(message.id)") }
+    history.endTurnJournal = { _, journalID in writes.record("end:\(journalID)") }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.conversationLoaded(snapshot))
+    await store.finish()
+
+    #expect(writes.recorded == ["update:\(oldAnswerID)", "end:\(oldJournalID)"])
+    guard case .preparedAnswer? = store.state.chat?.messages[id: activeAnswerID]?.body else {
+      Issue.record("Expected the active prepared answer to remain provisional")
+      return
+    }
+    #expect(store.state.chat?.interruptedTurns.isEmpty == true)
+  }
+
+  @Test func failedPreparedAnswerRecoveryRetainsItsJournal() async {
+    let prepared = Self.preparedFollowUp()
+    let userID = UUID(81)
+    let answerID = UUID(82)
+    let journalID = UUID(83)
+    let state = Self.appState(selected: Self.conversationB)
+    let snapshot = ConversationSnapshot(
+      summary: state.conversations[id: Self.conversationA]!,
+      messages: [
+        ChatMessage(
+          id: userID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 1)),
+        ChatMessage(
+          id: answerID, role: .assistant, body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2)),
+      ],
+      interruptedTurn: InterruptedTurn(
+        question: prepared.question,
+        interruptedAt: Date(timeIntervalSince1970: 1),
+        journalID: journalID, executionID: userID))
+    let ends = CallRecorder()
+    let updates = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, _ in
+      updates.record("attempted")
+      throw SchedulerPersistenceTestError.failed
+    }
+    history.endTurnJournal = { _, journalID in ends.record(journalID.uuidString) }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.conversationLoaded(snapshot))
+    await store.finish()
+
+    #expect(updates.recorded == ["attempted"])
+    #expect(ends.recorded.isEmpty)
+  }
+
+  @Test func recoveredAnswerWithoutPrecedingUserKeepsModernJournal() async {
+    let prepared = Self.preparedFollowUp()
+    let answerID = UUID(82)
+    let state = Self.appState(selected: Self.conversationB)
+    let snapshot = ConversationSnapshot(
+      summary: state.conversations[id: Self.conversationA]!,
+      messages: [
+        ChatMessage(
+          id: answerID, role: .assistant, body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2))
+      ],
+      interruptedTurn: InterruptedTurn(
+        question: prepared.question,
+        interruptedAt: Date(timeIntervalSince1970: 1),
+        journalID: UUID(83), executionID: answerID))
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateMessage = { _, _ in writes.record("update") }
+    history.endTurnJournal = { _, _ in writes.record("end") }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: { [history] in
+      $0.historyClient = history
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.conversationLoaded(snapshot))
+    await store.finish()
+
+    #expect(writes.recorded == ["update"])
+    #expect(store.state.chat?.interruptedTurns.count == 1)
   }
 
   @Test func deleteThenUndoRestoresConversation() async {
@@ -3670,6 +4099,73 @@ private func awaitArmedFMWatch(
     #expect(sql == prepared.sql)
     #expect(narration == PreparedAnswerFallback.narration(for: prepared.result))
     #expect(state.interruptedTurn == nil)
+  }
+
+  @Test func recoveryKeepsAnotherInterruptionWithTheSameQuestion() {
+    let prepared = AppFeatureSchedulerTests.preparedFollowUp()
+    let firstUserID = UUID(81)
+    let answerID = UUID(82)
+    let secondUserID = UUID(83)
+    let retainedJournalID = UUID(85)
+    let snapshot = ConversationSnapshot(
+      summary: ConversationSummary(
+        id: Self.conversationID,
+        title: "Repeated question",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 3)),
+      messages: [
+        ChatMessage(
+          id: firstUserID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 1)),
+        ChatMessage(
+          id: answerID, role: .assistant, body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2)),
+        ChatMessage(
+          id: secondUserID, role: .user, body: .text(prepared.question),
+          createdAt: Date(timeIntervalSince1970: 3)),
+      ],
+      interruptedTurns: [
+        InterruptedTurn(
+          question: prepared.question,
+          interruptedAt: Date(timeIntervalSince1970: 1),
+          journalID: UUID(84), executionID: firstUserID),
+        InterruptedTurn(
+          question: prepared.question,
+          interruptedAt: Date(timeIntervalSince1970: 3),
+          journalID: retainedJournalID, executionID: secondUserID),
+      ])
+
+    let state = ChatFeature.State(snapshot: snapshot)
+
+    #expect(state.interruptedTurns.map(\.journalID) == [retainedJournalID])
+    guard case .answer? = state.messages[id: answerID]?.body else {
+      Issue.record("Expected the prepared answer to be recovered")
+      return
+    }
+  }
+
+  @Test func assistantIDNeverMatchesAnInterruptionExecutionID() {
+    let prepared = AppFeatureSchedulerTests.preparedFollowUp()
+    let answerID = UUID(82)
+    let snapshot = ConversationSnapshot(
+      summary: ConversationSummary(
+        id: Self.conversationID,
+        title: "Missing user message",
+        startedAt: Date(timeIntervalSince1970: 0),
+        lastActivityAt: Date(timeIntervalSince1970: 2)),
+      messages: [
+        ChatMessage(
+          id: answerID, role: .assistant, body: .preparedAnswer(prepared),
+          createdAt: Date(timeIntervalSince1970: 2))
+      ],
+      interruptedTurn: InterruptedTurn(
+        question: prepared.question,
+        interruptedAt: Date(timeIntervalSince1970: 1),
+        journalID: UUID(83), executionID: answerID))
+
+    let state = ChatFeature.State(snapshot: snapshot)
+
+    #expect(state.interruptedTurns.count == 1)
   }
 
   @Test func keyboardRefocusCancelsPendingSubmission() async {

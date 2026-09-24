@@ -50,6 +50,7 @@ public struct InterruptedTurn: Equatable, Sendable, Codable {
     case running
     case knownInterruption = "known_interruption"
     case ambiguousInterruption = "ambiguous_interruption"
+    case manualRetryRequired = "manual_retry_required"
   }
 
   public var question: String
@@ -128,6 +129,35 @@ public struct ConversationSnapshot: Equatable, Sendable {
     self.interruptedTurns = interruptedTurns.isEmpty
       ? interruptedTurn.map { [$0] } ?? [] : interruptedTurns
     self.followUpBatch = followUpBatch
+  }
+}
+
+struct RecoveredPreparedAnswer: Sendable {
+  let message: ChatMessage
+  let question: String
+  let precedingUserMessageID: UUID?
+}
+
+extension ConversationSnapshot {
+  func recoveredPreparedAnswers(excluding preservedMessageID: UUID? = nil)
+    -> [RecoveredPreparedAnswer]
+  {
+    messages.enumerated().compactMap { index, message in
+      guard message.id != preservedMessageID,
+        case .preparedAnswer(let prepared) = message.body,
+        let finalized = message.finalizedInterruptedPreparedAnswer
+      else { return nil }
+      let precedingUserID: UUID?
+      if index > 0, messages[index - 1].role == .user {
+        precedingUserID = messages[index - 1].id
+      } else {
+        precedingUserID = nil
+      }
+      return RecoveredPreparedAnswer(
+        message: finalized,
+        question: prepared.question,
+        precedingUserMessageID: precedingUserID)
+    }
   }
 }
 

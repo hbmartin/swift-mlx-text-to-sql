@@ -34,14 +34,17 @@ SETUP_UV_ENV: Mapping[str, str] = MappingProxyType(
 )
 ACCESSIBILITY_WORKFLOW_NAME = "CI"
 ACCESSIBILITY_UI_JOB = "accessibility"
-ACCESSIBILITY_UI_RUNNER = "macos-26"
+ACCESSIBILITY_UI_RUNNER = "xcode-27"
+METAL_TOOLCHAIN_STEP: Mapping[str, str] = MappingProxyType(
+    {"name": "Install Metal Toolchain", "run": "xcodebuild -downloadComponent MetalToolchain"}
+)
 ACCESSIBILITY_CACHE_PATHS = (
     "CREGKit/.build\n"
     "${{ runner.temp }}/creg-derived-data\n"
     "${{ runner.temp }}/creg-source-packages\n"
 )
 ACCESSIBILITY_CACHE_KEY = (
-    "swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-26.3-"
+    "swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-"
     "${{ hashFiles('CREGKit/Package.resolved', "
     "'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', "
     "'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', "
@@ -77,7 +80,7 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "-scheme",
     "CREG",
     "-destination",
-    "platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5",
+    "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
     *(
         token
         for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
@@ -97,6 +100,7 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testPreviewShowsNewTableWhenChartInputIdentityChanges",
+    "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
 TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"
@@ -177,8 +181,8 @@ def accessibility_ui_bootstrap_steps() -> tuple[dict[str, object], ...]:
             "with": {"persist-credentials": False},
         },
         {
-            "name": "Select Xcode 26.3",
-            "run": "sudo xcode-select --switch /Applications/Xcode_26.3.app",
+            "name": METAL_TOOLCHAIN_STEP["name"],
+            "run": METAL_TOOLCHAIN_STEP["run"],
         },
         {
             "name": "Cache Swift and Xcode build artifacts",
@@ -892,12 +896,46 @@ def security_checker_contract_failures(
     ]
 
 
+def metal_toolchain_job_failures(
+    path: Path,
+    workflow: object,
+    *,
+    job_name: str,
+    build_step_name: str,
+    root: Path | None = None,
+) -> list[str]:
+    prefix = f"{display_path(path, root)}: {job_name} Metal Toolchain contract"
+    job, steps, failures = workflow_job_steps(
+        workflow, job_name=job_name, prefix=prefix
+    )
+    if job is None or steps is None:
+        return failures
+    if job.get("runs-on") != "xcode-27":
+        failures.append(f"{prefix} must use the xcode-27 runner")
+    expected = dict(METAL_TOOLCHAIN_STEP)
+    if len(steps) < 2 or steps[1] != expected:
+        failures.append(f"{prefix} must install Metal immediately after checkout")
+    if sum(step.get("name") == expected["name"] for step in steps) != 1:
+        failures.append(f"{prefix} must have exactly one Metal install step")
+    build, build_failures = named_step(
+        steps, name=build_step_name, prefix=prefix
+    )
+    failures.extend(build_failures)
+    if build is not None and steps.index(build) <= 1:
+        failures.append(f"{prefix} must install Metal before compiling")
+    return failures
+
+
 def reviewed_ci_contract_failures(
     path: Path, workflow: object, *, root: Path | None = None
 ) -> list[str]:
     """Compose all reviewed workflow contracts without duplicate context errors."""
     return [
         *reviewed_workflow_context_failures(path, workflow, root=root),
+        *metal_toolchain_job_failures(
+            path, workflow, job_name="swift", build_step_name="Test Swift packages",
+            root=root,
+        ),
         *_accessibility_ui_job_contract_failures(path, workflow, root=root),
         *_testflight_publisher_job_contract_failures(path, workflow, root=root),
         *_security_checker_job_contract_failures(path, workflow, root=root),
@@ -926,6 +964,11 @@ def main(
         failures.extend(
             checkout_credential_failures(path, workflow, root=effective_root)
         )
+        if isinstance(workflow, dict) and workflow.get("name") == "Documentation":
+            failures.extend(metal_toolchain_job_failures(
+                path, workflow, job_name="build",
+                build_step_name="Generate static documentation", root=effective_root,
+            ))
     matches = accessibility_workflows(workflows)
     if len(matches) != 1:
         failures.append(

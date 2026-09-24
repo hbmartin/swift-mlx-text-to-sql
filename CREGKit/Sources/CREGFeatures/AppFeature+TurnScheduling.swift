@@ -9,6 +9,7 @@ extension AppFeature {
     guard state.isSceneActive else { return .none }
     refreshFMAvailability(state: &state)
     return .merge(
+      resumeRequestedModelPreparation(state: &state),
       resumeSuspendedModelPreparation(state: &state),
       resumeInterruptedScopeDiagnosisIfIdle(state: &state),
       resumeFollowUpPreparationIfIdle(state: &state),
@@ -116,7 +117,30 @@ extension AppFeature {
         "queue_depth": String(state.queue.count),
       ])
 
-    let run: Effect<Action> = .run { send in
+    return .concatenate(
+      .cancel(id: CancelID.followUpPreparation),
+      .cancel(id: CancelID.scopeDiagnosis),
+      .cancel(id: CancelID.answerabilityCapture),
+      .run { send in
+        try? await history.clearFollowUpBatch(conversationID)
+        await send(.dispatchPreflightFinished(
+          questionID: questionID, directlyUserStarted: directlyUserStarted))
+      })
+  }
+
+  func runDispatchedTurn(
+    active: ActiveTurn,
+    directlyUserStarted: Bool
+  ) -> Effect<Action> {
+    guard let optimisticTurn = active.optimisticUserTurn else { return .none }
+    let conversationID = active.conversationID
+    let questionID = active.questionID
+    let userMessage = optimisticTurn.message
+    let submission = active.submission
+    let startedAt = active.startedAt
+    let replacingJournalID = active.replacingJournalID
+    let question = active.question
+    return .run { send in
       // Unstructured so a Stop cancellation cannot abort the user-message
       // write. Stop coalesces onto this same once-save before writing its
       // terminal message, so the prerequisite remains ordered even when Stop
@@ -197,13 +221,7 @@ extension AppFeature {
           conversationID: conversationID,
           questionID: questionID))
     }
-    return .concatenate(
-      .cancel(id: CancelID.followUpPreparation),
-      .run { _ in try? await history.clearFollowUpBatch(conversationID) },
-      .merge(
-        .cancel(id: CancelID.scopeDiagnosis),
-        .cancel(id: CancelID.answerabilityCapture),
-        run.cancellable(id: CancelID.pipeline, cancelInFlight: true)))
+    .cancellable(id: CancelID.pipeline, cancelInFlight: true)
   }
 
   /// Without a granted background-GPU task, scene deactivation must stop
@@ -325,8 +343,13 @@ extension AppFeature {
       let interrupted = chat.interruptedTurns.first(where: {
         if let requestedID { return $0.journalID == requestedID }
         if !automatic { return true }
+        let journalID = $0.journalID ?? $0.executionID
+        let trailingUser = chat.messages.last
         return $0.canAutoRetry
-          && ($0.executionID == chat.messages.last?.id || $0.executionID == nil)
+          && trailingUser?.role == .user
+          && $0.question == trailingUser?.previewText
+          && ($0.executionID == trailingUser?.id || $0.executionID == nil)
+          && !state.queue.contains(where: { $0.retryJournalID == journalID })
       }),
       !automatic || interrupted.canAutoRetry
     else { return .none }
@@ -345,7 +368,14 @@ extension AppFeature {
     guard let resolvedJournalID else { return .none }
     let submission = QuestionSubmission(
       question: interrupted.question, source: interrupted.source)
-    if !state.canDispatchTurn || state.fmAvailability != .available || !state.queue.isEmpty {
+    if automatic,
+      (!state.canDispatchTurn || state.fmAvailability != .available
+        || state.retryClaimInFlight)
+    { return .none }
+    if !automatic,
+      (!state.canDispatchTurn || state.fmAvailability != .available
+        || !state.queue.isEmpty)
+    {
       if state.retryClaimInFlight { return .none }
       if !state.queue.contains(where: { $0.retryJournalID == resolvedJournalID }) {
         state.queue.append(QueuedQuestion(
@@ -420,26 +450,32 @@ extension AppFeature {
     // snapshot. Re-read the synchronous system status before consuming a
     // queued item so a mid-foreground availability flip also fails closed.
     refreshFMAvailability(state: &state)
+    let requestedModel = resumeRequestedModelPreparation(state: &state)
+    if state.modelPreparationInFlight { return requestedModel }
     guard state.canDispatchTurn else { return .none }
     guard state.fmAvailability == .available else {
       return watchFMAvailabilityIfStranded(state: &state)
     }
+    let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
+    if state.retryClaimInFlight { return autoRetry }
     let visibleID = state.chat?.conversationID
     let next =
       state.queue.first { $0.conversationID == visibleID }
-      ?? state.queue.first
+      ?? state.queue.first { !$0.automaticRetry }
     guard let next else { return .none }
     state.queue.removeAll { $0.id == next.id }
     if let journalID = next.retryJournalID, let userMessage = next.existingUserMessage {
       if next.retryAlreadyClaimed {
-        state.chat?.interruptedTurns.removeAll {
-          ($0.journalID ?? $0.executionID) == journalID
+        state.retryClaimInFlight = true
+        return .run { send in
+          let snapshot = try? await history.loadConversation(next.conversationID)
+          let valid = snapshot?.messages.last?.id == userMessage.id
+            && snapshot?.interruptedTurns.contains(where: {
+              ($0.journalID ?? $0.executionID) == journalID
+                && $0.executionID == userMessage.id
+            }) == true
+          await send(.queuedRetryClaimed(next, valid))
         }
-        return dispatch(
-          state: &state, conversationID: next.conversationID,
-          submission: next.submission, existingUserMessage: userMessage,
-          autoRetryCount: next.automaticRetry ? 1 : 0,
-          directlyUserStarted: !next.automaticRetry)
       }
       state.retryClaimInFlight = true
       return .run { send in
@@ -519,6 +555,7 @@ extension AppFeature {
               questionID: questionID,
               failure: .history(operation: .messageSave, error: error)))
         }
+        await send(.turnPersistenceWriteSettled(questionID))
         await backgroundTurn.finish(questionID, persisted)
         await send(.turnPersistenceFinished(questionID))
       },

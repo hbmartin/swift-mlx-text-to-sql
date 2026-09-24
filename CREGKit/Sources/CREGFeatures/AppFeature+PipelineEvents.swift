@@ -132,7 +132,7 @@ extension AppFeature {
       } else {
         state.chat?.messages.append(assistantMessage)
       }
-    } else {
+    } else if active.autoRetryCount == 0 {
       // Background completion never changes the selected chat: mark the
       // Recent row unread, banner it, and emit a light haptic.
       state.conversations[id: conversationID]?.isUnread = true

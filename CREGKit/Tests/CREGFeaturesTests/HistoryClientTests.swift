@@ -400,6 +400,38 @@ import Testing
     #expect(snapshot.messages == [message])
   }
 
+  @Test func retryClaimRequiresTrailingUserAndDeclineSurvivesReload() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let first = userMessage("Repeated question", at: 10)
+    let second = userMessage("Repeated question", at: 20)
+    try await client.persistUserTurn(
+      conversationID, first, QuestionSubmission(question: first.previewText),
+      first.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, first.id, false)
+    try await client.persistUserTurn(
+      conversationID, second, QuestionSubmission(question: second.previewText),
+      second.createdAt, nil)
+    #expect(!(try await client.claimTurnRetry(
+      conversationID, first.id, first.id, true)))
+    try await client.markTurnInterrupted(conversationID, second.id, false)
+    #expect(try await client.claimTurnRetry(
+      conversationID, second.id, second.id, true))
+    try await client.releaseAutoRetryClaim(
+      conversationID, second.id, second.id)
+    #expect(try await client.loadConversation(conversationID)
+      .interruptedTurns.last?.canAutoRetry == true)
+    try await client.declineAutoRetry(conversationID, second.id)
+    let reloaded = try await makeClient(url).loadConversation(conversationID)
+    #expect(reloaded.interruptedTurns.last?.status == .manualRetryRequired)
+    #expect(reloaded.interruptedTurns.last?.canAutoRetry == false)
+    #expect(!(try await client.claimTurnRetry(
+      conversationID, second.id, second.id, true)))
+  }
+
   @Test func twoInterruptionsRemainIndependentThroughOffscreenCompletionAndDismissal() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()

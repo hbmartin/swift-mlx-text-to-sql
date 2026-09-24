@@ -488,9 +488,10 @@ private final class RestrictedCompiledQwen2Model:
   func prepare(
     _ input: LMInput,
     cache: [KVCache],
-    windowSize: Int?
+    state: LMOutput.State?,
+    prefill: PrefillParameters
   ) throws -> PrepareResult {
-    try base.prepare(input, cache: cache, windowSize: windowSize)
+    try base.prepare(input, cache: cache, state: state, prefill: prefill)
   }
 
   func callAsFunction(
@@ -539,8 +540,8 @@ private final class RestrictedCompiledQwen2Model:
       axis: -1)
   }
 
-  func newCache(parameters: GenerateParameters?) -> [KVCache] {
-    base.newCache(parameters: parameters)
+  func newCache(parameters: GenerateParameters?) throws -> [KVCache] {
+    try base.newCache(parameters: parameters)
   }
 
   func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
