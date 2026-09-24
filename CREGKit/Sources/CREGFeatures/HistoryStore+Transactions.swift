@@ -34,12 +34,18 @@ extension HistoryStore {
     try await queue.write { db in
       try db.execute(
         sql: """
-          UPDATE turn_journal SET status = 'known_interruption', auto_retry_count = 0
+          UPDATE turn_journal
+          SET status = CASE WHEN auto_retry_count = 1
+            THEN 'known_interruption' ELSE 'manual_retry_required' END,
+            auto_retry_count = 0
           WHERE conversation_id = ? AND journal_id = ? AND execution_id = ?
-            AND status = 'running' AND auto_retry_count = 1
+            AND status = 'running'
           """,
         arguments: [conversationID.uuidString, journalID.uuidString,
           executionID.uuidString])
+      guard db.changesCount == 1 else {
+        throw JournalTransferError.missingSource
+      }
     }
   }
 
@@ -71,7 +77,7 @@ extension HistoryStore {
         sql: """
           UPDATE turn_journal
           SET execution_id = ?, status = 'running',
-              auto_retry_count = CASE WHEN ? = 1 THEN 1 ELSE auto_retry_count END
+              auto_retry_count = CASE WHEN ? = 1 THEN 1 ELSE 0 END
           WHERE conversation_id = ? AND journal_id = ?
             AND (SELECT id FROM message WHERE conversation_id = ?
                  ORDER BY position DESC LIMIT 1) = ?
@@ -331,9 +337,32 @@ extension HistoryStore {
     try await queue.write { db in
       try db.execute(
         sql: """
-          INSERT OR REPLACE INTO prepared_follow_up_batch
+          INSERT INTO prepared_follow_up_batch
             (conversation_id, source_message_id, updated_at, payload)
           VALUES (?, ?, ?, ?)
+          ON CONFLICT(conversation_id) DO UPDATE SET
+            source_message_id = excluded.source_message_id,
+            updated_at = excluded.updated_at,
+            payload = excluded.payload
+          WHERE CASE
+            WHEN excluded.source_message_id = prepared_follow_up_batch.source_message_id
+              THEN excluded.updated_at >= prepared_follow_up_batch.updated_at
+                AND (json_extract(prepared_follow_up_batch.payload, '$.status') != 'completed'
+                  OR json_extract(excluded.payload, '$.status') = 'completed')
+            WHEN (SELECT position FROM message
+                  WHERE conversation_id = excluded.conversation_id
+                    AND id = excluded.source_message_id) IS NOT NULL
+              AND (SELECT position FROM message
+                   WHERE conversation_id = prepared_follow_up_batch.conversation_id
+                     AND id = prepared_follow_up_batch.source_message_id) IS NOT NULL
+              THEN (SELECT position FROM message
+                    WHERE conversation_id = excluded.conversation_id
+                      AND id = excluded.source_message_id) >
+                   (SELECT position FROM message
+                    WHERE conversation_id = prepared_follow_up_batch.conversation_id
+                      AND id = prepared_follow_up_batch.source_message_id)
+            ELSE excluded.updated_at >= prepared_follow_up_batch.updated_at
+          END
           """,
         arguments: [
           conversationID.uuidString,

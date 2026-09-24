@@ -3,6 +3,22 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
+  func reloadDismissalIfSelected(
+    state: State, conversationID: UUID
+  ) -> Effect<Action> {
+    guard state.chat?.conversationID == conversationID,
+      state.pendingDeletion?.summary.id != conversationID
+    else { return .none }
+    return .run { send in
+      do {
+        let snapshot = try await history.loadConversation(conversationID)
+        await send(.dismissalRefreshLoaded(snapshot))
+      } catch {
+        await send(.operationFailed(
+          .history(operation: .load, error: error)))
+      }
+    }
+  }
   func deleteConversation(
     state: inout State,
     summary: ConversationSummary
@@ -45,6 +61,7 @@ extension AppFeature {
       state.isScopeDiagnosisInFlight = false
       effects.append(.cancel(id: CancelID.scopeDiagnosis))
     }
+    state.pendingSuggestionContexts.removeValue(forKey: summary.id)
 
     if state.chat?.conversationID == summary.id {
       if let nextSummary = state.conversations.first {
@@ -215,7 +232,9 @@ extension AppFeature {
     guard var chat = state.chat else { return }
     chat.isSubmissionEnabled =
       state.modelReadiness == .ready && state.fmAvailability == .available
-    chat.queued = state.queue.filter { $0.conversationID == chat.conversationID }
+    chat.queued = state.queue.filter {
+      $0.conversationID == chat.conversationID && $0.retryJournalID == nil
+    }
     if let active = state.activeTurn,
       active.conversationID == chat.conversationID
     {
@@ -346,10 +365,11 @@ extension AppFeature {
       summary: "Model preparation is waiting for raw model work to settle.",
       context: ["runtime_mode": mode.rawValue])
     return .concatenate(
-      .run { _ in await preparationJournal.suspend(attemptID) },
+      .run { _ in await preparationJournal.requestSuspension(attemptID) },
       .cancel(id: CancelID.modelPreparation),
       .run { send in
         await pipeline.waitUntilInferenceIdle()
+        await preparationJournal.completeSuspension(attemptID)
         await send(.modelPreparationSuspended(attemptID))
       })
   }
@@ -371,10 +391,8 @@ extension AppFeature {
     return preparationEffect(mode: mode, attemptID: attemptID)
   }
 
-  /// A retained Scope Verdict memo deliberately does not gate preparation:
-  /// both retry paths abandon it via
-  /// `abandonScopeDiagnosisForModelMaintenance`, because the explicit user
-  /// request outranks the passive recovery memo.
+  /// A retained Scope Verdict memo does not gate explicit preparation. The
+  /// recovery context is parked until model maintenance finishes.
   func canStartModelPreparation(state: State) -> Bool {
     !state.modelPreparationInFlight
       && state.drainingModelPreparationAttemptID == nil
@@ -382,6 +400,13 @@ extension AppFeature {
       && !state.thermalPressure
       && (state.modelReadiness == .ready
         ? state.isInferenceIdleIgnoringScopeDiagnosis
+          || (state.activeTurn == nil && state.pendingInterruptedTurn == nil
+            && state.pendingTurnPersistence == nil
+            && !state.retryClaimInFlight
+            && state.retryReleaseJournalID == nil
+            && state.queue.allSatisfy(\.automaticRetry)
+            && state.followUpPreparation == nil
+            && !state.isCapturingAnswerability)
         : state.isModelRecoveryIdle)
   }
 

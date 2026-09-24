@@ -384,8 +384,7 @@ public struct ChatFeature: Sendable {
           state: &state,
           submittedQuestion: prepared.question,
           clearsComposer: false,
-          preparedFollowUp: prepared,
-          clearsFollowUpBatch: false)
+          preparedFollowUp: prepared)
 
       case .retryFailedTurnTapped(let messageID):
         guard

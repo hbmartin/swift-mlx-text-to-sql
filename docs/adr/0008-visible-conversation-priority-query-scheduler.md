@@ -19,10 +19,13 @@ visible Conversation; if it has none, it dispatches the globally oldest remainin
 Queued Question. A question receives its Conversation's latest completed history
 when dispatch begins.
 
-The queue exists only for the current process and is never restored or executed
-automatically after termination. A turn that was active when the process ended is
-persisted as **Interrupted** and offers **Ask Again** on the next launch. Switching
-or background completion never automatically changes the visible Conversation.
+The queue exists only for the current process. A known interruption in that
+process may retry once when the scene returns to the foreground, ordered by the
+original question time ahead of later questions in the same Conversation. The
+interruption banner owns retry presentation. After process termination, no
+automatic eligibility is restored: a persisted **Interrupted** turn offers
+**Ask Again** and waits for a tap. Switching or background completion never
+automatically changes the visible Conversation.
 
 The interruption journal has one row per turn, keyed by a stable journal ID.
 Each row stores the full submission source: free form, a Starter Query ID, or
@@ -34,13 +37,16 @@ queues the retry without changing its journal until dispatch. The trailing
 retry is claimed before inference, so a crash cannot trigger a second automatic
 retry. Legacy rows with no typed source remain free form.
 
-A brief inactive scene prevents new dispatch while active work continues.
-Backgrounding interrupts work without a continued-processing GPU grant. A
+A scene becoming inactive immediately interrupts work without a
+continued-processing GPU grant and suspends lower-priority inference. The
+background event uses the same idempotent deactivation path. A
 granted task remains open until its terminal history transaction succeeds.
-Model preparation journals identify each attempt; deliberate suspension is a
-completed outcome even when cancellation reaches the journal before creation.
-Memory warnings evict MLX cache off the main thread and suspend lower-priority
-inference. That work resumes after five warning-free seconds, or when thermal
+Model preparation journals identify each attempt. A cancelled preparation stays
+unfinished until the raw model operation releases the serializer; only then is
+its suspension recorded as complete. A process death during that drain is
+reported on the next launch. Cancellation and memory warnings retain the loaded
+SQL model container while generation remains gated on successful preparation.
+Suspended work resumes after five warning-free seconds, or when thermal
 state returns to nominal or fair, after the scene and serializer gates pass.
 
 ## Consequences

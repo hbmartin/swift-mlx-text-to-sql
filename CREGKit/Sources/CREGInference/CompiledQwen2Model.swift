@@ -10,6 +10,23 @@ import MLXLLM
 import MLXLMCommon
 import MLXNN
 
+enum CompiledQwen2VerificationPolicy {
+  static func skipsMLP(
+    layer: Int,
+    inputLength: Int,
+    isVerification: Bool,
+    skipLayers: Set<Int>,
+    longBatchExtraSkipLayers: Set<Int>,
+    extraSkipLayers: Set<Int>
+  ) -> Bool {
+    isVerification && (2...4).contains(inputLength)
+      && (skipLayers.contains(layer)
+        || ((3...4).contains(inputLength)
+          && longBatchExtraSkipLayers.contains(layer))
+        || extraSkipLayers.contains(layer))
+  }
+}
+
 private let compiledQwen2SiluProduct: @Sendable (MLXArray, MLXArray) -> MLXArray = compile(
   shapeless: true
 ) {
@@ -328,22 +345,24 @@ private final class CompiledQwen2InnerModel: Module {
   func callAsFunction(
     _ inputs: MLXArray,
     cache: [KVCache]? = nil,
+    isVerification: Bool = false,
     extraVerificationMLPSkipLayers: Set<Int> = []
   ) -> MLXArray {
     var hidden = embedTokens(inputs)
     let mask = createAttentionMask(h: hidden, cache: cache?.first)
-    let isVerification = 2...4 ~= inputs.dim(1)
-    let isLongVerification = 3...4 ~= inputs.dim(1)
     for (index, layer) in layers.enumerated() {
       hidden = layer(
         hidden,
         mask: mask,
         cache: cache?[index],
-        skipMLP: isVerification
-          && (verificationMLPSkipLayers.contains(index)
-            || (isLongVerification
-              && verificationMLPLongBatchExtraSkipLayers.contains(index))
-            || extraVerificationMLPSkipLayers.contains(index)))
+        skipMLP: CompiledQwen2VerificationPolicy.skipsMLP(
+          layer: index,
+          inputLength: inputs.dim(1),
+          isVerification: isVerification,
+          skipLayers: verificationMLPSkipLayers,
+          longBatchExtraSkipLayers:
+            verificationMLPLongBatchExtraSkipLayers,
+          extraSkipLayers: extraVerificationMLPSkipLayers))
     }
     return norm(hidden)
   }
@@ -397,6 +416,7 @@ private final class CompiledQwen2Model:
     logits(model(
       inputs,
       cache: cache,
+      isVerification: true,
       extraVerificationMLPSkipLayers: extraMLPSkipLayers))
   }
 
@@ -509,6 +529,7 @@ private final class RestrictedCompiledQwen2Model:
     restrictedLogits(base.model(
       inputs,
       cache: cache,
+      isVerification: true,
       extraVerificationMLPSkipLayers: extraMLPSkipLayers))
   }
 

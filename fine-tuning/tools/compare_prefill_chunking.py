@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 
@@ -28,6 +29,17 @@ PROVENANCE_IDENTITY = (
     "systemPromptSHA256",
     "schemaPromptSHA256",
     "grammarSHA256",
+)
+REQUIRED_EFFECTIVE_SETTINGS = (
+    "gcd", "temperature", "seed", "maxTokens", "maxItems", "rowCap",
+    "kvBits", "wiredMemory", "directPromptSuffix", "prefillChunking",
+    "compiledQwen2MLPFusion", "compiledQwen2QKVVerificationFusion",
+    "verificationMLPSkipLayers", "verificationMLPLongBatchExtraSkipLayers",
+    "verificationMLPConfidenceSkip", "verificationMLPAdditionalConfidenceSkips",
+    "questionAwareOutputHead", "compactQuestionAwareOutputHead",
+    "productionNGram", "ngramDraftCorpusSHA256", "ngramDraftTokens",
+    "ngramSerialPrefixTokens", "ngramAdaptiveMinimumSupport",
+    "fallbackModelKey", "fallbackModelRevision",
 )
 
 
@@ -50,17 +62,40 @@ def load_run(path: Path) -> tuple[dict, dict[str, dict]]:
 
 def identity_mismatches(reference: dict, candidate: dict) -> list[str]:
     mismatches = []
+    for label, run in (("reference", reference), ("candidate", candidate)):
+        if run.get("schemaVersion", 0) < 3:
+            mismatches.append(f"{label}.schemaVersion")
+        provenance = run.get("provenance") or {}
+        for key in PROVENANCE_IDENTITY:
+            value = provenance.get(key)
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                mismatches.append(f"{label}.provenance.{key}.missing")
+        for key in ("gold", "database", "packageLock", "executable"):
+            value = (provenance.get(key) or {}).get("sha256")
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                mismatches.append(f"{label}.provenance.{key}.sha256.missing")
+        settings = provenance.get("effectiveSettings") or {}
+        for key in REQUIRED_EFFECTIVE_SETTINGS:
+            if not isinstance(settings.get(key), str):
+                mismatches.append(f"{label}.effectiveSettings.{key}.missing")
     for field in SUMMARY_IDENTITY:
         if reference["summary"].get(field) != candidate["summary"].get(field):
             mismatches.append(f"summary.{field}")
     for field in PROVENANCE_IDENTITY:
-        if reference["provenance"].get(field) != candidate["provenance"].get(field):
+        if (reference.get("provenance") or {}).get(field) != (
+            candidate.get("provenance") or {}
+        ).get(field):
             mismatches.append(f"provenance.{field}")
-    for field in ("gold", "database", "packageLock"):
-        if (reference["provenance"].get(field) or {}).get("sha256") != (
-            candidate["provenance"].get(field) or {}
+    for field in ("gold", "database", "packageLock", "executable"):
+        if ((reference.get("provenance") or {}).get(field) or {}).get("sha256") != (
+            (candidate.get("provenance") or {}).get(field) or {}
         ).get("sha256"):
             mismatches.append(f"provenance.{field}.sha256")
+    ref_settings = (reference.get("provenance") or {}).get("effectiveSettings") or {}
+    candidate_settings = (candidate.get("provenance") or {}).get("effectiveSettings") or {}
+    for field in REQUIRED_EFFECTIVE_SETTINGS:
+        if field != "prefillChunking" and ref_settings.get(field) != candidate_settings.get(field):
+            mismatches.append(f"effectiveSettings.{field}")
     return mismatches
 
 
@@ -114,10 +149,13 @@ def main() -> int:
         else ["qualified.artifactMissing"]
     )
     control_mismatches = identity_mismatches(balanced, remainder)
-    if balanced["command"][0] != remainder["command"][0]:
-        control_mismatches.append("command.binaryPath")
-    if args.binary.resolve() != Path(balanced["command"][0]).resolve():
-        control_mismatches.append("providedBinary.path")
+    binary_hash = digest(args.binary)
+    for label, run in (("balanced", balanced), ("remainder", remainder),
+                       ("qualified", qualified)):
+        if run is not None and (run.get("provenance") or {}).get(
+            "executable", {}
+        ).get("sha256") != binary_hash:
+            control_mismatches.append(f"{label}.executableSHA256")
 
     qualified_losses = (
         losses(qualified_items, balanced_items)
@@ -178,7 +216,7 @@ def main() -> int:
         "schemaVersion": 1,
         "status": "blocked" if blocked else "passed",
         "itemCount": 200,
-        "binarySHA256": digest(args.binary),
+        "binarySHA256": binary_hash,
         "runs": runs,
         "qualifiedIdentityMismatches": qualified_mismatches,
         "sameBinaryControlIdentityMismatches": control_mismatches,
