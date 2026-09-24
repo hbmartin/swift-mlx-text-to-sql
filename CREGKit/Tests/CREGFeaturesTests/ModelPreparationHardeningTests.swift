@@ -189,6 +189,10 @@ private actor PreparationDrainGate {
         attemptID: attemptID, mode: .evaluated, environment: [:])
       if !suspendFirst { try await owner.suspend(attemptID) }
       try await owner.stageStarted(.promptCache, mode: .evaluated)
+      try await owner.fail(ModelPreparationFailure(
+        code: "model_container_load_failed", stage: .containerLoad,
+        mode: .evaluated, userMessage: "failed", diagnostic: "late callback"),
+        attemptID: attemptID)
       let data = try #require(await owner.exportData())
       let decoder = JSONDecoder()
       decoder.dateDecodingStrategy = .iso8601
@@ -244,12 +248,12 @@ private actor PreparationDrainGate {
     }
     store.exhaustivity = .off
 
-    await store.send(.appBecameInactive)
+    await store.send(.appEnteredBackground)
     await drain.waitUntilDraining()
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let before = try #require(await journalStore.exportData())
-    #expect(try decoder.decode(ModelPreparationJournalSnapshot.self, from: before).completed == false)
+    #expect(try decoder.decode(ModelPreparationJournalSnapshot.self, from: before).outcome == "suspended")
     #expect(store.state.drainingModelPreparationAttemptID == attemptID)
     await drain.release()
     await store.receive(.modelPreparationSuspended(attemptID))

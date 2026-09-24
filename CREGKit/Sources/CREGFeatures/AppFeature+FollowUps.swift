@@ -77,6 +77,10 @@ extension AppFeature {
             sourceMessageID: context.sourceAssistantMessageID,
             event: event))
       }
+      guard !Task.isCancelled else { return }
+      await send(.followUpPreparationStreamEnded(
+        conversationID: conversationID,
+        sourceMessageID: context.sourceAssistantMessageID))
     }
     .cancellable(
       id: CancelID.followUpPreparation,
@@ -108,6 +112,10 @@ extension AppFeature {
             sourceMessageID: context.sourceAssistantMessageID,
             event: event))
       }
+      guard !Task.isCancelled else { return }
+      await send(.followUpPreparationStreamEnded(
+        conversationID: conversationID,
+        sourceMessageID: context.sourceAssistantMessageID))
     }
     .cancellable(
       id: CancelID.followUpPreparation,
@@ -169,8 +177,34 @@ extension AppFeature {
       // the slot is free again.
       return .merge(
         persistence,
+        resumeRequestedModelPreparation(state: &state),
         resumeFollowUpPreparationIfIdle(state: &state))
     }
+  }
+
+  func handleFollowUpPreparationStreamEnded(
+    state: inout State,
+    conversationID: UUID,
+    sourceMessageID: UUID
+  ) -> Effect<Action> {
+    guard var preparation = state.followUpPreparation,
+      preparation.conversationID == conversationID,
+      preparation.context.sourceAssistantMessageID == sourceMessageID
+    else { return .none }
+    preparation.batch.status = .completed
+    preparation.batch.updatedAt = now
+    state.followUpPreparation = nil
+    if state.chat?.conversationID == conversationID {
+      state.chat?.followUpBatch = preparation.batch
+    }
+    let batch = preparation.batch
+    let lines = preparation.eventLines
+    return .merge(
+      .run { _ in
+        try? await history.saveFollowUpBatch(conversationID, batch)
+        try? await history.appendEvents(conversationID, sourceMessageID, lines)
+      },
+      resumeRequestedModelPreparation(state: &state))
   }
 
   // MARK: - Scope diagnosis (C before D)

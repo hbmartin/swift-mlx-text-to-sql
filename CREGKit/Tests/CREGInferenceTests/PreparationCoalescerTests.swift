@@ -26,7 +26,7 @@ import Testing
     private var started: CheckedContinuation<Void, Never>?
     private var release: CheckedContinuation<Int, Never>?
     private var didStart = false
-    private(set) var observedCancellation = false
+    private(set) var attempts = 0
 
     func waitUntilStarted() async {
       if didStart { return }
@@ -34,13 +34,13 @@ import Testing
     }
 
     func load() async -> Int {
+      attempts += 1
       didStart = true
       started?.resume()
       let value = await withCheckedContinuation {
         (continuation: CheckedContinuation<Int, Never>) in
         release = continuation
       }
-      observedCancellation = Task.isCancelled
       return value
     }
 
@@ -71,7 +71,7 @@ import Testing
     #expect(await retryProbe.attempts == 2)
   }
 
-  @Test func completedAfterCancellationLoadIsNotCached() async throws {
+  @Test func completedAfterCancellationLoadIsCached() async throws {
     let gate = SuspendedLoad()
     let coalescer = PreparationCoalescer<Int>()
     let caller = Task { try await coalescer.value { await gate.load() } }
@@ -79,7 +79,11 @@ import Testing
     caller.cancel()
     await gate.finish()
     await #expect(throws: CancellationError.self) { _ = try await caller.value }
-    #expect(await gate.observedCancellation)
-    #expect(try await coalescer.value { 43 } == 43)
+    let unexpectedReload = Probe()
+    for _ in 0..<3 {
+      #expect(try await coalescer.value { try await unexpectedReload.load() } == 42)
+    }
+    #expect(await gate.attempts == 1)
+    #expect(await unexpectedReload.attempts == 0)
   }
 }

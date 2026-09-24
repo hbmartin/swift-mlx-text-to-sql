@@ -215,6 +215,7 @@ extension QueryPipeline {
         }
       },
       runtimeMode: { await source.runtimeMode() },
+      waitUntilInferenceIdle: { await source.waitUntilInferenceIdle() },
       run: { question, history in
         observed(
           question: question,

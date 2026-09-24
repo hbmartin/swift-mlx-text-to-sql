@@ -147,11 +147,11 @@ public struct ChatFeature: Sendable {
         excluding: preservingPreparedAnswerID)
       let activeUserMessage: ChatMessage? = {
         if let preservingPreparedAnswerID {
-          guard let index = snapshot.messages.firstIndex(where: {
+          if let index = snapshot.messages.firstIndex(where: {
             $0.id == preservingPreparedAnswerID
-          }), index > 0, snapshot.messages[index - 1].role == .user
-          else { return nil }
-          return snapshot.messages[index - 1]
+          }), index > 0, snapshot.messages[index - 1].role == .user {
+            return snapshot.messages[index - 1]
+          }
         }
         guard snapshot.messages.last?.role == .user else { return nil }
         return snapshot.messages.last

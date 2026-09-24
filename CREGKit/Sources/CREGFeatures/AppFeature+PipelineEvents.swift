@@ -132,25 +132,27 @@ extension AppFeature {
       } else {
         state.chat?.messages.append(assistantMessage)
       }
-    } else if active.autoRetryCount == 0 {
-      // Background completion never changes the selected chat: mark the
-      // Recent row unread, banner it, and emit a light haptic.
+    } else {
+      // Every offscreen answer is unread. Only work the user explicitly
+      // started produces an immediate banner and haptic.
       state.conversations[id: conversationID]?.isUnread = true
-      state.answerReadyBanner = AnswerReadyBanner(
-        conversationID: conversationID,
-        title: state.conversations[id: conversationID]?.displayTitle
-          ?? "New Chat")
       effects.append(
         .run { _ in
           try? await history.setUnread(conversationID, true)
-          await haptics.answerReady()
         })
-      effects.append(
-        .run { send in
-          try await clock.sleep(for: .seconds(4))
-          await send(.answerReadyBannerTimedOut)
-        }
-        .cancellable(id: CancelID.bannerTimeout, cancelInFlight: true))
+      if !active.isAutomaticRetry {
+        state.answerReadyBanner = AnswerReadyBanner(
+          conversationID: conversationID,
+          title: state.conversations[id: conversationID]?.displayTitle
+            ?? "New Chat")
+        effects.append(.run { _ in await haptics.answerReady() })
+        effects.append(
+          .run { send in
+            try await clock.sleep(for: .seconds(4))
+            await send(.answerReadyBannerTimedOut)
+          }
+          .cancellable(id: CancelID.bannerTimeout, cancelInFlight: true))
+      }
     }
     updateSummaryAfterMessage(
       state: &state,

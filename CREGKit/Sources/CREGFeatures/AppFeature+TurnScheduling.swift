@@ -26,6 +26,7 @@ extension AppFeature {
     submission: QuestionSubmission,
     existingUserMessage: ChatMessage? = nil,
     autoRetryCount: Int = 0,
+    isAutomaticRetry: Bool = false,
     directlyUserStarted: Bool = true,
     replacingJournalID: UUID? = nil
   ) -> Effect<Action> {
@@ -71,6 +72,8 @@ extension AppFeature {
       submission: submission,
       startedAt: startedAt)
     activeTurn.autoRetryCount = autoRetryCount
+    activeTurn.isAutomaticRetry = isAutomaticRetry
+    activeTurn.directlyUserStarted = directlyUserStarted
     activeTurn.replacingJournalID = replacingJournalID
     if let replacingJournalID {
       activeTurn.replacedInterruptedTurn = state.chat?.interruptedTurns.first {
@@ -126,6 +129,35 @@ extension AppFeature {
         await send(.dispatchPreflightFinished(
           questionID: questionID, directlyUserStarted: directlyUserStarted))
       })
+  }
+
+  func resumeDispatchedTurnAfterPreflight(
+    state: inout State
+  ) -> Effect<Action> {
+    guard let active = state.activeTurn, active.preflightCompleted,
+      !active.pipelineStarted
+    else { return .none }
+    guard state.conversations[id: active.conversationID] != nil,
+      state.pendingDeletion?.summary.id != active.conversationID
+    else {
+      state.activeTurn = nil
+      if state.chat?.conversationID == active.conversationID {
+        if let optimistic = active.optimisticUserTurn, !optimistic.isExisting {
+          state.chat?.messages.remove(id: optimistic.message.id)
+        }
+        if let replaced = active.replacedInterruptedTurn {
+          state.chat?.interruptedTurns.append(replaced)
+        }
+      }
+      syncSchedulerProjection(into: &state)
+      return .send(.dispatchNextIfIdle)
+    }
+    guard state.isSceneActive, state.modelReadiness == .ready else {
+      return .none
+    }
+    state.activeTurn?.pipelineStarted = true
+    return runDispatchedTurn(
+      active: active, directlyUserStarted: active.directlyUserStarted)
   }
 
   func runDispatchedTurn(
@@ -224,8 +256,8 @@ extension AppFeature {
     .cancellable(id: CancelID.pipeline, cancelInFlight: true)
   }
 
-  /// Without a granted background-GPU task, scene deactivation must stop
-  /// submitting Metal work. The journal write owns the scheduler barrier;
+  /// Without a granted background-GPU task, background entry stops the turn.
+  /// The journal write owns the scheduler barrier;
   /// the serializer independently keeps any cancelled raw model call's slot
   /// until it actually settles.
   func interruptActiveTurn(
@@ -339,19 +371,21 @@ extension AppFeature {
     automatic: Bool,
     journalID requestedID: UUID? = nil
   ) -> Effect<Action> {
+    if automatic {
+      enqueueEligibleAutomaticRetry(state: &state)
+      return dispatchNextIfIdle(state: &state)
+    }
     guard let chat = state.chat,
       let interrupted = chat.interruptedTurns.first(where: {
+        let candidateID = $0.journalID ?? $0.executionID
+        guard let candidateID,
+          !state.dismissedRetryJournalIDs.contains(candidateID)
+        else { return false }
         if let requestedID { return $0.journalID == requestedID }
-        if !automatic { return true }
-        let journalID = $0.journalID ?? $0.executionID
-        let trailingUser = chat.messages.last
-        return $0.canAutoRetry
-          && trailingUser?.role == .user
-          && $0.question == trailingUser?.previewText
-          && ($0.executionID == trailingUser?.id || $0.executionID == nil)
-          && !state.queue.contains(where: { $0.retryJournalID == journalID })
+        return true
       }),
-      !automatic || interrupted.canAutoRetry
+      state.conversations[id: chat.conversationID] != nil,
+      state.pendingDeletion?.summary.id != chat.conversationID
     else { return .none }
     let last = chat.messages.last
     let trailingMessage: ChatMessage? = {
@@ -362,19 +396,13 @@ extension AppFeature {
       else { return nil }
       return last
     }()
-    if automatic && trailingMessage == nil { return .none }
     let resolvedJournalID = interrupted.journalID ?? interrupted.executionID
       ?? trailingMessage?.id
     guard let resolvedJournalID else { return .none }
     let submission = QuestionSubmission(
       question: interrupted.question, source: interrupted.source)
-    if automatic,
-      (!state.canDispatchTurn || state.fmAvailability != .available
-        || state.retryClaimInFlight)
-    { return .none }
-    if !automatic,
-      (!state.canDispatchTurn || state.fmAvailability != .available
-        || !state.queue.isEmpty)
+    if !state.canDispatchTurn || state.fmAvailability != .available
+      || !state.queue.isEmpty
     {
       if state.retryClaimInFlight { return .none }
       if !state.queue.contains(where: { $0.retryJournalID == resolvedJournalID }) {
@@ -382,7 +410,7 @@ extension AppFeature {
           id: uuid(), conversationID: chat.conversationID,
           submission: submission, retryJournalID: resolvedJournalID,
           existingUserMessage: trailingMessage,
-          automaticRetry: automatic, submittedAt: now))
+          automaticRetry: false, submittedAt: now))
         syncSchedulerProjection(into: &state)
       }
       return dispatchNextIfIdle(state: &state)
@@ -394,29 +422,79 @@ extension AppFeature {
         replacingJournalID: resolvedJournalID)
     }
     state.retryClaimInFlight = true
+    state.retryClaimJournalID = resolvedJournalID
     let conversationID = chat.conversationID
     let executionID = trailingMessage!.id
     return .run { send in
       do {
         let claimed = try await history.claimTurnRetry(
-          conversationID, resolvedJournalID, executionID, automatic)
+          conversationID, resolvedJournalID, executionID, false)
         await send(.interruptedRetryClaimed(
           conversationID: conversationID,
           journalID: resolvedJournalID,
           executionID: executionID,
-          automatic: automatic,
+          automatic: false,
           claimed: claimed))
       } catch {
         await send(.interruptedRetryClaimed(
           conversationID: conversationID,
           journalID: resolvedJournalID,
           executionID: executionID,
-          automatic: automatic,
+          automatic: false,
           claimed: false))
         await send(.operationFailed(
           .history(operation: .messageSave, error: error)))
       }
     }
+  }
+
+  func settleDismissedRetryClaim(
+    state: inout State,
+    conversationID: UUID,
+    journalID: UUID,
+    claimed: Bool
+  ) -> Effect<Action> {
+    state.retryClaimCleanupJournalID = journalID
+    return .run { send in
+      // A failed dismissal must restore Ask Again without re-arming an
+      // automatic claim that may already have consumed its budget.
+      if claimed {
+        try? await history.declineAutoRetry(conversationID, journalID)
+      }
+      await send(.dismissedRetryClaimSettled(journalID))
+    }
+  }
+
+  func enqueueEligibleAutomaticRetry(state: inout State) {
+    guard let chat = state.chat,
+      state.conversations[id: chat.conversationID] != nil,
+      state.pendingDeletion?.summary.id != chat.conversationID,
+      let trailingUser = chat.messages.last,
+      trailingUser.role == .user,
+      let interrupted = chat.interruptedTurns.first(where: { item in
+        guard let journalID = item.journalID ?? item.executionID else {
+          return false
+        }
+        return item.canAutoRetry
+          && item.question == trailingUser.previewText
+          && (item.executionID == trailingUser.id || item.executionID == nil)
+          && !state.dismissedRetryJournalIDs.contains(journalID)
+          && state.retryClaimJournalID != journalID
+          && !state.queue.contains(where: { $0.retryJournalID == journalID })
+      }),
+      let journalID = interrupted.journalID ?? interrupted.executionID
+    else { return }
+    let queued = QueuedQuestion(
+      id: uuid(), conversationID: chat.conversationID,
+      submission: QuestionSubmission(
+        question: interrupted.question, source: interrupted.source),
+      retryJournalID: journalID, existingUserMessage: trailingUser,
+      automaticRetry: true, submittedAt: interrupted.interruptedAt)
+    let index = state.queue.firstIndex {
+      $0.submittedAt > queued.submittedAt
+    } ?? state.queue.endIndex
+    state.queue.insert(queued, at: index)
+    syncSchedulerProjection(into: &state)
   }
 
   func suspendLowPriorityInference(state: inout State) -> Effect<Action> {
@@ -450,23 +528,30 @@ extension AppFeature {
     // snapshot. Re-read the synchronous system status before consuming a
     // queued item so a mid-foreground availability flip also fails closed.
     refreshFMAvailability(state: &state)
+    enqueueEligibleAutomaticRetry(state: &state)
     let requestedModel = resumeRequestedModelPreparation(state: &state)
     if state.modelPreparationInFlight { return requestedModel }
     guard state.canDispatchTurn else { return .none }
     guard state.fmAvailability == .available else {
       return watchFMAvailabilityIfStranded(state: &state)
     }
-    let autoRetry = claimInterruptedRetry(state: &state, automatic: true)
-    if state.retryClaimInFlight { return autoRetry }
+    if state.retryClaimInFlight { return .none }
     let visibleID = state.chat?.conversationID
     let next =
       state.queue.first { $0.conversationID == visibleID }
-      ?? state.queue.first { !$0.automaticRetry }
+      ?? state.queue.first
     guard let next else { return .none }
     state.queue.removeAll { $0.id == next.id }
+    guard state.conversations[id: next.conversationID] != nil,
+      state.pendingDeletion?.summary.id != next.conversationID
+    else {
+      syncSchedulerProjection(into: &state)
+      return .send(.dispatchNextIfIdle)
+    }
     if let journalID = next.retryJournalID, let userMessage = next.existingUserMessage {
       if next.retryAlreadyClaimed {
         state.retryClaimInFlight = true
+        state.retryClaimJournalID = journalID
         return .run { send in
           let snapshot = try? await history.loadConversation(next.conversationID)
           let valid = snapshot?.messages.last?.id == userMessage.id
@@ -478,6 +563,7 @@ extension AppFeature {
         }
       }
       state.retryClaimInFlight = true
+      state.retryClaimJournalID = journalID
       return .run { send in
         do {
           let claimed = try await history.claimTurnRetry(
@@ -521,7 +607,7 @@ extension AppFeature {
       state.isSceneActive,
       state.fmAvailability != .available,
       !state.queue.isEmpty || state.pendingScopeDiagnosis != nil
-        || state.chat?.interruptedTurn?.canAutoRetry == true
+        || state.chat?.interruptedTurns.contains(where: \.canAutoRetry) == true
         || state.resumableFollowUpBatch != nil
     else { return .none }
     return .run { send in
@@ -569,6 +655,16 @@ extension AppFeature {
     }
     .cancellable(
       id: TurnPersistenceTimeoutID(questionID: questionID),
+      cancelInFlight: true)
+  }
+
+  func turnPersistenceDrainWatchdog(questionID: UUID) -> Effect<Action> {
+    .run { send in
+      try await clock.sleep(for: .seconds(5))
+      await send(.turnPersistenceDrainTimedOut(questionID))
+    }
+    .cancellable(
+      id: TurnPersistenceDrainTimeoutID(questionID: questionID),
       cancelInFlight: true)
   }
 
@@ -707,14 +803,16 @@ extension AppFeature {
               replacesExisting,
               eventLines)
           }
+          await send(.turnPersistenceWriteSettled(questionID))
           await backgroundTurn.finish(questionID, true)
         } catch {
-          await backgroundTurn.finish(questionID, false)
           await send(
             .turnPersistenceFailed(
               conversationID: conversationID,
               questionID: questionID,
               failure: .history(operation: .messageSave, error: error)))
+          await send(.turnPersistenceWriteSettled(questionID))
+          await backgroundTurn.finish(questionID, false)
         }
         await send(.turnPersistenceFinished(questionID))
       },

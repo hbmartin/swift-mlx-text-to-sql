@@ -1,6 +1,19 @@
 import CREGCore
 import CryptoKit
 import Foundation
+import MLXLMCommon
+
+public enum SQLPrefillChunking: String, Codable, Sendable {
+  case balanced
+  case remainder
+
+  var mlxValue: PrefillParameters.Chunking {
+    switch self {
+    case .balanced: .balanced
+    case .remainder: .remainder
+    }
+  }
+}
 
 extension SQLGenClient {
   /// Load from a local weights directory (used by creg-eval-cli for parity runs).
@@ -26,6 +39,7 @@ extension SQLGenClient {
     experimentalNGramSerialPrefixTokens: Int = 0,
     experimentalNGramAdaptiveDraftMinimumSupport: Int = 0,
     enablePromptPrefixCache: Bool = true,
+    prefillChunking: SQLPrefillChunking = .balanced,
     runtimeMode: ModelRuntimeMode = .evaluated,
     preparationProgress: ModelPreparationProgress = .noop
   ) -> SQLGenClient {
@@ -55,6 +69,7 @@ extension SQLGenClient {
       experimentalNGramAdaptiveDraftMinimumSupport:
         experimentalNGramAdaptiveDraftMinimumSupport,
       enablePromptPrefixCache: enablePromptPrefixCache,
+      prefillChunking: prefillChunking,
       runtimeMode: runtimeMode,
       preparationProgress: preparationProgress)
     return SQLGenClient(

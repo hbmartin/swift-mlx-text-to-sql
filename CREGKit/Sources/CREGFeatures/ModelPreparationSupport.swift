@@ -195,10 +195,11 @@ actor ModelPreparationJournalStore {
 
   func suspend(_ attemptID: UUID) throws {
     suspendedAttempts.insert(attemptID)
-    guard var snapshot = current ?? load(), snapshot.attemptID == attemptID,
-      !snapshot.completed else { return }
+    guard var snapshot = current ?? load(), snapshot.attemptID == attemptID
+    else { return }
     snapshot.completed = true
     snapshot.outcome = "suspended"
+    snapshot.failure = nil
     current = snapshot
     try persist()
   }

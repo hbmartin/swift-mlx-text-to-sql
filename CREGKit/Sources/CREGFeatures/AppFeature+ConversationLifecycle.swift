@@ -346,10 +346,10 @@ extension AppFeature {
       summary: "Model preparation is waiting for raw model work to settle.",
       context: ["runtime_mode": mode.rawValue])
     return .concatenate(
+      .run { _ in await preparationJournal.suspend(attemptID) },
       .cancel(id: CancelID.modelPreparation),
       .run { send in
         await pipeline.waitUntilInferenceIdle()
-        await preparationJournal.suspend(attemptID)
         await send(.modelPreparationSuspended(attemptID))
       })
   }

@@ -65,6 +65,7 @@ struct EvalCLI {
     var topP: Double
     var topK: Int
     var maxTokens: Int
+    var prefillChunking: SQLPrefillChunking
     var rowCap: Int
     var itemCount: Int
     var correctCount: Int
@@ -137,6 +138,7 @@ struct EvalCLI {
         [--max-tokens <positive-int>] [--max-items <positive-int>] \
         [--kv-bits <4|8>] [--wired-memory <true|false>] \
         [--direct-prompt-suffix <true|false>] \
+        [--prefill-chunking <balanced|remainder>] \
         [--compiled-qwen2-mlp-fusion <true|false>] \
         [--compiled-qwen2-qkv-verification-fusion <true|false>] \
         [--verification-mlp-skip-layers <comma-separated-indices>] \
@@ -265,6 +267,13 @@ struct EvalCLI {
       }
     } else {
       directPromptSuffix = true
+    }
+    let prefillChunking: SQLPrefillChunking
+    if let raw = argument("prefill-chunking") {
+      guard let parsed = SQLPrefillChunking(rawValue: raw) else { usage() }
+      prefillChunking = parsed
+    } else {
+      prefillChunking = .balanced
     }
     let useProductionNGram: Bool
     if let raw = argument("production-ngram") {
@@ -536,7 +545,8 @@ struct EvalCLI {
         experimentalNGramDraftTokens: ngramDraft?.tokenCount ?? 0,
         experimentalNGramSerialPrefixTokens: ngramSerialPrefixTokens,
         experimentalNGramAdaptiveDraftMinimumSupport:
-          ngramAdaptiveMinimumSupport)
+          ngramAdaptiveMinimumSupport,
+        prefillChunking: prefillChunking)
       // Match the app lifecycle: load the model and prefill its invariant
       // schema/system prompt before measuring individual queries.
       let primaryPreparationStarted = ContinuousClock.now
@@ -567,7 +577,8 @@ struct EvalCLI {
           experimentalNGramDraftTokens: ngramDraft?.tokenCount ?? 0,
           experimentalNGramSerialPrefixTokens: ngramSerialPrefixTokens,
           experimentalNGramAdaptiveDraftMinimumSupport:
-            ngramAdaptiveMinimumSupport)
+            ngramAdaptiveMinimumSupport,
+          prefillChunking: prefillChunking)
       }
       let fallbackPreparationMicroseconds: Int64?
       let residentBytesAfterFallbackPreparation: UInt64?
@@ -763,6 +774,7 @@ struct EvalCLI {
         topP: 1,
         topK: 0,
         maxTokens: maxTokens,
+        prefillChunking: prefillChunking,
         rowCap: 10_000,
         itemCount: items.count,
         correctCount: correct,
