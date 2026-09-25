@@ -172,13 +172,19 @@ public enum QuestionSubmissionSource: Equatable, Sendable, Codable {
 public struct QuestionSubmission: Equatable, Sendable, Codable {
   public var question: String
   public var source: QuestionSubmissionSource
+  public var originConversationID: UUID?
+  public var clearsComposerOnAcceptance: Bool?
 
   public init(
     question: String,
-    source: QuestionSubmissionSource = .freeForm
+    source: QuestionSubmissionSource = .freeForm,
+    originConversationID: UUID? = nil,
+    clearsComposerOnAcceptance: Bool? = nil
   ) {
     self.question = question
     self.source = source
+    self.originConversationID = originConversationID
+    self.clearsComposerOnAcceptance = clearsComposerOnAcceptance
   }
 }
 
@@ -212,7 +218,6 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
   public var conversationID: UUID
   public var submission: QuestionSubmission
   public var retryJournalID: UUID?
-  public var retryAlreadyClaimed: Bool = false
   public var existingUserMessage: ChatMessage?
   public var automaticRetry: Bool = false
   public var question: String { submission.question }
@@ -235,7 +240,6 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
       question: question,
       source: starter.map(QuestionSubmissionSource.starter) ?? .freeForm)
     self.retryJournalID = nil
-    self.retryAlreadyClaimed = false
     self.existingUserMessage = nil
     self.automaticRetry = false
     self.submittedAt = submittedAt
@@ -246,7 +250,6 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     conversationID: UUID,
     submission: QuestionSubmission,
     retryJournalID: UUID? = nil,
-    retryAlreadyClaimed: Bool = false,
     existingUserMessage: ChatMessage? = nil,
     automaticRetry: Bool = false,
     submittedAt: Date
@@ -255,7 +258,6 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     self.conversationID = conversationID
     self.submission = submission
     self.retryJournalID = retryJournalID
-    self.retryAlreadyClaimed = retryAlreadyClaimed
     self.existingUserMessage = existingUserMessage
     self.automaticRetry = automaticRetry
     self.submittedAt = submittedAt

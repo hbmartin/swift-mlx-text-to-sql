@@ -99,6 +99,8 @@ struct EvalCLI {
   }
 
   struct Provenance: Encodable {
+    var executable: FileEvidence
+    var effectiveSettings: [String: String]
     var gitCommit: String?
     var gitDirty: Bool?
     var osVersion: String
@@ -113,7 +115,7 @@ struct EvalCLI {
     var grammarSHA256: String
     var schemaPromptSHA256: String
     var systemPromptSHA256: String
-    var packageLock: FileEvidence?
+    var packageLock: FileEvidence
   }
 
   static func argument(_ name: String) -> String? {
@@ -134,6 +136,7 @@ struct EvalCLI {
         [--fallback-model <weights-dir> --fallback-model-key <manifest-key> \
          --fallback-repository <repo> --fallback-revision <40-char-commit>] \
         --db <creg.sqlite> --gold <gold.jsonl> \
+        [--package-lock <CREGKit/Package.resolved>] \
         --gcd <on|off> --temperature <0...1> --seed <uint64> \
         [--max-tokens <positive-int>] [--max-items <positive-int>] \
         [--kv-bits <4|8>] [--wired-memory <true|false>] \
@@ -172,6 +175,36 @@ struct EvalCLI {
       path: url.path,
       size: data.count,
       sha256: sha256(data))
+  }
+
+  static func packageLockPath() -> String? {
+    if let explicit = argument("package-lock") { return explicit }
+    let fileManager = FileManager.default
+    let current = URL(fileURLWithPath: fileManager.currentDirectoryPath)
+    let executable = Bundle.main.executableURL
+      ?? URL(fileURLWithPath: CommandLine.arguments[0])
+    for base in [executable.deletingLastPathComponent(), current] {
+      var directory = base.standardizedFileURL
+      while true {
+        for relative in ["Package.resolved", "CREGKit/Package.resolved"] {
+          let candidate = directory.appendingPathComponent(relative)
+          if fileManager.fileExists(atPath: candidate.path) {
+            return candidate.path
+          }
+        }
+        let parent = directory.deletingLastPathComponent()
+        if parent == directory { break }
+        directory = parent
+      }
+    }
+    return nil
+  }
+
+  static func policySetting(
+    _ policy: VerificationMLPConfidenceSkipPolicy?
+  ) -> String {
+    guard let policy else { return "none" }
+    return "\(policy.layer),\(policy.targetInputLength),\(policy.minimumSupport),\(policy.requiresUnanimity)"
   }
 
   static func commandOutput(_ command: [String]) -> String? {
@@ -487,6 +520,51 @@ struct EvalCLI {
 
     do {
       let startedAt = ISO8601DateFormatter().string(from: Date())
+      let executablePath = (Bundle.main.executableURL
+        ?? URL(fileURLWithPath: CommandLine.arguments[0])).standardizedFileURL.path
+      let executableEvidence = try fileEvidence(executablePath)
+      guard let lockPath = packageLockPath() else {
+        print("Package.resolved not found; pass --package-lock")
+        exit(2)
+      }
+      let lockEvidence = try fileEvidence(lockPath)
+      let effectiveSettings: [String: String] = [
+        "gcd": gcd.rawValue,
+        "temperature": String(temperature),
+        "seed": String(seed),
+        "maxTokens": String(maxTokens),
+        "maxItems": maxItems.map(String.init) ?? "all",
+        "rowCap": "10000",
+        "kvBits": kvBits.map(String.init) ?? "none",
+        "wiredMemory": String(useWiredMemory),
+        "directPromptSuffix": String(directPromptSuffix),
+        "prefillChunking": prefillChunking.rawValue,
+        "compiledQwen2MLPFusion": String(compiledQwen2MLPFusion),
+        "compiledQwen2QKVVerificationFusion":
+          String(compiledQwen2QKVVerificationFusion),
+        "verificationMLPSkipLayers": verificationMLPSkipLayers
+          .map(String.init).joined(separator: ","),
+        "verificationMLPLongBatchExtraSkipLayers":
+          verificationMLPLongBatchExtraSkipLayers.map(String.init)
+          .joined(separator: ","),
+        "verificationMLPConfidenceSkip":
+          policySetting(verificationMLPConfidenceSkip),
+        "verificationMLPAdditionalConfidenceSkips":
+          verificationMLPAdditionalConfidenceSkips
+          .map { policySetting($0) }.joined(separator: ";"),
+        "questionAwareOutputHead": String(questionAwareOutputHead),
+        "compactQuestionAwareOutputHead":
+          String(compactQuestionAwareOutputHead),
+        "productionNGram": String(useProductionNGram),
+        "ngramDraftCorpusSHA256": try ngramDraft.map {
+          try fileEvidence($0.corpusPath).sha256
+        } ?? "none",
+        "ngramDraftTokens": String(ngramDraft?.tokenCount ?? 0),
+        "ngramSerialPrefixTokens": String(ngramSerialPrefixTokens),
+        "ngramAdaptiveMinimumSupport": String(ngramAdaptiveMinimumSupport),
+        "fallbackModelKey": fallback?.model.key ?? "none",
+        "fallbackModelRevision": fallback?.model.revision ?? "none",
+      ]
       let goldText = try String(
         contentsOfFile: goldPath, encoding: .utf8)
       var items = try goldText.split(separator: "\n")
@@ -606,11 +684,11 @@ struct EvalCLI {
         else { return nil }
         return document["directory_sha256"] as? String
       }()
-      let packageLockPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .appendingPathComponent("Package.resolved").path
       let gitCommit = commandOutput(["git", "rev-parse", "HEAD"])
       let gitStatus = commandOutput(["git", "status", "--porcelain"])
       let provenance = Provenance(
+        executable: executableEvidence,
+        effectiveSettings: effectiveSettings,
         gitCommit: gitCommit,
         gitDirty: gitStatus.map { !$0.isEmpty },
         osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
@@ -625,7 +703,7 @@ struct EvalCLI {
         grammarSHA256: sha256(Data(grammar.utf8)),
         schemaPromptSHA256: sha256(Data(schema.utf8)),
         systemPromptSHA256: sha256(Data(systemPrompt.utf8)),
-        packageLock: try? fileEvidence(packageLockPath))
+        packageLock: lockEvidence)
 
       var results: [ItemResult] = []
       var correct = 0
@@ -791,7 +869,7 @@ struct EvalCLI {
         residentBytesAfterFallbackPreparation:
           residentBytesAfterFallbackPreparation)
       let payload = Output(
-        schemaVersion: 2,
+        schemaVersion: 3,
         runID:
           "swift-parity-\(modelKey)-gcd-\(gcd.rawValue)-t-\(temperature)-s-\(seed)",
         startedAt: startedAt,

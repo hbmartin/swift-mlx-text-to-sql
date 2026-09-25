@@ -160,8 +160,7 @@ extension AppFeature {
       message: assistantMessage,
       replacing: replacesProvisional)
     syncSchedulerProjection(into: &state)
-    if state.activeTurn == nil, state.queue.isEmpty {
-      switch outcome {
+    switch outcome {
       case .answered(let result, let narration, _, _):
         state.pendingTurnPersistence?.followUpContext =
           FollowUpSuggestionContext(
@@ -180,7 +179,6 @@ extension AppFeature {
               reason: reason, scopeVerdict: telemetry.scopeVerdict))
       case .failed, .needsClarification:
         break
-      }
     }
     return .merge(effects)
   }

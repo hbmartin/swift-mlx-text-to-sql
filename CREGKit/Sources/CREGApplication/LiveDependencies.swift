@@ -5,7 +5,7 @@ import CREGFeatures
 import CREGInference
 import Foundation
 
-private actor SQLGenRuntimeRouter {
+actor SQLGenRuntimeRouter {
   private let makeEvaluated: @Sendable () -> SQLGenClient
   private let makeCompatibility: @Sendable () -> SQLGenClient
   private var evaluated: SQLGenClient?
@@ -37,14 +37,19 @@ private actor SQLGenRuntimeRouter {
     }
     do {
       let report = try await client.prepare(mode)
+      try Task.checkCancellation()
       activeMode = mode
       isPrepared = true
       return report
     } catch {
-      if mode == .evaluated {
-        evaluated = nil
-      } else {
-        compatibility = nil
+      // Cancellation suspends preparation, but the container may already be
+      // loaded. Keep its client so resumption reuses that single load.
+      if !(error is CancellationError) && !Task.isCancelled {
+        if mode == .evaluated {
+          evaluated = nil
+        } else {
+          compatibility = nil
+        }
       }
       isPrepared = false
       throw error

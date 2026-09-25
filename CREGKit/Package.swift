@@ -174,5 +174,9 @@ let package = Package(
         .define("ATC_TEST_HOOKS", .when(configuration: .debug))
       ]
     ),
+    .testTarget(
+      name: "CREGApplicationTests",
+      dependencies: ["CREGApplication", "CREGCore"]
+    ),
   ]
 )

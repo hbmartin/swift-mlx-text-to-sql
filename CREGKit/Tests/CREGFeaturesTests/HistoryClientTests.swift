@@ -432,6 +432,26 @@ import Testing
       conversationID, second.id, second.id, true)))
   }
 
+  @Test func manualTakeoverResetsAutomaticClaimAndReleasesAsManual() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let user = userMessage("Retry after interruption", at: 10)
+    try await client.persistUserTurn(
+      conversationID, user, QuestionSubmission(question: user.previewText),
+      user.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, user.id, false)
+    #expect(try await client.claimTurnRetry(
+      conversationID, user.id, user.id, true))
+    #expect(try await client.claimTurnRetry(
+      conversationID, user.id, user.id, false))
+    try await client.releaseAutoRetryClaim(conversationID, user.id, user.id)
+    let saved = try await client.loadConversation(conversationID)
+    #expect(saved.interruptedTurn?.status == .manualRetryRequired)
+    #expect(saved.interruptedTurn?.autoRetryCount == 0)
+  }
+
   @Test func twoInterruptionsRemainIndependentThroughOffscreenCompletionAndDismissal() async throws {
     let client = try makeClient(temporaryDatabaseURL())
     let conversationID = UUID()
@@ -547,6 +567,39 @@ import Testing
     try await client.clearFollowUpBatch(conversationID)
     #expect(
       try await client.loadConversation(conversationID).followUpBatch == nil)
+  }
+
+  @Test func olderSuggestionSaveCannotReplaceLatestAnsweredTurn() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let earlier = answerMessage(narration: "Earlier", at: 10)
+    let latest = answerMessage(narration: "Latest", at: 20)
+    try await client.appendMessage(conversationID, earlier)
+    try await client.appendMessage(conversationID, latest)
+    let oldContext = FollowUpSuggestionContext(
+      sourceAssistantMessageID: earlier.id,
+      question: "Earlier", standaloneQuestion: "Earlier",
+      narration: "Earlier", result: QueryResult(columns: [], rows: []))
+    let latestContext = FollowUpSuggestionContext(
+      sourceAssistantMessageID: latest.id,
+      question: "Latest", standaloneQuestion: "Latest",
+      narration: "Latest", result: QueryResult(columns: [], rows: []))
+    let newer = PreparedFollowUpBatch(
+      sourceAssistantMessageID: latest.id, context: latestContext,
+      status: .completed, updatedAt: Date(timeIntervalSince1970: 20))
+    let older = PreparedFollowUpBatch(
+      sourceAssistantMessageID: earlier.id, context: oldContext,
+      updatedAt: Date(timeIntervalSince1970: 30))
+    try await client.saveFollowUpBatch(conversationID, newer)
+    try await client.saveFollowUpBatch(conversationID, older)
+    #expect(try await client.loadConversation(conversationID).followUpBatch == newer)
+    let latePreparing = PreparedFollowUpBatch(
+      sourceAssistantMessageID: latest.id, context: latestContext,
+      updatedAt: newer.updatedAt)
+    try await client.saveFollowUpBatch(conversationID, latePreparing)
+    #expect(try await client.loadConversation(conversationID).followUpBatch == newer)
   }
 
   @Test func preparedAnswerUpdateKeepsPositionAndLateAppendCannotRegressIt() async throws {

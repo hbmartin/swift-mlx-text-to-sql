@@ -11,15 +11,12 @@ extension ChatFeature {
     submittedQuestion: String? = nil,
     clearsComposer: Bool = true,
     starter: StarterQueryID? = nil,
-    preparedFollowUp: PreparedFollowUp? = nil,
-    clearsFollowUpBatch: Bool = true
+    preparedFollowUp: PreparedFollowUp? = nil
   ) -> Effect<Action> {
     guard state.isSubmissionEnabled else { return .none }
     let question = (submittedQuestion ?? state.composerText)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !question.isEmpty else { return .none }
-    if clearsComposer { state.composerText = "" }
-    if clearsFollowUpBatch { state.followUpBatch = nil }
     let conversationID = state.conversationID
     let source: QuestionSubmissionSource =
       if let preparedFollowUp {
@@ -34,16 +31,11 @@ extension ChatFeature {
       .send(
         .delegate(
           .submitQuestion(
-            QuestionSubmission(question: question, source: source))))
+            QuestionSubmission(
+              question: question, source: source,
+              originConversationID: conversationID,
+              clearsComposerOnAcceptance: clearsComposer))))
     ]
-    if clearsComposer {
-      effects.insert(
-        .cancel(id: DraftSaveID(conversationID: conversationID)),
-        at: 0)
-      effects.insert(
-        .run { _ in try? await history.saveDraft(conversationID, "") },
-        at: 1)
-    }
 
     // A pending Not right correction records the question that follows it.
     if let context = state.correctionContext,

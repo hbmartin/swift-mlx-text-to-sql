@@ -199,6 +199,14 @@ extension QueryPipeline {
             ])
           return report
         } catch {
+          if error is CancellationError || Task.isCancelled {
+            diagnostics.info(
+              category: .pipeline,
+              code: "pipeline_preparation_cancelled",
+              summary: "Pipeline preparation was intentionally suspended.",
+              context: ["runtime_mode": mode.rawValue])
+            throw error
+          }
           diagnostics.record(
             DiagnosticEvent(
               level: .error,

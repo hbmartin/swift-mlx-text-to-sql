@@ -131,6 +131,14 @@ extension SQLGenClient {
             ])
           return report
         } catch {
+          if error is CancellationError || Task.isCancelled {
+            diagnostics.info(
+              category: .model,
+              code: "model_load_cancelled",
+              summary: "The bundled SQL model load was intentionally suspended.",
+              context: ["model_key": modelKey, "runtime_mode": mode.rawValue])
+            throw error
+          }
           diagnostics.record(
             DiagnosticEvent(
               level: .error,

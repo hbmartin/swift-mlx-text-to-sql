@@ -178,16 +178,16 @@ private actor PreparationDrainGate {
     #expect(await store.exportData() != nil)
   }
 
-  @Test func suspensionBeforeOrAfterJournalBeginIsACompletedOutcome() async throws {
+  @Test func suspensionStaysUnfinishedUntilDrainCompletes() async throws {
     for suspendFirst in [true, false] {
       let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("creg-suspension-test-\(UUID().uuidString).json")
       let owner = ModelPreparationJournalStore(url: url, processSessionID: UUID(11))
       let attemptID = UUID()
-      if suspendFirst { try await owner.suspend(attemptID) }
+      if suspendFirst { try await owner.requestSuspension(attemptID) }
       try await owner.begin(
         attemptID: attemptID, mode: .evaluated, environment: [:])
-      if !suspendFirst { try await owner.suspend(attemptID) }
+      if !suspendFirst { try await owner.requestSuspension(attemptID) }
       try await owner.stageStarted(.promptCache, mode: .evaluated)
       try await owner.fail(ModelPreparationFailure(
         code: "model_container_load_failed", stage: .containerLoad,
@@ -198,10 +198,14 @@ private actor PreparationDrainGate {
       decoder.dateDecodingStrategy = .iso8601
       let saved = try decoder.decode(ModelPreparationJournalSnapshot.self, from: data)
       #expect(saved.attemptID == attemptID)
-      #expect(saved.completed)
-      #expect(saved.outcome == "suspended")
+      #expect(!saved.completed)
+      #expect(saved.outcome == "suspending")
       let relaunched = ModelPreparationJournalStore(url: url, processSessionID: UUID(12))
-      #expect(await relaunched.unfinishedAttempt() == nil)
+      #expect(await relaunched.unfinishedAttempt()?.attemptID == attemptID)
+      try await owner.completeSuspension(attemptID)
+      let completedRelaunch = ModelPreparationJournalStore(
+        url: url, processSessionID: UUID(13))
+      #expect(await completedRelaunch.unfinishedAttempt() == nil)
     }
   }
 
@@ -211,7 +215,7 @@ private actor PreparationDrainGate {
     let owner = ModelPreparationJournalStore(url: url, processSessionID: UUID(13))
     let suspendedID = UUID(14)
     let resumedID = UUID(15)
-    try await owner.suspend(suspendedID)
+    try await owner.requestSuspension(suspendedID)
     try await owner.begin(
       attemptID: resumedID, mode: .evaluated, environment: [:])
     try await owner.begin(
@@ -253,7 +257,7 @@ private actor PreparationDrainGate {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let before = try #require(await journalStore.exportData())
-    #expect(try decoder.decode(ModelPreparationJournalSnapshot.self, from: before).outcome == "suspended")
+    #expect(try decoder.decode(ModelPreparationJournalSnapshot.self, from: before).outcome == "suspending")
     #expect(store.state.drainingModelPreparationAttemptID == attemptID)
     await drain.release()
     await store.receive(.modelPreparationSuspended(attemptID))

@@ -34,11 +34,26 @@ extension AppFeature {
       canStartFollowUpPreparation(
         state: state, conversationID: conversationID)
     else {
-      state.pendingScopeDiagnosis = PendingScopeDiagnosis(
+      state.pendingSuggestionContexts[conversationID] = PendingScopeDiagnosis(
         conversationID: conversationID,
         messageID: context.sourceAssistantMessageID,
         context: context)
-      return watchFMAvailabilityIfStranded(state: &state)
+      let batch = PreparedFollowUpBatch(
+        sourceAssistantMessageID: context.sourceAssistantMessageID,
+        context: context, status: .preparing, updatedAt: now)
+      if state.chat?.conversationID == conversationID {
+        state.chat?.followUpBatch = batch
+      }
+      return .merge(
+        watchFMAvailabilityIfStranded(state: &state),
+        .run { send in
+          do {
+            try await history.saveFollowUpBatch(conversationID, batch)
+          } catch {
+            await send(.operationFailed(
+              .history(operation: .messageSave, error: error)))
+          }
+        })
     }
     return startFollowUpPreparation(
       state: &state,
@@ -64,6 +79,7 @@ extension AppFeature {
       conversationID: conversationID,
       context: context,
       batch: batch)
+    state.pendingSuggestionContexts.removeValue(forKey: conversationID)
     if state.chat?.conversationID == conversationID {
       state.chat?.followUpBatch = batch
     }
@@ -98,6 +114,15 @@ extension AppFeature {
       let batch = state.resumableFollowUpBatch,
       let context = batch.context
     else { return .none }
+    if case .turnFailure(_, let verdict) = context.seed,
+      verdict == nil
+    {
+      return startScopeDiagnosis(
+        state: &state,
+        conversationID: chat.conversationID,
+        messageID: context.sourceAssistantMessageID,
+        context: context)
+    }
     state.followUpPreparation = FollowUpPreparationState(
       conversationID: chat.conversationID,
       context: context,
@@ -133,7 +158,6 @@ extension AppFeature {
       preparation.conversationID == conversationID,
       preparation.context.sourceAssistantMessageID == sourceMessageID,
       state.activeTurn == nil,
-      state.queue.isEmpty,
       state.pendingTurnPersistence == nil
     else { return .none }
 
@@ -178,6 +202,7 @@ extension AppFeature {
       return .merge(
         persistence,
         resumeRequestedModelPreparation(state: &state),
+        resumePendingSuggestionContextIfIdle(state: &state),
         resumeFollowUpPreparationIfIdle(state: &state))
     }
   }
@@ -191,7 +216,9 @@ extension AppFeature {
       preparation.conversationID == conversationID,
       preparation.context.sourceAssistantMessageID == sourceMessageID
     else { return .none }
-    preparation.batch.status = .completed
+    // No `.finished` event means this batch may be partial. Keep its
+    // durable `.preparing` state for the next idle or navigation resume.
+    preparation.batch.status = .preparing
     preparation.batch.updatedAt = now
     state.followUpPreparation = nil
     if state.chat?.conversationID == conversationID {
@@ -204,6 +231,7 @@ extension AppFeature {
         try? await history.saveFollowUpBatch(conversationID, batch)
         try? await history.appendEvents(conversationID, sourceMessageID, lines)
       },
+      resumePendingSuggestionContextIfIdle(state: &state),
       resumeRequestedModelPreparation(state: &state))
   }
 
@@ -232,29 +260,54 @@ extension AppFeature {
       state.fmAvailability == .available
     else { return .none }
     state.pendingScopeDiagnosis = nil
-    return startFollowUpPreparation(
+    return startScopeDiagnosis(
       state: &state,
       conversationID: pending.conversationID,
+      messageID: pending.messageID,
+      context: pending.context)
+  }
+
+  func resumePendingSuggestionContextIfIdle(
+    state: inout State
+  ) -> Effect<Action> {
+    guard state.canStartLowPriorityInference,
+      state.modelReadiness == .ready,
+      state.fmAvailability == .available
+    else { return .none }
+    let selectedID = state.chat?.conversationID
+    guard let pending = selectedID.flatMap({ state.pendingSuggestionContexts[$0] })
+      ?? state.pendingSuggestionContexts.values.first(where: {
+        state.conversations[id: $0.conversationID] != nil
+      })
+    else { return .none }
+    state.pendingSuggestionContexts.removeValue(forKey: pending.conversationID)
+    if pending.context.isRecoverySeed {
+      return startScopeDiagnosis(
+        state: &state, conversationID: pending.conversationID,
+        messageID: pending.messageID, context: pending.context)
+    }
+    return startFollowUpPreparation(
+      state: &state, conversationID: pending.conversationID,
       context: pending.context)
   }
 
   /// A retained scope diagnosis holds `isInferenceIdle` false, and while
   /// Apple Intelligence is off nothing else can clear it — which would gate
   /// the user's explicit model-preparation retry for the rest of the
-  /// session. The explicit retry outranks the passive recovery memo, exactly
-  /// as `dispatch` abandons an in-flight diagnosis rather than queueing
-  /// behind it.
+  /// session. The explicit retry outranks the passive recovery memo. Park
+  /// the memo so it can resume after model maintenance.
   func abandonScopeDiagnosisForModelMaintenance(
     state: inout State
   ) -> Effect<Action> {
-    guard state.pendingScopeDiagnosis != nil else { return .none }
+    guard let pending = state.pendingScopeDiagnosis else { return .none }
+    state.pendingSuggestionContexts[pending.conversationID] = pending
     state.pendingScopeDiagnosis = nil
     state.isScopeDiagnosisInFlight = false
     diagnostics.info(
       category: .submission,
-      code: "scope_diagnosis_abandoned_for_model_preparation",
+      code: "scope_diagnosis_parked_for_model_preparation",
       summary:
-        "A pending scope diagnosis was abandoned so a user-requested model preparation could start.")
+        "A pending scope diagnosis was parked so a user-requested model preparation could start.")
     return .cancel(id: CancelID.scopeDiagnosis)
   }
 
@@ -296,7 +349,22 @@ extension AppFeature {
       context: context)
     state.isScopeDiagnosisInFlight = true
     let question = context.standaloneQuestion
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: messageID,
+      context: context, status: .preparing, updatedAt: now)
     return .run(priority: .low) { send in
+      // Register the cancellation ID before the durable write, and let the
+      // write finish even if inactivity cancels the judge in this window.
+      let save = Task {
+        try await history.saveFollowUpBatch(conversationID, batch)
+      }
+      do {
+        try await save.value
+      } catch {
+        await send(.operationFailed(
+          .history(operation: .messageSave, error: error)))
+      }
+      guard !Task.isCancelled else { return }
       let verdict = await scopeDiagnosis.judge(question)
       guard !Task.isCancelled else { return }
       await send(
@@ -369,8 +437,11 @@ extension AppFeature {
       // the resume gates see fresh state, and watch for recovery so the
       // retained memo does not strand while the app stays foregrounded.
       refreshFMAvailability(state: &state)
+      state.pendingScopeDiagnosis = nil
       return .merge(
-        resumeInterruptedScopeDiagnosisIfIdle(state: &state),
+        startOrRetainFollowUpPreparation(
+          state: &state, conversationID: conversationID,
+          context: context),
         watchFMAvailabilityIfStranded(state: &state))
     }
     state.pendingScopeDiagnosis = nil
