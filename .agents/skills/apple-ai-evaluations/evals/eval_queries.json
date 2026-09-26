@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Build a regression harness that scores our Foundation Models answers on every prompt change.",
+    "should_trigger": true
+  },
+  {
+    "query": "Our model-as-judge grader disagrees with human reviewers. How should I calibrate and align it?",
+    "should_trigger": true
+  },
+  {
+    "query": "I need synthetic adversarial conversations and a score for whether the agent called tools in the right order.",
+    "should_trigger": true
+  },
+  {
+    "query": "Before converting this network, check the training set for duplicates and whether the convnet is wider than necessary.",
+    "should_trigger": true
+  },
+  {
+    "query": "Profile an .aimodel to find why it runs on the GPU instead of the Neural Engine.",
+    "should_trigger": false
+  },
+  {
+    "query": "Measure cold-start latency, peak memory, and thermal throttling for a model we are about to ship.",
+    "should_trigger": false
+  },
+  {
+    "query": "Write ordinary XCTest coverage for this URLSession wrapper.",
+    "should_trigger": false
+  },
+  {
+    "query": "Convert my torch.nn.Module to Core AI and replace an unsupported operator.",
+    "should_trigger": false
+  }
+]

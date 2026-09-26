@@ -66,7 +66,19 @@ public struct ModelPreparationFailure: Error, Sendable, Equatable, Codable {
   }
 
   public var allowsCompatibilityRetry: Bool {
-    mode == .evaluated && stage.allowsCompatibilityRetry
+    mode == .evaluated && stage.allowsCompatibilityRetry && !isPaused
+  }
+
+  /// The prior process was suspending this attempt when it ended. Nothing
+  /// failed; the attempt waits for an explicit Retry tap.
+  public static let previousPreparationSuspendedCode =
+    "previous_preparation_suspended"
+  /// The prior process ended while this attempt was still running.
+  public static let previousPreparationInterruptedCode =
+    "previous_preparation_interrupted"
+
+  public var isPaused: Bool {
+    code == Self.previousPreparationSuspendedCode
   }
 }
 

@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Our model is too large for the app binary. Design a background asset-pack and update strategy.",
+    "should_trigger": true
+  },
+  {
+    "query": "The app gets jetsammed halfway through inference on older phones even though the model loads.",
+    "should_trigger": true
+  },
+  {
+    "query": "Create an honest benchmark plan covering cold start, peak memory, sustained thermals, and throttling.",
+    "should_trigger": true
+  },
+  {
+    "query": "How much download and on-disk budget should we reserve for two model versions during an update?",
+    "should_trigger": true
+  },
+  {
+    "query": "Calibrate a model-as-judge grader against human preferences.",
+    "should_trigger": false
+  },
+  {
+    "query": "Replace an unsupported operator while converting PyTorch to Core AI.",
+    "should_trigger": false
+  },
+  {
+    "query": "LanguageModelSession streams duplicate snapshots into my SwiftUI view.",
+    "should_trigger": false
+  },
+  {
+    "query": "Implement a quantized MTLTensor attention kernel.",
+    "should_trigger": false
+  }
+]

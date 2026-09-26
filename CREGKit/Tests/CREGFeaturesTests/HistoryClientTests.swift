@@ -390,9 +390,9 @@ import Testing
     #expect(try await makeClient(url).loadConversation(id).interruptedTurn?.canAutoRetry == true)
 
     #expect(try await client.claimTurnRetry(
-      id, message.id, message.id, true))
-    #expect(!(try await client.claimTurnRetry(
-      id, message.id, message.id, true)))
+      id, message.id, message.id, true) == 1)
+    #expect(try await client.claimTurnRetry(
+      id, message.id, message.id, true) == nil)
     snapshot = try await client.loadConversation(id)
     #expect(snapshot.interruptedTurn?.autoRetryCount == 1)
     #expect(snapshot.interruptedTurn?.canAutoRetry == false)
@@ -415,25 +415,29 @@ import Testing
     try await client.persistUserTurn(
       conversationID, second, QuestionSubmission(question: second.previewText),
       second.createdAt, nil)
-    #expect(!(try await client.claimTurnRetry(
-      conversationID, first.id, first.id, true)))
+    #expect(try await client.claimTurnRetry(
+      conversationID, first.id, first.id, true) == nil)
     try await client.markTurnInterrupted(conversationID, second.id, false)
     #expect(try await client.claimTurnRetry(
-      conversationID, second.id, second.id, true))
+      conversationID, second.id, second.id, true) == 1)
     try await client.releaseAutoRetryClaim(
-      conversationID, second.id, second.id)
+      conversationID, second.id, second.id, true)
     #expect(try await client.loadConversation(conversationID)
       .interruptedTurns.last?.canAutoRetry == true)
     try await client.declineAutoRetry(conversationID, second.id)
     let reloaded = try await makeClient(url).loadConversation(conversationID)
     #expect(reloaded.interruptedTurns.last?.status == .manualRetryRequired)
     #expect(reloaded.interruptedTurns.last?.canAutoRetry == false)
-    #expect(!(try await client.claimTurnRetry(
-      conversationID, second.id, second.id, true)))
+    #expect(try await client.claimTurnRetry(
+      conversationID, second.id, second.id, true) == nil)
   }
 
-  @Test func manualTakeoverResetsAutomaticClaimAndReleasesAsManual() async throws {
-    let client = try makeClient(temporaryDatabaseURL())
+  /// The journal is authoritative for the retry count: a manual takeover
+  /// preserves the count the automatic claim spent, and releasing the manual
+  /// claim leaves it spent. Ask Again never replenishes the allowance.
+  @Test func manualTakeoverPreservesAutomaticCountAndReleasesAsManual() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
     let conversationID = UUID()
     _ = try await client.createConversation(
       conversationID, Date(timeIntervalSince1970: 0))
@@ -443,13 +447,47 @@ import Testing
       user.createdAt, nil)
     try await client.markTurnInterrupted(conversationID, user.id, false)
     #expect(try await client.claimTurnRetry(
-      conversationID, user.id, user.id, true))
+      conversationID, user.id, user.id, true) == 1)
     #expect(try await client.claimTurnRetry(
-      conversationID, user.id, user.id, false))
-    try await client.releaseAutoRetryClaim(conversationID, user.id, user.id)
+      conversationID, user.id, user.id, false) == 1)
+    try await client.releaseAutoRetryClaim(conversationID, user.id, user.id, false)
     let saved = try await client.loadConversation(conversationID)
     #expect(saved.interruptedTurn?.status == .manualRetryRequired)
+    #expect(saved.interruptedTurn?.autoRetryCount == 1)
+    // The count survives reload and a fresh process cannot claim automatically.
+    let reloaded = try await makeClient(url).loadConversation(conversationID)
+    #expect(reloaded.interruptedTurn?.autoRetryCount == 1)
+    #expect(try await client.claimTurnRetry(
+      conversationID, user.id, user.id, true) == nil)
+    #expect(try await client.claimTurnRetry(
+      conversationID, user.id, user.id, false) == 1)
+  }
+
+  /// A manual claim on a never-retried row keeps the count at zero, and its
+  /// release reopens the row as a known interruption.
+  @Test func manualClaimOnFreshRowPreservesZeroCount() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(
+      conversationID, Date(timeIntervalSince1970: 0))
+    let user = userMessage("Ask again first", at: 10)
+    try await client.persistUserTurn(
+      conversationID, user, QuestionSubmission(question: user.previewText),
+      user.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, user.id, false)
+    #expect(try await client.claimTurnRetry(
+      conversationID, user.id, user.id, false) == 0)
+    try await client.releaseAutoRetryClaim(conversationID, user.id, user.id, false)
+    let saved = try await client.loadConversation(conversationID)
+    #expect(saved.interruptedTurn?.status == .knownInterruption)
     #expect(saved.interruptedTurn?.autoRetryCount == 0)
+    // An automatic release of a row that never made an automatic claim is a
+    // missing source, not a silent reset.
+    #expect(try await client.claimTurnRetry(
+      conversationID, user.id, user.id, false) == 0)
+    await #expect(throws: (any Error).self) {
+      try await client.releaseAutoRetryClaim(conversationID, user.id, user.id, true)
+    }
   }
 
   @Test func twoInterruptionsRemainIndependentThroughOffscreenCompletionAndDismissal() async throws {
@@ -526,7 +564,172 @@ import Testing
     #expect(try await client.loadConversation(conversationID).messages.last == retry)
   }
 
+  /// The durable count is what a fresh process reads: after one automatic
+  /// claim the row never auto-retries again, in this process or the next.
+  @Test func automaticClaimCountSurvivesReloadAndBlocksASecondAutomaticClaim() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
+    let conversationID = UUID()
+    _ = try await client.createConversation(conversationID, Date(timeIntervalSince1970: 0))
+    let user = userMessage("Retry once", at: 10)
+    try await client.persistUserTurn(
+      conversationID, user, QuestionSubmission(question: user.previewText),
+      user.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, user.id, false)
+    #expect(try await client.claimTurnRetry(conversationID, user.id, user.id, true) == 1)
+    // The retried turn is interrupted again before it finishes.
+    try await client.markTurnInterrupted(conversationID, user.id, false)
+
+    let reloaded = try await makeClient(url).loadConversation(conversationID)
+    #expect(reloaded.interruptedTurn?.status == .knownInterruption)
+    #expect(reloaded.interruptedTurn?.autoRetryCount == 1)
+    #expect(reloaded.interruptedTurn?.canAutoRetry == false)
+    #expect(try await makeClient(url).claimTurnRetry(
+      conversationID, user.id, user.id, true) == nil)
+    // Ask Again still works and reports the spent count.
+    #expect(try await makeClient(url).claimTurnRetry(
+      conversationID, user.id, user.id, false) == 1)
+  }
+
+  @Test func transferredJournalKeepsItsSpentCount() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let conversationID = UUID()
+    _ = try await client.createConversation(conversationID, Date(timeIntervalSince1970: 0))
+    let old = userMessage("Old question", at: 10)
+    try await client.persistUserTurn(
+      conversationID, old, QuestionSubmission(question: old.previewText), old.createdAt, nil)
+    try await client.markTurnInterrupted(conversationID, old.id, false)
+    #expect(try await client.claimTurnRetry(conversationID, old.id, old.id, true) == 1)
+    try await client.markTurnInterrupted(conversationID, old.id, false)
+    let later = userMessage("Later question", at: 20)
+    try await client.persistUserTurn(
+      conversationID, later, QuestionSubmission(question: later.previewText), later.createdAt, nil)
+    try await client.persistTerminalTurn(
+      conversationID, later.id, answerMessage(narration: "Later answer", at: 25), false, [])
+
+    let retry = userMessage("Old question", at: 30)
+    try await client.persistUserTurn(
+      conversationID, retry, QuestionSubmission(question: retry.previewText),
+      retry.createdAt, old.id)
+    try await client.markTurnInterrupted(conversationID, retry.id, false)
+    let snapshot = try await client.loadConversation(conversationID)
+    #expect(snapshot.interruptedTurns.map(\.journalID) == [retry.id])
+    #expect(snapshot.interruptedTurns.first?.autoRetryCount == 1)
+    #expect(snapshot.interruptedTurns.first?.canAutoRetry == false)
+  }
+
+  @Test func createConversationWithDraftIsAtomicAndVisibleOnReload() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
+    let id = UUID()
+    let summary = try await client.createConversationWithDraft(
+      id, Date(timeIntervalSince1970: 7), "Rejected question text")
+    #expect(summary.id == id)
+    let snapshot = try await makeClient(url).loadConversation(id)
+    #expect(snapshot.draft == "Rejected question text")
+    #expect(snapshot.messages.isEmpty)
+    #expect(try await client.bootstrap().map(\.id) == [id])
+  }
+
   // MARK: Prepared follow-ups
+
+  /// Accepting a question retires the prior batch and advances the durable
+  /// generation in one transaction; a suggestion write that lost the race
+  /// is refused, and a relaunch sees no chips for the retired answer.
+  @Test func acceptedQuestionRetiresBatchAndRejectsLateWritesAcrossRelaunch() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
+    let conversationID = UUID()
+    _ = try await client.createConversation(conversationID, Date(timeIntervalSince1970: 0))
+    let firstAnswer = answerMessage(narration: "First answer", at: 10)
+    try await client.appendMessage(conversationID, firstAnswer)
+    let context = FollowUpSuggestionContext(
+      sourceAssistantMessageID: firstAnswer.id,
+      question: "First", standaloneQuestion: "First",
+      narration: "First answer", result: QueryResult(columns: [], rows: []))
+    let batch = PreparedFollowUpBatch(
+      sourceAssistantMessageID: firstAnswer.id, context: context,
+      status: .completed,
+      suggestions: [preparedFollowUp(sourceMessageID: firstAnswer.id)],
+      updatedAt: Date(timeIntervalSince1970: 11), generation: 0)
+    try await client.saveFollowUpBatch(conversationID, batch)
+    #expect(try await client.loadConversation(conversationID).followUpBatch == batch)
+
+    // Q2 is accepted: generation 1, batch retired, all in one transaction.
+    try await client.acceptQuestion(conversationID, 1)
+    #expect(try await client.loadConversation(conversationID).followUpBatch == nil)
+    #expect(try await client.loadConversation(conversationID).suggestionGeneration == 1)
+    // A late write from the retired generation is refused even though its
+    // source is still the latest message.
+    var late = batch
+    late.updatedAt = Date(timeIntervalSince1970: 12)
+    await #expect(throws: HistoryStoreError.staleFollowUpBatch) {
+      try await client.saveFollowUpBatch(conversationID, late)
+    }
+    let relaunched = try await makeClient(url).loadConversation(conversationID)
+    #expect(relaunched.followUpBatch == nil)
+    #expect(relaunched.summary.suggestionGeneration == 1)
+    #expect(try await makeClient(url).bootstrap().first?.suggestionGeneration == 1)
+
+    // The durable counter never moves backwards.
+    try await client.acceptQuestion(conversationID, 1)
+    #expect(try await client.loadConversation(conversationID).suggestionGeneration == 1)
+
+    // The new answer's batch, prepared under generation 1, saves and loads.
+    let secondUser = userMessage("Second", at: 20)
+    let secondAnswer = answerMessage(narration: "Second answer", at: 21)
+    try await client.appendMessage(conversationID, secondUser)
+    try await client.appendMessage(conversationID, secondAnswer)
+    let secondContext = FollowUpSuggestionContext(
+      sourceAssistantMessageID: secondAnswer.id,
+      question: "Second", standaloneQuestion: "Second",
+      narration: "Second answer", result: QueryResult(columns: [], rows: []))
+    let second = PreparedFollowUpBatch(
+      sourceAssistantMessageID: secondAnswer.id, context: secondContext,
+      updatedAt: Date(timeIntervalSince1970: 22), generation: 1)
+    try await client.saveFollowUpBatch(conversationID, second)
+    #expect(try await makeClient(url).loadConversation(conversationID).followUpBatch == second)
+    // A delayed preflight from an older queued question cannot retire a
+    // batch owned by the current generation.
+    try await client.acceptQuestion(conversationID, 0)
+    try await client.acceptQuestion(conversationID, 1)
+    #expect(try await makeClient(url).loadConversation(conversationID).followUpBatch == second)
+  }
+
+  /// Batches persisted before generations existed decode with a nil
+  /// generation, compare as generation zero, and are discarded on load once
+  /// the Conversation moves on or their answer stops being the latest.
+  @Test func legacyBatchDecodesCompatiblyAndIsDiscardedWhenStale() async throws {
+    let url = temporaryDatabaseURL()
+    let client = try makeClient(url)
+    let conversationID = UUID()
+    _ = try await client.createConversation(conversationID, Date(timeIntervalSince1970: 0))
+    let answer = answerMessage(narration: "Legacy answer", at: 10)
+    try await client.appendMessage(conversationID, answer)
+    let legacyPayload = """
+      {"sourceAssistantMessageID":"\(answer.id.uuidString)","status":"completed",
+       "suggestions":[],"updatedAt":11}
+      """
+    let queue = try DatabaseQueue(path: url.path)
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          INSERT INTO prepared_follow_up_batch
+            (conversation_id, source_message_id, updated_at, payload)
+          VALUES (?, ?, 11, ?)
+          """,
+        arguments: [conversationID.uuidString, answer.id.uuidString, legacyPayload])
+    }
+    let loaded = try await client.loadConversation(conversationID).followUpBatch
+    #expect(loaded?.generation == nil)
+    #expect(loaded?.effectiveGeneration == 0)
+    #expect(loaded?.scopeDiagnosisCompleted == false)
+    #expect(loaded?.status == .completed)
+
+    // A newer message makes the legacy batch stale on load.
+    try await client.appendMessage(conversationID, userMessage("Next", at: 12))
+    #expect(try await client.loadConversation(conversationID).followUpBatch == nil)
+  }
 
   @Test func preparedBatchRoundTripsProgressivelyAndClears() async throws {
     let client = try makeClient(temporaryDatabaseURL())
@@ -534,6 +737,8 @@ import Testing
     let sourceID = UUID()
     _ = try await client.createConversation(
       conversationID, Date(timeIntervalSince1970: 0))
+    try await client.appendMessage(
+      conversationID, answerMessage(narration: "Portfolio value is shown.", id: sourceID, at: 5))
     let context = FollowUpSuggestionContext(
       sourceAssistantMessageID: sourceID,
       question: "What is portfolio value?",
@@ -593,12 +798,18 @@ import Testing
       sourceAssistantMessageID: earlier.id, context: oldContext,
       updatedAt: Date(timeIntervalSince1970: 30))
     try await client.saveFollowUpBatch(conversationID, newer)
-    try await client.saveFollowUpBatch(conversationID, older)
+    // A batch whose source answer is no longer the latest message is stale.
+    await #expect(throws: HistoryStoreError.staleFollowUpBatch) {
+      try await client.saveFollowUpBatch(conversationID, older)
+    }
     #expect(try await client.loadConversation(conversationID).followUpBatch == newer)
+    // A late `.preparing` write can never regress the completed batch.
     let latePreparing = PreparedFollowUpBatch(
       sourceAssistantMessageID: latest.id, context: latestContext,
       updatedAt: newer.updatedAt)
-    try await client.saveFollowUpBatch(conversationID, latePreparing)
+    await #expect(throws: HistoryStoreError.staleFollowUpBatch) {
+      try await client.saveFollowUpBatch(conversationID, latePreparing)
+    }
     #expect(try await client.loadConversation(conversationID).followUpBatch == newer)
   }
 
@@ -922,16 +1133,16 @@ import Testing
     let prepared = preparedFollowUp(sourceMessageID: sourceID)
     _ = try await client.createConversation(
       conversationID, Date(timeIntervalSince1970: 0))
+    try await client.appendMessage(
+      conversationID,
+      ChatMessage(
+        id: sourceID, role: .assistant, body: .preparedAnswer(prepared),
+        createdAt: Date(timeIntervalSince1970: 9)))
     let batch = PreparedFollowUpBatch(
       sourceAssistantMessageID: sourceID,
       suggestions: [prepared],
       updatedAt: Date(timeIntervalSince1970: 10))
     try await client.saveFollowUpBatch(conversationID, batch)
-    try await client.appendMessage(
-      conversationID,
-      ChatMessage(
-        id: UUID(), role: .assistant, body: .preparedAnswer(prepared),
-        createdAt: Date(timeIntervalSince1970: 11)))
 
     #expect(try await client.search("compare fund").isEmpty)
     #expect(try await client.search("SELECT").isEmpty)

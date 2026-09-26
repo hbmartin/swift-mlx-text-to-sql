@@ -19,15 +19,6 @@ struct EvalCLI {
     let sql: String
   }
 
-  struct TrainingConversation: Decodable {
-    struct Message: Decodable {
-      let role: String
-      let content: String
-    }
-
-    let messages: [Message]
-  }
-
   struct ItemResult: Encodable {
     var id: String
     var tier: Int
@@ -111,7 +102,13 @@ struct EvalCLI {
     var database: FileEvidence
     var gold: FileEvidence
     var modelArtifactLock: FileEvidence?
-    var modelDirectorySHA256: String?
+    /// Content-derived digest of the primary weights directory in the
+    /// repository's sorted-file format; never copied from the lock.
+    var modelDirectorySHA256: String
+    /// The digest the artifact lock declared, recorded for cross-checking.
+    var modelArtifactLockDirectorySHA256: String?
+    var fallbackModelArtifactLock: FileEvidence?
+    var fallbackModelDirectorySHA256: String?
     var grammarSHA256: String
     var schemaPromptSHA256: String
     var systemPromptSHA256: String
@@ -168,13 +165,32 @@ struct EvalCLI {
       .map { String(format: "%02x", $0) }.joined()
   }
 
+  /// Hashes incrementally so a multi-hundred-megabyte executable or weights
+  /// file never has to be resident in memory to be identified.
   static func fileEvidence(_ path: String) throws -> FileEvidence {
     let url = URL(fileURLWithPath: path).standardizedFileURL
-    let data = try Data(contentsOf: url)
+    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
     return FileEvidence(
       path: url.path,
-      size: data.count,
-      sha256: sha256(data))
+      size: size,
+      sha256: try PreparedFollowUpIntegrity.sha256(contentsOf: url))
+  }
+
+  /// Content-derived identity of a weights directory in the repository's
+  /// sorted-file digest format (`eval.file_integrity.directory_digest`).
+  static func modelDirectoryDigest(_ path: String) throws -> String {
+    try DirectoryDigest.digest(
+      of: URL(fileURLWithPath: path),
+      include: DirectoryDigest.isModelArtifactPath)
+  }
+
+  static func declaredDirectoryDigest(lockPath: String) -> String? {
+    guard
+      let data = try? Data(contentsOf: URL(fileURLWithPath: lockPath)),
+      let document = try? JSONSerialization.jsonObject(with: data)
+        as? [String: Any]
+    else { return nil }
+    return document["directory_sha256"] as? String
   }
 
   static func packageLockPath() -> String? {
@@ -528,6 +544,12 @@ struct EvalCLI {
         exit(2)
       }
       let lockEvidence = try fileEvidence(lockPath)
+      // The corpus is hashed and parsed from one read so the recorded digest
+      // can never describe different bytes than the run drafted from.
+      let ngramDraftCorpusFile = try ngramDraft.map {
+        try NGramDraftCorpusFile.load(
+          contentsOf: URL(fileURLWithPath: $0.corpusPath))
+      }
       let effectiveSettings: [String: String] = [
         "gcd": gcd.rawValue,
         "temperature": String(temperature),
@@ -556,14 +578,13 @@ struct EvalCLI {
         "compactQuestionAwareOutputHead":
           String(compactQuestionAwareOutputHead),
         "productionNGram": String(useProductionNGram),
-        "ngramDraftCorpusSHA256": try ngramDraft.map {
-          try fileEvidence($0.corpusPath).sha256
-        } ?? "none",
+        "ngramDraftCorpusSHA256": ngramDraftCorpusFile?.sha256 ?? "none",
         "ngramDraftTokens": String(ngramDraft?.tokenCount ?? 0),
         "ngramSerialPrefixTokens": String(ngramSerialPrefixTokens),
         "ngramAdaptiveMinimumSupport": String(ngramAdaptiveMinimumSupport),
         "fallbackModelKey": fallback?.model.key ?? "none",
         "fallbackModelRevision": fallback?.model.revision ?? "none",
+        "fallbackModelRepository": fallback?.model.repository ?? "none",
       ]
       let goldText = try String(
         contentsOfFile: goldPath, encoding: .utf8)
@@ -578,22 +599,7 @@ struct EvalCLI {
       if let maxItems {
         items = Array(items.prefix(maxItems))
       }
-      let ngramDraftCorpus: [String]
-      if let ngramDraft {
-        let text = try String(
-          contentsOfFile: ngramDraft.corpusPath,
-          encoding: .utf8)
-        ngramDraftCorpus = try text.split(separator: "\n")
-          .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-          .compactMap {
-            let conversation = try JSONDecoder().decode(
-              TrainingConversation.self,
-              from: Data($0.utf8))
-            return conversation.messages.first { $0.role == "assistant" }?.content
-          }
-      } else {
-        ngramDraftCorpus = []
-      }
+      let ngramDraftCorpus = ngramDraftCorpusFile?.statements ?? []
 
       let model = ModelReference(
         key: modelKey,
@@ -676,14 +682,14 @@ struct EvalCLI {
       let artifactLockPath = URL(fileURLWithPath: modelPath)
         .appendingPathComponent(".creg-artifact.json").path
       let artifactLock = try? fileEvidence(artifactLockPath)
-      let artifactDirectorySHA256: String? = {
-        guard
-          let data = try? Data(contentsOf: URL(fileURLWithPath: artifactLockPath)),
-          let document = try? JSONSerialization.jsonObject(with: data)
-            as? [String: Any]
-        else { return nil }
-        return document["directory_sha256"] as? String
-      }()
+      let modelDirectorySHA256 = try modelDirectoryDigest(modelPath)
+      let fallbackArtifactLockPath = fallback.map {
+        URL(fileURLWithPath: $0.modelPath)
+          .appendingPathComponent(".creg-artifact.json").path
+      }
+      let fallbackModelDirectorySHA256 = try fallback.map {
+        try modelDirectoryDigest($0.modelPath)
+      }
       let gitCommit = commandOutput(["git", "rev-parse", "HEAD"])
       let gitStatus = commandOutput(["git", "status", "--porcelain"])
       let provenance = Provenance(
@@ -699,7 +705,13 @@ struct EvalCLI {
         database: try fileEvidence(dbPath),
         gold: try fileEvidence(goldPath),
         modelArtifactLock: artifactLock,
-        modelDirectorySHA256: artifactDirectorySHA256,
+        modelDirectorySHA256: modelDirectorySHA256,
+        modelArtifactLockDirectorySHA256: declaredDirectoryDigest(
+          lockPath: artifactLockPath),
+        fallbackModelArtifactLock: fallbackArtifactLockPath.flatMap {
+          try? fileEvidence($0)
+        },
+        fallbackModelDirectorySHA256: fallbackModelDirectorySHA256,
         grammarSHA256: sha256(Data(grammar.utf8)),
         schemaPromptSHA256: sha256(Data(schema.utf8)),
         systemPromptSHA256: sha256(Data(systemPrompt.utf8)),
@@ -869,7 +881,7 @@ struct EvalCLI {
         residentBytesAfterFallbackPreparation:
           residentBytesAfterFallbackPreparation)
       let payload = Output(
-        schemaVersion: 3,
+        schemaVersion: 4,
         runID:
           "swift-parity-\(modelKey)-gcd-\(gcd.rawValue)-t-\(temperature)-s-\(seed)",
         startedAt: startedAt,

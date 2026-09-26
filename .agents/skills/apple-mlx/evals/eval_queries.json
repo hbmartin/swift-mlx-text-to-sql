@@ -1,0 +1,34 @@
+[
+  {
+    "query": "My mx.array computation never evaluates and unified-memory use keeps growing across requests.",
+    "should_trigger": true
+  },
+  {
+    "query": "mx.compile recompiles on every token because a Python argument changes. How do I stabilize the graph?",
+    "should_trigger": true
+  },
+  {
+    "query": "Port this Hugging Face checkpoint to mlx-lm, quantize it, and verify the accuracy change.",
+    "should_trigger": true
+  },
+  {
+    "query": "Integrate mlx-swift-lm into an iOS app and bridge its generated output to Foundation Models types.",
+    "should_trigger": true
+  },
+  {
+    "query": "Export a torch.nn.Module to .aimodel with coreai-torch.",
+    "should_trigger": false
+  },
+  {
+    "query": "LanguageModelSession tool calls stop after a guardrail refusal.",
+    "should_trigger": false
+  },
+  {
+    "query": "Hand-write flash attention with MTLTensor and cooperative tensors, without MLX.",
+    "should_trigger": false
+  },
+  {
+    "query": "Size an over-the-air model download and plan thermal benchmarks for a released app.",
+    "should_trigger": false
+  }
+]

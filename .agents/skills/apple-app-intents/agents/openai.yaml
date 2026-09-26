@@ -1,0 +1,6 @@
+interface:
+  display_name: "App Intents, Siri schema domains, and Spotlight entity indexing"
+  short_description: "Build App Intents for Siri and Apple Intelligence"
+  default_prompt: "Use $apple-app-intents to answer this Apple on-device AI request with the bundled evidence-backed guides."
+policy:
+  allow_implicit_invocation: true

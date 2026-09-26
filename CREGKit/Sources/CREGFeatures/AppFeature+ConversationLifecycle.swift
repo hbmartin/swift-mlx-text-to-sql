@@ -62,6 +62,9 @@ extension AppFeature {
       effects.append(.cancel(id: CancelID.scopeDiagnosis))
     }
     state.pendingSuggestionContexts.removeValue(forKey: summary.id)
+    state.automaticRetryCandidates = state.automaticRetryCandidates.filter {
+      $0.value.conversationID != summary.id
+    }
 
     if state.chat?.conversationID == summary.id {
       if let nextSummary = state.conversations.first {
@@ -235,6 +238,18 @@ extension AppFeature {
     chat.queued = state.queue.filter {
       $0.conversationID == chat.conversationID && $0.retryJournalID == nil
     }
+    // The interruption banner owns retry presentation: a journal that is
+    // queued, being claimed, or being released shows "Retry queued".
+    var queuedRetries = Set(
+      state.queue.compactMap {
+        $0.conversationID == chat.conversationID ? $0.retryJournalID : nil
+      })
+    if state.retryClaimConversationID == chat.conversationID,
+      let claiming = state.retryClaimJournalID
+    {
+      queuedRetries.insert(claiming)
+    }
+    chat.queuedRetryJournalIDs = queuedRetries
     if let active = state.activeTurn,
       active.conversationID == chat.conversationID
     {

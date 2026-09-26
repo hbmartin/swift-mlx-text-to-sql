@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Implement flash attention using Metal cooperative tensors and explain the threadgroup layout.",
+    "should_trigger": true
+  },
+  {
+    "query": "My MTLTensor kernel is correct for one shape but hits a severe memory-layout performance cliff for another.",
+    "should_trigger": true
+  },
+  {
+    "query": "How should I represent multiplane quantized operands with the new TensorOps APIs?",
+    "should_trigger": true
+  },
+  {
+    "query": "Is this Metal Performance Primitives tensor surface available on 26.x or only with the 27 SDK?",
+    "should_trigger": true
+  },
+  {
+    "query": "coreai-torch cannot convert a PyTorch operator into an .aimodel.",
+    "should_trigger": false
+  },
+  {
+    "query": "Write an MLX custom kernel and integrate it with mx.compile.",
+    "should_trigger": false
+  },
+  {
+    "query": "My Core ML decision-tree pipeline should migrate to Core AI, right?",
+    "should_trigger": false
+  },
+  {
+    "query": "Optimize a Metal fragment shader for a game renderer.",
+    "should_trigger": false
+  }
+]

@@ -414,6 +414,15 @@ Primary checked-in evidence:
 | Optimized benchmark build | Removes Debug `-Onone` host-code overhead while retaining the experimental model gate | Use for physical measurement. The signed app is built with Release `-O` and whole-module settings plus an explicit benchmark-only compile condition; its bundled q128 manifest and receipt verify unchanged. Physical timing is pending device unlock. |
 | Re-fusing from BF16 or under the current toolchain | Avoids carrying forward the evaluated fused bytes | Reject. Both paths changed outputs; the clean BF16 fusion scored 11/15 on tier 1, and the newly re-fused group-128 artifact scored 13/15 versus 15/15 for the pinned evaluated artifact. |
 
+**Requalification required.** The v10 output gate and latency measurements
+above were taken before a compiled Qwen2 execution-path fix: an ordinary
+two-to-four-token verification check without a confidence-gated skip had
+stopped applying the configured layer-8/10 (and layer-2 long-batch) MLP skips.
+Every compiled-model check now routes through the explicit verification path.
+Re-run the 200-item Debug v10 output gate and the paired latency passes with
+the corrected binary before treating v10 as qualified; see
+[`prefill-chunking-qualification-2026-09-24.md`](prefill-chunking-qualification-2026-09-24.md).
+
 The immediate phone build uses the one-candidate Debug v10 policy and the pinned
 group-128 artifact with compiled Qwen2 MLP fusion and the question-aware output
 head. Its two-to-four-token target checks also use the verified fused Q/K/V

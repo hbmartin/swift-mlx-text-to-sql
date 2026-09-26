@@ -265,11 +265,17 @@ struct ChatView: View {
       readinessBanner
       fmAvailabilityBanner
       ForEach(Array(store.interruptedTurns.enumerated()), id: \.offset) { _, interrupted in
+        let retryID = interrupted.journalID ?? interrupted.executionID
         InterruptedTurnBanner(
           interrupted: interrupted,
+          retryQueued: retryID.map { store.queuedRetryJournalIDs.contains($0) }
+            ?? false,
           askAgain: {
             if let id = interrupted.journalID { store.send(.askAgainTappedFor(id)) }
             else { store.send(.askAgainTapped) }
+          },
+          cancelRetry: {
+            if let retryID { store.send(.cancelQueuedRetryTapped(retryID)) }
           },
           dismiss: {
             if let id = interrupted.journalID { store.send(.interruptedDismissedFor(id)) }

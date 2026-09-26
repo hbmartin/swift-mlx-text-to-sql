@@ -577,11 +577,8 @@ enum CompiledQwen2ModelFactory {
   ) -> LLMModelFactory {
     let registry = ModelTypeRegistry<LanguageModel>(creators: [
       "qwen2": { data in
-        let configuration = try JSONDecoder.json5().decode(
-          CompiledQwen2Configuration.self,
-          from: data)
-        return CompiledQwen2Model(
-          configuration,
+        try makeModel(
+          configurationJSON: data,
           verificationMLPSkipLayers: verificationMLPSkipLayers,
           verificationMLPLongBatchExtraSkipLayers:
             verificationMLPLongBatchExtraSkipLayers)
@@ -590,6 +587,28 @@ enum CompiledQwen2ModelFactory {
     return LLMModelFactory(
       typeRegistry: registry,
       modelRegistry: LLMRegistry.shared)
+  }
+
+  /// Builds the compiled graph from a `config.json` document with freshly
+  /// initialized parameters. Weight loading is the container's job; tests
+  /// use this to exercise the verification execution path on a small model.
+  static func makeModel(
+    configurationJSON data: Data,
+    verificationMLPSkipLayers: Set<Int> = [],
+    verificationMLPLongBatchExtraSkipLayers: Set<Int> = []
+  ) throws -> any LanguageModel {
+    let configuration = try JSONDecoder.json5().decode(
+      CompiledQwen2Configuration.self,
+      from: data)
+    return CompiledQwen2Model(
+      configuration,
+      verificationMLPSkipLayers: verificationMLPSkipLayers,
+      verificationMLPLongBatchExtraSkipLayers:
+        verificationMLPLongBatchExtraSkipLayers)
+  }
+
+  static func isCompiledQwen2(_ model: any LanguageModel) -> Bool {
+    model is CompiledQwen2Model || model is RestrictedCompiledQwen2Model
   }
 
   static func vocabularySize(of model: any LanguageModel) -> Int? {

@@ -109,6 +109,10 @@ public struct ChatFeature: Sendable {
     /// conversation, and this conversation's Queued Questions.
     public var processing: ProcessingState?
     public var queued: [QueuedQuestion] = []
+    /// Maintained by ``AppFeature``: interruption journals whose retry is
+    /// queued, being claimed, or being released, so the banner can show
+    /// "Retry queued" with a cancel action instead of Ask Again.
+    public var queuedRetryJournalIDs: Set<UUID> = []
     /// Only the latest successful answer may own prepared follow-up chips.
     public var followUpBatch: PreparedFollowUpBatch?
     /// Full-screen Result Viewer presentation (the message whose result is
@@ -207,6 +211,7 @@ public struct ChatFeature: Sendable {
     case cancelQueuedTapped(UUID)
     case askAgainTapped
     case askAgainTappedFor(UUID)
+    case cancelQueuedRetryTapped(UUID)
     case interruptedDismissed
     case interruptedDismissedFor(UUID)
     case timelineExpansionToggled
@@ -240,6 +245,8 @@ public struct ChatFeature: Sendable {
       case retryInterruptedTurn
       case retryInterruptedTurnFor(UUID)
       case dismissInterruptedTurn(UUID)
+      /// Cancels a queued retry; the journal survives for Ask Again.
+      case cancelQueuedRetry(UUID)
       case stopActiveTurn
       case cancelQueued(UUID)
       case openBrowser
@@ -428,6 +435,14 @@ public struct ChatFeature: Sendable {
         guard state.interruptedTurns.contains(where: { $0.journalID == journalID })
         else { return .none }
         return .send(.delegate(.retryInterruptedTurnFor(journalID)))
+
+      case .cancelQueuedRetryTapped(let journalID):
+        guard state.queuedRetryJournalIDs.contains(journalID) else { return .none }
+        diagnostics.info(
+          category: .submission,
+          code: "chat_queued_retry_cancelled",
+          summary: "A queued retry was cancelled from the interruption banner.")
+        return .send(.delegate(.cancelQueuedRetry(journalID)))
 
       case .interruptedDismissed:
         guard let interrupted = state.interruptedTurn else { return .none }

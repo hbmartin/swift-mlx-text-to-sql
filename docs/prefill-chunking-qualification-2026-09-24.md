@@ -42,11 +42,49 @@ same-binary differences is 63 items.
 
 The gate implementation in
 [`compare_prefill_chunking.py`](../fine-tuning/tools/compare_prefill_chunking.py)
-rejects item-level losses and mismatched input provenance, checks that
-balanced and remainder used the same optimized binary, and writes the
-changed-output report even when blocked. Both reports have status
-`blocked`: the evaluation report rejects the mismatched historical
-artifact, and the device report records `qualified.artifactMissing`.
+rejects item-level losses and mismatched input provenance, requires the
+balanced and remainder controls to come from the exact `--binary` under test,
+and writes the changed-output report even when blocked. A qualified baseline
+may come from a different binary when its model digests, prompt, grammar,
+corpus, database, package lock, and effective settings match; the report then
+records `qualifiedBinaryDiffers` and `qualifiedBinarySHA256` as a separate
+disclosure while item-level losses against that baseline remain blocking.
+Both checked-in reports have status `blocked`: the evaluation report rejects
+the mismatched historical artifact, and the device report records
+`qualified.artifactMissing`.
+
+## Evidence recorded per run (schema version 4)
+
+Every run hashes its executable, package lock, gold corpus, and database
+incrementally, so identifying a multi-hundred-megabyte binary never requires
+holding it in memory. `modelDirectorySHA256` is derived from the weights
+directory's bytes in the repository's sorted-file digest format (the same
+canonical JSON inventory `eval.file_integrity.directory_digest` hashes),
+excluding the artifact lock and cache paths; the lock's declared digest is
+recorded separately as `modelArtifactLockDirectorySHA256` for cross-checking.
+When a fallback model is configured, `fallbackModelDirectorySHA256` and the
+`fallbackModelRepository` setting are recorded and the gate requires both to
+be present and equal across compared runs; runs without a fallback remain
+comparable without them. The experimental n-gram draft corpus is hashed and
+parsed from one read, so `ngramDraftCorpusSHA256` always describes the bytes
+the run drafted from. The four runs listed above predate schema version 4:
+they carry the lock-declared model digest and no executable evidence, and the
+gate continues to block them for that reason.
+
+## Debug v10 requalification
+
+The compiled Qwen2 execution path was corrected after these runs: an ordinary
+two-to-four-token n-gram verification check without a confidence-gated skip
+had stopped applying the configured MLP skips (layers 8 and 10, plus layer 2
+for three- and four-token checks), while prefill tails of the same length
+correctly kept every MLP. Every check on a compiled model now routes through
+the explicit verification path. The prior Debug v10 200-item output gate and
+matched latency measurements in [`on-device-latency.md`](on-device-latency.md)
+were taken before this fix and are treated as needing requalification: re-run
+the 200-item output gate and the paired latency checks against the pinned
+group-128 artifact with the corrected binary before treating that
+configuration as qualified. No production runtime policy changes until that
+requalification completes.
 
 ## Preparation and build verification
 
@@ -63,7 +101,13 @@ artifact, and the device report records `qualified.artifactMissing`.
   isolated run of that suite also failed.
 - `python3 fine-tuning/tests/test_compare_prefill_chunking.py` passed,
   including a case where aggregate scores tie but an individual EX loss
-  blocks the gate.
+  blocks the gate, a cross-binary qualified baseline that passes with its
+  binary difference disclosed, same-binary control failures, changed and
+  missing fallback evidence, and identical-versus-changed corpus bytes.
+- Swift unit tests exercise ordinary two-to-four-token compiled verification
+  on a small randomly initialized Qwen2 graph and confirm the configured MLP
+  skips apply there but not to one-token steps or prefill tails of the same
+  length (`CompiledQwen2VerificationExecutionTests`).
 
 To unblock release, produce the exact qualified 200-item artifact for the
 same model, configuration, prompt, grammar, gold corpus, database, and

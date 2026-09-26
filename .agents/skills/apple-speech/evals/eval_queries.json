@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Build a live SpeechAnalyzer pipeline from microphone buffers and install the required transcription assets.",
+    "should_trigger": true
+  },
+  {
+    "query": "The transcript is empty with a clean console even though audio buffers are arriving.",
+    "should_trigger": true
+  },
+  {
+    "query": "My merged volatile and finalized SpeechTranscriber results repeat whole phrases.",
+    "should_trigger": true
+  },
+  {
+    "query": "The final sentence gets cut off and our custom vocabulary is ignored during file transcription.",
+    "should_trigger": true
+  },
+  {
+    "query": "Expose a send-message action to Siri with an AppIntent and AppEntity.",
+    "should_trigger": false
+  },
+  {
+    "query": "Generate spoken audio from text with AVSpeechSynthesizer.",
+    "should_trigger": false
+  },
+  {
+    "query": "Use Foundation Models to summarize an existing transcript.",
+    "should_trigger": false
+  },
+  {
+    "query": "Index document entities in Core Spotlight for on-screen awareness.",
+    "should_trigger": false
+  }
+]

@@ -20,7 +20,7 @@ extension HistoryStore {
       db,
       sql: """
         SELECT c.id, c.title, c.is_manually_titled, c.started_at,
-               c.last_activity_at, c.is_unread,
+               c.last_activity_at, c.is_unread, c.suggestion_generation,
                (SELECT COUNT(*) FROM message m WHERE m.conversation_id = c.id)
                  AS message_count,
                (SELECT m.payload FROM message m
@@ -43,26 +43,55 @@ extension HistoryStore {
         lastActivityAt: Date(timeIntervalSince1970: row["last_activity_at"]),
         latestMessagePreview: latestPreview,
         isUnread: (row["is_unread"] as Int64) != 0,
-        messageCount: Int(row["message_count"] as Int64))
+        messageCount: Int(row["message_count"] as Int64),
+        suggestionGeneration: Int(row["suggestion_generation"] as Int64))
     }
   }
 
   // MARK: Conversation CRUD
 
-  func createConversation(id: UUID, startedAt: Date) async throws -> ConversationSummary {
+  /// Creates a Conversation and, atomically, its unsent draft. A rejected
+  /// submission lands here so the text is durable in its own chat without
+  /// touching another chat's draft.
+  func createConversation(
+    id: UUID, startedAt: Date, draft: String = ""
+  ) async throws -> ConversationSummary {
     try await queue.write { db in
       try db.execute(
         sql: """
-          INSERT INTO conversation (id, title, started_at, last_activity_at)
-          VALUES (?, '', ?, ?)
+          INSERT INTO conversation (id, title, started_at, last_activity_at, draft)
+          VALUES (?, '', ?, ?, ?)
           """,
         arguments: [
           id.uuidString, startedAt.timeIntervalSince1970,
-          startedAt.timeIntervalSince1970,
+          startedAt.timeIntervalSince1970, draft,
         ])
     }
     return ConversationSummary(
       id: id, title: "", startedAt: startedAt, lastActivityAt: startedAt)
+  }
+
+  /// Accepting a question advances the Conversation's suggestion generation
+  /// and retires the prior batch in one transaction. The reducer advances its
+  /// in-memory copy synchronously and hands the resulting value here, so the
+  /// durable counter only ever moves forward.
+  func acceptQuestion(conversationID: UUID, generation: Int) async throws {
+    try await queue.write { db in
+      try db.execute(
+        sql: """
+          UPDATE conversation SET suggestion_generation = ?
+          WHERE id = ? AND suggestion_generation < ?
+          """,
+        arguments: [generation, conversationID.uuidString, generation])
+      // A queued older question can reach preflight after a newer question
+      // advanced the generation. Its stale write must not clear that newer
+      // question's batch.
+      if db.changesCount == 1 {
+        try db.execute(
+          sql: "DELETE FROM prepared_follow_up_batch WHERE conversation_id = ?",
+          arguments: [conversationID.uuidString])
+      }
+    }
   }
 
   func loadConversation(id: UUID) async throws -> ConversationSnapshot {
@@ -121,6 +150,11 @@ extension HistoryStore {
           status: InterruptedTurn.Status(rawValue: status) ?? .running,
           autoRetryCount: autoRetryCount)
       }
+      let suggestionGeneration = Int(row["suggestion_generation"] as Int64)
+      // A batch is shown only while it still owns the Conversation's
+      // suggestion slot: its generation must match and its source answer
+      // must still be the latest persisted message. Anything else is a
+      // retired batch whose delete lost a race, and is dropped here.
       let followUpBatch = try String.fetchOne(
         db,
         sql: "SELECT payload FROM prepared_follow_up_batch WHERE conversation_id = ?",
@@ -128,6 +162,10 @@ extension HistoryStore {
       ).flatMap {
         try? Self.decoder.decode(
           PreparedFollowUpBatch.self, from: Data($0.utf8))
+      }.flatMap { batch in
+        batch.effectiveGeneration == suggestionGeneration
+          && messages.last?.id == batch.sourceAssistantMessageID
+          ? batch : nil
       }
       let messageCount =
         try Int.fetchOne(
@@ -141,7 +179,8 @@ extension HistoryStore {
         lastActivityAt: Date(timeIntervalSince1970: row["last_activity_at"]),
         latestMessagePreview: messages.last?.previewText ?? "",
         isUnread: (row["is_unread"] as Int64) != 0,
-        messageCount: messageCount)
+        messageCount: messageCount,
+        suggestionGeneration: suggestionGeneration)
       return ConversationSnapshot(
         summary: summary,
         draft: row["draft"],

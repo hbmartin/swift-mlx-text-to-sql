@@ -121,11 +121,19 @@ struct ModelPreparationFailureBanner: View {
   let retryCompatibility: (() -> Void)?
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+  /// A paused attempt is not a failure: the prior process was suspending
+  /// model preparation when it ended, and the attempt simply waits for Retry.
+  private var isPaused: Bool { failure.isPaused }
+  private var tint: Color { isPaused ? .secondary : .orange }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Label(failure.userMessage, systemImage: "exclamationmark.triangle.fill")
-        .font(.callout)
-        .foregroundStyle(.orange)
+      Label(
+        failure.userMessage,
+        systemImage: isPaused ? "pause.circle.fill" : "exclamationmark.triangle.fill"
+      )
+      .font(.callout)
+      .foregroundStyle(tint)
 
       let actionLayout = dynamicTypeSize.isAccessibilitySize
         ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
@@ -137,7 +145,8 @@ struct ModelPreparationFailureBanner: View {
           Text("Retry")
             .cregTextButtonLabelTarget()
         }
-        if let retryCompatibility {
+        .accessibilityIdentifier("model-preparation-retry")
+        if let retryCompatibility, !isPaused {
           Button {
             retryCompatibility()
           } label: {
@@ -155,12 +164,13 @@ struct ModelPreparationFailureBanner: View {
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
     .overlay {
       RoundedRectangle(cornerRadius: 16)
-        .stroke(.orange.opacity(0.35))
+        .stroke(tint.opacity(0.35))
     }
-    .accessibilityIdentifier("model-preparation-failure")
+    .accessibilityIdentifier(
+      isPaused ? "model-preparation-paused" : "model-preparation-failure")
   }
 
   private var technicalDetails: String {

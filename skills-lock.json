@@ -1,6 +1,66 @@
 {
   "version": 1,
   "skills": {
+    "apple-ai-evaluations": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-ai-evaluations/SKILL.md",
+      "computedHash": "80aa0b1e6490b872698c0fe3b6c70894fcde9f192883931dd5bf50c7edec17d7"
+    },
+    "apple-ai-migration": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-ai-migration/SKILL.md",
+      "computedHash": "78777c7c0537f23a9e178d67504ae87999d9afdcad5e4242e52528351f78faee"
+    },
+    "apple-ai-shipping": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-ai-shipping/SKILL.md",
+      "computedHash": "e9587c2366bfa9185d119f03c4b175f2f3b99f0e67cede061e57e9651d528bda"
+    },
+    "apple-app-intents": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-app-intents/SKILL.md",
+      "computedHash": "0ce5bd30adcd2ffac2c31ec64ec9d4d44443ecd74f6655571365c44acb2064cf"
+    },
+    "apple-core-ai": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-core-ai/SKILL.md",
+      "computedHash": "b454353ffa6ad09faea4d218e8b586b61b96e9d3ae7b2f4e59a37e7693fb7f72"
+    },
+    "apple-foundation-models": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-foundation-models/SKILL.md",
+      "computedHash": "e457a8a58a6286ddefc906d4354826793da0e05832dba7c4f06775ea6b4792af"
+    },
+    "apple-metal-tensorops": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-metal-tensorops/SKILL.md",
+      "computedHash": "0cad2df065aaaff1dc8d7476e218ff49bd5fd09f2c0454f2c1eefc8753fbe564"
+    },
+    "apple-mlx": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-mlx/SKILL.md",
+      "computedHash": "d9e3be1f79c481e7bdbc91c19271a11d2bded843a0c97f42109bab07114021af"
+    },
+    "apple-on-device-ai": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-on-device-ai/SKILL.md",
+      "computedHash": "a60d45c60c3f7183d1f54874eebc874c26ea6626038feadd39f041432fbe2f74"
+    },
+    "apple-speech": {
+      "source": "hbmartin/Foundation-Models-and-Core-AI-and-MLX-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-speech/SKILL.md",
+      "computedHash": "6045361293321fecfabc8f12eedffcbe55dfb1f951f6ede89809595200262d7e"
+    },
     "domain-modeling": {
       "source": "mattpocock/skills",
       "sourceType": "github",

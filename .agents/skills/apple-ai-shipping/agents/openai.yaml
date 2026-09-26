@@ -1,0 +1,6 @@
+interface:
+  display_name: "Shipping and operating on-device AI in a released app"
+  short_description: "Ship and benchmark on-device AI models"
+  default_prompt: "Use $apple-ai-shipping to answer this Apple on-device AI request with the bundled evidence-backed guides."
+policy:
+  allow_implicit_invocation: true

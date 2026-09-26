@@ -199,9 +199,13 @@ actor ModelPreparationJournalStore {
     try persist()
   }
 
+  /// Marks a live attempt as suspending. An attempt that already reached a
+  /// terminal outcome — a success whose completion raced the cancellation,
+  /// or a failure — is never reopened: the journal keeps the truth.
   func requestSuspension(_ attemptID: UUID) throws {
     suspendedAttempts.insert(attemptID)
-    guard var snapshot = current ?? load(), snapshot.attemptID == attemptID
+    guard var snapshot = current ?? load(), snapshot.attemptID == attemptID,
+      !snapshot.completed
     else { return }
     snapshot.completed = false
     snapshot.outcome = "suspending"
@@ -213,7 +217,8 @@ actor ModelPreparationJournalStore {
   func completeSuspension(_ attemptID: UUID) throws {
     completedSuspensions.insert(attemptID)
     guard var snapshot = current ?? load(), snapshot.attemptID == attemptID,
-      suspendedAttempts.contains(attemptID)
+      suspendedAttempts.contains(attemptID),
+      snapshot.outcome == "suspending"
     else { return }
     snapshot.completed = true
     snapshot.outcome = "suspended"

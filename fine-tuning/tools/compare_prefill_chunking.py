@@ -1,8 +1,15 @@
 """Gate a 200-item balanced-prefill run against qualification and remainder.
 
 The report is written even when the gate fails so every changed SQL output
-remains available for review. Run this against outputs from the same optimized
-creg-eval-cli binary for the two chunking modes.
+remains available for review. The balanced and remainder controls must come
+from the exact ``--binary`` under test. A qualified baseline may come from a
+different binary when its model, prompt, grammar, corpus, database, package
+lock, and effective settings match; that binary difference is disclosed
+separately and item-level losses against it remain blocking.
+
+Fallback weights, when a run configures them, must carry a content-derived
+directory digest and repository, and both must match between compared runs.
+Runs without a fallback remain comparable without those fields.
 """
 
 from __future__ import annotations
@@ -30,6 +37,9 @@ PROVENANCE_IDENTITY = (
     "schemaPromptSHA256",
     "grammarSHA256",
 )
+SHA256 = re.compile(r"[0-9a-f]{64}")
+FALLBACK_PROVENANCE_IDENTITY = ("fallbackModelDirectorySHA256",)
+FALLBACK_EFFECTIVE_SETTINGS = ("fallbackModelRepository",)
 REQUIRED_EFFECTIVE_SETTINGS = (
     "gcd", "temperature", "seed", "maxTokens", "maxItems", "rowCap",
     "kvBits", "wiredMemory", "directPromptSuffix", "prefillChunking",
@@ -60,42 +70,88 @@ def load_run(path: Path) -> tuple[dict, dict[str, dict]]:
     return run, by_id
 
 
-def identity_mismatches(reference: dict, candidate: dict) -> list[str]:
+def _mapping(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _sha256(value: object) -> bool:
+    return isinstance(value, str) and SHA256.fullmatch(value) is not None
+
+
+def configures_fallback(run: dict) -> bool:
+    settings = _mapping(_mapping(run.get("provenance")).get("effectiveSettings"))
+    key = settings.get("fallbackModelKey")
+    return isinstance(key, str) and key != "none"
+
+
+def executable_sha256(run: dict | None) -> str | None:
+    if run is None:
+        return None
+    value = _mapping(_mapping(run.get("provenance")).get("executable")).get("sha256")
+    return value if _sha256(value) else None
+
+
+def identity_mismatches(
+    reference: dict, candidate: dict, *, compare_executable: bool = True
+) -> list[str]:
+    """Fields that make two runs incomparable.
+
+    ``compare_executable`` is False for a qualified baseline, whose binary may
+    legitimately differ from the binary under test; the difference is then
+    disclosed by the caller instead of blocking.
+    """
     mismatches = []
+    file_identity = ["gold", "database", "packageLock"]
+    if compare_executable:
+        file_identity.append("executable")
     for label, run in (("reference", reference), ("candidate", candidate)):
         if run.get("schemaVersion", 0) < 3:
             mismatches.append(f"{label}.schemaVersion")
-        provenance = run.get("provenance") or {}
+        provenance = _mapping(run.get("provenance"))
         for key in PROVENANCE_IDENTITY:
-            value = provenance.get(key)
-            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            if not _sha256(provenance.get(key)):
                 mismatches.append(f"{label}.provenance.{key}.missing")
         for key in ("gold", "database", "packageLock", "executable"):
-            value = (provenance.get(key) or {}).get("sha256")
-            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            if not _sha256(_mapping(provenance.get(key)).get("sha256")):
                 mismatches.append(f"{label}.provenance.{key}.sha256.missing")
-        settings = provenance.get("effectiveSettings") or {}
+        settings = _mapping(provenance.get("effectiveSettings"))
         for key in REQUIRED_EFFECTIVE_SETTINGS:
             if not isinstance(settings.get(key), str):
                 mismatches.append(f"{label}.effectiveSettings.{key}.missing")
+        if configures_fallback(run):
+            for key in FALLBACK_PROVENANCE_IDENTITY:
+                if not _sha256(provenance.get(key)):
+                    mismatches.append(f"{label}.provenance.{key}.missing")
+            for key in FALLBACK_EFFECTIVE_SETTINGS:
+                if not isinstance(settings.get(key), str):
+                    mismatches.append(f"{label}.effectiveSettings.{key}.missing")
+    ref_summary = _mapping(reference.get("summary"))
+    candidate_summary = _mapping(candidate.get("summary"))
     for field in SUMMARY_IDENTITY:
-        if reference["summary"].get(field) != candidate["summary"].get(field):
+        if ref_summary.get(field) != candidate_summary.get(field):
             mismatches.append(f"summary.{field}")
+    ref_provenance = _mapping(reference.get("provenance"))
+    candidate_provenance = _mapping(candidate.get("provenance"))
     for field in PROVENANCE_IDENTITY:
-        if (reference.get("provenance") or {}).get(field) != (
-            candidate.get("provenance") or {}
-        ).get(field):
+        if ref_provenance.get(field) != candidate_provenance.get(field):
             mismatches.append(f"provenance.{field}")
-    for field in ("gold", "database", "packageLock", "executable"):
-        if ((reference.get("provenance") or {}).get(field) or {}).get("sha256") != (
-            (candidate.get("provenance") or {}).get(field) or {}
+    for field in file_identity:
+        if _mapping(ref_provenance.get(field)).get("sha256") != _mapping(
+            candidate_provenance.get(field)
         ).get("sha256"):
             mismatches.append(f"provenance.{field}.sha256")
-    ref_settings = (reference.get("provenance") or {}).get("effectiveSettings") or {}
-    candidate_settings = (candidate.get("provenance") or {}).get("effectiveSettings") or {}
+    ref_settings = _mapping(ref_provenance.get("effectiveSettings"))
+    candidate_settings = _mapping(candidate_provenance.get("effectiveSettings"))
     for field in REQUIRED_EFFECTIVE_SETTINGS:
         if field != "prefillChunking" and ref_settings.get(field) != candidate_settings.get(field):
             mismatches.append(f"effectiveSettings.{field}")
+    if configures_fallback(reference) or configures_fallback(candidate):
+        for field in FALLBACK_PROVENANCE_IDENTITY:
+            if ref_provenance.get(field) != candidate_provenance.get(field):
+                mismatches.append(f"provenance.{field}")
+        for field in FALLBACK_EFFECTIVE_SETTINGS:
+            if ref_settings.get(field) != candidate_settings.get(field):
+                mismatches.append(f"effectiveSettings.{field}")
     return mismatches
 
 
@@ -145,17 +201,22 @@ def main() -> int:
         raise ValueError("remainder run does not record remainder prefill")
 
     qualified_mismatches = (
-        identity_mismatches(balanced, qualified) if qualified is not None
+        identity_mismatches(balanced, qualified, compare_executable=False)
+        if qualified is not None
         else ["qualified.artifactMissing"]
     )
     control_mismatches = identity_mismatches(balanced, remainder)
     binary_hash = digest(args.binary)
-    for label, run in (("balanced", balanced), ("remainder", remainder),
-                       ("qualified", qualified)):
-        if run is not None and (run.get("provenance") or {}).get(
-            "executable", {}
-        ).get("sha256") != binary_hash:
+    # Both controls must come from the binary under test; the qualified
+    # baseline may not, and that difference is disclosed rather than hidden
+    # behind a blocked identity check.
+    for label, run in (("balanced", balanced), ("remainder", remainder)):
+        if executable_sha256(run) != binary_hash:
             control_mismatches.append(f"{label}.executableSHA256")
+    qualified_binary = executable_sha256(qualified)
+    qualified_binary_differs = (
+        qualified is not None and qualified_binary != binary_hash
+    )
 
     qualified_losses = (
         losses(qualified_items, balanced_items)
@@ -217,6 +278,8 @@ def main() -> int:
         "status": "blocked" if blocked else "passed",
         "itemCount": 200,
         "binarySHA256": binary_hash,
+        "qualifiedBinarySHA256": qualified_binary,
+        "qualifiedBinaryDiffers": qualified_binary_differs,
         "runs": runs,
         "qualifiedIdentityMismatches": qualified_mismatches,
         "sameBinaryControlIdentityMismatches": control_mismatches,
@@ -233,6 +296,7 @@ def main() -> int:
             for key, value in report["runs"].items()
         },
         "qualifiedIdentityMismatches": qualified_mismatches,
+        "qualifiedBinaryDiffers": qualified_binary_differs,
         "sameBinaryControlIdentityMismatches": control_mismatches,
         "balancedLossesAgainstQualified": qualified_losses,
         "balancedLossesAgainstRemainder": remainder_losses,

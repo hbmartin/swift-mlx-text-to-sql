@@ -1,0 +1,6 @@
+interface:
+  display_name: "Core AI: the 27-cycle inference runtime and its conversion pipeline"
+  short_description: "Build, convert, and optimize Core AI models"
+  default_prompt: "Use $apple-core-ai to answer this Apple on-device AI request with the bundled evidence-backed guides."
+policy:
+  allow_implicit_invocation: true

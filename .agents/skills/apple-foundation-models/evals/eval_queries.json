@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Show me the correct way to stream snapshots from LanguageModelSession into SwiftUI.",
+    "should_trigger": true
+  },
+  {
+    "query": "My @Guide(.anyOf) annotation compiles but the generated property ignores the allowed values.",
+    "should_trigger": true
+  },
+  {
+    "query": "respond(to:) hangs after a Foundation Models tool returns, and there is no useful console error.",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I implement a custom LanguageModel backend while keeping the Foundation Models session API?",
+    "should_trigger": true
+  },
+  {
+    "query": "Which Apple inference framework should I choose for a new image model?",
+    "should_trigger": false
+  },
+  {
+    "query": "An .aimodel loads but silently falls back from the Neural Engine to the GPU.",
+    "should_trigger": false
+  },
+  {
+    "query": "mx.compile keeps recompiling because one of my arguments changes shape.",
+    "should_trigger": false
+  },
+  {
+    "query": "Siri runs my AppIntent but the entity mutation never persists.",
+    "should_trigger": false
+  }
+]

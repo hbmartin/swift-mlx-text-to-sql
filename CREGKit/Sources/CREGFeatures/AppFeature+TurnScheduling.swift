@@ -40,23 +40,32 @@ extension AppFeature {
     autoRetryCount: Int = 0,
     isAutomaticRetry: Bool = false,
     directlyUserStarted: Bool = true,
+    acceptedSuggestionGeneration: Int? = nil,
     replacingJournalID: UUID? = nil
   ) -> Effect<Action> {
     precondition(
       state.canDispatchTurn && state.fmAvailability == .available,
       "Dispatch requires an active scene and an idle, ready scheduler with Apple Intelligence available."
     )
+    // A queued question keeps the generation assigned at acceptance. A later
+    // accepted question must not let this older answer own current chips just
+    // because the scheduler dispatched it later. Retries without a queued
+    // generation acquire one when they dispatch.
+    let suggestionGeneration = acceptedSuggestionGeneration
+      ?? acceptQuestion(state: &state, conversationID: conversationID)
     // A new turn owns the serializer; an in-flight scope diagnosis for an
-    // older failure is abandoned rather than queued ahead of it.
-    if let pending = state.pendingScopeDiagnosis {
+    // older failure is parked rather than queued ahead of it — unless the
+    // dispatch just retired its generation, in which case it is dropped.
+    if let pending = state.pendingScopeDiagnosis,
+      ownsSuggestions(
+        state: state, conversationID: pending.conversationID,
+        generation: pending.generation)
+    {
       state.pendingSuggestionContexts[pending.conversationID] = pending
     }
     state.pendingScopeDiagnosis = nil
     state.isScopeDiagnosisInFlight = false
     state.followUpPreparation = nil
-    if state.chat?.conversationID == conversationID {
-      state.chat?.followUpBatch = nil
-    }
     if state.isCapturingAnswerability {
       // Cancellation drops the effect's completion action, so this is the
       // only record that the capture died rather than finishing.
@@ -90,9 +99,17 @@ extension AppFeature {
     activeTurn.isAutomaticRetry = isAutomaticRetry
     activeTurn.directlyUserStarted = directlyUserStarted
     activeTurn.replacingJournalID = replacingJournalID
+    activeTurn.suggestionGeneration = suggestionGeneration
     if let replacingJournalID {
       activeTurn.replacedInterruptedTurn = state.chat?.interruptedTurns.first {
         $0.journalID == replacingJournalID
+      }
+      // The transferred journal keeps the count it already spent, so the
+      // dispatched turn carries it too and never re-arms automatic retry.
+      if existingUserMessage == nil,
+        let replaced = activeTurn.replacedInterruptedTurn
+      {
+        activeTurn.autoRetryCount = max(autoRetryCount, replaced.autoRetryCount)
       }
     }
     activeTurn.optimisticUserTurn = optimisticTurn
@@ -140,10 +157,95 @@ extension AppFeature {
       .cancel(id: CancelID.scopeDiagnosis),
       .cancel(id: CancelID.answerabilityCapture),
       .run { send in
-        try? await history.clearFollowUpBatch(conversationID)
+        try? await history.acceptQuestion(conversationID, suggestionGeneration)
         await send(.dispatchPreflightFinished(
           questionID: questionID, directlyUserStarted: directlyUserStarted))
       })
+  }
+
+  // MARK: - Suggestion ownership
+
+  /// Advances the conversation's suggestion generation in memory and retires
+  /// everything the previous generation owned: visible chips, the parked
+  /// context, and the in-flight judge. The durable advance travels with the
+  /// caller's effect so the counter only ever moves forward.
+  @discardableResult
+  func acceptQuestion(state: inout State, conversationID: UUID) -> Int {
+    guard var summary = state.conversations[id: conversationID] else {
+      return 0
+    }
+    summary.suggestionGeneration += 1
+    state.conversations[id: conversationID] = summary
+    state.pendingSuggestionContexts.removeValue(forKey: conversationID)
+    if state.pendingScopeDiagnosis?.conversationID == conversationID {
+      state.pendingScopeDiagnosis = nil
+      state.isScopeDiagnosisInFlight = false
+    }
+    if state.chat?.conversationID == conversationID {
+      state.chat?.followUpBatch = nil
+    }
+    return summary.suggestionGeneration
+  }
+
+  /// A context, batch, or preparation may be parked, resumed, or displayed
+  /// only while its generation is the conversation's current one.
+  func ownsSuggestions(
+    state: State, conversationID: UUID, generation: Int
+  ) -> Bool {
+    state.conversations[id: conversationID]?.suggestionGeneration == generation
+  }
+
+  // MARK: - Retry queue
+
+  /// Inserts by original question time so a retry precedes every later
+  /// question in its conversation while the queue stays oldest-first.
+  func insertQueuedQuestion(_ queued: QueuedQuestion, into state: inout State) {
+    let index = state.queue.firstIndex {
+      $0.submittedAt > queued.submittedAt
+    } ?? state.queue.endIndex
+    state.queue.insert(queued, at: index)
+    syncSchedulerProjection(into: &state)
+  }
+
+  /// The banner's cancel: the queued retry leaves the queue, its automatic
+  /// allowance is declined, and the journal row survives for Ask Again. A
+  /// claim or release still in flight for the journal completes as a
+  /// cancellation instead of dispatching.
+  func cancelQueuedRetry(
+    state: inout State, conversationID: UUID, journalID: UUID
+  ) -> Effect<Action> {
+    state.queue.removeAll {
+      $0.conversationID == conversationID && $0.retryJournalID == journalID
+    }
+    state.automaticRetryCandidates.removeValue(forKey: journalID)
+    state.userPromotedRetryJournalIDs.remove(journalID)
+    if state.retryClaimJournalID == journalID
+      || state.retryReleaseJournalID == journalID
+    {
+      state.cancelledRetryJournalIDs.insert(journalID)
+    }
+    if state.chat?.conversationID == conversationID,
+      let index = state.chat?.interruptedTurns.firstIndex(where: {
+        ($0.journalID ?? $0.executionID) == journalID
+      })
+    {
+      state.chat?.interruptedTurns[index].status = .manualRetryRequired
+    }
+    syncSchedulerProjection(into: &state)
+    diagnostics.info(
+      category: .submission,
+      code: "queued_retry_cancelled",
+      summary: "A queued retry was cancelled; the journal remains for Ask Again.")
+    return .merge(
+      .run { send in
+        do {
+          try await history.declineAutoRetry(conversationID, journalID)
+        } catch {
+          await send(.operationFailed(
+            .history(operation: .messageSave, error: error)))
+        }
+      },
+      dispatchNextIfIdle(state: &state))
   }
 
   func resumeDispatchedTurnAfterPreflight(
@@ -381,6 +483,11 @@ extension AppFeature {
       })
   }
 
+  /// Automatic: enqueue every eligible same-process candidate and run the
+  /// scheduler. Manual (Ask Again): the request becomes a queued retry for
+  /// the visible conversation, ordered by its original question time, and
+  /// the scheduler claims it through the same path every queued retry uses.
+  /// If a claim is already in flight, the request promotes it instead.
   func claimInterruptedRetry(
     state: inout State,
     automatic: Bool,
@@ -420,6 +527,10 @@ extension AppFeature {
     if state.failedDismissalManualRetryIDs.remove(resolvedJournalID) != nil {
       state.dismissedRetryJournalIDs.remove(resolvedJournalID)
     }
+    state.cancelledRetryJournalIDs.remove(resolvedJournalID)
+    // An Ask Again request supersedes the automatic allowance; it is never
+    // replenished by the manual request.
+    state.automaticRetryCandidates.removeValue(forKey: resolvedJournalID)
     if let index = state.queue.firstIndex(where: {
       $0.retryJournalID == resolvedJournalID
     }) {
@@ -428,58 +539,28 @@ extension AppFeature {
       syncSchedulerProjection(into: &state)
       return dispatchNextIfIdle(state: &state)
     }
-    if state.retryClaimJournalID == resolvedJournalID {
+    if state.retryClaimJournalID == resolvedJournalID
+      || state.retryReleaseJournalID == resolvedJournalID
+    {
       state.userPromotedRetryJournalIDs.insert(resolvedJournalID)
       return .none
     }
     let submission = QuestionSubmission(
       question: interrupted.question, source: interrupted.source)
-    if !state.canDispatchTurn || state.fmAvailability != .available
-      || !state.queue.isEmpty
-    {
-      if state.retryClaimInFlight { return .none }
-      if !state.queue.contains(where: { $0.retryJournalID == resolvedJournalID }) {
-        state.queue.append(QueuedQuestion(
-          id: uuid(), conversationID: chat.conversationID,
-          submission: submission, retryJournalID: resolvedJournalID,
-          existingUserMessage: trailingMessage,
-          automaticRetry: false, submittedAt: now))
-        syncSchedulerProjection(into: &state)
-      }
-      return dispatchNextIfIdle(state: &state)
-    }
-    if trailingMessage == nil {
-      return dispatch(
-        state: &state, conversationID: chat.conversationID,
-        submission: submission, directlyUserStarted: true,
-        replacingJournalID: resolvedJournalID)
-    }
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = resolvedJournalID
-    state.retryClaimSelectionID = state.chat?.conversationID
-    let conversationID = chat.conversationID
-    let executionID = trailingMessage!.id
-    return .run { send in
-      do {
-        let claimed = try await history.claimTurnRetry(
-          conversationID, resolvedJournalID, executionID, false)
-        await send(.interruptedRetryClaimed(
-          conversationID: conversationID,
-          journalID: resolvedJournalID,
-          executionID: executionID,
-          automatic: false,
-          claimed: claimed))
-      } catch {
-        await send(.interruptedRetryClaimed(
-          conversationID: conversationID,
-          journalID: resolvedJournalID,
-          executionID: executionID,
-          automatic: false,
-          claimed: false))
-        await send(.operationFailed(
-          .history(operation: .messageSave, error: error)))
-      }
-    }
+    insertQueuedQuestion(
+      QueuedQuestion(
+        id: uuid(), conversationID: chat.conversationID,
+        submission: submission, retryJournalID: resolvedJournalID,
+        existingUserMessage: trailingMessage,
+        automaticRetry: false,
+        submittedAt: trailingMessage?.createdAt ?? now),
+      into: &state)
+    diagnostics.info(
+      category: .submission,
+      code: "chat_interrupted_turn_retry_queued",
+      summary: "An Ask Again request was queued for the scheduler.",
+      context: ["retries_in_place": String(trailingMessage != nil)])
+    return dispatchNextIfIdle(state: &state)
   }
 
   func settleDismissedRetryClaim(
@@ -499,20 +580,23 @@ extension AppFeature {
     }
   }
 
-  /// A claimed retry cannot live in the in-memory queue. Persist release
-  /// before allowing another claim or dispatch to use the journal.
+  /// A claimed retry cannot live in the in-memory queue. Persist the release
+  /// before allowing another claim or dispatch to use the journal. The
+  /// release names the claim kind so an automatic claim restores its unused
+  /// allowance while a manual claim leaves the durable count alone.
   func releaseRetryClaim(
     state: inout State,
     queued: QueuedQuestion
   ) -> Effect<Action> {
     guard let journalID = queued.retryJournalID,
       let executionID = queued.existingUserMessage?.id
-    else { return .none }
+    else { return .send(.dispatchNextIfIdle) }
     state.retryReleaseJournalID = journalID
+    syncSchedulerProjection(into: &state)
     return .run { send in
       do {
         try await history.releaseAutoRetryClaim(
-          queued.conversationID, journalID, executionID)
+          queued.conversationID, journalID, executionID, queued.automaticRetry)
         await send(.retryClaimReleased(queued, true))
       } catch {
         await send(.retryClaimReleased(queued, false))
@@ -522,39 +606,37 @@ extension AppFeature {
     }
   }
 
+  /// Queues every same-process candidate that is not already queued,
+  /// claimed, releasing, dismissed, or cancelled. Selection is irrelevant:
+  /// the entry is built from the interrupted turn's own data, and a
+  /// deactivated scene merely leaves it waiting for the next open gate.
   func enqueueEligibleAutomaticRetry(state: inout State) {
-    guard let chat = state.chat,
-      state.conversations[id: chat.conversationID] != nil,
-      state.pendingDeletion?.summary.id != chat.conversationID,
-      let trailingUser = chat.messages.last,
-      trailingUser.role == .user,
-      let interrupted = chat.interruptedTurns.first(where: { item in
-        guard let journalID = item.journalID ?? item.executionID else {
-          return false
-        }
-        return state.isSceneActive
-          && state.sameProcessAutomaticRetryIDs.contains(journalID)
-          && item.canAutoRetry
-          && item.question == trailingUser.previewText
-          && (item.executionID == trailingUser.id || item.executionID == nil)
-          && !state.dismissedRetryJournalIDs.contains(journalID)
-          && state.retryClaimJournalID != journalID
-          && state.retryReleaseJournalID != journalID
-          && !state.queue.contains(where: { $0.retryJournalID == journalID })
-      }),
-      let journalID = interrupted.journalID ?? interrupted.executionID
-    else { return }
-    let queued = QueuedQuestion(
-      id: uuid(), conversationID: chat.conversationID,
-      submission: QuestionSubmission(
-        question: interrupted.question, source: interrupted.source),
-      retryJournalID: journalID, existingUserMessage: trailingUser,
-      automaticRetry: true, submittedAt: trailingUser.createdAt)
-    let index = state.queue.firstIndex {
-      $0.submittedAt > queued.submittedAt
-    } ?? state.queue.endIndex
-    state.queue.insert(queued, at: index)
-    syncSchedulerProjection(into: &state)
+    let candidates = state.automaticRetryCandidates.values.sorted {
+      $0.userMessage.createdAt < $1.userMessage.createdAt
+    }
+    for candidate in candidates {
+      let journalID = candidate.journalID
+      guard state.conversations[id: candidate.conversationID] != nil,
+        state.pendingDeletion?.summary.id != candidate.conversationID,
+        !state.dismissedRetryJournalIDs.contains(journalID),
+        !state.cancelledRetryJournalIDs.contains(journalID),
+        state.retryClaimJournalID != journalID,
+        state.retryReleaseJournalID != journalID,
+        state.activeTurn?.questionID != journalID,
+        state.pendingInterruptedTurn?.questionID != journalID,
+        !state.queue.contains(where: { $0.retryJournalID == journalID })
+      else { continue }
+      insertQueuedQuestion(
+        QueuedQuestion(
+          id: uuid(), conversationID: candidate.conversationID,
+          submission: candidate.submission,
+          retryJournalID: journalID,
+          existingUserMessage: candidate.userMessage,
+          automaticRetry: true,
+          suggestionGeneration: candidate.suggestionGeneration,
+          submittedAt: candidate.userMessage.createdAt),
+        into: &state)
+    }
   }
 
   func suspendLowPriorityInference(state: inout State) -> Effect<Action> {
@@ -611,14 +693,15 @@ extension AppFeature {
     if let journalID = next.retryJournalID, let userMessage = next.existingUserMessage {
       state.retryClaimInFlight = true
       state.retryClaimJournalID = journalID
-      state.retryClaimSelectionID = state.chat?.conversationID
+      state.retryClaimConversationID = next.conversationID
+      syncSchedulerProjection(into: &state)
       return .run { send in
         do {
-          let claimed = try await history.claimTurnRetry(
+          let retryCount = try await history.claimTurnRetry(
             next.conversationID, journalID, userMessage.id, next.automaticRetry)
-          await send(.queuedRetryClaimed(next, claimed))
+          await send(.queuedRetryClaimed(next, retryCount))
         } catch {
-          await send(.queuedRetryClaimed(next, false))
+          await send(.queuedRetryClaimed(next, nil))
           await send(.operationFailed(.history(operation: .messageSave, error: error)))
         }
       }
@@ -631,6 +714,7 @@ extension AppFeature {
         submission: next.submission,
         existingUserMessage: next.existingUserMessage,
         directlyUserStarted: false,
+        acceptedSuggestionGeneration: next.suggestionGeneration,
         replacingJournalID: next.existingUserMessage == nil ? next.retryJournalID : nil))
   }
 
@@ -656,10 +740,7 @@ extension AppFeature {
       state.fmAvailability != .available,
       !state.queue.isEmpty || state.pendingScopeDiagnosis != nil
         || !state.pendingSuggestionContexts.isEmpty
-        || state.chat?.interruptedTurns.contains(where: {
-          guard let id = $0.journalID ?? $0.executionID else { return false }
-          return $0.canAutoRetry && state.sameProcessAutomaticRetryIDs.contains(id)
-        }) == true
+        || !state.automaticRetryCandidates.isEmpty
         || state.resumableFollowUpBatch != nil
     else { return .none }
     return .run { send in
