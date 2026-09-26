@@ -68,7 +68,9 @@ pass.
 Prepared suggestions are owned by a per-Conversation suggestion generation
 stored in SQLite. Accepting a question — queued or dispatched — advances the
 generation and deletes the prior batch in one transaction before the pipeline
-runs. Active turns, parked contexts, and batch writes carry the generation they
+runs. A queued question keeps the generation assigned at acceptance when it
+later dispatches; an automatic retry keeps the interrupted turn's generation.
+Active turns, parked contexts, and batch writes carry the generation they
 began with; the store refuses a batch whose generation changed or whose source
 answer is no longer the latest persisted message, and the reducer applies the
 same check before parking, resuming, or displaying a context. Whether the Scope

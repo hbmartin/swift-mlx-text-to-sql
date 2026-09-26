@@ -83,9 +83,14 @@ extension HistoryStore {
           WHERE id = ? AND suggestion_generation < ?
           """,
         arguments: [generation, conversationID.uuidString, generation])
-      try db.execute(
-        sql: "DELETE FROM prepared_follow_up_batch WHERE conversation_id = ?",
-        arguments: [conversationID.uuidString])
+      // A queued older question can reach preflight after a newer question
+      // advanced the generation. Its stale write must not clear that newer
+      // question's batch.
+      if db.changesCount == 1 {
+        try db.execute(
+          sql: "DELETE FROM prepared_follow_up_batch WHERE conversation_id = ?",
+          arguments: [conversationID.uuidString])
+      }
     }
   }
 

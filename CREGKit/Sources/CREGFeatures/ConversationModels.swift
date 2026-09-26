@@ -252,6 +252,9 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
   public var retryJournalID: UUID?
   public var existingUserMessage: ChatMessage?
   public var automaticRetry: Bool = false
+  /// Ownership assigned when a new question is accepted, before it queues.
+  /// Retries without a new submission acquire ownership at dispatch instead.
+  public var suggestionGeneration: Int?
   public var question: String { submission.question }
   public var starter: StarterQueryID? {
     guard case .starter(let starter) = submission.source else { return nil }
@@ -274,6 +277,7 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     self.retryJournalID = nil
     self.existingUserMessage = nil
     self.automaticRetry = false
+    self.suggestionGeneration = nil
     self.submittedAt = submittedAt
   }
 
@@ -284,6 +288,7 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     retryJournalID: UUID? = nil,
     existingUserMessage: ChatMessage? = nil,
     automaticRetry: Bool = false,
+    suggestionGeneration: Int? = nil,
     submittedAt: Date
   ) {
     self.id = id
@@ -292,6 +297,7 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     self.retryJournalID = retryJournalID
     self.existingUserMessage = existingUserMessage
     self.automaticRetry = automaticRetry
+    self.suggestionGeneration = suggestionGeneration
     self.submittedAt = submittedAt
   }
 }

@@ -40,17 +40,19 @@ extension AppFeature {
     autoRetryCount: Int = 0,
     isAutomaticRetry: Bool = false,
     directlyUserStarted: Bool = true,
+    acceptedSuggestionGeneration: Int? = nil,
     replacingJournalID: UUID? = nil
   ) -> Effect<Action> {
     precondition(
       state.canDispatchTurn && state.fmAvailability == .available,
       "Dispatch requires an active scene and an idle, ready scheduler with Apple Intelligence available."
     )
-    // Every dispatch is an accepted question for its conversation: the
-    // generation advances and the retired batch is deleted in the preflight
-    // transaction before the pipeline runs.
-    let suggestionGeneration = acceptQuestion(
-      state: &state, conversationID: conversationID)
+    // A queued question keeps the generation assigned at acceptance. A later
+    // accepted question must not let this older answer own current chips just
+    // because the scheduler dispatched it later. Retries without a queued
+    // generation acquire one when they dispatch.
+    let suggestionGeneration = acceptedSuggestionGeneration
+      ?? acceptQuestion(state: &state, conversationID: conversationID)
     // A new turn owns the serializer; an in-flight scope diagnosis for an
     // older failure is parked rather than queued ahead of it — unless the
     // dispatch just retired its generation, in which case it is dropped.
@@ -631,6 +633,7 @@ extension AppFeature {
           retryJournalID: journalID,
           existingUserMessage: candidate.userMessage,
           automaticRetry: true,
+          suggestionGeneration: candidate.suggestionGeneration,
           submittedAt: candidate.userMessage.createdAt),
         into: &state)
     }
@@ -711,6 +714,7 @@ extension AppFeature {
         submission: next.submission,
         existingUserMessage: next.existingUserMessage,
         directlyUserStarted: false,
+        acceptedSuggestionGeneration: next.suggestionGeneration,
         replacingJournalID: next.existingUserMessage == nil ? next.retryJournalID : nil))
   }
 

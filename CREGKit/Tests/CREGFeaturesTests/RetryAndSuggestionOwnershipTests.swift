@@ -65,6 +65,10 @@ private actor HeldOperation {
     state.activeTurn = activeTurn(
       questionID: questionID, conversationID: Self.conversationB,
       question: "Offscreen question", at: 1)
+    state.activeTurn?.suggestionGeneration = 1
+    // A later accepted question already owns generation 2. Retrying this
+    // older turn must not claim generation 3 just because it dispatches first.
+    state.conversations[id: Self.conversationB]?.suggestionGeneration = 2
     let later = QueuedQuestion(
       id: UUID(9002), conversationID: Self.conversationB,
       question: "Later in B", submittedAt: Date(timeIntervalSince1970: 5))
@@ -100,6 +104,8 @@ private actor HeldOperation {
     #expect(store.state.activeTurn?.conversationID == Self.conversationB)
     #expect(store.state.activeTurn?.isAutomaticRetry == true)
     #expect(store.state.activeTurn?.autoRetryCount == 1)
+    #expect(store.state.activeTurn?.suggestionGeneration == 1)
+    #expect(store.state.conversations[id: Self.conversationB]?.suggestionGeneration == 2)
     #expect(store.state.activeTurn?.optimisticUserTurn?.isExisting == true)
     #expect(store.state.queue.map(\.question) == ["Later in B"])
     #expect(store.state.automaticRetryCandidates.isEmpty)
@@ -448,7 +454,7 @@ private actor HeldOperation {
 
   // MARK: Suggestion ownership
 
-  @Test func acceptedQueuedQuestionRetiresTheEarlierAnswersSuggestions() async {
+  @Test func laterQueuedQuestionRetiresEveryEarlierAnswersSuggestions() async {
     let firstID = UUID(9070)
     var state = Scheduler.appState()
     state.activeTurn = activeTurn(
@@ -490,6 +496,12 @@ private actor HeldOperation {
       QuestionSubmission(question: "Second question")))))
     #expect(store.state.queue.map(\.question) == ["Second question"])
     #expect(store.state.conversations[id: Self.conversationA]?.suggestionGeneration == 1)
+    // Q3 is accepted before Q2 dispatches. Q2 must keep generation 1 when
+    // it runs; dispatching it later cannot make it the current owner again.
+    await store.send(.chat(.delegate(.submitQuestion(
+      QuestionSubmission(question: "Third question")))))
+    #expect(store.state.queue.map(\.question) == ["Second question", "Third question"])
+    #expect(store.state.conversations[id: Self.conversationA]?.suggestionGeneration == 2)
 
     await store.send(
       .pipelineEvent(
@@ -498,11 +510,11 @@ private actor HeldOperation {
     await store.finish()
     await store.skipReceivedActions()
 
-    // Only Q2's answer owns suggestions; Q1's context was dropped, never
-    // parked, and no Q1 batch was shown.
-    #expect(preparedContexts.value.map(\.question) == ["Second question"])
+    // Only Q3's answer owns suggestions. Q1 and Q2 were retired by a newer
+    // acceptance, and neither context was parked or shown.
+    #expect(preparedContexts.value.map(\.question) == ["Third question"])
     #expect(store.state.pendingSuggestionContexts.isEmpty)
-    #expect(store.state.chat?.followUpBatch?.context?.question == "Second question")
+    #expect(store.state.chat?.followUpBatch?.context?.question == "Third question")
     #expect(store.state.chat?.followUpBatch?.generation == 2)
   }
 

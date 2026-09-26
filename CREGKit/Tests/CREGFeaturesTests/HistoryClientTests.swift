@@ -689,6 +689,11 @@ import Testing
       updatedAt: Date(timeIntervalSince1970: 22), generation: 1)
     try await client.saveFollowUpBatch(conversationID, second)
     #expect(try await makeClient(url).loadConversation(conversationID).followUpBatch == second)
+    // A delayed preflight from an older queued question cannot retire a
+    // batch owned by the current generation.
+    try await client.acceptQuestion(conversationID, 0)
+    try await client.acceptQuestion(conversationID, 1)
+    #expect(try await makeClient(url).loadConversation(conversationID).followUpBatch == second)
   }
 
   /// Batches persisted before generations existed decode with a nil

@@ -198,17 +198,20 @@ public struct AppFeature: Sendable {
     public var conversationID: UUID
     public var submission: QuestionSubmission
     public var userMessage: ChatMessage
+    public var suggestionGeneration: Int?
 
     public init(
       journalID: UUID,
       conversationID: UUID,
       submission: QuestionSubmission,
-      userMessage: ChatMessage
+      userMessage: ChatMessage,
+      suggestionGeneration: Int? = nil
     ) {
       self.journalID = journalID
       self.conversationID = conversationID
       self.submission = submission
       self.userMessage = userMessage
+      self.suggestionGeneration = suggestionGeneration
     }
   }
 
@@ -1164,7 +1167,8 @@ public struct AppFeature: Sendable {
               journalID: interrupted.questionID,
               conversationID: interrupted.conversationID,
               submission: interrupted.submission,
-              userMessage: optimistic.message)
+              userMessage: optimistic.message,
+              suggestionGeneration: interrupted.suggestionGeneration)
         }
         if !userPersisted {
           if let optimistic = interrupted.optimisticUserTurn {
@@ -1316,7 +1320,8 @@ public struct AppFeature: Sendable {
           existingUserMessage: queued.existingUserMessage,
           autoRetryCount: retryCount,
           isAutomaticRetry: queued.automaticRetry,
-          directlyUserStarted: !queued.automaticRetry)
+          directlyUserStarted: !queued.automaticRetry,
+          acceptedSuggestionGeneration: queued.suggestionGeneration)
 
       case .retryClaimReleased(let queued, let released):
         guard let journalID = queued.retryJournalID,
@@ -1803,7 +1808,8 @@ public struct AppFeature: Sendable {
           let userTurn = dispatch(
             state: &state,
             conversationID: conversationID,
-            submission: submission)
+            submission: submission,
+            acceptedSuggestionGeneration: generation)
           let appendPreparationEvents = Effect<Action>.run { _ in
             if let preparation, !preparation.eventLines.isEmpty {
               try? await history.appendEvents(
@@ -1826,6 +1832,7 @@ public struct AppFeature: Sendable {
           id: uuid(),
           conversationID: conversationID,
           submission: submission,
+          suggestionGeneration: generation,
           submittedAt: now)
         state.queue.append(queued)
         syncSchedulerProjection(into: &state)
