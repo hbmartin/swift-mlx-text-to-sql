@@ -383,13 +383,20 @@ private func awaitArmedFMWatch(
     let questionID = store.state.chat!.messages[0].id
     await store.receive(.dispatchPreflightFinished(
       questionID: questionID, directlyUserStarted: true))
+    // A brief inactive scene keeps the turn running; only the background
+    // transition interrupts it.
     await store.send(.appBecameInactive)
-    #expect(store.state.activeTurn == nil)
+    #expect(store.state.activeTurn?.questionID == questionID)
     await store.send(.appEnteredBackground)
     await store.finish()
+    await store.skipReceivedActions()
+    #expect(store.state.activeTurn == nil)
     #expect(store.state.chat?.interruptedTurn?.canAutoRetry == true)
     #expect(store.state.chat?.messages.count == 1)
     #expect(marks.recorded.count == 1)
+    // The retry queued from the turn's own data while still backgrounded.
+    #expect(store.state.queue.first?.retryJournalID == questionID)
+    #expect(store.state.chat?.queuedRetryJournalIDs.contains(questionID) == true)
 
     await store.send(.appBecameActive)
     await store.finish()
@@ -410,7 +417,10 @@ private func awaitArmedFMWatch(
       interruptedAt: Date(timeIntervalSince1970: 10),
       journalID: first.id, executionID: first.id,
       status: .knownInterruption)
-    state.sameProcessAutomaticRetryIDs.insert(first.id)
+    state.automaticRetryCandidates[first.id] = AppFeature.AutomaticRetryCandidate(
+      journalID: first.id, conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: first.previewText),
+      userMessage: first)
     state.queue = [QueuedQuestion(
       id: UUID(706), conversationID: Self.conversationA,
       question: "Second question", submittedAt: Date(timeIntervalSince1970: 2))]
@@ -476,7 +486,7 @@ private func awaitArmedFMWatch(
       status: .knownInterruption)
     state.retryClaimInFlight = true
     state.retryClaimJournalID = user.id
-    state.retryClaimSelectionID = Self.conversationA
+    state.retryClaimConversationID = Self.conversationA
     let queued = QueuedQuestion(
       id: UUID(7063), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -492,7 +502,7 @@ private func awaitArmedFMWatch(
 
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
     #expect(store.state.userPromotedRetryJournalIDs.contains(user.id))
-    await store.send(.queuedRetryClaimed(queued, true))
+    await store.send(.queuedRetryClaimed(queued, 1))
     await store.skipReceivedActions()
     #expect(store.state.activeTurn?.question == user.previewText)
     #expect(store.state.activeTurn?.directlyUserStarted == true)
@@ -555,17 +565,28 @@ private func awaitArmedFMWatch(
     #expect(store.state.queue.isEmpty)
   }
 
-  @Test func submissionToPendingDeletionConversationIsRejected() async {
+  /// A submission whose origin is being deleted lands in a brand-new chat's
+  /// draft, created atomically; no other chat's draft changes, and the
+  /// deletion flow keeps ownership of the selection.
+  @Test func submissionToPendingDeletionConversationIsSavedInANewChat() async {
     var state = Self.appState(selected: Self.conversationB)
     let deleted = state.conversations[id: Self.conversationB]!
     state.pendingDeletion = AppFeature.PendingDeletion(summary: deleted, index: 1)
     let drafts = CallRecorder()
+    let created = CallRecorder()
     var history = HistoryClient.noop()
     history.saveDraft = { id, text in
       drafts.record("\(id):\(text)")
     }
+    history.createConversationWithDraft = { id, startedAt, draft in
+      created.record("\(id):\(draft)")
+      return ConversationSummary(
+        id: id, title: "", startedAt: startedAt, lastActivityAt: startedAt)
+    }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 50))
     }
     store.exhaustivity = .off
 
@@ -577,11 +598,12 @@ private func awaitArmedFMWatch(
     await store.skipReceivedActions()
     #expect(store.state.activeTurn == nil)
     #expect(store.state.queue.isEmpty)
-    #expect(store.state.chat?.messages.isEmpty == true)
-    #expect(store.state.chat?.conversationID == Self.conversationA)
-    #expect(store.state.chat?.composerText == "Too late")
+    #expect(store.state.chat?.conversationID == Self.conversationB)
+    #expect(store.state.conversations.count == 3)
+    #expect(created.recorded == ["\(UUID(0)):Too late"])
+    #expect(drafts.recorded.isEmpty)
     #expect(store.state.presentedFailure?.code == "submission_conversation_unavailable")
-    #expect(drafts.recorded == ["\(Self.conversationA):Too late"])
+    #expect(store.state.unsavedRejectedSubmission == nil)
   }
 
   @Test func offscreenAutomaticRetryDispatchesAsGloballyOldestQueueItem() async {
@@ -626,7 +648,10 @@ private func awaitArmedFMWatch(
         journalID: user.id, executionID: user.id,
         status: .knownInterruption),
     ]
-    state.sameProcessAutomaticRetryIDs.insert(user.id)
+    state.automaticRetryCandidates[user.id] = AppFeature.AutomaticRetryCandidate(
+      journalID: user.id, conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: user.previewText),
+      userMessage: user)
     let availability = LockIsolated<FMAvailability>(
       .unavailable(reason: .modelNotReady))
     let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
@@ -660,30 +685,42 @@ private func awaitArmedFMWatch(
     #expect(store.state.queue.isEmpty)
   }
 
-  @Test func claimedAutomaticRetryIsReleasedAfterConversationSwitch() async {
-    let questionID = UUID(707)
+  /// The retry entry carries the interrupted turn's own data, so a claim
+  /// that lands after the user switched conversations dispatches offscreen
+  /// instead of being released back to the journal.
+  @Test func claimedAutomaticRetryDispatchesOffscreenAfterConversationSwitch() async {
+    let user = ChatMessage(
+      id: UUID(707), role: .user, body: .text("Retry elsewhere"),
+      createdAt: Date(timeIntervalSince1970: 1))
     let releases = CallRecorder()
     var history = HistoryClient.noop()
-    history.releaseAutoRetryClaim = { conversationID, journalID, executionID in
+    history.releaseAutoRetryClaim = { conversationID, journalID, executionID, _ in
       releases.record("\(conversationID):\(journalID):\(executionID)")
     }
     var state = Self.appState(selected: Self.conversationB)
     state.retryClaimInFlight = true
+    state.retryClaimJournalID = user.id
+    state.retryClaimConversationID = Self.conversationA
+    let queued = QueuedQuestion(
+      id: UUID(7071), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: user.previewText),
+      retryJournalID: user.id, existingUserMessage: user,
+      automaticRetry: true, submittedAt: user.createdAt)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 2))
     }
     store.exhaustivity = .off
 
-    await store.send(.interruptedRetryClaimed(
-      conversationID: Self.conversationA, journalID: questionID,
-      executionID: questionID, automatic: true, claimed: true))
-    await store.finish()
-    #expect(store.state.activeTurn == nil)
-    #expect(releases.recorded == [
-      "\(Self.conversationA):\(questionID):\(questionID)"
-    ])
+    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.skipReceivedActions()
+    #expect(store.state.activeTurn?.conversationID == Self.conversationA)
+    #expect(store.state.activeTurn?.isAutomaticRetry == true)
+    #expect(store.state.activeTurn?.autoRetryCount == 1)
+    #expect(releases.recorded.isEmpty)
+    await store.skipInFlightEffects()
   }
 
   @Test func busyAskAgainQueuesOriginalSourceAndCancellationKeepsJournal() async {
@@ -743,9 +780,16 @@ private func awaitArmedFMWatch(
 
     await store.send(.chat(.delegate(.dismissInterruptedTurn(questionID))))
     #expect(store.state.queue.isEmpty)
-    await store.send(.interruptedRetryClaimed(
-      conversationID: Self.conversationA, journalID: questionID,
-      executionID: questionID, automatic: true, claimed: true))
+    await store.send(.queuedRetryClaimed(
+      QueuedQuestion(
+        id: UUID(709), conversationID: Self.conversationA,
+        submission: QuestionSubmission(question: "Retry"),
+        retryJournalID: questionID,
+        existingUserMessage: ChatMessage(
+          id: questionID, role: .user, body: .text("Retry"),
+          createdAt: Date(timeIntervalSince1970: 1)),
+        automaticRetry: true, submittedAt: Date(timeIntervalSince1970: 1)),
+      1))
     await store.finish()
     #expect(store.state.activeTurn == nil)
     #expect(endings.recorded == [questionID.uuidString])
@@ -790,9 +834,13 @@ private func awaitArmedFMWatch(
       conversationID: Self.conversationA, journalID: questionID,
       failure: failure))
     #expect(store.state.failedDismissalAwaitingClaim?.journalID == questionID)
-    await store.send(.interruptedRetryClaimed(
-      conversationID: Self.conversationA, journalID: questionID,
-      executionID: questionID, automatic: true, claimed: true))
+    await store.send(.queuedRetryClaimed(
+      QueuedQuestion(
+        id: UUID(7091), conversationID: Self.conversationA,
+        submission: QuestionSubmission(question: "Retry"),
+        retryJournalID: questionID, existingUserMessage: user,
+        automaticRetry: true, submittedAt: user.createdAt),
+      1))
     await store.finish()
     await store.skipReceivedActions()
 
@@ -826,7 +874,9 @@ private func awaitArmedFMWatch(
     #expect(deletingStore.state.chat?.title == "Keep this selection")
   }
 
-  @Test func claimedRetryReleasesDuringInactivityWithoutQueueing() async {
+  /// A manual Ask Again whose claim lands behind a closed gate is released
+  /// durably and stays queued, then resumes when the gate reopens.
+  @Test func claimedManualRetryReleasedDuringInactivityStaysQueuedAndResumes() async {
     let questionID = UUID(703)
     let user = ChatMessage(
       id: questionID, role: .user, body: .text("Which property leads?"),
@@ -834,6 +884,8 @@ private func awaitArmedFMWatch(
     var state = Self.appState()
     state.isSceneActive = false
     state.retryClaimInFlight = true
+    state.retryClaimJournalID = questionID
+    state.retryClaimConversationID = Self.conversationA
     state.chat?.messages = IdentifiedArray(uniqueElements: [user])
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
@@ -843,19 +895,36 @@ private func awaitArmedFMWatch(
       id: UUID(704), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
       retryJournalID: questionID, existingUserMessage: user,
-      submittedAt: Date(timeIntervalSince1970: 2))
+      submittedAt: user.createdAt)
+    let releases = CallRecorder()
+    var history = HistoryClient.noop()
+    history.releaseAutoRetryClaim = { _, journalID, _, automatic in
+      releases.record("\(journalID):\(automatic)")
+    }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
-      $0.historyClient = .noop()
+      $0.historyClient = history
+      $0.queryPipeline = Self.hangingPipeline()
+      $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 3))
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, true))
-    #expect(store.state.queue.isEmpty)
+    await store.send(.queuedRetryClaimed(queued, 0))
+    await store.receive(.retryClaimReleased(queued, true))
+    await store.skipReceivedActions()
+    #expect(releases.recorded == ["\(questionID):false"])
+    #expect(store.state.queue.map(\.retryJournalID) == [questionID])
+    #expect(store.state.queue.first?.automaticRetry == false)
     #expect(store.state.chat?.interruptedTurn?.journalID == questionID)
-    await store.finish()
+    #expect(store.state.chat?.queuedRetryJournalIDs == [questionID])
+    #expect(store.state.activeTurn == nil)
+
+    await store.send(.appBecameActive)
+    await store.skipReceivedActions()
+    #expect(store.state.activeTurn?.question == user.previewText)
+    #expect(store.state.activeTurn?.directlyUserStarted == true)
     #expect(store.state.queue.isEmpty)
-    #expect(store.state.chat?.interruptedTurn?.journalID == questionID)
+    await store.skipInFlightEffects()
   }
 
   @Test func failedClaimReleaseShowsManualRetryAndError() async {
@@ -877,7 +946,7 @@ private func awaitArmedFMWatch(
       retryJournalID: user.id, existingUserMessage: user,
       automaticRetry: true, submittedAt: user.createdAt)
     var history = HistoryClient.noop()
-    history.releaseAutoRetryClaim = { _, _, _ in
+    history.releaseAutoRetryClaim = { _, _, _, _ in
       throw HistoryStoreError.conversationNotFound
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
@@ -885,44 +954,52 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, true))
+    await store.send(.queuedRetryClaimed(queued, 1))
     await store.finish()
     await store.skipReceivedActions()
     #expect(store.state.queue.isEmpty)
+    #expect(store.state.automaticRetryCandidates[user.id] == nil)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
     #expect(store.state.presentedFailure != nil)
   }
 
-  @Test func manualClaimReleasesAfterNavigation() async {
-    let questionID = UUID(7068)
+  /// Navigation is not a closed gate: an Ask Again request whose claim lands
+  /// after the user switched conversations dispatches with its own data.
+  @Test func manualClaimDispatchesAfterNavigation() async {
+    let user = ChatMessage(
+      id: UUID(7068), role: .user, body: .text("Ask again elsewhere"),
+      createdAt: Date(timeIntervalSince1970: 1))
     var state = Self.appState(selected: Self.conversationB)
     state.retryClaimInFlight = true
-    state.retryClaimJournalID = questionID
+    state.retryClaimJournalID = user.id
+    state.retryClaimConversationID = Self.conversationA
     let releases = CallRecorder()
     var history = HistoryClient.noop()
-    history.releaseAutoRetryClaim = { conversationID, journalID, executionID in
+    history.releaseAutoRetryClaim = { conversationID, journalID, executionID, _ in
       releases.record("\(conversationID)|\(journalID)|\(executionID)")
     }
+    let queued = QueuedQuestion(
+      id: UUID(7069), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: user.previewText),
+      retryJournalID: user.id, existingUserMessage: user,
+      automaticRetry: false, submittedAt: user.createdAt)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 3))
     }
     store.exhaustivity = .off
 
-    await store.send(.interruptedRetryClaimed(
-      conversationID: Self.conversationA,
-      journalID: questionID,
-      executionID: questionID,
-      automatic: false,
-      claimed: true))
-    await store.finish()
+    await store.send(.queuedRetryClaimed(queued, 1))
     await store.skipReceivedActions()
-    #expect(releases.recorded == [
-      "\(Self.conversationA)|\(questionID)|\(questionID)"
-    ])
+    #expect(releases.recorded.isEmpty)
     #expect(store.state.queue.isEmpty)
-    #expect(store.state.activeTurn == nil)
+    #expect(store.state.activeTurn?.conversationID == Self.conversationA)
+    #expect(store.state.activeTurn?.directlyUserStarted == true)
+    // A manual claim preserves the durable count it found.
+    #expect(store.state.activeTurn?.autoRetryCount == 1)
+    await store.skipInFlightEffects()
   }
 
   @Test func retryDispatchRetiresOldFollowUpPreparation() async {
@@ -1570,7 +1647,9 @@ private func awaitArmedFMWatch(
     state.chat?.followUpBatch = batch
     let clears = CallRecorder()
     var history = HistoryClient.noop()
-    history.clearFollowUpBatch = { id in clears.record(id.uuidString) }
+    history.acceptQuestion = { id, generation in
+      clears.record("\(id.uuidString):\(generation)")
+    }
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -1602,7 +1681,8 @@ private func awaitArmedFMWatch(
       return
     }
     #expect(queued == prepared)
-    #expect(clears.recorded == [Self.conversationA.uuidString])
+    #expect(clears.recorded == ["\(Self.conversationA.uuidString):1"])
+    #expect(store.state.conversations[id: Self.conversationA]?.suggestionGeneration == 1)
   }
 
   @Test func appReadinessGateKeepsPreparedFollowUpAvailable() async {
@@ -1981,8 +2061,9 @@ private func awaitArmedFMWatch(
     #expect(eventWrites.recorded == ["{\"prepared\":true}"])
   }
 
-  /// Inactivity suspends ungranted low-priority work immediately.
-  @Test func transientInactivitySuspendsLowPriorityWork() async {
+  /// A brief inactive scene closes dispatch and availability polling only;
+  /// running low-priority work continues until the background transition.
+  @Test func transientInactivityKeepsLowPriorityWorkUntilBackground() async {
     let prepared = Self.preparedFollowUp()
     let context = FollowUpSuggestionContext(
       sourceAssistantMessageID: prepared.sourceAssistantMessageID,
@@ -2013,16 +2094,26 @@ private func awaitArmedFMWatch(
     await store.finish()
 
     #expect(store.state.isSceneActive == false)
+    #expect(store.state.followUpPreparation != nil)
+    #expect(store.state.isCapturingAnswerability == true)
+    #expect(store.state.chat?.followUpBatch == batch)
+
+    await store.send(.appEnteredBackground)
+    await store.finish()
+
     #expect(store.state.followUpPreparation == nil)
     #expect(store.state.isCapturingAnswerability == false)
     #expect(store.state.chat?.followUpBatch == batch)
   }
 
-  @Test func inactiveSceneDuringBatchClearDoesNotStartPipeline() async {
+  /// A brief inactive scene arriving while the acceptance transaction is
+  /// still in flight keeps the dispatched turn but defers its pipeline start
+  /// to the next activation; nothing is interrupted or journaled.
+  @Test func inactiveSceneDuringAcceptanceDefersPipelineStartUntilActivation() async {
     let clear = AssistantPersistenceGate()
     let runs = CallRecorder()
     var history = HistoryClient.noop()
-    history.clearFollowUpBatch = { _ in await clear.holdFirstAssistant() }
+    history.acceptQuestion = { _, _ in await clear.holdFirstAssistant() }
     let store = TestStore(initialState: Self.appState()) {
       AppFeature()
     } withDependencies: {
@@ -2040,11 +2131,15 @@ private func awaitArmedFMWatch(
     await store.send(.appBecameInactive)
     await clear.release()
     await store.finish()
-    #expect(store.state.activeTurn == nil)
+    await store.skipReceivedActions()
+    #expect(store.state.activeTurn?.question == "Question")
+    #expect(store.state.activeTurn?.pipelineStarted == false)
+    #expect(store.state.pendingInterruptedTurn == nil)
     #expect(runs.recorded.isEmpty)
 
     await store.send(.appBecameActive)
     await store.finish()
+    await store.skipReceivedActions()
     #expect(runs.recorded == ["Question"])
   }
 
@@ -2389,9 +2484,10 @@ private func awaitArmedFMWatch(
       ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 0)))
     await store.finish()
     await store.skipReceivedActions(strict: false)
-    #expect(order.recorded == [
-      "judge:A recovery", "prepare:A recovery", "prepare:B latest"
-    ])
+    // A context that arrives through the persisted-verdict path has already
+    // been judged, so resumption goes straight to preparation, visible
+    // conversation first.
+    #expect(order.recorded == ["prepare:A recovery", "prepare:B latest"])
   }
 
   /// A completed turn's write can outlive a compatibility re-preparation, so
@@ -4501,9 +4597,12 @@ private func awaitArmedFMWatch(
     await gate.release()
     await store.receive(\.scopeDiagnosisPersisted)
 
+    // The new question advanced the suggestion generation, so the retired
+    // context is dropped: no second batch write and nothing parked.
     #expect(preparations.recorded.isEmpty)
-    #expect(batchSaves.recorded == ["saved", "saved"])
+    #expect(batchSaves.recorded == ["saved"])
     #expect(store.state.followUpPreparation == nil)
+    #expect(store.state.pendingSuggestionContexts.isEmpty)
     #expect(store.state.activeTurn?.question == "New question")
 
     await store.send(.chat(.stopTapped))

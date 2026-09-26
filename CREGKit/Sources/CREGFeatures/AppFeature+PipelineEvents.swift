@@ -87,6 +87,8 @@ extension AppFeature {
       conversationID: conversationID)
     state.pendingTurnPersistence?.userMessageID =
       active.optimisticUserTurn?.message.id
+    state.pendingTurnPersistence?.suggestionGeneration =
+      active.suggestionGeneration
 
     diagnostics.info(
       category: .submission,

@@ -221,7 +221,11 @@ struct ElapsedTimeText: View {
 
 struct InterruptedTurnBanner: View {
   let interrupted: InterruptedTurn
+  /// The retry is queued, being claimed, or being released: the banner owns
+  /// that presentation and offers cancellation instead of Ask Again.
+  var retryQueued: Bool = false
   let askAgain: () -> Void
+  var cancelRetry: () -> Void = {}
   let dismiss: () -> Void
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -233,7 +237,7 @@ struct InterruptedTurnBanner: View {
       spacerMinLength: 4
     ) {
       VStack(alignment: .leading, spacing: 3) {
-        Text("Interrupted before it finished")
+        Text(retryQueued ? "Retry queued" : "Interrupted before it finished")
           .font(.footnote.weight(.semibold))
         Text(interrupted.question)
           .font(.footnote)
@@ -242,11 +246,21 @@ struct InterruptedTurnBanner: View {
       }
     } actions: {
       HStack(spacing: 4) {
-        Button(action: askAgain) {
-          Text("Ask Again")
-            .cregTextButtonLabelTarget()
+        if retryQueued {
+          Button(action: cancelRetry) {
+            Text("Cancel")
+              .cregTextButtonLabelTarget()
+          }
+          .font(.footnote.weight(.semibold))
+          .accessibilityLabel("Cancel queued retry")
+          .accessibilityIdentifier("interrupted-turn-cancel-retry")
+        } else {
+          Button(action: askAgain) {
+            Text("Ask Again")
+              .cregTextButtonLabelTarget()
+          }
+          .font(.footnote.weight(.semibold))
         }
-        .font(.footnote.weight(.semibold))
         Button(action: dismiss) {
           Image(systemName: "xmark")
             .foregroundStyle(.secondary)

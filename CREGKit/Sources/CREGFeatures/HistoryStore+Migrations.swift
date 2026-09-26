@@ -189,6 +189,17 @@ extension HistoryStore {
         """)
     }
 
+    // One monotonically increasing counter per Conversation. Every accepted
+    // question advances it inside the transaction that retires the prior
+    // batch, so a late suggestion write can prove which answer it belongs to.
+    migrator.registerMigration("v7-suggestion-generation") { db in
+      try db.execute(
+        sql: """
+          ALTER TABLE conversation
+            ADD COLUMN suggestion_generation INTEGER NOT NULL DEFAULT 0;
+          """)
+    }
+
     return migrator
   }
 }

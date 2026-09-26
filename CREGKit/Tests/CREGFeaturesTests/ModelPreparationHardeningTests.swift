@@ -209,6 +209,30 @@ private actor PreparationDrainGate {
     }
   }
 
+  /// A suspension request that arrives after the attempt already completed
+  /// must not reopen the success: the next launch reads a finished journal.
+  @Test func suspensionCannotReopenACompletedSuccess() async throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-suspend-completed-\(UUID().uuidString).json")
+    let owner = ModelPreparationJournalStore(url: url, processSessionID: UUID(21))
+    let attemptID = UUID(22)
+    try await owner.begin(attemptID: attemptID, mode: .evaluated, environment: [:])
+    try await owner.complete(
+      ModelPreparationReport(mode: .evaluated, elapsedMilliseconds: 1),
+      attemptID: attemptID)
+    try await owner.requestSuspension(attemptID)
+    try await owner.completeSuspension(attemptID)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let saved = try decoder.decode(
+      ModelPreparationJournalSnapshot.self,
+      from: try #require(await owner.exportData()))
+    #expect(saved.completed)
+    #expect(saved.outcome == "succeeded")
+    let relaunched = ModelPreparationJournalStore(url: url, processSessionID: UUID(23))
+    #expect(await relaunched.unfinishedAttempt() == nil)
+  }
+
   @Test func lateSuspendedBeginCannotReplaceTheResumedAttempt() async throws {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("creg-late-suspension-test-\(UUID().uuidString).json")
@@ -265,6 +289,75 @@ private actor PreparationDrainGate {
     #expect(try decoder.decode(ModelPreparationJournalSnapshot.self, from: after).outcome == "suspended")
     #expect(store.state.drainingModelPreparationAttemptID == nil)
     await store.finish()
+  }
+
+  /// A journal the prior process left in `suspending` is a paused attempt:
+  /// no preparation starts, the paused state shows Retry, and the tap starts
+  /// a fresh attempt. Unexpected-interruption reporting is reserved for an
+  /// attempt that was still running when the process ended.
+  @Test func priorProcessSuspendingJournalPausesUntilRetry() async {
+    let modes = LockIsolated<[ModelRuntimeMode]>([])
+    let pipeline = QueryPipeline(
+      prepareMode: { mode in
+        modes.withValue { $0.append(mode) }
+        return ModelPreparationReport(mode: mode, elapsedMilliseconds: 0)
+      },
+      runtimeMode: { .evaluated },
+      run: { _, _ in AsyncStream { $0.finish() } })
+    var state = AppFeature.State()
+    state.didRequestPreparationJournalInspection = true
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.queryPipeline = pipeline
+      $0.modelPreparationJournal = .noop
+      $0.uuid = .incrementing
+    }
+    store.exhaustivity = .off
+
+    let suspending = ModelPreparationJournalSnapshot(
+      attemptID: UUID(31), processSessionID: UUID(32), mode: .evaluated,
+      stage: .containerLoad, startedAt: Date(timeIntervalSince1970: 1),
+      stageStartedAt: Date(timeIntervalSince1970: 1), completed: false,
+      outcome: "suspending", failure: nil, environment: [:])
+    await store.send(.preparationJournalLoaded(suspending))
+    await store.finish()
+    guard case .failed(let paused) = store.state.modelReadiness else {
+      Issue.record("Expected the paused preparation state")
+      return
+    }
+    #expect(paused.isPaused)
+    #expect(paused.code == ModelPreparationFailure.previousPreparationSuspendedCode)
+    #expect(!paused.allowsCompatibilityRetry)
+    #expect(modes.value.isEmpty)
+
+    await store.send(.retryPreparation)
+    await store.receive(\.modelPrepared)
+    await store.finish()
+    #expect(modes.value == [.evaluated])
+    #expect(store.state.modelReadiness == .ready)
+  }
+
+  @Test func priorProcessRunningJournalIsReportedAsInterrupted() async {
+    var state = AppFeature.State()
+    state.didRequestPreparationJournalInspection = true
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.modelPreparationJournal = .noop
+    }
+    store.exhaustivity = .off
+
+    let running = ModelPreparationJournalSnapshot(
+      attemptID: UUID(33), processSessionID: UUID(34), mode: .evaluated,
+      stage: .promptCache, startedAt: Date(timeIntervalSince1970: 1),
+      stageStartedAt: Date(timeIntervalSince1970: 1), completed: false,
+      outcome: nil, failure: nil, environment: [:])
+    await store.send(.preparationJournalLoaded(running))
+    await store.finish()
+    guard case .failed(let failure) = store.state.modelReadiness else {
+      Issue.record("Expected the interrupted preparation state")
+      return
+    }
+    #expect(!failure.isPaused)
+    #expect(failure.code == ModelPreparationFailure.previousPreparationInterruptedCode)
+    #expect(failure.allowsCompatibilityRetry)
   }
 
   @Test func cancelledPreparationCompletionCannotReplaceDrainingAttempt() async {

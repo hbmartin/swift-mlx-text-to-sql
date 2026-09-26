@@ -174,6 +174,12 @@ public struct PreparedFollowUp: Identifiable, Sendable, Equatable, Codable {
 }
 
 /// The latest answer's persisted, progressively populated suggestion batch.
+///
+/// A batch is owned by the Conversation's suggestion generation it began
+/// with. Accepting a new question advances that generation, so a late save
+/// from an older answer can never resurrect retired chips. Batches persisted
+/// before generations existed decode with a nil generation and are compared
+/// as generation zero.
 public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
   public static let maximumSuggestionCount = 3
 
@@ -187,19 +193,32 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
   public var status: Status
   public var suggestions: [PreparedFollowUp]
   public var updatedAt: Date
+  /// The Conversation suggestion generation this batch was prepared under.
+  public var generation: Int?
+  /// True once the Scope Verdict judge has run for a Recovery Suggestion
+  /// context, whether or not it produced a verdict. A resumed batch with this
+  /// flag set never calls the judge again.
+  public var scopeDiagnosisCompleted: Bool
+
+  /// The generation used for ownership comparisons; legacy batches are zero.
+  public var effectiveGeneration: Int { generation ?? 0 }
 
   public init(
     sourceAssistantMessageID: UUID,
     context: FollowUpSuggestionContext? = nil,
     status: Status = .preparing,
     suggestions: [PreparedFollowUp] = [],
-    updatedAt: Date
+    updatedAt: Date,
+    generation: Int? = nil,
+    scopeDiagnosisCompleted: Bool = false
   ) {
     self.sourceAssistantMessageID = sourceAssistantMessageID
     self.context = context
     self.status = status
     self.suggestions = Self.normalized(suggestions)
     self.updatedAt = updatedAt
+    self.generation = generation
+    self.scopeDiagnosisCompleted = scopeDiagnosisCompleted
   }
 
   /// Adds a progressively prepared suggestion while preserving the product
@@ -247,7 +266,8 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case sourceAssistantMessageID, context, status, suggestions, updatedAt
+    case sourceAssistantMessageID, context, status, suggestions, updatedAt,
+      generation, scopeDiagnosisCompleted
   }
 
   public init(from decoder: Decoder) throws {
@@ -260,7 +280,10 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
       status: try values.decode(Status.self, forKey: .status),
       suggestions: try values.decode(
         [PreparedFollowUp].self, forKey: .suggestions),
-      updatedAt: try values.decode(Date.self, forKey: .updatedAt))
+      updatedAt: try values.decode(Date.self, forKey: .updatedAt),
+      generation: try values.decodeIfPresent(Int.self, forKey: .generation),
+      scopeDiagnosisCompleted: try values.decodeIfPresent(
+        Bool.self, forKey: .scopeDiagnosisCompleted) ?? false)
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -270,6 +293,8 @@ public struct PreparedFollowUpBatch: Sendable, Equatable, Codable {
     try values.encode(status, forKey: .status)
     try values.encode(Self.normalized(suggestions), forKey: .suggestions)
     try values.encode(updatedAt, forKey: .updatedAt)
+    try values.encodeIfPresent(generation, forKey: .generation)
+    try values.encode(scopeDiagnosisCompleted, forKey: .scopeDiagnosisCompleted)
   }
 }
 

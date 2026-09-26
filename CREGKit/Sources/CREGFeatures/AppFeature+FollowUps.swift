@@ -27,9 +27,14 @@ extension AppFeature {
   func startOrRetainFollowUpPreparation(
     state: inout State,
     conversationID: UUID,
-    context: FollowUpSuggestionContext
+    context: FollowUpSuggestionContext,
+    generation: Int,
+    scopeDiagnosisCompleted: Bool = false
   ) -> Effect<Action> {
-    guard state.conversations[id: conversationID] != nil else { return .none }
+    guard state.conversations[id: conversationID] != nil,
+      ownsSuggestions(
+        state: state, conversationID: conversationID, generation: generation)
+    else { return .none }
     guard
       canStartFollowUpPreparation(
         state: state, conversationID: conversationID)
@@ -37,48 +42,73 @@ extension AppFeature {
       state.pendingSuggestionContexts[conversationID] = PendingScopeDiagnosis(
         conversationID: conversationID,
         messageID: context.sourceAssistantMessageID,
-        context: context)
+        context: context,
+        generation: generation,
+        scopeDiagnosisCompleted: scopeDiagnosisCompleted)
       let batch = PreparedFollowUpBatch(
         sourceAssistantMessageID: context.sourceAssistantMessageID,
-        context: context, status: .preparing, updatedAt: now)
+        context: context, status: .preparing, updatedAt: now,
+        generation: generation,
+        scopeDiagnosisCompleted: scopeDiagnosisCompleted)
       if state.chat?.conversationID == conversationID {
         state.chat?.followUpBatch = batch
       }
       return .merge(
         watchFMAvailabilityIfStranded(state: &state),
-        .run { send in
-          do {
-            try await history.saveFollowUpBatch(conversationID, batch)
-          } catch {
-            await send(.operationFailed(
-              .history(operation: .messageSave, error: error)))
-          }
-        })
+        saveFollowUpBatchEffect(conversationID: conversationID, batch: batch))
     }
     return startFollowUpPreparation(
       state: &state,
       conversationID: conversationID,
-      context: context)
+      context: context,
+      generation: generation,
+      scopeDiagnosisCompleted: scopeDiagnosisCompleted)
+  }
+
+  /// A stale save is a retired batch losing a race with the acceptance that
+  /// retired it; the store refuses it and nothing is presented. Any other
+  /// failure reaches the failure surface.
+  func saveFollowUpBatchEffect(
+    conversationID: UUID,
+    batch: PreparedFollowUpBatch
+  ) -> Effect<Action> {
+    .run { send in
+      do {
+        try await history.saveFollowUpBatch(conversationID, batch)
+      } catch HistoryStoreError.staleFollowUpBatch {
+        return
+      } catch {
+        await send(.operationFailed(
+          .history(operation: .messageSave, error: error)))
+      }
+    }
   }
 
   func startFollowUpPreparation(
     state: inout State,
     conversationID: UUID,
-    context: FollowUpSuggestionContext
+    context: FollowUpSuggestionContext,
+    generation: Int,
+    scopeDiagnosisCompleted: Bool = false
   ) -> Effect<Action> {
     guard
       canStartFollowUpPreparation(
-        state: state, conversationID: conversationID)
+        state: state, conversationID: conversationID),
+      ownsSuggestions(
+        state: state, conversationID: conversationID, generation: generation)
     else { return .none }
     let batch = PreparedFollowUpBatch(
       sourceAssistantMessageID: context.sourceAssistantMessageID,
       context: context,
       status: .preparing,
-      updatedAt: now)
+      updatedAt: now,
+      generation: generation,
+      scopeDiagnosisCompleted: scopeDiagnosisCompleted)
     state.followUpPreparation = FollowUpPreparationState(
       conversationID: conversationID,
       context: context,
-      batch: batch)
+      batch: batch,
+      generation: generation)
     state.pendingSuggestionContexts.removeValue(forKey: conversationID)
     if state.chat?.conversationID == conversationID {
       state.chat?.followUpBatch = batch
@@ -114,19 +144,30 @@ extension AppFeature {
       let batch = state.resumableFollowUpBatch,
       let context = batch.context
     else { return .none }
+    guard
+      ownsSuggestions(
+        state: state, conversationID: chat.conversationID,
+        generation: batch.effectiveGeneration)
+    else {
+      // The loaded batch was retired by a later accepted question.
+      state.chat?.followUpBatch = nil
+      return .none
+    }
     if case .turnFailure(_, let verdict) = context.seed,
-      verdict == nil
+      verdict == nil, !batch.scopeDiagnosisCompleted
     {
       return startScopeDiagnosis(
         state: &state,
         conversationID: chat.conversationID,
         messageID: context.sourceAssistantMessageID,
-        context: context)
+        context: context,
+        generation: batch.effectiveGeneration)
     }
     state.followUpPreparation = FollowUpPreparationState(
       conversationID: chat.conversationID,
       context: context,
-      batch: batch)
+      batch: batch,
+      generation: batch.effectiveGeneration)
     let conversationID = chat.conversationID
     return .run(priority: .low) { send in
       for await event in pipeline.prepareFollowUps(context) {
@@ -247,10 +288,15 @@ extension AppFeature {
       let pending = state.pendingScopeDiagnosis,
       !state.isScopeDiagnosisInFlight
     else { return .none }
-    guard state.conversations[id: pending.conversationID] != nil else {
+    guard state.conversations[id: pending.conversationID] != nil,
+      ownsSuggestions(
+        state: state, conversationID: pending.conversationID,
+        generation: pending.generation)
+    else {
       // The retained diagnosis can never resume once its conversation is
-      // gone; keeping it would gate preparation, resume, and model
-      // maintenance for the rest of the session.
+      // gone or its generation was retired; keeping it would gate
+      // preparation, resume, and model maintenance for the rest of the
+      // session.
       state.pendingScopeDiagnosis = nil
       return .none
     }
@@ -264,7 +310,9 @@ extension AppFeature {
       state: &state,
       conversationID: pending.conversationID,
       messageID: pending.messageID,
-      context: pending.context)
+      context: pending.context,
+      generation: pending.generation,
+      scopeDiagnosisCompleted: pending.scopeDiagnosisCompleted)
   }
 
   func resumePendingSuggestionContextIfIdle(
@@ -274,21 +322,34 @@ extension AppFeature {
       state.modelReadiness == .ready,
       state.fmAvailability == .available
     else { return .none }
+    // Parked contexts whose conversation is gone or whose generation was
+    // retired are dropped here rather than resumed.
+    state.pendingSuggestionContexts = state.pendingSuggestionContexts.filter {
+      state.conversations[id: $0.key] != nil
+        && ownsSuggestions(
+          state: state, conversationID: $0.key,
+          generation: $0.value.generation)
+    }
     let selectedID = state.chat?.conversationID
     guard let pending = selectedID.flatMap({ state.pendingSuggestionContexts[$0] })
-      ?? state.pendingSuggestionContexts.values.first(where: {
-        state.conversations[id: $0.conversationID] != nil
+      ?? state.pendingSuggestionContexts.values.min(by: {
+        $0.conversationID.uuidString < $1.conversationID.uuidString
       })
     else { return .none }
     state.pendingSuggestionContexts.removeValue(forKey: pending.conversationID)
-    if pending.context.isRecoverySeed {
+    // The judge runs once per context: a parked verdict, or a completed nil
+    // verdict, resumes straight into preparation.
+    if pending.needsScopeDiagnosis {
       return startScopeDiagnosis(
         state: &state, conversationID: pending.conversationID,
-        messageID: pending.messageID, context: pending.context)
+        messageID: pending.messageID, context: pending.context,
+        generation: pending.generation)
     }
     return startFollowUpPreparation(
       state: &state, conversationID: pending.conversationID,
-      context: pending.context)
+      context: pending.context,
+      generation: pending.generation,
+      scopeDiagnosisCompleted: pending.scopeDiagnosisCompleted)
   }
 
   /// A retained scope diagnosis holds `isInferenceIdle` false, and while
@@ -319,13 +380,25 @@ extension AppFeature {
     state: inout State,
     conversationID: UUID,
     messageID: UUID,
-    context: FollowUpSuggestionContext
+    context: FollowUpSuggestionContext,
+    generation: Int,
+    scopeDiagnosisCompleted: Bool = false
   ) -> Effect<Action> {
     // The persistence barrier can settle after the user has already deleted
     // the conversation (the durable delete defers on that same barrier). A
     // verdict for a deleted conversation has nothing to enrich or persist,
-    // and parking it would hold `isInferenceIdle` false for nothing.
-    guard state.conversations[id: conversationID] != nil else { return .none }
+    // and parking it would hold `isInferenceIdle` false for nothing. The
+    // same goes for a context whose generation a later question retired.
+    guard state.conversations[id: conversationID] != nil,
+      ownsSuggestions(
+        state: state, conversationID: conversationID, generation: generation)
+    else { return .none }
+    // A context that already carries a verdict, or whose judge already
+    // completed, is never judged again.
+    let needsScopeDiagnosis: Bool = {
+      guard case .turnFailure(_, let verdict) = context.seed else { return false }
+      return verdict == nil && !scopeDiagnosisCompleted
+    }()
     // The judge needs Apple Intelligence and the serializer, not the SQL
     // model, so readiness is deliberately absent here. Every gate that is
     // closed would fail the identical gate inside preparation, so hand the
@@ -333,7 +406,7 @@ extension AppFeature {
     // copy of a Recovery Suggestion context survives to the next foreground
     // idle window rather than being discarded.
     guard
-      context.isRecoverySeed,
+      needsScopeDiagnosis,
       state.isSceneActive,
       state.isTurnSchedulerIdle,
       state.fmAvailability == .available
@@ -341,17 +414,21 @@ extension AppFeature {
       return startOrRetainFollowUpPreparation(
         state: &state,
         conversationID: conversationID,
-        context: context)
+        context: context,
+        generation: generation,
+        scopeDiagnosisCompleted: scopeDiagnosisCompleted)
     }
     state.pendingScopeDiagnosis = PendingScopeDiagnosis(
       conversationID: conversationID,
       messageID: messageID,
-      context: context)
+      context: context,
+      generation: generation)
     state.isScopeDiagnosisInFlight = true
     let question = context.standaloneQuestion
     let batch = PreparedFollowUpBatch(
       sourceAssistantMessageID: messageID,
-      context: context, status: .preparing, updatedAt: now)
+      context: context, status: .preparing, updatedAt: now,
+      generation: generation)
     return .run(priority: .low) { send in
       // Register the cancellation ID before the durable write, and let the
       // write finish even if inactivity cancels the judge in this window.
@@ -360,6 +437,8 @@ extension AppFeature {
       }
       do {
         try await save.value
+      } catch HistoryStoreError.staleFollowUpBatch {
+        return
       } catch {
         await send(.operationFailed(
           .history(operation: .messageSave, error: error)))
@@ -429,19 +508,20 @@ extension AppFeature {
     }
 
     guard verdictAttached else {
-      // Keep the recovery memo until every follow-on gate is open. In
-      // particular, deactivation can be reduced before this already-queued
-      // nil completion; consuming the memo here would leave nothing for the
-      // next activation to resume. A nil verdict also often means Apple
-      // Intelligence went unavailable mid-session — re-read availability so
-      // the resume gates see fresh state, and watch for recovery so the
-      // retained memo does not strand while the app stays foregrounded.
+      // The judge ran to completion without a verdict. The context moves on
+      // to preparation, parked if a gate is closed, and is marked judged so
+      // no resume path calls the judge a second time. A nil verdict also
+      // often means Apple Intelligence went unavailable mid-session — re-read
+      // availability so the resume gates see fresh state, and watch for
+      // recovery so the retained context does not strand while the app
+      // stays foregrounded.
       refreshFMAvailability(state: &state)
       state.pendingScopeDiagnosis = nil
       return .merge(
         startOrRetainFollowUpPreparation(
           state: &state, conversationID: conversationID,
-          context: context),
+          context: context, generation: pending.generation,
+          scopeDiagnosisCompleted: true),
         watchFMAvailabilityIfStranded(state: &state))
     }
     state.pendingScopeDiagnosis = nil
@@ -459,7 +539,8 @@ extension AppFeature {
       verdictPersistence ?? .none,
       .send(
         .scopeDiagnosisPersisted(
-          conversationID: conversationID, context: context)))
+          conversationID: conversationID, context: context,
+          generation: pending.generation)))
   }
 
   // MARK: - Conversation lifecycle helpers

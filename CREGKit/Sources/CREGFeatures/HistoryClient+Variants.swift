@@ -3,6 +3,8 @@ import Foundation
 enum HistoryStoreError: Error, Sendable {
   case conversationNotFound
   case messageNotFound
+  /// The batch no longer owns its Conversation's suggestion slot.
+  case staleFollowUpBatch
 }
 
 // MARK: - Test and degraded variants
@@ -13,6 +15,10 @@ extension HistoryClient {
       bootstrap: { [] },
       listConversations: { [] },
       createConversation: { id, startedAt in
+        ConversationSummary(
+          id: id, title: "", startedAt: startedAt, lastActivityAt: startedAt)
+      },
+      createConversationWithDraft: { id, startedAt, _ in
         ConversationSummary(
           id: id, title: "", startedAt: startedAt, lastActivityAt: startedAt)
       },
@@ -32,9 +38,9 @@ extension HistoryClient {
       clearFeedback: { _, _ in },
       endTurnJournal: { _, _ in },
       markTurnInterrupted: { _, _, _ in },
-      claimTurnRetry: { _, _, _, _ in true },
+      claimTurnRetry: { _, _, _, automatic in automatic ? 1 : 0 },
       declineAutoRetry: { _, _ in },
-      releaseAutoRetryClaim: { _, _, _ in },
+      releaseAutoRetryClaim: { _, _, _, _ in },
       appendMessage: { _, _ in },
       updateMessage: { _, _ in },
       updateResultPresentation: { _, _ in },
@@ -56,7 +62,8 @@ extension HistoryClient {
           feedbackCount: 0)
       },
       saveFollowUpBatch: { _, _ in },
-      clearFollowUpBatch: { _ in }
+      clearFollowUpBatch: { _ in },
+      acceptQuestion: { _, _ in }
     )
   }
 
@@ -68,6 +75,7 @@ extension HistoryClient {
       bootstrap: { throw error },
       listConversations: { throw error },
       createConversation: { _, _ in throw error },
+      createConversationWithDraft: { _, _, _ in throw error },
       loadConversation: { _ in throw error },
       renameConversation: { _, _ in throw error },
       deleteConversation: { _ in throw error },
@@ -80,7 +88,7 @@ extension HistoryClient {
       markTurnInterrupted: { _, _, _ in throw error },
       claimTurnRetry: { _, _, _, _ in throw error },
       declineAutoRetry: { _, _ in throw error },
-      releaseAutoRetryClaim: { _, _, _ in throw error },
+      releaseAutoRetryClaim: { _, _, _, _ in throw error },
       appendMessage: { _, _ in throw error },
       updateMessage: { _, _ in throw error },
       updateResultPresentation: { _, _ in throw error },
@@ -91,7 +99,8 @@ extension HistoryClient {
       exportJSONL: { _ in throw error },
       supportBundleSource: { throw error },
       saveFollowUpBatch: { _, _ in throw error },
-      clearFollowUpBatch: { _ in throw error }
+      clearFollowUpBatch: { _ in throw error },
+      acceptQuestion: { _, _ in throw error }
     )
   }
 }

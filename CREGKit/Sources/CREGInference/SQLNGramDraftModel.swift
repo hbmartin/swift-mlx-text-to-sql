@@ -335,9 +335,13 @@ private struct SQLNGramSpeculativeTokenIterator: TokenIteratorProtocol {
     }
     let confidenceSkipLayers = Set(
       matchingConfidenceSkipPolicies.map(\.layer))
+    // Every target check on a compiled Qwen2 model is an explicit
+    // verification call, with or without confidence-gated extras: the
+    // configured two-to-four-token MLP skips apply only here, never to a
+    // prefill tail or a serial one-token step of the same length. Generic
+    // models keep their ordinary forward pass.
     let result: LMOutput
-    if !confidenceSkipLayers.isEmpty,
-      mainState == nil,
+    if mainState == nil,
       let logits = CompiledQwen2ModelFactory.verificationLogits(
         of: mainModel,
         inputs: verifyInput.tokens[.newAxis],

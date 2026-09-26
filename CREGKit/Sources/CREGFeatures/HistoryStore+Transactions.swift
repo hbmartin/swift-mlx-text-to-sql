@@ -28,21 +28,37 @@ extension HistoryStore {
     }
   }
 
+  /// Returns a claim that could not dispatch. An automatic claim consumed the
+  /// one allowed retry when it succeeded, so releasing it restores that
+  /// allowance. A manual claim never touched the count, so releasing it only
+  /// reopens the row for the still-queued Ask Again request.
   func releaseAutoRetryClaim(
-    conversationID: UUID, journalID: UUID, executionID: UUID
+    conversationID: UUID, journalID: UUID, executionID: UUID,
+    automatic: Bool
   ) async throws {
     try await queue.write { db in
-      try db.execute(
-        sql: """
-          UPDATE turn_journal
-          SET status = CASE WHEN auto_retry_count = 1
-            THEN 'known_interruption' ELSE 'manual_retry_required' END,
-            auto_retry_count = 0
-          WHERE conversation_id = ? AND journal_id = ? AND execution_id = ?
-            AND status = 'running'
-          """,
-        arguments: [conversationID.uuidString, journalID.uuidString,
-          executionID.uuidString])
+      if automatic {
+        try db.execute(
+          sql: """
+            UPDATE turn_journal
+            SET status = 'known_interruption', auto_retry_count = 0
+            WHERE conversation_id = ? AND journal_id = ? AND execution_id = ?
+              AND status = 'running' AND auto_retry_count = 1
+            """,
+          arguments: [conversationID.uuidString, journalID.uuidString,
+            executionID.uuidString])
+      } else {
+        try db.execute(
+          sql: """
+            UPDATE turn_journal
+            SET status = CASE WHEN auto_retry_count = 0
+              THEN 'known_interruption' ELSE 'manual_retry_required' END
+            WHERE conversation_id = ? AND journal_id = ? AND execution_id = ?
+              AND status = 'running'
+            """,
+          arguments: [conversationID.uuidString, journalID.uuidString,
+            executionID.uuidString])
+      }
       guard db.changesCount == 1 else {
         throw JournalTransferError.missingSource
       }
@@ -66,18 +82,23 @@ extension HistoryStore {
     }
   }
 
-  /// Claims a journaled retry before inference starts. A crash after this
-  /// transaction cannot trigger a second automatic retry on relaunch.
+  /// Claims a journaled retry before inference starts and returns the
+  /// durable retry count the dispatched turn must carry, or nil when the
+  /// claim did not apply. A successful automatic claim consumes the single
+  /// allowed retry; a manual claim preserves whatever count the row already
+  /// holds, so Ask Again never replenishes the automatic allowance. A crash
+  /// after this transaction cannot trigger a second automatic retry on
+  /// relaunch.
   func claimTurnRetry(
     conversationID: UUID, journalID: UUID, executionID: UUID,
     automatic: Bool
-  ) async throws -> Bool {
+  ) async throws -> Int? {
     try await queue.write { db in
       try db.execute(
         sql: """
           UPDATE turn_journal
           SET execution_id = ?, status = 'running',
-              auto_retry_count = CASE WHEN ? = 1 THEN 1 ELSE 0 END
+              auto_retry_count = CASE WHEN ? = 1 THEN 1 ELSE auto_retry_count END
           WHERE conversation_id = ? AND journal_id = ?
             AND (SELECT id FROM message WHERE conversation_id = ?
                  ORDER BY position DESC LIMIT 1) = ?
@@ -88,7 +109,14 @@ extension HistoryStore {
           conversationID.uuidString, journalID.uuidString,
           conversationID.uuidString, executionID.uuidString, automatic ? 1 : 0,
         ])
-      return db.changesCount == 1
+      guard db.changesCount == 1 else { return nil }
+      return try Int.fetchOne(
+        db,
+        sql: """
+          SELECT auto_retry_count FROM turn_journal
+          WHERE conversation_id = ? AND journal_id = ?
+          """,
+        arguments: [conversationID.uuidString, journalID.uuidString])
     }
   }
 
@@ -328,6 +356,13 @@ extension HistoryStore {
     }
   }
 
+  /// Persists a batch only while it still owns the Conversation's suggestion
+  /// slot: its generation must equal the Conversation's current one and its
+  /// source answer must still be the latest persisted message. A stale save
+  /// throws `HistoryStoreError.staleFollowUpBatch`; callers treat that as a
+  /// silent retirement, never as a user-facing failure. Within one owner, a
+  /// `.preparing` write can never regress a `.completed` one and an older
+  /// write can never replace a newer one.
   func saveFollowUpBatch(
     conversationID: UUID,
     batch: PreparedFollowUpBatch
@@ -335,34 +370,45 @@ extension HistoryStore {
     let payload = String(
       decoding: try Self.encoder.encode(batch), as: UTF8.self)
     try await queue.write { db in
+      guard
+        let owner = try Row.fetchOne(
+          db,
+          sql: """
+            SELECT suggestion_generation,
+                   (SELECT id FROM message WHERE conversation_id = c.id
+                    ORDER BY position DESC LIMIT 1) AS latest_message_id
+            FROM conversation c WHERE c.id = ?
+            """,
+          arguments: [conversationID.uuidString])
+      else { throw HistoryStoreError.conversationNotFound }
+      let generation = Int(owner["suggestion_generation"] as Int64)
+      let latestMessageID: String? = owner["latest_message_id"]
+      guard batch.effectiveGeneration == generation,
+        latestMessageID == batch.sourceAssistantMessageID.uuidString
+      else { throw HistoryStoreError.staleFollowUpBatch }
+      if let existing = try Row.fetchOne(
+        db,
+        sql: """
+          SELECT source_message_id, updated_at,
+                 json_extract(payload, '$.status') AS status
+          FROM prepared_follow_up_batch WHERE conversation_id = ?
+          """,
+        arguments: [conversationID.uuidString]),
+        (existing["source_message_id"] as String)
+          == batch.sourceAssistantMessageID.uuidString
+      {
+        let existingUpdatedAt: Double = existing["updated_at"]
+        let existingStatus: String? = existing["status"]
+        guard batch.updatedAt.timeIntervalSince1970 >= existingUpdatedAt,
+          existingStatus != PreparedFollowUpBatch.Status.completed.rawValue
+            || batch.status == .completed
+        else { throw HistoryStoreError.staleFollowUpBatch }
+      }
       try db.execute(
         sql: """
-          INSERT INTO prepared_follow_up_batch
+          INSERT OR REPLACE INTO prepared_follow_up_batch
             (conversation_id, source_message_id, updated_at, payload)
           VALUES (?, ?, ?, ?)
-          ON CONFLICT(conversation_id) DO UPDATE SET
-            source_message_id = excluded.source_message_id,
-            updated_at = excluded.updated_at,
-            payload = excluded.payload
-          WHERE CASE
-            WHEN excluded.source_message_id = prepared_follow_up_batch.source_message_id
-              THEN excluded.updated_at >= prepared_follow_up_batch.updated_at
-                AND (json_extract(prepared_follow_up_batch.payload, '$.status') != 'completed'
-                  OR json_extract(excluded.payload, '$.status') = 'completed')
-            WHEN (SELECT position FROM message
-                  WHERE conversation_id = excluded.conversation_id
-                    AND id = excluded.source_message_id) IS NOT NULL
-              AND (SELECT position FROM message
-                   WHERE conversation_id = prepared_follow_up_batch.conversation_id
-                     AND id = prepared_follow_up_batch.source_message_id) IS NOT NULL
-              THEN (SELECT position FROM message
-                    WHERE conversation_id = excluded.conversation_id
-                      AND id = excluded.source_message_id) >
-                   (SELECT position FROM message
-                    WHERE conversation_id = prepared_follow_up_batch.conversation_id
-                      AND id = prepared_follow_up_batch.source_message_id)
-            ELSE excluded.updated_at >= prepared_follow_up_batch.updated_at
-          END
           """,
         arguments: [
           conversationID.uuidString,
@@ -465,16 +511,22 @@ extension HistoryStore {
       // A Stop path may have already persisted and completed this exact turn.
       // A late duplicate user write must not reopen its interruption journal.
       guard inserted else { return }
+      // A transferred journal keeps the count it already spent: Ask Again on
+      // an older interruption never replenishes the automatic allowance.
       try db.execute(
         sql: """
           INSERT INTO turn_journal
             (journal_id, conversation_id, question, started_at, execution_id,
              status, auto_retry_count, submission_source)
-          VALUES (?, ?, ?, ?, ?, 'running', 0, ?)
+          VALUES (?, ?, ?, ?, ?, 'running',
+            COALESCE((SELECT auto_retry_count FROM turn_journal
+                      WHERE conversation_id = ? AND journal_id = ?), 0), ?)
           """,
         arguments: [
           message.id.uuidString, conversationID.uuidString, submission.question,
-          startedAt.timeIntervalSince1970, message.id.uuidString, sourcePayload,
+          startedAt.timeIntervalSince1970, message.id.uuidString,
+          conversationID.uuidString, replacingJournalID?.uuidString ?? "",
+          sourcePayload,
         ])
       if let replacingJournalID {
         try db.execute(

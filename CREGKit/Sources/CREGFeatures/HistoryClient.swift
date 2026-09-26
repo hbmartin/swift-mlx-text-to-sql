@@ -11,6 +11,10 @@ public struct HistoryClient: Sendable {
   public var listConversations: @Sendable () async throws -> [ConversationSummary]
   public var createConversation:
     @Sendable (_ id: UUID, _ startedAt: Date) async throws -> ConversationSummary
+  /// Creates a Conversation and its unsent draft in one transaction.
+  public var createConversationWithDraft:
+    @Sendable (_ id: UUID, _ startedAt: Date, _ draft: String) async throws
+      -> ConversationSummary
   public var loadConversation: @Sendable (_ id: UUID) async throws -> ConversationSnapshot
   /// Manual rename; wins over auto-titles thereafter.
   public var renameConversation: @Sendable (_ id: UUID, _ title: String) async throws -> Void
@@ -28,14 +32,18 @@ public struct HistoryClient: Sendable {
   public var markTurnInterrupted:
     @Sendable (_ conversationID: UUID, _ executionID: UUID, _ ambiguous: Bool)
       async throws -> Void
+  /// Claims a journal row for dispatch and returns the durable retry count
+  /// the turn must carry, or nil when the claim did not apply.
   public var claimTurnRetry:
     @Sendable (_ conversationID: UUID, _ journalID: UUID,
-      _ executionID: UUID, _ automatic: Bool) async throws -> Bool
+      _ executionID: UUID, _ automatic: Bool) async throws -> Int?
   public var declineAutoRetry:
     @Sendable (_ conversationID: UUID, _ journalID: UUID) async throws -> Void
+  /// Reopens a claimed row. `automatic` restores the unused allowance;
+  /// manual leaves the count untouched.
   public var releaseAutoRetryClaim:
     @Sendable (_ conversationID: UUID, _ journalID: UUID,
-      _ executionID: UUID) async throws -> Void
+      _ executionID: UUID, _ automatic: Bool) async throws -> Void
   public var appendMessage:
     @Sendable (_ conversationID: UUID, _ message: ChatMessage) async throws -> Void
   /// Replaces an existing body/telemetry payload without changing transcript
@@ -78,9 +86,15 @@ public struct HistoryClient: Sendable {
   public var exportJSONL: @Sendable (_ conversationID: UUID) async throws -> URL
   /// Gathers everything the Support Bundle includes from the history store.
   public var supportBundleSource: @Sendable () async throws -> SupportBundleSource
+  /// Throws `HistoryStoreError.staleFollowUpBatch` when the batch no longer
+  /// owns the Conversation's suggestion slot.
   public var saveFollowUpBatch:
     @Sendable (_ conversationID: UUID, _ batch: PreparedFollowUpBatch) async throws -> Void
   public var clearFollowUpBatch: @Sendable (_ conversationID: UUID) async throws -> Void
+  /// Advances the suggestion generation to at least `generation` and retires
+  /// the prior batch in one transaction.
+  public var acceptQuestion:
+    @Sendable (_ conversationID: UUID, _ generation: Int) async throws -> Void
 }
 
 /// History-store contribution to a Support Bundle: a database snapshot plus
@@ -133,6 +147,9 @@ extension HistoryClient {
       bootstrap: { try await store.bootstrap() },
       listConversations: { try await store.listConversations() },
       createConversation: { try await store.createConversation(id: $0, startedAt: $1) },
+      createConversationWithDraft: {
+        try await store.createConversation(id: $0, startedAt: $1, draft: $2)
+      },
       loadConversation: { try await store.loadConversation(id: $0) },
       renameConversation: { try await store.rename(id: $0, title: $1) },
       deleteConversation: { try await store.delete(id: $0) },
@@ -155,7 +172,7 @@ extension HistoryClient {
       },
       releaseAutoRetryClaim: {
         try await store.releaseAutoRetryClaim(
-          conversationID: $0, journalID: $1, executionID: $2)
+          conversationID: $0, journalID: $1, executionID: $2, automatic: $3)
       },
       appendMessage: { try await store.appendMessage(conversationID: $0, message: $1) },
       updateMessage: { try await store.updateMessage(conversationID: $0, message: $1) },
@@ -183,7 +200,10 @@ extension HistoryClient {
       saveFollowUpBatch: {
         try await store.saveFollowUpBatch(conversationID: $0, batch: $1)
       },
-      clearFollowUpBatch: { try await store.clearFollowUpBatch(conversationID: $0) }
+      clearFollowUpBatch: { try await store.clearFollowUpBatch(conversationID: $0) },
+      acceptQuestion: {
+        try await store.acceptQuestion(conversationID: $0, generation: $1)
+      }
     )
   }
 }

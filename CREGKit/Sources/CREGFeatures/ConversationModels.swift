@@ -15,6 +15,9 @@ public struct ConversationSummary: Identifiable, Equatable, Sendable, Codable {
   /// A background completion the user has not opened yet.
   public var isUnread: Bool
   public var messageCount: Int
+  /// The durable suggestion generation: advanced by every accepted question,
+  /// and the identity a prepared batch must match to be saved or shown.
+  public var suggestionGeneration: Int
 
   public init(
     id: UUID,
@@ -24,7 +27,8 @@ public struct ConversationSummary: Identifiable, Equatable, Sendable, Codable {
     lastActivityAt: Date,
     latestMessagePreview: String = "",
     isUnread: Bool = false,
-    messageCount: Int = 0
+    messageCount: Int = 0,
+    suggestionGeneration: Int = 0
   ) {
     self.id = id
     self.title = title
@@ -34,6 +38,31 @@ public struct ConversationSummary: Identifiable, Equatable, Sendable, Codable {
     self.latestMessagePreview = latestMessagePreview
     self.isUnread = isUnread
     self.messageCount = messageCount
+    self.suggestionGeneration = suggestionGeneration
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, isManuallyTitled, startedAt, lastActivityAt,
+      latestMessagePreview, isUnread, messageCount, suggestionGeneration
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      id: try values.decode(UUID.self, forKey: .id),
+      title: try values.decode(String.self, forKey: .title),
+      isManuallyTitled: try values.decodeIfPresent(
+        Bool.self, forKey: .isManuallyTitled) ?? false,
+      startedAt: try values.decode(Date.self, forKey: .startedAt),
+      lastActivityAt: try values.decode(Date.self, forKey: .lastActivityAt),
+      latestMessagePreview: try values.decodeIfPresent(
+        String.self, forKey: .latestMessagePreview) ?? "",
+      isUnread: try values.decodeIfPresent(Bool.self, forKey: .isUnread)
+        ?? false,
+      messageCount: try values.decodeIfPresent(Int.self, forKey: .messageCount)
+        ?? 0,
+      suggestionGeneration: try values.decodeIfPresent(
+        Int.self, forKey: .suggestionGeneration) ?? 0)
   }
 
   /// Untitled conversations render as "New Chat" everywhere.
@@ -112,6 +141,9 @@ public struct ConversationSnapshot: Equatable, Sendable {
   public var interruptedTurns: [InterruptedTurn]
   public var interruptedTurn: InterruptedTurn? { interruptedTurns.first }
   public var followUpBatch: PreparedFollowUpBatch?
+  /// Mirrors `summary.suggestionGeneration`; the batch above, when present,
+  /// already matched it and the latest persisted message at load time.
+  public var suggestionGeneration: Int { summary.suggestionGeneration }
 
   public init(
     summary: ConversationSummary,

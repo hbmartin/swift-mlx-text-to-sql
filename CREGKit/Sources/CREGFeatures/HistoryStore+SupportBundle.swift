@@ -29,6 +29,7 @@ extension HistoryStore {
         var lastActivityAt: Double
         var draft: String
         var isUnread: Bool
+        var suggestionGeneration: Int
         var interruptedQuestion: String?
       }
       struct NormalizedMessage: Encodable {
@@ -56,6 +57,7 @@ extension HistoryStore {
           lastActivityAt: row["last_activity_at"],
           draft: row["draft"],
           isUnread: (row["is_unread"] as Int64) != 0,
+          suggestionGeneration: Int(row["suggestion_generation"] as Int64),
           interruptedQuestion: journals[row["id"] as String])
       }
       let messages = try Row.fetchAll(
