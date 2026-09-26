@@ -236,6 +236,11 @@ extension AppFeature {
       category: .submission,
       code: "queued_retry_cancelled",
       summary: "A queued retry was cancelled; the journal remains for Ask Again.")
+    if state.retryReleaseJournalID == journalID {
+      // Releasing a claim still requires the row to be `running`. Decline it
+      // only after that write finishes and the reducer receives its result.
+      return .none
+    }
     return .merge(
       .run { send in
         do {
@@ -527,7 +532,12 @@ extension AppFeature {
     if state.failedDismissalManualRetryIDs.remove(resolvedJournalID) != nil {
       state.dismissedRetryJournalIDs.remove(resolvedJournalID)
     }
-    state.cancelledRetryJournalIDs.remove(resolvedJournalID)
+    let cancellationSettling =
+      state.retryReleaseJournalID == resolvedJournalID
+      && state.cancelledRetryJournalIDs.contains(resolvedJournalID)
+    if !cancellationSettling {
+      state.cancelledRetryJournalIDs.remove(resolvedJournalID)
+    }
     // An Ask Again request supersedes the automatic allowance; it is never
     // replenished by the manual request.
     state.automaticRetryCandidates.removeValue(forKey: resolvedJournalID)
@@ -543,6 +553,7 @@ extension AppFeature {
       || state.retryReleaseJournalID == resolvedJournalID
     {
       state.userPromotedRetryJournalIDs.insert(resolvedJournalID)
+      syncSchedulerProjection(into: &state)
       return .none
     }
     let submission = QuestionSubmission(
@@ -592,16 +603,16 @@ extension AppFeature {
       let executionID = queued.existingUserMessage?.id
     else { return .send(.dispatchNextIfIdle) }
     state.retryReleaseJournalID = journalID
+    state.retryReleaseConversationID = queued.conversationID
     syncSchedulerProjection(into: &state)
     return .run { send in
       do {
         try await history.releaseAutoRetryClaim(
           queued.conversationID, journalID, executionID, queued.automaticRetry)
-        await send(.retryClaimReleased(queued, true))
+        await send(.retryClaimReleased(queued, nil))
       } catch {
-        await send(.retryClaimReleased(queued, false))
-        await send(.operationFailed(
-          .history(operation: .messageSave, error: error)))
+        await send(.retryClaimReleased(
+          queued, .history(operation: .messageSave, error: error)))
       }
     }
   }
@@ -713,7 +724,7 @@ extension AppFeature {
         conversationID: next.conversationID,
         submission: next.submission,
         existingUserMessage: next.existingUserMessage,
-        directlyUserStarted: false,
+        directlyUserStarted: next.retryJournalID != nil && !next.automaticRetry,
         acceptedSuggestionGeneration: next.suggestionGeneration,
         replacingJournalID: next.existingUserMessage == nil ? next.retryJournalID : nil))
   }

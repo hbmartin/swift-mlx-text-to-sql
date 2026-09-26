@@ -85,6 +85,15 @@ import Testing
     #expect(changed.statements == ["SELECT 1"])
   }
 
+  @Test func corpusFileRejectsInvalidUTF8InsideAssistantSQL() {
+    var data = Data(#"{"messages":[{"role":"assistant","content":"SELECT "#.utf8)
+    data.append(0xFF)
+    data.append(contentsOf: Data(#" FROM property"}]}"#.utf8))
+    #expect(throws: NGramDraftCorpusFile.Error.invalidUTF8) {
+      try NGramDraftCorpusFile(data: data)
+    }
+  }
+
   @Test func legacyBatchPayloadDecodesWithoutGenerationFields() throws {
     let sourceID = UUID()
     let payload = Data(

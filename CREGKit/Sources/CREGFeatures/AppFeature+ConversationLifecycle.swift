@@ -249,6 +249,13 @@ extension AppFeature {
     {
       queuedRetries.insert(claiming)
     }
+    if state.retryReleaseConversationID == chat.conversationID,
+      let releasing = state.retryReleaseJournalID,
+      (!state.cancelledRetryJournalIDs.contains(releasing)
+        || state.userPromotedRetryJournalIDs.contains(releasing))
+    {
+      queuedRetries.insert(releasing)
+    }
     chat.queuedRetryJournalIDs = queuedRetries
     if let active = state.activeTurn,
       active.conversationID == chat.conversationID
