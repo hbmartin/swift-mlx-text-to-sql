@@ -1,0 +1,6 @@
+interface:
+  display_name: "Apple on-device AI: choosing a stack and getting the gates right"
+  short_description: "Choose the right Apple on-device AI framework"
+  default_prompt: "Use $apple-on-device-ai to answer this Apple on-device AI request with the bundled evidence-backed guides."
+policy:
+  allow_implicit_invocation: true

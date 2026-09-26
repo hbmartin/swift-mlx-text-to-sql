@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Convert this torch.nn.Module into an .aimodel and diagnose the unsupported operator report from coreai-torch.",
+    "should_trigger": true
+  },
+  {
+    "query": "The target contains an .aimodel and Xcode says the Metal compiler component is missing.",
+    "should_trigger": true
+  },
+  {
+    "query": "AIModel loads successfully but profiling shows GPU execution and much worse latency than expected.",
+    "should_trigger": true
+  },
+  {
+    "query": "Compare quantization, palettization, and pruning for this Core AI model without silently losing accuracy.",
+    "should_trigger": true
+  },
+  {
+    "query": "LanguageModelSession throws exceededContextWindowSize during a long conversation.",
+    "should_trigger": false
+  },
+  {
+    "query": "mx.compile creates a new graph for every generation step in my MLX model.",
+    "should_trigger": false
+  },
+  {
+    "query": "Implement flash attention directly with Metal cooperative tensors.",
+    "should_trigger": false
+  },
+  {
+    "query": "Plan background delivery and disk budgeting for model updates after App Store release.",
+    "should_trigger": false
+  }
+]

@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Upgrade our shipping Foundation Models integration from Xcode 26 to 27 and map every renamed LanguageModelError case.",
+    "should_trigger": true
+  },
+  {
+    "query": "A trained Adapter that loaded on the 26 SDK is rejected after moving the project to 27.",
+    "should_trigger": true
+  },
+  {
+    "query": "Keep one source tree building against both Xcode 26 and 27 while the AI APIs move.",
+    "should_trigger": true
+  },
+  {
+    "query": "Decide which neural Core ML models should become .aimodel and which non-neural pipelines must stay put.",
+    "should_trigger": true
+  },
+  {
+    "query": "Start a greenfield Core AI app that only targets the 27 SDK.",
+    "should_trigger": false
+  },
+  {
+    "query": "LanguageModelSession.respond(to:) hangs in a current Foundation Models project with no SDK migration.",
+    "should_trigger": false
+  },
+  {
+    "query": "Port a Hugging Face checkpoint to MLX without changing Apple SDK generations.",
+    "should_trigger": false
+  },
+  {
+    "query": "Plan background model downloads and thermal benchmarks for the next app release.",
+    "should_trigger": false
+  }
+]

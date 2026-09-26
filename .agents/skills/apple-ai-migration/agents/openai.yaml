@@ -1,0 +1,6 @@
+interface:
+  display_name: "Migrating an Apple AI integration from 26 to 27"
+  short_description: "Migrate Apple AI apps and models to SDK 27"
+  default_prompt: "Use $apple-ai-migration to answer this Apple on-device AI request with the bundled evidence-backed guides."
+policy:
+  allow_implicit_invocation: true

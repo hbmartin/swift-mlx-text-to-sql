@@ -1,0 +1,34 @@
+[
+  {
+    "query": "I need private on-device AI in a new iPhone app. Should I start with Foundation Models, Core AI, MLX, or Metal?",
+    "should_trigger": true
+  },
+  {
+    "query": "This API compiles under Xcode 27 but availability is false on one of our supported devices. Help me build the right gating matrix.",
+    "should_trigger": true
+  },
+  {
+    "query": "We support iOS, macOS, and visionOS and I cannot tell whether this feature starts at 26.2, 26.4, or 27.0.",
+    "should_trigger": true
+  },
+  {
+    "query": "I found AIModel, LanguageModelSession, and mx.compile in three prototypes. Map each symbol to the correct Apple stack.",
+    "should_trigger": true
+  },
+  {
+    "query": "LanguageModelSession.respond(to:) never returns after my tool call completes.",
+    "should_trigger": false
+  },
+  {
+    "query": "coreai-torch says one of my PyTorch ops is unsupported while exporting an .aimodel.",
+    "should_trigger": false
+  },
+  {
+    "query": "My MLX array is staying lazy and unified-memory use keeps climbing.",
+    "should_trigger": false
+  },
+  {
+    "query": "SpeechAnalyzer produces duplicated phrases when I combine volatile and final results.",
+    "should_trigger": false
+  }
+]

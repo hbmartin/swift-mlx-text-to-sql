@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Create an AppIntent and AppEntity so Siri can select and mutate one of the user's saved records.",
+    "should_trigger": true
+  },
+  {
+    "query": "The intent reports success but the entity change never persists in the app.",
+    "should_trigger": true
+  },
+  {
+    "query": "Siri answers from text visible on screen instead of resolving the IndexedEntity I put in Spotlight.",
+    "should_trigger": true
+  },
+  {
+    "query": "A send intent refuses my attachment. Check FileEntityIdentifier, FileRepresentation, and the assistant schema domain.",
+    "should_trigger": true
+  },
+  {
+    "query": "SpeechAnalyzer returns an empty transcript for microphone input.",
+    "should_trigger": false
+  },
+  {
+    "query": "LanguageModelSession guided generation invents a property outside @Guide(.anyOf).",
+    "should_trigger": false
+  },
+  {
+    "query": "Convert an MLX model to Core AI for Neural Engine execution.",
+    "should_trigger": false
+  },
+  {
+    "query": "Add an ordinary in-app search screen that does not integrate with Siri, Spotlight, or App Intents.",
+    "should_trigger": false
+  }
+]
