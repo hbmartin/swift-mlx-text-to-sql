@@ -910,7 +910,7 @@ private func awaitArmedFMWatch(
     store.exhaustivity = .off
 
     await store.send(.queuedRetryClaimed(queued, 0))
-    await store.receive(.retryClaimReleased(queued, true))
+    await store.receive(.retryClaimReleased(queued, nil))
     await store.skipReceivedActions()
     #expect(releases.recorded == ["\(questionID):false"])
     #expect(store.state.queue.map(\.retryJournalID) == [questionID])

@@ -154,6 +154,10 @@ public enum DirectoryDigest {
 /// from one read so the recorded digest can never describe different content
 /// than the corpus the run actually drafted from.
 public struct NGramDraftCorpusFile: Sendable, Equatable {
+  public enum Error: Swift.Error, Equatable, Sendable {
+    case invalidUTF8
+  }
+
   public var sha256: String
   public var statements: [String]
 
@@ -168,7 +172,9 @@ public struct NGramDraftCorpusFile: Sendable, Equatable {
 
   public init(data: Data) throws {
     sha256 = PreparedFollowUpIntegrity.sha256(data)
-    let text = String(decoding: data, as: UTF8.self)
+    guard let text = String(data: data, encoding: .utf8) else {
+      throw Error.invalidUTF8
+    }
     statements = try text.split(separator: "\n")
       .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
       .compactMap { line in
