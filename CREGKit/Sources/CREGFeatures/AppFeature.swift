@@ -1329,9 +1329,27 @@ public struct AppFeature: Sendable {
         guard let journalID = queued.retryJournalID,
           state.retryReleaseJournalID == journalID
         else { return .none }
+        if state.dismissedRetryJournalIDs.contains(journalID) {
+          // Dismissal owns the row and any user-facing write failure. The
+          // release may have failed because dismissal already removed it.
+          state.retryReleaseJournalID = nil
+          state.retryReleaseConversationID = nil
+          state.cancelledRetryJournalIDs.remove(journalID)
+          state.automaticRetryCandidates.removeValue(forKey: journalID)
+          state.userPromotedRetryJournalIDs.remove(journalID)
+          syncSchedulerProjection(into: &state)
+          return .send(.dispatchNextIfIdle)
+        }
         if state.cancelledRetryJournalIDs.contains(journalID) {
           // The release write must finish before cancellation changes the
           // journal status. Keep the dispatch gate closed through the decline.
+          if let releaseFailure {
+            diagnostics.record(DiagnosticEvent(
+              level: .error, category: .history,
+              code: "retry_release_failed_after_cancellation",
+              summary: "A cancelled retry claim could not be released.",
+              details: releaseFailure.diagnostic))
+          }
           state.automaticRetryCandidates.removeValue(forKey: journalID)
           if state.chat?.conversationID == queued.conversationID,
             let index = state.chat?.interruptedTurns.firstIndex(where: {
@@ -1398,14 +1416,15 @@ public struct AppFeature: Sendable {
 
       case .retryCancellationSettled(let queued, let failure):
         guard let journalID = queued.retryJournalID,
-          state.retryReleaseJournalID == journalID,
-          state.cancelledRetryJournalIDs.remove(journalID) != nil
+          state.retryReleaseJournalID == journalID
         else { return .none }
+        state.cancelledRetryJournalIDs.remove(journalID)
         state.retryReleaseJournalID = nil
         state.retryReleaseConversationID = nil
         let requestedAgain = state.userPromotedRetryJournalIDs.remove(journalID) != nil
-        if failure == nil, requestedAgain,
+        if requestedAgain,
           state.conversations[id: queued.conversationID] != nil,
+          state.pendingDeletion?.summary.id != queued.conversationID,
           !state.dismissedRetryJournalIDs.contains(journalID)
         {
           var manual = queued
@@ -1899,7 +1918,9 @@ public struct AppFeature: Sendable {
         state.failedDismissalManualRetryIDs.remove(journalID)
         state.automaticRetryCandidates.removeValue(forKey: journalID)
         state.userPromotedRetryJournalIDs.remove(journalID)
-        state.cancelledRetryJournalIDs.remove(journalID)
+        if state.retryReleaseJournalID != journalID {
+          state.cancelledRetryJournalIDs.remove(journalID)
+        }
         state.queue.removeAll {
           $0.conversationID == conversationID && $0.retryJournalID == journalID
         }

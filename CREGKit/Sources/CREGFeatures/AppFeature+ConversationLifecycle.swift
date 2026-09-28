@@ -239,18 +239,23 @@ extension AppFeature {
       $0.conversationID == chat.conversationID && $0.retryJournalID == nil
     }
     // The interruption banner owns retry presentation: a journal that is
-    // queued, being claimed, or being released shows "Retry queued".
+    // queued, being claimed, or being released shows "Retry queued" while
+    // it remains wanted. A new Ask Again restores that presentation.
     var queuedRetries = Set(
       state.queue.compactMap {
         $0.conversationID == chat.conversationID ? $0.retryJournalID : nil
       })
     if state.retryClaimConversationID == chat.conversationID,
-      let claiming = state.retryClaimJournalID
+      let claiming = state.retryClaimJournalID,
+      !state.dismissedRetryJournalIDs.contains(claiming),
+      (!state.cancelledRetryJournalIDs.contains(claiming)
+        || state.userPromotedRetryJournalIDs.contains(claiming))
     {
       queuedRetries.insert(claiming)
     }
     if state.retryReleaseConversationID == chat.conversationID,
       let releasing = state.retryReleaseJournalID,
+      !state.dismissedRetryJournalIDs.contains(releasing),
       (!state.cancelledRetryJournalIDs.contains(releasing)
         || state.userPromotedRetryJournalIDs.contains(releasing))
     {
