@@ -222,6 +222,7 @@ private actor HeldOperation {
     await store.skipReceivedActions()
     #expect(store.state.cancelledRetryJournalIDs.contains(user.id))
     #expect(store.state.retryClaimInFlight)
+    #expect(store.state.chat?.queuedRetryJournalIDs.isEmpty == true)
     await store.send(.queuedRetryClaimed(queued, 1))
     await store.finish()
     await store.skipReceivedActions()
@@ -231,6 +232,33 @@ private actor HeldOperation {
     #expect(declines.recorded == [user.id.uuidString, user.id.uuidString])
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
     #expect(store.state.chat?.messages.count == 1)
+  }
+
+  @Test func cancelledClaimShowsASecondAskAgainAsQueued() async {
+    let user = ChatMessage(
+      id: UUID(9043), role: .user, body: .text("Ask again after cancel"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    var state = Scheduler.appState()
+    state.chat?.messages.append(user)
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: user.previewText, interruptedAt: user.createdAt,
+      journalID: user.id, executionID: user.id, status: .knownInterruption)
+    state.retryClaimInFlight = true
+    state.retryClaimJournalID = user.id
+    state.retryClaimConversationID = Self.conversationA
+    state.chat?.queuedRetryJournalIDs = [user.id]
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.chat(.cancelQueuedRetryTapped(user.id)))
+    await store.skipReceivedActions()
+    #expect(store.state.chat?.queuedRetryJournalIDs.isEmpty == true)
+    await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
+    await store.finish()
+    #expect(store.state.userPromotedRetryJournalIDs.contains(user.id))
+    #expect(store.state.chat?.queuedRetryJournalIDs == [user.id])
   }
 
   @Test func nonTrailingAskAgainRequestsBackgroundGrantButOrdinaryQueueDoesNot() async {
@@ -364,6 +392,127 @@ private actor HeldOperation {
     await store.skipInFlightEffects()
   }
 
+  @Test func dismissalDuringCancellationDeclineReopensTheDispatchGate() async {
+    let user = ChatMessage(
+      id: UUID(9044), role: .user, body: .text("Dismiss during decline"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    var state = Scheduler.appState()
+    state.isSceneActive = false
+    state.chat?.messages.append(user)
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: user.previewText, interruptedAt: user.createdAt,
+      journalID: user.id, executionID: user.id, status: .knownInterruption)
+    state.retryClaimInFlight = true
+    state.retryClaimJournalID = user.id
+    state.retryClaimConversationID = Self.conversationA
+    state.queue = [QueuedQuestion(
+      id: UUID(9045), conversationID: Self.conversationA,
+      question: "Next after dismissal",
+      submittedAt: Date(timeIntervalSince1970: 3))]
+    let queued = QueuedQuestion(
+      id: UUID(9046), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: user.previewText),
+      retryJournalID: user.id, existingUserMessage: user,
+      automaticRetry: true, submittedAt: user.createdAt)
+    let release = HeldOperation()
+    let decline = HeldOperation()
+    var history = HistoryClient.noop()
+    history.releaseAutoRetryClaim = { _, _, _, _ in await release.hold() }
+    history.declineAutoRetry = { _, _ in await decline.hold() }
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+      $0.queryPipeline = Scheduler.hangingPipeline()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 4))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.queuedRetryClaimed(queued, 1))
+    await release.waitUntilHeld()
+    await store.send(.chat(.cancelQueuedRetryTapped(user.id)))
+    await release.finish()
+    await store.receive(.retryClaimReleased(queued, nil))
+    await decline.waitUntilHeld()
+
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(user.id))))
+    await store.receive(.interruptedDismissalFinished(
+      conversationID: Self.conversationA, journalID: user.id, failure: nil))
+    #expect(store.state.cancelledRetryJournalIDs.contains(user.id))
+    #expect(store.state.chat?.queuedRetryJournalIDs.isEmpty == true)
+    await store.send(.appBecameActive)
+    #expect(store.state.retryReleaseJournalID == user.id)
+    #expect(store.state.activeTurn == nil)
+
+    await decline.finish()
+    await store.receive(.retryCancellationSettled(queued, nil))
+    await store.skipReceivedActions()
+    #expect(store.state.retryReleaseJournalID == nil)
+    #expect(store.state.cancelledRetryJournalIDs.isEmpty)
+    #expect(store.state.activeTurn?.question == "Next after dismissal")
+    #expect(store.state.presentedFailure == nil)
+    await store.skipInFlightEffects()
+  }
+
+  @Test func dismissalDuringReleaseSuppressesTheObsoleteReleaseError() async {
+    let user = ChatMessage(
+      id: UUID(9047), role: .user, body: .text("Dismiss during release"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    var state = Scheduler.appState()
+    state.isSceneActive = false
+    state.chat?.messages.append(user)
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: user.previewText, interruptedAt: user.createdAt,
+      journalID: user.id, executionID: user.id, status: .knownInterruption)
+    state.retryClaimInFlight = true
+    state.retryClaimJournalID = user.id
+    state.retryClaimConversationID = Self.conversationA
+    state.queue = [QueuedQuestion(
+      id: UUID(9048), conversationID: Self.conversationA,
+      question: "Next after release",
+      submittedAt: Date(timeIntervalSince1970: 3))]
+    let queued = QueuedQuestion(
+      id: UUID(9049), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: user.previewText),
+      retryJournalID: user.id, existingUserMessage: user,
+      automaticRetry: true, submittedAt: user.createdAt)
+    let release = HeldOperation()
+    let declines = CallRecorder()
+    let releaseError = NSError(domain: "CREG.RetryTest", code: 3)
+    var history = HistoryClient.noop()
+    history.releaseAutoRetryClaim = { _, _, _, _ in
+      await release.hold()
+      throw releaseError
+    }
+    history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+      $0.queryPipeline = Scheduler.hangingPipeline()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 4))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.queuedRetryClaimed(queued, 1))
+    await release.waitUntilHeld()
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(user.id))))
+    await store.receive(.interruptedDismissalFinished(
+      conversationID: Self.conversationA, journalID: user.id, failure: nil))
+    #expect(store.state.chat?.queuedRetryJournalIDs.isEmpty == true)
+    await store.send(.appBecameActive)
+    #expect(store.state.activeTurn == nil)
+    #expect(store.state.retryReleaseJournalID == user.id)
+
+    await release.finish()
+    await store.receive(.retryClaimReleased(
+      queued, .history(operation: .messageSave, error: releaseError)))
+    await store.skipReceivedActions()
+    #expect(store.state.retryReleaseJournalID == nil)
+    #expect(store.state.activeTurn?.question == "Next after release")
+    #expect(store.state.presentedFailure == nil)
+    #expect(declines.recorded.isEmpty)
+    await store.skipInFlightEffects()
+  }
+
   @Test func releaseFailureAfterCancellationDoesNotShowFalseError() async {
     let user = ChatMessage(
       id: UUID(9037), role: .user, body: .text("Cancelled release"),
@@ -384,6 +533,7 @@ private actor HeldOperation {
       automaticRetry: true, submittedAt: user.createdAt)
     let release = HeldOperation()
     let declines = CallRecorder()
+    let diagnostics = DiagnosticEventRecorder()
     var history = HistoryClient.noop()
     let releaseError = NSError(domain: "CREG.RetryTest", code: 1)
     history.releaseAutoRetryClaim = { _, _, _, _ in
@@ -393,6 +543,7 @@ private actor HeldOperation {
     history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
 
@@ -410,6 +561,12 @@ private actor HeldOperation {
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
     #expect(store.state.presentedFailure == nil)
+    let releaseEvents = diagnostics.events.filter {
+      $0.code == "retry_release_failed_after_cancellation"
+    }
+    #expect(releaseEvents.count == 1)
+    #expect(releaseEvents.first?.level == .error)
+    #expect(releaseEvents.first?.details?.contains("CREG.RetryTest") == true)
   }
 
   @Test func failedCancellationDeclineReportsTheRealHistoryError() async {
@@ -445,6 +602,66 @@ private actor HeldOperation {
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.presentedFailure?.code == "history_message_save_failed")
+  }
+
+  @Test func askAgainSurvivesFailedCancellationDecline() async {
+    let user = ChatMessage(
+      id: UUID(9052), role: .user, body: .text("Retry after failed decline"),
+      createdAt: Date(timeIntervalSince1970: 1))
+    var state = Scheduler.appState()
+    state.isSceneActive = false
+    state.chat?.messages.append(user)
+    state.chat?.interruptedTurn = InterruptedTurn(
+      question: user.previewText, interruptedAt: user.createdAt,
+      journalID: user.id, executionID: user.id, status: .manualRetryRequired,
+      autoRetryCount: 1)
+    state.retryReleaseJournalID = user.id
+    state.retryReleaseConversationID = Self.conversationA
+    state.cancelledRetryJournalIDs.insert(user.id)
+    let queued = QueuedQuestion(
+      id: UUID(9053), conversationID: Self.conversationA,
+      submission: QuestionSubmission(question: user.previewText),
+      retryJournalID: user.id, existingUserMessage: user,
+      automaticRetry: true, submittedAt: user.createdAt)
+    let decline = HeldOperation()
+    let claims = CallRecorder()
+    let declineError = NSError(domain: "CREG.RetryTest", code: 4)
+    var history = HistoryClient.noop()
+    history.declineAutoRetry = { _, _ in
+      await decline.hold()
+      throw declineError
+    }
+    history.claimTurnRetry = { _, _, _, automatic in
+      claims.record(String(automatic))
+      return 1
+    }
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.historyClient = history
+      $0.queryPipeline = Scheduler.hangingPipeline()
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 2))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.retryClaimReleased(queued, nil))
+    await decline.waitUntilHeld()
+    await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
+    #expect(store.state.chat?.queuedRetryJournalIDs == [user.id])
+    await decline.finish()
+    await store.receive(.retryCancellationSettled(
+      queued, .history(operation: .messageSave, error: declineError)))
+    await store.skipReceivedActions()
+    #expect(store.state.retryReleaseJournalID == nil)
+    #expect(store.state.queue.map(\.retryJournalID) == [user.id])
+    #expect(store.state.queue.first?.automaticRetry == false)
+    #expect(store.state.presentedFailure?.code == "history_message_save_failed")
+
+    await store.send(.appBecameActive)
+    await store.skipReceivedActions()
+    #expect(claims.recorded == ["false"])
+    #expect(store.state.activeTurn?.directlyUserStarted == true)
+    #expect(store.state.activeTurn?.autoRetryCount == 1)
+    await store.skipInFlightEffects()
   }
 
   @Test func automaticReleaseRestoresAllowanceAndRetriesOnActivation() async {
