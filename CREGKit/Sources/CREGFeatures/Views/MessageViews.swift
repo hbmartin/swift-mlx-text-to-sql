@@ -91,6 +91,7 @@ struct MessageCell: View {
           telemetry: message.devInfo, notice: notice)
         Text(narration)
           .frame(maxWidth: .infinity, alignment: .leading)
+        PortfolioSnapshotContextView()
         if let banner = warning.banner {
           Label(
             banner,
@@ -252,8 +253,8 @@ struct FollowUpSuggestionsView: View {
   }
 }
 
-/// Answer actions: copy the combined answer as Markdown, share it, narration
-/// Read Aloud, and reversible Helpful / Not right feedback.
+/// Primary answer actions stay labeled. Sharing and positive feedback live in
+/// the menu so the correction path remains easy to find.
 struct AnswerActionsRow: View {
   let messageID: UUID
   let narration: String
@@ -264,30 +265,26 @@ struct AnswerActionsRow: View {
   let store: StoreOf<ChatFeature>
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-  @ViewBuilder
   var body: some View {
-    if dynamicTypeSize.isAccessibilitySize {
-      LazyVGrid(
-        columns: [GridItem(.adaptive(minimum: 68), spacing: 8)],
-        alignment: .leading,
-        spacing: 8
-      ) {
-        copyButton
-        shareControl
-        readAloudButtons
-        helpfulButton
-        notRightButton
-      }
-    } else {
-      HStack(spacing: 8) {
-        copyButton
-        shareControl
-        readAloudButtons
-        Spacer(minLength: 0)
-        helpfulButton
-        notRightButton
+    Group {
+      if dynamicTypeSize.isAccessibilitySize {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8)], spacing: 8) {
+          copyButton
+          readAloudButton
+          notRightButton
+          moreMenu
+        }
+      } else {
+        HStack(spacing: 6) {
+          copyButton
+          readAloudButton
+          notRightButton
+          Spacer(minLength: 0)
+          moreMenu
+        }
       }
     }
+    .padding(.top, 2)
   }
 
   private var exportedAnswer: String {
@@ -301,118 +298,100 @@ struct AnswerActionsRow: View {
     Button {
       Pasteboard.copy(exportedAnswer)
     } label: {
-      Image(systemName: "doc.on.doc")
-        .cregIconButtonTarget()
+      actionLabel("Copy", systemImage: "doc.on.doc")
     }
-    .buttonStyle(.plain)
-    .foregroundStyle(.secondary)
+    .buttonStyle(.bordered)
     .accessibilityLabel("Copy answer as Markdown")
     .cregLargeContentViewer(
       "Copy answer as Markdown", systemImage: "doc.on.doc")
-  }
-
-  private var shareControl: some View {
-    ShareLink(item: exportedAnswer) {
-      Image(systemName: "square.and.arrow.up")
-        .cregIconButtonTarget()
-    }
-    .buttonStyle(.plain)
-    .foregroundStyle(.secondary)
-    .accessibilityLabel("Share answer")
-    .cregLargeContentViewer("Share answer", systemImage: "square.and.arrow.up")
-  }
-
-  private var helpfulButton: some View {
-    Button {
-      store.send(.feedbackHelpfulTapped(messageID: messageID))
-    } label: {
-      Image(
-        systemName: feedback?.verdict == .helpful
-          ? "hand.thumbsup.fill" : "hand.thumbsup"
-      )
-      .cregIconButtonTarget()
-    }
-    .buttonStyle(.plain)
-    .foregroundStyle(
-      feedback?.verdict == .helpful ? CREGBrand.blue : Color.secondary
-    )
-    .accessibilityLabel("Helpful")
-    .accessibilityAddTraits(
-      feedback?.verdict == .helpful ? [.isSelected] : []
-    )
-    .cregLargeContentViewer("Helpful", systemImage: "hand.thumbsup")
   }
 
   private var notRightButton: some View {
     Button {
       store.send(.feedbackNotRightTapped(messageID: messageID))
     } label: {
-      Image(
-        systemName: feedback?.verdict == .notRight
-          ? "hand.thumbsdown.fill" : "hand.thumbsdown"
-      )
-      .cregIconButtonTarget()
+      actionLabel(
+        "Not right",
+        systemImage: feedback?.verdict == .notRight
+          ? "hand.thumbsdown.fill" : "hand.thumbsdown")
     }
-    .buttonStyle(.plain)
-    .foregroundStyle(
-      feedback?.verdict == .notRight ? Color.orange : Color.secondary
-    )
+    .buttonStyle(.bordered)
+    .tint(feedback?.verdict == .notRight ? .orange : nil)
     .accessibilityLabel("Not right")
     .accessibilityAddTraits(
       feedback?.verdict == .notRight ? [.isSelected] : []
     )
-    .cregLargeContentViewer("Not right", systemImage: "hand.thumbsdown")
   }
 
   @ViewBuilder
-  private var readAloudButtons: some View {
+  private var readAloudButton: some View {
     if let readAloud, readAloud.messageID == messageID {
       if readAloud.phase == .playing {
         Button {
           store.send(.readAloudPauseTapped)
         } label: {
-          Image(systemName: "pause.fill")
-            .cregIconButtonTarget()
+          actionLabel("Pause", systemImage: "pause.fill")
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(CREGBrand.blue)
+        .buttonStyle(.bordered)
+        .tint(CREGBrand.blue)
         .accessibilityLabel("Pause reading")
-        .cregLargeContentViewer("Pause reading", systemImage: "pause.fill")
       } else {
         Button {
           store.send(.readAloudResumeTapped)
         } label: {
-          Image(systemName: "play.fill")
-            .cregIconButtonTarget()
+          actionLabel("Resume", systemImage: "play.fill")
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(CREGBrand.blue)
+        .buttonStyle(.bordered)
+        .tint(CREGBrand.blue)
         .accessibilityLabel("Resume reading")
-        .cregLargeContentViewer("Resume reading", systemImage: "play.fill")
       }
-      Button {
-        store.send(.readAloudStopTapped)
-      } label: {
-        Image(systemName: "stop.fill")
-          .cregIconButtonTarget()
-      }
-      .accessibilityLabel("Stop reading")
-      .cregLargeContentViewer("Stop reading", systemImage: "stop.fill")
-      .buttonStyle(.plain)
-      .foregroundStyle(CREGBrand.blue)
     } else {
       Button {
         store.send(.readAloudTapped(messageID: messageID))
       } label: {
-        Image(systemName: "speaker.wave.2")
-          .cregIconButtonTarget()
+        actionLabel("Listen", systemImage: "speaker.wave.2")
       }
-      .buttonStyle(.plain)
-      .foregroundStyle(.secondary)
+      .buttonStyle(.bordered)
       .accessibilityLabel("Read narration aloud")
-      .cregLargeContentViewer(
-        "Read narration aloud", systemImage: "speaker.wave.2")
     }
+  }
+
+  private var moreMenu: some View {
+    Menu {
+      ShareLink(item: exportedAnswer) {
+        Label("Share answer", systemImage: "square.and.arrow.up")
+      }
+      Button {
+        store.send(.feedbackHelpfulTapped(messageID: messageID))
+      } label: {
+        Label(
+          feedback?.verdict == .helpful ? "Marked helpful" : "Helpful",
+          systemImage: feedback?.verdict == .helpful
+            ? "hand.thumbsup.fill" : "hand.thumbsup")
+      }
+      if let readAloud, readAloud.messageID == messageID {
+        Button {
+          store.send(.readAloudStopTapped)
+        } label: {
+          Label("Stop reading", systemImage: "stop.fill")
+        }
+      }
+    } label: {
+      if dynamicTypeSize.isAccessibilitySize {
+        actionLabel("More", systemImage: "ellipsis")
+      } else {
+        Image(systemName: "ellipsis")
+          .frame(minWidth: 28, minHeight: 44)
+      }
+    }
+    .buttonStyle(.bordered)
+    .accessibilityLabel("More answer actions")
+  }
+
+  private func actionLabel(_ title: String, systemImage: String) -> some View {
+    Label(title, systemImage: systemImage)
+      .font(.caption.weight(.medium))
+      .frame(minHeight: 44)
   }
 }
 
@@ -480,8 +459,8 @@ struct TraceView: View {
       .padding(.top, 4)
     } label: {
       Text(label)
-        .font(.caption)
-        .foregroundStyle(.tertiary)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.primary)
     }
   }
 

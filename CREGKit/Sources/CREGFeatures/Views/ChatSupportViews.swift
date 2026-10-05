@@ -62,11 +62,44 @@ struct EmptyChatState: View {
   let submit: (StarterQueryID) -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 14) {
+      Image(systemName: "building.2.crop.circle")
+        .font(.system(size: 38, weight: .ultraLight))
+        .foregroundStyle(CREGBrand.blue)
+        .padding(.top, 18)
       Text("Ask about your portfolio")
-        .font(.title3.weight(.semibold))
-        .padding(.top, 24)
-      ForEach(StarterQueryID.allCases) { starter in
+        .font(.title2.weight(.semibold))
+      Text("Explore the bundled portfolio with a question, or start here.")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+      PortfolioSnapshotContextView()
+      Button {
+        submit(.portfolioValueByFundV1)
+      } label: {
+        HStack(alignment: .center, spacing: 12) {
+          Image(systemName: "chart.bar.xaxis")
+            .font(.title3)
+            .foregroundStyle(CREGBrand.blue)
+          Text(StarterQueryID.portfolioValueByFundV1.question)
+            .font(.subheadline.weight(.semibold))
+            .multilineTextAlignment(.leading)
+          Spacer(minLength: 4)
+          Image(systemName: "arrow.up.right")
+            .font(.caption.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+        .padding(.horizontal, 16)
+        .background(CREGBrand.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!isEnabled)
+      Text("MORE TO EXPLORE")
+        .font(.caption2.weight(.semibold))
+        .tracking(0.8)
+        .foregroundStyle(.secondary)
+        .padding(.top, 6)
+      ForEach(StarterQueryID.allCases.filter { $0 != .portfolioValueByFundV1 }) { starter in
         Button {
           submit(starter)
         } label: {
@@ -77,12 +110,12 @@ struct EmptyChatState: View {
             Spacer(minLength: 8)
             Image(systemName: "arrow.up.right")
               .font(.caption)
-              .foregroundStyle(.tertiary)
+              .foregroundStyle(.secondary)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 14)
           .padding(.vertical, 12)
-          .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+          .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -90,6 +123,15 @@ struct EmptyChatState: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+struct PortfolioSnapshotContextView: View {
+  var body: some View {
+    Label("Portfolio data as of \(PortfolioAsOfDateDisplay.text)", systemImage: "calendar")
+      .font(.caption.weight(.medium))
+      .foregroundStyle(.secondary)
+      .accessibilityIdentifier("portfolio-snapshot-date")
   }
 }
 

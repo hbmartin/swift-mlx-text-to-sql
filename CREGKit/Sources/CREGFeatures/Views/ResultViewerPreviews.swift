@@ -44,6 +44,18 @@ import SwiftUI
     .frame(width: 402, height: 874)
 }
 
+#Preview("Result Viewer — Portfolio Table — Light") {
+  @Previewable @State var preference = ResultPresentationPreference.table
+  ResultViewerView(
+    result: PreviewFixtures.fundValueResult,
+    runtimeMode: .evaluated,
+    textSize: .constant(.standard),
+    sql: StarterQueryID.portfolioValueByFundV1.sql,
+    question: StarterQueryID.portfolioValueByFundV1.question,
+    preference: $preference)
+    .frame(width: 402, height: 874)
+}
+
 #Preview("Result Viewer — Truncation Warning — Dark") {
   @Previewable @State var preference = ResultPresentationPreference.automatic
   ResultViewerView(

@@ -315,6 +315,11 @@ struct ResultViewerView: View {
     } ?? result.rowCount
     NavigationStack {
       VStack(spacing: 0) {
+        PortfolioSnapshotContextView()
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal)
+          .padding(.top, 8)
+          .padding(.bottom, 4)
         if !pickerOptions.isEmpty || selectedChartFailure?.isRetryable == true {
           Picker(
             "Result view",
@@ -346,7 +351,9 @@ struct ResultViewerView: View {
 
         if effectiveResultMode == .chart {
           if let analysis, let selectedRecommendation {
-            ResultChartExplorerContainer(recommendation: selectedRecommendation) {
+            ResultChartExplorerContainer(
+              recommendation: selectedRecommendation, result: result
+            ) {
               if chartSelectionLifecycle.pendingSourceRows == nil,
                 case .ready(_, let presented?) = session.state
               {
@@ -359,6 +366,7 @@ struct ResultViewerView: View {
                   formatters: CREGChartAdapter.formatters,
                   textResolver: CREGChartAdapter.textResolver
                 )
+                .autoChartTheme(CREGChartAppearance.theme)
                 .id(
                   PresentedChartIdentity(
                     analysisID: analysis.id,

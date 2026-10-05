@@ -627,9 +627,8 @@ extension AppFeature {
     }
     for candidate in candidates {
       let journalID = candidate.journalID
-      guard state.conversations[id: candidate.conversationID] != nil,
-        state.pendingDeletion?.summary.id != candidate.conversationID,
-        !state.dismissedRetryJournalIDs.contains(journalID),
+      guard retryJournalEligibleForQueue(
+        state: state, conversationID: candidate.conversationID, journalID: journalID),
         !state.cancelledRetryJournalIDs.contains(journalID),
         state.retryClaimJournalID != journalID,
         state.retryReleaseJournalID != journalID,

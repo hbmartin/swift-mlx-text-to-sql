@@ -3,20 +3,31 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
-  func reloadDismissalIfSelected(
-    state: State, conversationID: UUID
+  func retryJournalEligibleForQueue(
+    state: State, conversationID: UUID, journalID: UUID
+  ) -> Bool {
+    state.conversations[id: conversationID] != nil
+      && state.pendingDeletion?.summary.id != conversationID
+      && !state.dismissedRetryJournalIDs.contains(journalID)
+  }
+
+  /// A dismissal failure owns the user-facing error. Keep its journal hidden
+  /// until every earlier retry write has settled, then restore manual retry.
+  func finishDeferredDismissalIfReady(
+    state: inout State, journalID: UUID
   ) -> Effect<Action> {
-    guard state.chat?.conversationID == conversationID,
-      state.pendingDeletion?.summary.id != conversationID
+    guard let deferred = state.failedDismissalAwaitingRetryWrite,
+      deferred.journalID == journalID,
+      state.retryClaimJournalID != journalID,
+      state.retryClaimCleanupJournalID != journalID,
+      state.retryReleaseJournalID != journalID
     else { return .none }
+    guard state.chat?.conversationID == deferred.conversationID,
+      state.pendingDeletion?.summary.id != deferred.conversationID
+    else { return .send(.failedDismissalReloaded(deferred, nil)) }
     return .run { send in
-      do {
-        let snapshot = try await history.loadConversation(conversationID)
-        await send(.dismissalRefreshLoaded(snapshot))
-      } catch {
-        await send(.operationFailed(
-          .history(operation: .load, error: error)))
-      }
+      let snapshot = try? await history.loadConversation(deferred.conversationID)
+      await send(.failedDismissalReloaded(deferred, snapshot))
     }
   }
   func deleteConversation(
@@ -245,11 +256,13 @@ extension AppFeature {
       state.queue.compactMap {
         $0.conversationID == chat.conversationID ? $0.retryJournalID : nil
       })
+    // During a claim, Ask Again clears cancellation before promoting it.
+    // During a release, cancellation and promotion can coexist until decline
+    // settles, so the release condition below retains both checks.
     if state.retryClaimConversationID == chat.conversationID,
       let claiming = state.retryClaimJournalID,
       !state.dismissedRetryJournalIDs.contains(claiming),
-      (!state.cancelledRetryJournalIDs.contains(claiming)
-        || state.userPromotedRetryJournalIDs.contains(claiming))
+      !state.cancelledRetryJournalIDs.contains(claiming)
     {
       queuedRetries.insert(claiming)
     }

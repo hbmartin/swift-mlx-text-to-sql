@@ -139,6 +139,25 @@ struct ResultPreviewView: View {
           VStack(alignment: .leading, spacing: 6) {
             if effectiveResultMode == .chart {
               chartArea(recommendation: selectedRecommendation)
+                .autoChartTheme(CREGChartAppearance.theme)
+              if let values = simpleChartValues {
+                VStack(spacing: 4) {
+                  ForEach(values.indices, id: \.self) { index in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                      Text(values[index].label)
+                        .lineLimit(1)
+                        .foregroundStyle(.secondary)
+                      Spacer(minLength: 4)
+                      Text(values[index].value)
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                    }
+                    .font(.caption)
+                  }
+                }
+                .padding(.top, 2)
+              }
             } else {
               tablePreview
             }
@@ -198,6 +217,10 @@ struct ResultPreviewView: View {
           migratePreference: migratePreference)
       }
     }
+  }
+
+  private var simpleChartValues: [(label: String, value: String)]? {
+    SimpleChartValues.rows(for: result)
   }
 
   @ViewBuilder
@@ -284,4 +307,35 @@ struct ResultPreviewView: View {
         if shouldOpen { open() }
       }
   }
+}
+
+enum SimpleChartValues {
+  static func rows(for result: QueryResult) -> [(label: String, value: String)]? {
+    guard result.columns.count == 2,
+      (2...4).contains(result.rows.count),
+      result.rows.allSatisfy({ row in
+        guard row.count == 2, case .text = row[0] else { return false }
+        switch row[1] {
+        case .integer, .real: return true
+        default: return false
+        }
+      })
+    else { return nil }
+    return result.rows.map { row in
+      (
+        row[0].displayString,
+        ResultViewerLogic.displayedCopyValue(row[1], column: result.columns[1])
+      )
+    }
+  }
+}
+
+enum CREGChartAppearance {
+  static let theme = AutoChartTheme(
+    axisColor: .primary,
+    legendColor: CREGBrand.blue,
+    markColors: [CREGBrand.blue, CREGBrand.turquoise, .orange, .purple, .green],
+    titleFont: .headline,
+    labelFont: .caption,
+    distinguishesMarksWithoutColor: true)
 }

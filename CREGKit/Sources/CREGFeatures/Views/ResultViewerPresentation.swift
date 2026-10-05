@@ -142,13 +142,16 @@ struct ResultChartExplorerPreparationView: View {
 
 struct ResultChartExplorerContainer<Content: View>: View {
   let recommendation: AutoChartRecommendation
+  let result: QueryResult?
   let content: Content
 
   init(
     recommendation: AutoChartRecommendation,
+    result: QueryResult? = nil,
     @ViewBuilder content: () -> Content
   ) {
     self.recommendation = recommendation
+    self.result = result
     self.content = content()
   }
 
@@ -156,6 +159,26 @@ struct ResultChartExplorerContainer<Content: View>: View {
     ScrollView {
       content
         .padding()
+      if let result, let values = SimpleChartValues.rows(for: result) {
+        VStack(alignment: .leading, spacing: 8) {
+          Text("Result values")
+            .font(.subheadline.weight(.semibold))
+          ForEach(values.indices, id: \.self) { index in
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+              Text(values[index].label)
+                .foregroundStyle(.secondary)
+              Spacer(minLength: 4)
+              Text(values[index].value)
+                .fontWeight(.semibold)
+                .monospacedDigit()
+            }
+            .font(.subheadline)
+          }
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
       if let reason = recommendation.rationale.first {
         Label(
           CREGChartAdapter.textResolver(reason),

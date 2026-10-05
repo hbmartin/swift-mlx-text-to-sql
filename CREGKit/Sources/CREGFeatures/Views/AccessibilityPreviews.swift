@@ -132,14 +132,12 @@ import SwiftUI
   }
 
   #if os(iOS)
-    #Preview("Chat — Answered — AX5 — Landscape") {
+    #Preview("Chat — Answered — AX5 — Landscape", traits: .landscapeLeft) {
       AccessibilityPreviewFrame(scenario: .answeredChat, size: .accessibility5)
-        .previewInterfaceOrientation(.landscapeLeft)
     }
 
-    #Preview("Conversation Browser — AX5 — Landscape") {
+    #Preview("Conversation Browser — AX5 — Landscape", traits: .landscapeLeft) {
       AccessibilityPreviewFrame(scenario: .browser, size: .accessibility5)
-        .previewInterfaceOrientation(.landscapeLeft)
     }
   #endif
 #endif

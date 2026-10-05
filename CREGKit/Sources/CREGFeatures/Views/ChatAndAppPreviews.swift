@@ -172,4 +172,24 @@ import SwiftUI
     now: PreviewFixtures.now)
     .preferredColorScheme(.dark)
 }
+
+#Preview("Conversation Browser — Search Results") {
+  var state = PreviewFixtures.appState(
+    revealed: true,
+    chat: PreviewFixtures.answeredChatState())
+  state.browserSearchText = "lease"
+  state.searchHits = [
+    ConversationSearchHit(
+      conversationID: PreviewFixtures.id("8"),
+      title: "Lease expirations this year",
+      snippet: "12 active leases at held properties expire before July 2027.",
+      lastActivityAt: PreviewFixtures.now.addingTimeInterval(-7_200)),
+    ConversationSearchHit(
+      conversationID: PreviewFixtures.id("7"),
+      title: "Debt maturities and lease exposure",
+      snippet: "Compare loan maturities with lease expirations across the portfolio.",
+      lastActivityAt: PreviewFixtures.now.addingTimeInterval(-172_800)),
+  ]
+  return AppRootView(store: PreviewFixtures.appStore(state), now: PreviewFixtures.now)
+}
 #endif
