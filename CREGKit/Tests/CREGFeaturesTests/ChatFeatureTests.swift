@@ -833,7 +833,7 @@ private func awaitArmedFMWatch(
     await store.send(.interruptedDismissalFinished(
       conversationID: Self.conversationA, journalID: questionID,
       failure: failure))
-    #expect(store.state.failedDismissalAwaitingClaim?.journalID == questionID)
+    #expect(store.state.failedDismissalAwaitingRetryWrite?.journalID == questionID)
     await store.send(.queuedRetryClaimed(
       QueuedQuestion(
         id: UUID(7091), conversationID: Self.conversationA,
@@ -858,19 +858,29 @@ private func awaitArmedFMWatch(
   @Test func lateDismissalRefreshCannotChangeSelection() async {
     let summary = Self.appState().conversations[id: Self.conversationA]!
     let snapshot = ConversationSnapshot(summary: summary)
+    let deferred = AppFeature.PendingDismissalFailure(
+      conversationID: Self.conversationA,
+      journalID: UUID(710),
+      failure: FailurePresentation(
+        code: "dismissal_failed", title: "Dismissal failed",
+        message: "Try again.", diagnostic: "test"))
     var state = Self.appState(selected: Self.conversationB)
+    state.failedDismissalAwaitingRetryWrite = deferred
     let store = TestStore(initialState: state) { AppFeature() }
     store.exhaustivity = .off
 
-    await store.send(.dismissalRefreshLoaded(snapshot))
+    await store.send(.failedDismissalReloaded(deferred, snapshot))
+    await store.skipReceivedActions()
     #expect(store.state.chat?.conversationID == Self.conversationB)
     var deletingState = Self.appState(selected: Self.conversationA)
     deletingState.chat?.title = "Keep this selection"
+    deletingState.failedDismissalAwaitingRetryWrite = deferred
     deletingState.pendingDeletion = AppFeature.PendingDeletion(
       summary: summary, index: 0)
     let deletingStore = TestStore(initialState: deletingState) { AppFeature() }
     deletingStore.exhaustivity = .off
-    await deletingStore.send(.dismissalRefreshLoaded(snapshot))
+    await deletingStore.send(.failedDismissalReloaded(deferred, snapshot))
+    await deletingStore.skipReceivedActions()
     #expect(deletingStore.state.chat?.title == "Keep this selection")
   }
 
