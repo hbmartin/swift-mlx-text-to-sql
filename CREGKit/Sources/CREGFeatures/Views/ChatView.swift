@@ -148,9 +148,8 @@ struct ChatView: View {
           browserButton
           Spacer(minLength: 0)
           newChatButton
-          overflowMenu
         }
-        titlePill(lineLimit: nil)
+        conversationMenu(lineLimit: nil)
       }
       .padding(.horizontal, 12)
       .padding(.vertical, 6)
@@ -158,11 +157,10 @@ struct ChatView: View {
       HStack(spacing: 10) {
         browserButton
         Spacer(minLength: 0)
-        titlePill(lineLimit: 1)
+        conversationMenu(lineLimit: 2)
           .layoutPriority(1)
         Spacer(minLength: 0)
         newChatButton
-        overflowMenu
       }
       .padding(.horizontal, 12)
       .padding(.vertical, 6)
@@ -195,16 +193,6 @@ struct ChatView: View {
     }
   }
 
-  private func titlePill(lineLimit: Int?) -> some View {
-    Text(store.displayTitle)
-      .font(.headline)
-      .lineLimit(lineLimit)
-      .multilineTextAlignment(.center)
-      .padding(.horizontal, 16)
-      .frame(maxWidth: .infinity, minHeight: 44)
-      .cregGlassCapsule()
-  }
-
   private var newChatButton: some View {
     CREGGlassContainer(spacing: 10) {
       Button {
@@ -219,10 +207,11 @@ struct ChatView: View {
     }
   }
 
-  private var overflowMenu: some View {
+  private func conversationMenu(lineLimit: Int?) -> some View {
     // The overflow Menu stays outside morphing glass containers to avoid the
     // iOS 26.1 Menu-in-container morph break.
     Menu {
+      Text(store.displayTitle)
       Button {
         store.send(.renameTapped)
       } label: {
@@ -239,12 +228,19 @@ struct ChatView: View {
         Label("Delete", systemImage: "trash")
       }
     } label: {
-      Image(systemName: "ellipsis")
-        .cregIconButtonTarget()
+      HStack(spacing: 6) {
+        Text(store.displayTitle)
+          .font(.headline)
+          .lineLimit(lineLimit)
+          .multilineTextAlignment(.center)
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.semibold))
+      }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, minHeight: 44)
         .cregGlassCapsule(interactive: true)
     }
-    .accessibilityLabel("More")
-    .cregLargeContentViewer("More", systemImage: "ellipsis")
+    .accessibilityLabel("\(store.displayTitle), conversation actions")
   }
 
   // MARK: Bottom stack

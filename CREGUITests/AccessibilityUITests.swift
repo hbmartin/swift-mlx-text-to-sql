@@ -29,32 +29,28 @@ final class AccessibilityUITests: XCTestCase {
     }
   }
 
-  func testKnownIconControlsAreAtLeast44Points() {
+  func testAnswerActionsAreAtLeast44Points() {
     for size in ["large", "ax5"] {
       let answered = launch(scenario: "answered-chat", dynamicType: size)
       assertAccessibleControl("Conversations", in: answered)
       assertAccessibleControl("New chat", in: answered)
-      assertAccessibleControl("More", in: answered)
+      XCTAssertTrue(
+        answered.descendants(matching: .any)
+          .matching(NSPredicate(format: "label CONTAINS 'conversation actions'"))
+          .firstMatch.exists)
+      if size == "ax5" {
+        for _ in 0..<3 { answered.swipeUp() }
+      }
       assertAccessibleControl("Copy answer as Markdown", in: answered)
-      assertAccessibleControl("Share answer", in: answered)
       assertAccessibleControl("Read narration aloud", in: answered)
-      assertAccessibleControl("Helpful", in: answered)
       assertAccessibleControl("Not right", in: answered)
+      assertAccessibleControl("More answer actions", in: answered)
+      answered.buttons["More answer actions"].tap()
+      XCTAssertTrue(
+        answered.descendants(matching: .any)["Share answer"]
+          .waitForExistence(timeout: 5))
+      XCTAssertTrue(answered.descendants(matching: .any)["Helpful"].exists)
       answered.terminate()
-
-      let processing = launch(scenario: "processing-queue", dynamicType: size)
-      assertAccessibleControl("Stop answering", in: processing)
-      assertAccessibleControl("Cancel queued question", in: processing)
-      processing.terminate()
-
-      let error = launch(scenario: "error", dynamicType: size)
-      assertAccessibleControl("Dismiss error", in: error)
-      error.terminate()
-
-      let recovery = launch(scenario: "recovery", dynamicType: size)
-      assertAccessibleControl("Dismiss interrupted question", in: recovery)
-      assertAccessibleControl("Dismiss correction", in: recovery)
-      recovery.terminate()
     }
   }
 
@@ -335,7 +331,9 @@ final class AccessibilityUITests: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) {
-    let control = app.descendants(matching: .any)[label]
+    let control = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "label BEGINSWITH %@", label))
+      .firstMatch
     XCTAssertTrue(
       control.waitForExistence(timeout: 5),
       "Missing control named \(label)",

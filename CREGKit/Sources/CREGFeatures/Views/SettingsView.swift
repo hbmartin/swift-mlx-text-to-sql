@@ -36,18 +36,25 @@ struct SettingsView: View {
           }
         }
 
-        Section {
-          Toggle("Developer mode", isOn: $store.developerMode)
-        } footer: {
-          Text(
-            "Shows generated SQL, per-stage internals, and expandable technical error details. Normal mode keeps those details private."
-          )
-        }
-
         appearanceSection
 
         if store.supportsAlternateIcons {
           AppIconSection(store: store)
+        }
+
+        Section("Privacy & about") {
+          Text("CREG answers portfolio questions on your iPhone.")
+          Text("Conversations, drafts, and diagnostics stay on device unless you share an export.")
+            .foregroundStyle(.secondary)
+          PortfolioSnapshotContextView()
+        }
+
+        Section {
+          Toggle("Developer mode", isOn: $store.developerMode)
+        } header: {
+          Text("Advanced")
+        } footer: {
+          Text("Shows generated SQL and detailed diagnostics in conversations.")
         }
 
         Section("Model & build") {
@@ -69,18 +76,6 @@ struct SettingsView: View {
           }
         }
 
-        Section("Privacy & about") {
-          Text(
-            "CREG answers portfolio questions fully on device. Conversations, drafts, and diagnostics never leave this iPhone unless you explicitly share or email an export."
-          )
-          .font(.footnote)
-          Text(
-            "The bundled portfolio snapshot is fixed as of \(PortfolioAsOfDateDisplay.text). Answers about “now” reflect that snapshot, not today’s date."
-          )
-          .font(.footnote)
-          .foregroundStyle(.secondary)
-        }
-
         Section {
           Button {
             store.send(.supportBundleExportTapped)
@@ -98,9 +93,7 @@ struct SettingsView: View {
           }
           .disabled(store.isBuildingSupportBundle)
         } footer: {
-          Text(
-            "Creates a ZIP with your conversation history, drafts, feedback, sanitized diagnostics, and model/build manifests — not the model weights or the portfolio database. It contains your questions and result data; review before sending."
-          )
+          Text("Includes questions, results, drafts, and diagnostics. Review the ZIP before sending.")
         }
 
         #if DEBUG
@@ -189,9 +182,7 @@ struct SettingsView: View {
     } header: {
       Text("Appearance")
     } footer: {
-      Text(
-        "System follows your iPhone’s Light/Dark setting, including its automatic schedule. Light and Dark pin CREG to that theme instead."
-      )
+      Text("System follows your iPhone’s appearance.")
     }
   }
 
@@ -227,7 +218,19 @@ struct SettingsView: View {
 }
 
 enum PortfolioAsOfDateDisplay {
-  static var text: String { CREGEngine.PortfolioSnapshot.asOfDate }
+  static let text: String = {
+    let input = DateFormatter()
+    input.dateFormat = "yyyy-MM-dd"
+    input.locale = Locale(identifier: "en_US_POSIX")
+    input.timeZone = TimeZone(secondsFromGMT: 0)
+    guard let date = input.date(from: CREGEngine.PortfolioSnapshot.asOfDate) else {
+      return CREGEngine.PortfolioSnapshot.asOfDate
+    }
+    let output = DateFormatter()
+    output.dateStyle = .long
+    output.timeZone = TimeZone(secondsFromGMT: 0)
+    return output.string(from: date)
+  }()
 }
 
 extension AppFeature.SupportBundleExport: Identifiable {
