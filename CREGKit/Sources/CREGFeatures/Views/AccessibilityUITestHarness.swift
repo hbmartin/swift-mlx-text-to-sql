@@ -9,6 +9,7 @@ import SwiftUI
     enum Scenario: String, CaseIterable, Sendable {
       case emptyChat = "empty-chat"
       case answeredChat = "answered-chat"
+      case answeredChatHelpful = "answered-chat-helpful"
       case processingQueue = "processing-queue"
       case error
       case recovery
@@ -112,6 +113,11 @@ import SwiftUI
       case .answeredChat:
         ChatView(
           store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
+          chrome: PreviewFixtures.chrome)
+
+      case .answeredChatHelpful:
+        ChatView(
+          store: PreviewFixtures.chatStore(PreviewFixtures.helpfulChatState()),
           chrome: PreviewFixtures.chrome)
 
       case .resultExplorer:
@@ -400,8 +406,11 @@ import SwiftUI
     fileprivate static func uiTestValue(_ value: String) -> Self? {
       switch value.lowercased() {
       case "large": .large
+      case "xxlarge": .xxLarge
+      case "xxxlarge": .xxxLarge
       case "ax1", "accessibility1": .accessibility1
       case "ax3", "accessibility3": .accessibility3
+      case "ax4", "accessibility4": .accessibility4
       case "ax5", "accessibility5": .accessibility5
       default: nil
       }

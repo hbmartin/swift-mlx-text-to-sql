@@ -242,15 +242,29 @@ extension AppFeature {
       return .none
     }
     return .merge(
-      .run { send in
-        do {
-          try await history.declineAutoRetry(conversationID, journalID)
-        } catch {
-          await send(.operationFailed(
-            .history(operation: .messageSave, error: error)))
-        }
-      },
+      declineCancelledRetry(state: &state, conversationID: conversationID, journalID: journalID),
       dispatchNextIfIdle(state: &state))
+  }
+
+  func declineCancelledRetry(
+    state: inout State, conversationID: UUID, journalID: UUID
+  ) -> Effect<Action> {
+    let operationID = uuid()
+    state.pendingRetryDeclines[
+      journalID, default: RetryDeclineWrites(conversationID: conversationID)
+    ].operationIDs.insert(operationID)
+    return .run { send in
+      do {
+        try await history.declineAutoRetry(conversationID, journalID)
+        await send(.retryDeclineFinished(
+          conversationID: conversationID, journalID: journalID,
+          operationID: operationID, failure: nil))
+      } catch {
+        await send(.retryDeclineFinished(
+          conversationID: conversationID, journalID: journalID,
+          operationID: operationID, failure: .history(operation: .messageSave, error: error)))
+      }
+    }
   }
 
   func resumeDispatchedTurnAfterPreflight(
@@ -508,8 +522,10 @@ extension AppFeature {
         guard let candidateID,
           (!state.dismissedRetryJournalIDs.contains(candidateID)
             || (state.failedDismissalManualRetryIDs.contains(candidateID)
-              && !state.retryClaimInFlight
-              && state.retryClaimCleanupJournalID == nil))
+              && state.retryClaimJournalID != candidateID
+              && state.retryClaimCleanupJournalID != candidateID
+              && state.retryReleaseJournalID != candidateID
+              && state.pendingRetryDeclines[candidateID] == nil))
         else { return false }
         if let requestedID { return $0.journalID == requestedID }
         return true
@@ -529,7 +545,7 @@ extension AppFeature {
     let resolvedJournalID = interrupted.journalID ?? interrupted.executionID
       ?? trailingMessage?.id
     guard let resolvedJournalID else { return .none }
-    if state.failedDismissalManualRetryIDs.remove(resolvedJournalID) != nil {
+    if state.failedDismissalRecoveries.removeValue(forKey: resolvedJournalID) != nil {
       state.dismissedRetryJournalIDs.remove(resolvedJournalID)
     }
     let cancellationSettling =
@@ -711,8 +727,8 @@ extension AppFeature {
             next.conversationID, journalID, userMessage.id, next.automaticRetry)
           await send(.queuedRetryClaimed(next, retryCount))
         } catch {
-          await send(.queuedRetryClaimed(next, nil))
-          await send(.operationFailed(.history(operation: .messageSave, error: error)))
+          await send(.queuedRetryClaimed(
+            next, nil, .history(operation: .messageSave, error: error)))
         }
       }
     }

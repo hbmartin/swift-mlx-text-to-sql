@@ -1,0 +1,211 @@
+import AutoTableCharts
+import AutoTableChartsUI
+import CREGEngine
+import ComposableArchitecture
+import SwiftUI
+
+#if DEBUG
+private struct AnswerActionsPreviewFrame: View {
+  let width: CGFloat
+  let size: DynamicTypeSize
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 24) {
+      actions(phase: nil)
+      actions(phase: .playing)
+      actions(phase: .paused)
+    }
+    .frame(width: width)
+    .environment(\.dynamicTypeSize, size)
+    .padding(16)
+    .background(CREGBrand.chatSurface)
+  }
+
+  private func actions(phase: ChatFeature.ReadAloudState.Phase?) -> some View {
+    AnswerActionsRow(
+      messageID: PreviewFixtures.id("2"),
+      narration: PreviewFixtures.answeredNarration,
+      result: PreviewFixtures.fundValueResult,
+      runtimeMode: .evaluated,
+      feedback: nil,
+      readAloud: phase.map { .init(messageID: PreviewFixtures.id("2"), phase: $0) },
+      store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()))
+  }
+}
+
+#Preview("Answer Actions — 343pt — Large", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 343, size: .large)
+}
+
+#Preview("Answer Actions — 343pt — XXL", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 343, size: .xxLarge)
+}
+
+#Preview("Answer Actions — 343pt — XXXL", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 343, size: .xxxLarge)
+}
+
+#Preview("Answer Actions — 343pt — AX4", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 343, size: .accessibility4)
+}
+
+#Preview("Answer Actions — 343pt — AX5", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 343, size: .accessibility5)
+}
+
+#Preview("Answer Actions — 370pt — Large", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 370, size: .large)
+}
+
+#Preview("Answer Actions — 370pt — XXL", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 370, size: .xxLarge)
+}
+
+#Preview("Answer Actions — 370pt — XXXL", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 370, size: .xxxLarge)
+}
+
+#Preview("Answer Actions — 370pt — AX4", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 370, size: .accessibility4)
+}
+
+#Preview("Answer Actions — 370pt — AX5", traits: .sizeThatFitsLayout) {
+  AnswerActionsPreviewFrame(width: 370, size: .accessibility5)
+}
+
+#Preview("Featured Starter — XXL", traits: .sizeThatFitsLayout) {
+  EmptyChatState(isEnabled: true, submit: { _ in })
+    .frame(width: 343)
+    .environment(\.dynamicTypeSize, .xxLarge)
+    .padding(16)
+}
+
+#Preview("Featured Starter — AX5", traits: .sizeThatFitsLayout) {
+  EmptyChatState(isEnabled: true, submit: { _ in })
+    .frame(width: 343)
+    .environment(\.dynamicTypeSize, .accessibility5)
+    .padding(16)
+}
+
+#Preview("Portfolio Date — Gregorian", traits: .sizeThatFitsLayout) {
+  PortfolioSnapshotContextView()
+    .environment(\.calendar, Calendar(identifier: .gregorian))
+    .environment(\.locale, Locale(identifier: "en_US"))
+    .padding(16)
+}
+
+#Preview("Portfolio Date — Buddhist", traits: .sizeThatFitsLayout) {
+  PortfolioSnapshotContextView()
+    .environment(\.calendar, Calendar(identifier: .buddhist))
+    .environment(\.locale, Locale(identifier: "th_TH"))
+    .padding(16)
+}
+
+#Preview("Portfolio Date — Japanese", traits: .sizeThatFitsLayout) {
+  PortfolioSnapshotContextView()
+    .environment(\.calendar, Calendar(identifier: .japanese))
+    .environment(\.locale, Locale(identifier: "ja_JP"))
+    .padding(16)
+}
+
+#Preview("Chart Value Rows — Funds — Standard", traits: .sizeThatFitsLayout) {
+  SimpleChartValuesView(values: SimpleChartValues.rows(for: PreviewFixtures.fundValueResult)!)
+    .frame(width: 323)
+    .environment(\.dynamicTypeSize, .large)
+    .padding(10)
+}
+
+#Preview("Chart Value Rows — Funds — AX5", traits: .sizeThatFitsLayout) {
+  SimpleChartValuesView(values: SimpleChartValues.rows(for: PreviewFixtures.fundValueResult)!)
+    .frame(width: 323)
+    .environment(\.dynamicTypeSize, .accessibility5)
+    .padding(10)
+}
+
+#Preview("Chart Value Rows — Dates — Standard", traits: .sizeThatFitsLayout) {
+  SimpleChartValuesView(values: SimpleChartValues.rows(for: PreviewFixtures.datedValueResult)!)
+    .frame(width: 323)
+    .environment(\.dynamicTypeSize, .large)
+    .padding(10)
+}
+
+#Preview("Chart Value Rows — Dates — AX5", traits: .sizeThatFitsLayout) {
+  SimpleChartValuesView(values: SimpleChartValues.rows(for: PreviewFixtures.datedValueResult)!)
+    .frame(width: 323)
+    .environment(\.dynamicTypeSize, .accessibility5)
+    .padding(10)
+}
+
+#Preview("More Actions — Selected Helpful — Light", traits: .sizeThatFitsLayout) {
+  AnswerMoreActions(exportedAnswer: "Fixture answer", isHelpful: true, markHelpful: {}, stopReading: {})
+    .frame(width: 343)
+    .environment(\.dynamicTypeSize, .accessibility5)
+    .preferredColorScheme(.light)
+}
+
+#Preview("Chart Appearance — Preparation — Light", traits: .sizeThatFitsLayout) {
+  ResultChartPreparationView(
+    recommendation: PreviewFixtures.ChartPreparation.recommendation,
+    presentation: .preview(plotHeight: 180),
+    formatters: CREGChartAdapter.formatters,
+    textResolver: CREGChartAdapter.textResolver)
+    .autoChartTheme(CREGChartAppearance.theme)
+    .frame(width: 343)
+    .preferredColorScheme(.light)
+}
+
+#Preview("Chart Appearance — Explorer — Light") {
+  @Previewable @State var preference = ResultPresentationPreference.automatic
+  ResultViewerView(
+    result: PreviewFixtures.fundValueResult, runtimeMode: .evaluated,
+    textSize: .constant(.standard), preference: $preference)
+    .frame(width: 402, height: 874)
+    .preferredColorScheme(.light)
+}
+
+#Preview("Chart Appearance — KPI — Light") {
+  @Previewable @State var preference = ResultPresentationPreference.automatic
+  ResultViewerView(
+    result: QueryResult(columns: ["current_market_value"], rows: [[.integer(934_450_000)]]),
+    runtimeMode: .evaluated, textSize: .constant(.standard), preference: $preference)
+    .frame(width: 402, height: 874)
+    .preferredColorScheme(.light)
+}
+
+#Preview("More Actions — Selected Helpful — Dark", traits: .sizeThatFitsLayout) {
+  AnswerMoreActions(exportedAnswer: "Fixture answer", isHelpful: true, markHelpful: {}, stopReading: {})
+    .frame(width: 343)
+    .environment(\.dynamicTypeSize, .accessibility5)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Chart Appearance — Preparation — Dark", traits: .sizeThatFitsLayout) {
+  ResultChartPreparationView(
+    recommendation: PreviewFixtures.ChartPreparation.recommendation,
+    presentation: .preview(plotHeight: 180),
+    formatters: CREGChartAdapter.formatters,
+    textResolver: CREGChartAdapter.textResolver)
+    .autoChartTheme(CREGChartAppearance.theme)
+    .frame(width: 343)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Chart Appearance — Explorer — Dark") {
+  @Previewable @State var preference = ResultPresentationPreference.automatic
+  ResultViewerView(
+    result: PreviewFixtures.fundValueResult, runtimeMode: .evaluated,
+    textSize: .constant(.standard), preference: $preference)
+    .frame(width: 402, height: 874)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Chart Appearance — KPI — Dark") {
+  @Previewable @State var preference = ResultPresentationPreference.automatic
+  ResultViewerView(
+    result: QueryResult(columns: ["current_market_value"], rows: [[.integer(934_450_000)]]),
+    runtimeMode: .evaluated, textSize: .constant(.standard), preference: $preference)
+    .frame(width: 402, height: 874)
+    .preferredColorScheme(.dark)
+}
+
+#endif

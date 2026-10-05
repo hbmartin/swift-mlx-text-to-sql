@@ -141,21 +141,7 @@ struct ResultPreviewView: View {
               chartArea(recommendation: selectedRecommendation)
                 .autoChartTheme(CREGChartAppearance.theme)
               if let values = simpleChartValues {
-                VStack(spacing: 4) {
-                  ForEach(values.indices, id: \.self) { index in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                      Text(values[index].label)
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
-                      Spacer(minLength: 4)
-                      Text(values[index].value)
-                        .fontWeight(.semibold)
-                        .monospacedDigit()
-                        .foregroundStyle(.primary)
-                    }
-                    .font(.caption)
-                  }
-                }
+                SimpleChartValuesView(values: values)
                 .padding(.top, 2)
               }
             } else {
@@ -189,6 +175,8 @@ struct ResultPreviewView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
           "Result \(effectiveResultMode == .chart ? "chart" : "table"), \(ResultViewerLogic.rowCountLabel(for: result))")
+        .accessibilityValue(
+          effectiveResultMode == .chart ? SimpleChartValues.accessibilitySummary(for: result) : "")
         .accessibilityHint("Double-tap or pinch outward to open the result explorer")
       }
       .task(id: chartInputIdentity) {
@@ -310,6 +298,10 @@ struct ResultPreviewView: View {
 }
 
 enum SimpleChartValues {
+  static func accessibilitySummary(for result: QueryResult) -> String {
+    rows(for: result)?.map { "\($0.label), \($0.value)" }.joined(separator: "; ") ?? ""
+  }
+
   static func rows(for result: QueryResult) -> [(label: String, value: String)]? {
     guard result.columns.count == 2,
       (2...4).contains(result.rows.count),
@@ -323,17 +315,56 @@ enum SimpleChartValues {
     else { return nil }
     return result.rows.map { row in
       (
-        row[0].displayString,
+        ResultViewerLogic.displayedCopyValue(row[0], column: result.columns[0]),
         ResultViewerLogic.displayedCopyValue(row[1], column: result.columns[1])
       )
     }
   }
 }
 
+struct SimpleChartValuesView: View {
+  let values: [(label: String, value: String)]
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: dynamicTypeSize.isAccessibilitySize ? 12 : 4) {
+      ForEach(values.indices, id: \.self) { index in
+        if dynamicTypeSize.isAccessibilitySize {
+          VStack(alignment: .leading, spacing: 4) {
+            label(at: index)
+            value(at: index)
+          }
+        } else {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            label(at: index)
+            Spacer(minLength: 4)
+            value(at: index)
+          }
+        }
+      }
+    }
+    .font(.caption)
+  }
+
+  private func label(at index: Int) -> some View {
+    Text(values[index].label)
+      .fixedSize(horizontal: false, vertical: true)
+      .foregroundStyle(.secondary)
+  }
+
+  private func value(at index: Int) -> some View {
+    Text(values[index].value)
+      .fontWeight(.semibold)
+      .monospacedDigit()
+      .fixedSize(horizontal: false, vertical: true)
+      .foregroundStyle(.primary)
+  }
+}
+
 enum CREGChartAppearance {
   static let theme = AutoChartTheme(
     axisColor: .primary,
-    legendColor: CREGBrand.blue,
+    legendColor: .primary,
     markColors: [CREGBrand.blue, CREGBrand.turquoise, .orange, .purple, .green],
     titleFont: .headline,
     labelFont: .caption,

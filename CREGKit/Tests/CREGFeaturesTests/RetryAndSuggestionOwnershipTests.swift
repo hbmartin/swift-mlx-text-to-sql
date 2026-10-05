@@ -256,6 +256,7 @@ private actor HeldOperation {
     history.declineAutoRetry = { _, _ in throw error }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.uuid = .incrementing
       $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
@@ -283,6 +284,7 @@ private actor HeldOperation {
     state.chat?.queuedRetryJournalIDs = [user.id]
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = .noop()
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
@@ -469,9 +471,12 @@ private actor HeldOperation {
     await store.receive(.retryClaimReleased(queued, nil))
     await decline.waitUntilHeld()
 
-    await store.send(.chat(.delegate(.dismissInterruptedTurn(user.id))))
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(
+      conversationID: Self.conversationA, journalID: user.id,
+      interruption: state.chat!.interruptedTurn!))))
     await store.receive(.interruptedDismissalFinished(
-      conversationID: Self.conversationA, journalID: user.id, failure: nil))
+      conversationID: Self.conversationA, journalID: user.id,
+      attemptID: store.state.pendingInterruptedDismissals[user.id]!.attemptID, failure: nil))
     #expect(store.state.cancelledRetryJournalIDs.contains(user.id))
     #expect(store.state.chat?.queuedRetryJournalIDs.isEmpty == true)
     await store.send(.appBecameActive)
@@ -529,9 +534,12 @@ private actor HeldOperation {
 
     await store.send(.queuedRetryClaimed(queued, 1))
     await release.waitUntilHeld()
-    await store.send(.chat(.delegate(.dismissInterruptedTurn(user.id))))
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(
+      conversationID: Self.conversationA, journalID: user.id,
+      interruption: state.chat!.interruptedTurn!))))
     await store.receive(.interruptedDismissalFinished(
-      conversationID: Self.conversationA, journalID: user.id, failure: nil))
+      conversationID: Self.conversationA, journalID: user.id,
+      attemptID: store.state.pendingInterruptedDismissals[user.id]!.attemptID, failure: nil))
     #expect(store.state.chat?.queuedRetryJournalIDs.isEmpty == true)
     await store.send(.appBecameActive)
     #expect(store.state.activeTurn == nil)
@@ -799,8 +807,8 @@ private actor HeldOperation {
     let releaseFailure = FailurePresentation.history(
       operation: .messageSave, error: releaseError)
     let release = HeldOperation()
-    let reload = HeldOperation()
     let reloads = CallRecorder()
+    let diagnostics = DiagnosticEventRecorder()
     let snapshot = ConversationSnapshot(
       summary: state.conversations[id: Self.conversationA]!,
       messages: [user], interruptedTurn: state.chat!.interruptedTurn)
@@ -812,21 +820,24 @@ private actor HeldOperation {
     history.endTurnJournal = { _, _ in throw dismissalError }
     history.loadConversation = { id in
       reloads.record(id.uuidString)
-      await reload.hold()
       return snapshot
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
 
     await store.send(.queuedRetryClaimed(queued, 1))
     await release.waitUntilHeld()
-    await store.send(.chat(.delegate(.dismissInterruptedTurn(user.id))))
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(
+      conversationID: Self.conversationA, journalID: user.id,
+      interruption: state.chat!.interruptedTurn!))))
     await store.receive(.interruptedDismissalFinished(
       conversationID: Self.conversationA, journalID: user.id,
-      failure: dismissalFailure))
-    #expect(store.state.failedDismissalAwaitingRetryWrite?.journalID == user.id)
+      attemptID: store.state.pendingInterruptedDismissals[user.id]!.attemptID, failure: dismissalFailure))
+    #expect(store.state.pendingInterruptedDismissals[user.id]?.journalID == user.id)
     #expect(store.state.presentedFailure == nil)
     #expect(reloads.recorded.isEmpty)
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
@@ -835,18 +846,19 @@ private actor HeldOperation {
 
     await release.finish()
     await store.receive(.retryClaimReleased(queued, releaseFailure))
-    await reload.waitUntilHeld()
-    #expect(store.state.failedDismissalAwaitingRetryWrite?.journalID == user.id)
-    #expect(store.state.failedDismissalManualRetryIDs.isEmpty)
-    await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
-    #expect(store.state.userPromotedRetryJournalIDs.isEmpty)
-    await reload.finish()
+    #expect(store.state.presentedFailure == nil)
+    #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
+    await store.receive(.operationFailed(dismissalFailure))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
-    #expect(store.state.failedDismissalAwaitingRetryWrite == nil)
+    #expect(store.state.pendingInterruptedDismissals[user.id] == nil)
     #expect(store.state.failedDismissalManualRetryIDs.contains(user.id))
     #expect(store.state.presentedFailure == dismissalFailure)
-    #expect(reloads.recorded == [Self.conversationA.uuidString])
+    #expect(diagnostics.events.filter { $0.code == dismissalFailure.code }.count == 1)
+    #expect(diagnostics.events.first { $0.code == dismissalFailure.code }?.details
+      == dismissalFailure.diagnostic)
+    #expect(diagnostics.events.filter { $0.code == "retry_write_failed_after_dismissal" }.count == 1)
+    #expect(reloads.recorded.isEmpty)
   }
 
   @Test func failedDismissalAfterReleaseSettlesImmediately() async {
@@ -888,12 +900,15 @@ private actor HeldOperation {
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
     await store.send(.queuedRetryClaimed(queued, 1))
     await release.waitUntilHeld()
-    await store.send(.chat(.delegate(.dismissInterruptedTurn(user.id))))
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(
+      conversationID: Self.conversationA, journalID: user.id,
+      interruption: state.chat!.interruptedTurn!))))
     await dismissal.waitUntilHeld()
     await release.finish()
     await store.receive(.retryClaimReleased(queued, nil))
@@ -902,10 +917,10 @@ private actor HeldOperation {
     await dismissal.finish()
     await store.receive(.interruptedDismissalFinished(
       conversationID: Self.conversationA, journalID: user.id,
-      failure: failure))
+      attemptID: store.state.pendingInterruptedDismissals[user.id]!.attemptID, failure: failure))
     await store.skipReceivedActions()
     #expect(store.state.presentedFailure == failure)
-    #expect(reloads.recorded == [Self.conversationA.uuidString])
+    #expect(reloads.recorded.isEmpty)
   }
 
   @Test func failedDismissalWaitsForCancellationDeclineAndSuppressesItsError() async {
@@ -933,6 +948,7 @@ private actor HeldOperation {
     let decline = HeldOperation()
     let declines = CallRecorder()
     let reloads = CallRecorder()
+    let diagnostics = DiagnosticEventRecorder()
     let snapshot = ConversationSnapshot(
       summary: state.conversations[id: Self.conversationA]!,
       messages: [user], interruptedTurn: state.chat!.interruptedTurn)
@@ -951,16 +967,20 @@ private actor HeldOperation {
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.uuid = .incrementing
+      $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
 
     await store.send(.retryClaimReleased(queued, nil))
     await decline.waitUntilHeld()
-    await store.send(.chat(.delegate(.dismissInterruptedTurn(user.id))))
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(
+      conversationID: Self.conversationA, journalID: user.id,
+      interruption: state.chat!.interruptedTurn!))))
     await store.receive(.interruptedDismissalFinished(
       conversationID: Self.conversationA, journalID: user.id,
-      failure: dismissalFailure))
-    #expect(store.state.failedDismissalAwaitingRetryWrite?.journalID == user.id)
+      attemptID: store.state.pendingInterruptedDismissals[user.id]!.attemptID, failure: dismissalFailure))
+    #expect(store.state.pendingInterruptedDismissals[user.id]?.journalID == user.id)
     #expect(store.state.presentedFailure == nil)
     #expect(reloads.recorded.isEmpty)
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
@@ -969,11 +989,17 @@ private actor HeldOperation {
     await decline.finish()
     await store.receive(.retryCancellationSettled(
       queued, .history(operation: .messageSave, error: declineError)))
+    #expect(store.state.presentedFailure == nil)
+    await store.receive(.operationFailed(dismissalFailure))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
-    #expect(store.state.failedDismissalAwaitingRetryWrite == nil)
+    #expect(store.state.pendingInterruptedDismissals[user.id] == nil)
     #expect(store.state.presentedFailure == dismissalFailure)
-    #expect(reloads.recorded == [Self.conversationA.uuidString])
+    #expect(diagnostics.events.filter { $0.code == dismissalFailure.code }.count == 1)
+    #expect(diagnostics.events.first { $0.code == dismissalFailure.code }?.details
+      == dismissalFailure.diagnostic)
+    #expect(diagnostics.events.filter { $0.code == "retry_write_failed_after_dismissal" }.count == 1)
+    #expect(reloads.recorded.isEmpty)
   }
 
   @Test func automaticReleaseRestoresAllowanceAndRetriesOnActivation() async {

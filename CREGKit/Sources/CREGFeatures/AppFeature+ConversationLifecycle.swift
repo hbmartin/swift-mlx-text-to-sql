@@ -16,18 +16,79 @@ extension AppFeature {
   func finishDeferredDismissalIfReady(
     state: inout State, journalID: UUID
   ) -> Effect<Action> {
-    guard let deferred = state.failedDismissalAwaitingRetryWrite,
-      deferred.journalID == journalID,
+    guard var deferred = state.pendingInterruptedDismissals[journalID],
+      let failure = deferred.failure,
       state.retryClaimJournalID != journalID,
       state.retryClaimCleanupJournalID != journalID,
-      state.retryReleaseJournalID != journalID
+      state.retryReleaseJournalID != journalID,
+      state.pendingRetryDeclines[journalID] == nil
     else { return .none }
-    guard state.chat?.conversationID == deferred.conversationID,
-      state.pendingDeletion?.summary.id != deferred.conversationID
-    else { return .send(.failedDismissalReloaded(deferred, nil)) }
-    return .run { send in
-      let snapshot = try? await history.loadConversation(deferred.conversationID)
-      await send(.failedDismissalReloaded(deferred, snapshot))
+    state.pendingInterruptedDismissals.removeValue(forKey: journalID)
+    guard
+      state.conversations[id: deferred.conversationID] != nil
+        || state.pendingDeletion?.summary.id == deferred.conversationID
+    else { return .none }
+    deferred.interruption.status = .manualRetryRequired
+    state.failedDismissalRecoveries[journalID] = deferred
+    syncDismissalProjection(into: &state)
+    syncSchedulerProjection(into: &state)
+    return handleConversationWriteFailure(
+      state: &state, conversationID: deferred.conversationID, failure: failure)
+  }
+
+  /// A history load cannot resurrect pending or successfully dismissed rows.
+  /// Recovery changes only interruption banners, preserving the live chat.
+  func syncDismissalProjection(into state: inout State) {
+    guard var chat = state.chat,
+      state.pendingDeletion?.summary.id != chat.conversationID
+    else { return }
+    chat.interruptedTurns.removeAll {
+      guard let journalID = $0.journalID ?? $0.executionID else { return false }
+      return state.dismissedRetryJournalIDs.contains(journalID)
+        && state.failedDismissalRecoveries[journalID] == nil
+    }
+    for recovery in state.failedDismissalRecoveries.values
+    where recovery.conversationID == chat.conversationID {
+      if let index = chat.interruptedTurns.firstIndex(where: {
+        ($0.journalID ?? $0.executionID) == recovery.journalID
+      }) {
+        let retryCount = chat.interruptedTurns[index].autoRetryCount
+        chat.interruptedTurns[index] = recovery.interruption
+        chat.interruptedTurns[index].autoRetryCount = retryCount
+      } else {
+        chat.interruptedTurns.append(recovery.interruption)
+      }
+    }
+    chat.interruptedTurns.sort {
+      if $0.interruptedAt != $1.interruptedAt { return $0.interruptedAt < $1.interruptedAt }
+      return (($0.journalID ?? $0.executionID)?.uuidString ?? "")
+        < (($1.journalID ?? $1.executionID)?.uuidString ?? "")
+    }
+    state.chat = chat
+  }
+
+  func recordSuppressedRetryFailure(_ failure: FailurePresentation, journalID: UUID) {
+    diagnostics.record(
+      DiagnosticEvent(
+        level: .error, category: .history,
+        code: "retry_write_failed_after_dismissal",
+        summary: "An obsolete retry write failed after its interruption was dismissed.",
+        details: failure.diagnostic,
+        context: ["journal_id": journalID.uuidString, "failure_code": failure.code]))
+  }
+
+  func clearDismissalRecovery(state: inout State, conversationID: UUID) {
+    let journals = Set(
+      state.pendingInterruptedDismissals.values.filter { $0.conversationID == conversationID }
+        .map(\.journalID)
+        + state.failedDismissalRecoveries.values.filter { $0.conversationID == conversationID }
+        .map(\.journalID))
+    for journalID in journals {
+      state.pendingInterruptedDismissals.removeValue(forKey: journalID)
+      state.failedDismissalRecoveries.removeValue(forKey: journalID)
+    }
+    state.pendingRetryDeclines = state.pendingRetryDeclines.filter {
+      $0.value.conversationID != conversationID
     }
   }
   func deleteConversation(
@@ -114,6 +175,7 @@ extension AppFeature {
         summary: "Conversation deletion is waiting for its final history write.")
       return .none
     }
+    clearDismissalRecovery(state: &state, conversationID: conversationID)
     return commitDeletionEffect(conversationID: conversationID)
   }
 
@@ -444,6 +506,7 @@ extension AppFeature {
             && state.pendingTurnPersistence == nil
             && !state.retryClaimInFlight
             && state.retryReleaseJournalID == nil
+            && state.pendingRetryDeclines.isEmpty
             && state.queue.allSatisfy(\.automaticRetry)
             && state.followUpPreparation == nil
             && !state.isCapturingAnswerability)

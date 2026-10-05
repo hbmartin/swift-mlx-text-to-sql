@@ -93,7 +93,9 @@ struct SettingsView: View {
           }
           .disabled(store.isBuildingSupportBundle)
         } footer: {
-          Text("Includes questions, results, drafts, and diagnostics. Review the ZIP before sending.")
+          Text(
+            "Includes questions, results, drafts, answer feedback and corrections, event history, and diagnostics. Review the ZIP before sending."
+          )
         }
 
         #if DEBUG
@@ -218,19 +220,8 @@ struct SettingsView: View {
 }
 
 enum PortfolioAsOfDateDisplay {
-  static let text: String = {
-    let input = DateFormatter()
-    input.dateFormat = "yyyy-MM-dd"
-    input.locale = Locale(identifier: "en_US_POSIX")
-    input.timeZone = TimeZone(secondsFromGMT: 0)
-    guard let date = input.date(from: CREGEngine.PortfolioSnapshot.asOfDate) else {
-      return CREGEngine.PortfolioSnapshot.asOfDate
-    }
-    let output = DateFormatter()
-    output.dateStyle = .long
-    output.timeZone = TimeZone(secondsFromGMT: 0)
-    return output.string(from: date)
-  }()
+  static let text = PortfolioValueFormatting.formattedISODate(CREGEngine.PortfolioSnapshot.asOfDate)
+    ?? CREGEngine.PortfolioSnapshot.asOfDate
 }
 
 extension AppFeature.SupportBundleExport: Identifiable {
@@ -245,7 +236,7 @@ struct SupportBundleSendView: View {
 
   static let supportAddress = "harold.martin@gmail.com"
   static let sensitiveContentsWarning =
-    "This bundle contains your portfolio questions, results, drafts, and diagnostics. Send it only if you are comfortable sharing that data with support."
+    "This bundle contains your portfolio questions, results, drafts, answer feedback and corrections, event history, and diagnostics. Send it only if you are comfortable sharing that data with support."
 
   var body: some View {
     #if canImport(MessageUI)
