@@ -43,7 +43,7 @@ final class AccessibilityUITests: XCTestCase {
         assertAccessibleControl(scrollToControl(label, in: answered), label: label)
       }
       try answered.performAccessibilityAudit(for: .textClipped)
-      answered.buttons["More answer actions"].tap()
+      tapMoreClearOfChatHeader(in: answered)
       assertAccessibleControl("Share answer", in: answered)
       assertAccessibleControl("Helpful", in: answered)
       answered.terminate()
@@ -96,7 +96,7 @@ final class AccessibilityUITests: XCTestCase {
       XCTAssertTrue(app.otherElements["PopoverDismissRegion"].waitForNonExistence(timeout: 5))
       tapMoreClearOfChatHeader(in: app)
       XCTAssertTrue(helpful.waitForExistence(timeout: 5), app.debugDescription)
-      assertAccessibleControl(helpful, label: "Helpful")
+      assertAccessibleControl(scrollToControl("Helpful", in: app), label: "Helpful")
       app.terminate()
     }
   }
@@ -510,13 +510,15 @@ final class AccessibilityUITests: XCTestCase {
     let control = app.descendants(matching: .any)
       .matching(NSPredicate(format: "label BEGINSWITH %@", label))
       .firstMatch
+    let moreScroll = app.scrollViews["answer-more-scroll"]
+    let scroll = moreScroll.exists ? moreScroll : app.scrollViews.firstMatch
     for _ in 0..<6 {
       if control.exists && control.isHittable { return control }
-      app.swipeUp()
+      scroll.swipeUp()
     }
     for _ in 0..<6 {
       if control.exists && control.isHittable { return control }
-      app.swipeDown()
+      scroll.swipeDown()
     }
     XCTAssertTrue(control.waitForExistence(timeout: 5), "Missing control named \(label)")
     return control
@@ -557,7 +559,9 @@ final class AccessibilityUITests: XCTestCase {
       "Missing control named \(label)",
       file: file,
       line: line)
-    XCTAssertTrue(control.isHittable, "\(label) is not hittable", file: file, line: line)
+    XCTAssertTrue(
+      control.isHittable, "\(label) is not hittable: \(control.debugDescription)",
+      file: file, line: line)
     XCTAssertGreaterThanOrEqual(
       control.frame.width, 44 - 0.001, "\(label) is narrower than 44 points", file: file, line: line)
     XCTAssertGreaterThanOrEqual(
