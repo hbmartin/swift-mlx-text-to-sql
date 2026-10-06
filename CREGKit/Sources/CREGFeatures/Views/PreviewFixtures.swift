@@ -243,6 +243,21 @@ enum PreviewFixtures {
       title: "Current market value by fund")
   }
 
+  static func helpfulChatState() -> ChatFeature.State {
+    var state = answeredChatState()
+    let messageID = id("2")
+    state.feedback[messageID] = AnswerFeedback(
+      messageID: messageID, verdict: .helpful, updatedAt: now)
+    return state
+  }
+
+  static let datedValueResult = QueryResult(
+    columns: ["period_end", "current_market_value"],
+    rows: [
+      [.text("2024-06-30"), .real(412_500_000)],
+      [.text("2024-12-31"), .real(426_000_000)],
+    ])
+
   static func preparedFollowUps(count: Int = 3) -> [PreparedFollowUp] {
     let questions = [
       "How does current market value compare with acquisition cost by fund?",

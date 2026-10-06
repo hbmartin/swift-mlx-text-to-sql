@@ -254,7 +254,7 @@ struct FollowUpSuggestionsView: View {
 }
 
 /// Primary answer actions stay labeled. Sharing and positive feedback live in
-/// the menu so the correction path remains easy to find.
+/// a popover with full touch targets so the correction path remains easy to find.
 struct AnswerActionsRow: View {
   let messageID: UUID
   let narration: String
@@ -264,27 +264,28 @@ struct AnswerActionsRow: View {
   let readAloud: ChatFeature.ReadAloudState?
   let store: StoreOf<ChatFeature>
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @State private var isMorePresented = false
 
   var body: some View {
-    Group {
-      if dynamicTypeSize.isAccessibilitySize {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8)], spacing: 8) {
-          copyButton
-          readAloudButton
-          notRightButton
-          moreMenu
-        }
-      } else {
-        HStack(spacing: 6) {
-          copyButton
-          readAloudButton
-          notRightButton
-          Spacer(minLength: 0)
-          moreMenu
-        }
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 6) {
+        actions(stacked: false)
+      }
+      .fixedSize(horizontal: true, vertical: false)
+      VStack(alignment: .leading, spacing: 8) {
+        actions(stacked: true)
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.top, 2)
+  }
+
+  @ViewBuilder
+  private func actions(stacked: Bool) -> some View {
+    copyButton(stacked: stacked)
+    readAloudButton(stacked: stacked)
+    notRightButton(stacked: stacked)
+    moreMenu(stacked: stacked)
   }
 
   private var exportedAnswer: String {
@@ -294,11 +295,11 @@ struct AnswerActionsRow: View {
       runtimeMode: runtimeMode)
   }
 
-  private var copyButton: some View {
+  private func copyButton(stacked: Bool) -> some View {
     Button {
       Pasteboard.copy(exportedAnswer)
     } label: {
-      actionLabel("Copy", systemImage: "doc.on.doc")
+      actionLabel("Copy", systemImage: "doc.on.doc", stacked: stacked)
     }
     .buttonStyle(.bordered)
     .accessibilityLabel("Copy answer as Markdown")
@@ -306,14 +307,15 @@ struct AnswerActionsRow: View {
       "Copy answer as Markdown", systemImage: "doc.on.doc")
   }
 
-  private var notRightButton: some View {
+  private func notRightButton(stacked: Bool) -> some View {
     Button {
       store.send(.feedbackNotRightTapped(messageID: messageID))
     } label: {
       actionLabel(
         "Not right",
         systemImage: feedback?.verdict == .notRight
-          ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+          ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+        stacked: stacked)
     }
     .buttonStyle(.bordered)
     .tint(feedback?.verdict == .notRight ? .orange : nil)
@@ -324,13 +326,13 @@ struct AnswerActionsRow: View {
   }
 
   @ViewBuilder
-  private var readAloudButton: some View {
+  private func readAloudButton(stacked: Bool) -> some View {
     if let readAloud, readAloud.messageID == messageID {
       if readAloud.phase == .playing {
         Button {
           store.send(.readAloudPauseTapped)
         } label: {
-          actionLabel("Pause", systemImage: "pause.fill")
+          actionLabel("Pause", systemImage: "pause.fill", stacked: stacked)
         }
         .buttonStyle(.bordered)
         .tint(CREGBrand.blue)
@@ -339,7 +341,7 @@ struct AnswerActionsRow: View {
         Button {
           store.send(.readAloudResumeTapped)
         } label: {
-          actionLabel("Resume", systemImage: "play.fill")
+          actionLabel("Resume", systemImage: "play.fill", stacked: stacked)
         }
         .buttonStyle(.bordered)
         .tint(CREGBrand.blue)
@@ -349,49 +351,88 @@ struct AnswerActionsRow: View {
       Button {
         store.send(.readAloudTapped(messageID: messageID))
       } label: {
-        actionLabel("Listen", systemImage: "speaker.wave.2")
+        actionLabel("Listen", systemImage: "speaker.wave.2", stacked: stacked)
       }
       .buttonStyle(.bordered)
-      .accessibilityLabel("Read narration aloud")
+      .accessibilityLabel("Listen")
+      .accessibilityHint("Reads this answer aloud")
+      .accessibilityInputLabels(["Listen", "Read narration aloud"])
     }
   }
 
-  private var moreMenu: some View {
-    Menu {
-      ShareLink(item: exportedAnswer) {
-        Label("Share answer", systemImage: "square.and.arrow.up")
-      }
-      Button {
-        store.send(.feedbackHelpfulTapped(messageID: messageID))
-      } label: {
-        Label(
-          feedback?.verdict == .helpful ? "Marked helpful" : "Helpful",
-          systemImage: feedback?.verdict == .helpful
-            ? "hand.thumbsup.fill" : "hand.thumbsup")
-      }
-      if let readAloud, readAloud.messageID == messageID {
-        Button {
-          store.send(.readAloudStopTapped)
-        } label: {
-          Label("Stop reading", systemImage: "stop.fill")
-        }
-      }
+  private func moreMenu(stacked: Bool) -> some View {
+    Button {
+      isMorePresented = true
     } label: {
-      if dynamicTypeSize.isAccessibilitySize {
-        actionLabel("More", systemImage: "ellipsis")
+      if stacked || dynamicTypeSize.isAccessibilitySize {
+        actionLabel("More", systemImage: "ellipsis", stacked: stacked)
       } else {
         Image(systemName: "ellipsis")
-          .frame(minWidth: 28, minHeight: 44)
+          .frame(minWidth: 44, minHeight: 44)
       }
     }
     .buttonStyle(.bordered)
     .accessibilityLabel("More answer actions")
+    .popover(isPresented: $isMorePresented, arrowEdge: .bottom) {
+      AnswerMoreActions(
+        exportedAnswer: exportedAnswer,
+        isHelpful: feedback?.verdict == .helpful,
+        markHelpful: {
+          store.send(.feedbackHelpfulTapped(messageID: messageID))
+          isMorePresented = false
+        },
+        stopReading: readAloud?.messageID == messageID ? {
+          store.send(.readAloudStopTapped)
+          isMorePresented = false
+        } : nil)
+      .presentationCompactAdaptation(.popover)
+    }
+  }
+
+  private func actionLabel(_ title: String, systemImage: String, stacked: Bool) -> some View {
+    Label(title, systemImage: systemImage)
+      .font(.caption.weight(.medium))
+      .fixedSize(horizontal: !stacked, vertical: true)
+      .frame(maxWidth: stacked ? .infinity : nil, minHeight: 44, alignment: .leading)
+  }
+}
+
+/// Shared by the popover and deterministic previews of its selected state.
+struct AnswerMoreActions: View {
+  let exportedAnswer: String
+  let isHelpful: Bool
+  let markHelpful: () -> Void
+  var stopReading: (() -> Void)?
+
+  var body: some View {
+    VStack(spacing: 0) {
+      ShareLink(item: exportedAnswer) {
+        actionLabel("Share answer", systemImage: "square.and.arrow.up")
+      }
+      Button(action: markHelpful) {
+        actionLabel("Helpful", systemImage: isHelpful ? "hand.thumbsup.fill" : "hand.thumbsup")
+      }
+      .accessibilityAddTraits(isHelpful ? [.isSelected] : [])
+      .accessibilityHint(isHelpful ? "Removes the helpful mark" : "Marks this answer as helpful")
+      if let stopReading {
+        Button(action: stopReading) {
+          actionLabel("Stop reading", systemImage: "stop.fill")
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .frame(minWidth: 220, maxWidth: 360)
+    .padding(8)
   }
 
   private func actionLabel(_ title: String, systemImage: String) -> some View {
     Label(title, systemImage: systemImage)
-      .font(.caption.weight(.medium))
-      .frame(minHeight: 44)
+      .font(.body)
+      .multilineTextAlignment(.leading)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .padding(.horizontal, 12)
+      .contentShape(Rectangle())
   }
 }
 

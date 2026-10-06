@@ -29,28 +29,67 @@ final class AccessibilityUITests: XCTestCase {
     }
   }
 
-  func testAnswerActionsAreAtLeast44Points() {
-    for size in ["large", "ax5"] {
+  func testAnswerActionsAreAtLeast44Points() throws {
+    for size in ["large", "xxlarge", "xxxlarge", "ax4", "ax5"] {
       let answered = launch(scenario: "answered-chat", dynamicType: size)
       assertAccessibleControl("Conversations", in: answered)
       assertAccessibleControl("New chat", in: answered)
-      XCTAssertTrue(
+      assertAccessibleControl(
         answered.descendants(matching: .any)
           .matching(NSPredicate(format: "label CONTAINS 'conversation actions'"))
-          .firstMatch.exists)
-      if size == "ax5" {
-        for _ in 0..<3 { answered.swipeUp() }
+          .firstMatch,
+        label: "Conversation actions")
+      for label in ["Copy answer as Markdown", "Listen", "Not right", "More answer actions"] {
+        assertAccessibleControl(scrollToControl(label, in: answered), label: label)
       }
-      assertAccessibleControl("Copy answer as Markdown", in: answered)
-      assertAccessibleControl("Read narration aloud", in: answered)
-      assertAccessibleControl("Not right", in: answered)
-      assertAccessibleControl("More answer actions", in: answered)
+      try answered.performAccessibilityAudit(for: .textClipped)
       answered.buttons["More answer actions"].tap()
-      XCTAssertTrue(
-        answered.descendants(matching: .any)["Share answer"]
-          .waitForExistence(timeout: 5))
-      XCTAssertTrue(answered.descendants(matching: .any)["Helpful"].exists)
+      assertAccessibleControl("Share answer", in: answered)
+      assertAccessibleControl("Helpful", in: answered)
       answered.terminate()
+    }
+  }
+
+  func testKnownIconControlsAreAtLeast44Points() {
+    for size in ["large", "ax5"] {
+      let processing = launch(scenario: "processing-queue", dynamicType: size)
+      for label in ["Stop answering", "Cancel queued question"] {
+        assertAccessibleControl(scrollToControl(label, in: processing), label: label)
+      }
+      processing.terminate()
+      let error = launch(scenario: "error", dynamicType: size)
+      assertAccessibleControl("Dismiss error", in: error)
+      error.terminate()
+      let recovery = launch(scenario: "recovery", dynamicType: size)
+      for label in ["Dismiss interrupted question", "Dismiss correction"] {
+        assertAccessibleControl(scrollToControl(label, in: recovery), label: label)
+      }
+      recovery.terminate()
+    }
+  }
+
+  func testAnswerActionAccessibilitySemantics() {
+    for size in ["large", "ax5"] {
+      let app = launch(scenario: "answered-chat-helpful", dynamicType: size)
+      assertAccessibleControl(scrollToControl("Listen", in: app), label: "Listen")
+      scrollToControl("More answer actions", in: app).tap()
+      let helpful = app.buttons["Helpful"]
+      assertAccessibleControl(helpful, label: "Helpful")
+      XCTAssertTrue(helpful.isSelected)
+      app.terminate()
+    }
+  }
+
+  func testSimpleChartValuesAreAccessible() {
+    for size in ["large", "ax5"] {
+      let app = launch(scenario: "answered-chat", dynamicType: size)
+      let preview = scrollToControl("Result chart, 4 rows", in: app)
+      let summary = preview.value as? String ?? ""
+      XCTAssertTrue(summary.contains("Meridian Core Fund I, $412,500,000"))
+      XCTAssertTrue(summary.contains("Meridian Value-Add II, $268,900,000"))
+      XCTAssertTrue(summary.contains("Harborline Opportunistic, $154,300,000"))
+      XCTAssertTrue(summary.contains("Coastal Core-Plus III, $98,750,000"))
+      app.terminate()
     }
   }
 
@@ -334,6 +373,31 @@ final class AccessibilityUITests: XCTestCase {
     let control = app.descendants(matching: .any)
       .matching(NSPredicate(format: "label BEGINSWITH %@", label))
       .firstMatch
+    assertAccessibleControl(control, label: label, file: file, line: line)
+  }
+
+  private func scrollToControl(_ label: String, in app: XCUIApplication) -> XCUIElement {
+    let control = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "label BEGINSWITH %@", label))
+      .firstMatch
+    for _ in 0..<6 {
+      if control.exists && control.isHittable { return control }
+      app.swipeUp()
+    }
+    for _ in 0..<6 {
+      if control.exists && control.isHittable { return control }
+      app.swipeDown()
+    }
+    XCTAssertTrue(control.waitForExistence(timeout: 5), "Missing control named \(label)")
+    return control
+  }
+
+  private func assertAccessibleControl(
+    _ control: XCUIElement,
+    label: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
     XCTAssertTrue(
       control.waitForExistence(timeout: 5),
       "Missing control named \(label)",

@@ -688,6 +688,32 @@ def test_accessibility_ui_contract_rejects_duplicate_pinned_arguments(
     assert f"found {flag!r}" in failures[0]
 
 
+@pytest.mark.parametrize("method", [
+    "testAnswerActionsAreAtLeast44Points",
+    "testKnownIconControlsAreAtLeast44Points",
+    "testAnswerActionAccessibilitySemantics",
+    "testSimpleChartValuesAreAccessible",
+])
+def test_accessibility_ui_contract_requires_answer_action_targets(method):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
+    ui_test = next(
+        step
+        for step in steps
+        if step.get("name") == "Test focused accessibility UI contracts"
+    )
+    ui_test["run"] = ui_test["run"].replace(
+        "-only-testing:CREGUITests/AccessibilityUITests/"
+        + method,
+        "",
+    )
+
+    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+    assert len(failures) == 1
+    assert "UI test command argument errors" in failures[0]
+
+
 def test_accessibility_ui_contract_requires_a_direct_xcodebuild_invocation():
     path, workflow = accessibility_workflow()
     steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]

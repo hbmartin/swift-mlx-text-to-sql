@@ -9,6 +9,7 @@ import Testing
       let expectedScenarios = [
         "empty-chat",
         "answered-chat",
+        "answered-chat-helpful",
         "processing-queue",
         "error",
         "recovery",
@@ -145,5 +146,20 @@ import Testing
 
       #expect(disabled == nil)
     }
+    @Test(arguments: ["xxlarge", "xxxlarge", "ax4"])
+    func largeTextRegressionSizesAreRecognized(size: String) {
+      let request = AccessibilityUITestConfiguration.request(environment: [
+        AccessibilityUITestConfiguration.scenarioEnvironmentKey: "answered-chat",
+        AccessibilityUITestConfiguration.dynamicTypeEnvironmentKey: size,
+      ])
+      guard case .scenario(let configuration) = request else {
+        Issue.record("Expected a recognized Dynamic Type fixture")
+        return
+      }
+      let expected: DynamicTypeSize = size == "xxlarge" ? .xxLarge
+        : (size == "xxxlarge" ? .xxxLarge : .accessibility4)
+      #expect(configuration.dynamicTypeSize == expected)
+    }
+
   }
 #endif

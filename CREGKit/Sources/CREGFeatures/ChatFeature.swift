@@ -244,7 +244,8 @@ public struct ChatFeature: Sendable {
       case submitQuestion(QuestionSubmission)
       case retryInterruptedTurn
       case retryInterruptedTurnFor(UUID)
-      case dismissInterruptedTurn(UUID)
+      case dismissInterruptedTurn(
+        conversationID: UUID, journalID: UUID, interruption: InterruptedTurn)
       /// Cancels a queued retry; the journal survives for Ask Again.
       case cancelQueuedRetry(UUID)
       case stopActiveTurn
@@ -449,11 +450,17 @@ public struct ChatFeature: Sendable {
         state.interruptedTurn = nil
         guard let journalID = interrupted.journalID ?? interrupted.executionID
         else { return .none }
-        return .send(.delegate(.dismissInterruptedTurn(journalID)))
+        return .send(.delegate(.dismissInterruptedTurn(
+          conversationID: state.conversationID, journalID: journalID,
+          interruption: interrupted)))
 
       case .interruptedDismissedFor(let journalID):
+        guard let interrupted = state.interruptedTurns.first(where: { $0.journalID == journalID })
+        else { return .none }
         state.interruptedTurns.removeAll { $0.journalID == journalID }
-        return .send(.delegate(.dismissInterruptedTurn(journalID)))
+        return .send(.delegate(.dismissInterruptedTurn(
+          conversationID: state.conversationID, journalID: journalID,
+          interruption: interrupted)))
 
       case .timelineExpansionToggled:
         state.processing?.isTimelineExpanded.toggle()

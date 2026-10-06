@@ -775,10 +775,15 @@ private func awaitArmedFMWatch(
       submittedAt: Date(timeIntervalSince1970: 2))]
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
+      $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
-    await store.send(.chat(.delegate(.dismissInterruptedTurn(questionID))))
+    await store.send(.chat(.delegate(.dismissInterruptedTurn(
+      conversationID: Self.conversationA, journalID: questionID,
+      interruption: InterruptedTurn(
+        question: "Retry", interruptedAt: Date(timeIntervalSince1970: 1),
+        journalID: questionID, executionID: questionID)))))
     #expect(store.state.queue.isEmpty)
     await store.send(.queuedRetryClaimed(
       QueuedQuestion(
@@ -795,7 +800,7 @@ private func awaitArmedFMWatch(
     #expect(endings.recorded == [questionID.uuidString])
   }
 
-  @Test func failedDismissalSettlesOverlappingClaimAndReloadsSelectedChat() async {
+  @Test func failedDismissalSettlesOverlappingClaimWithoutReloadingSelectedChat() async {
     let questionID = UUID(709)
     let user = ChatMessage(
       id: questionID, role: .user, body: .text("Retry"),
@@ -818,10 +823,14 @@ private func awaitArmedFMWatch(
     var state = Self.appState()
     state.retryClaimInFlight = true
     state.retryClaimJournalID = questionID
+    state.retryClaimConversationID = Self.conversationA
     state.dismissedRetryJournalIDs.insert(questionID)
     let failure = FailurePresentation(
       code: "history_message_save_failed", title: "Dismiss failed",
       message: "Try again.", diagnostic: "test")
+    state.pendingInterruptedDismissals[questionID] = AppFeature.PendingInterruptedDismissal(
+      conversationID: Self.conversationA, journalID: questionID, attemptID: UUID(7092),
+      interruption: interruption)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.historyClient = history
       $0.queryPipeline = Self.hangingPipeline()
@@ -832,8 +841,8 @@ private func awaitArmedFMWatch(
 
     await store.send(.interruptedDismissalFinished(
       conversationID: Self.conversationA, journalID: questionID,
-      failure: failure))
-    #expect(store.state.failedDismissalAwaitingRetryWrite?.journalID == questionID)
+      attemptID: UUID(7092), failure: failure))
+    #expect(store.state.pendingInterruptedDismissals[questionID]?.journalID == questionID)
     await store.send(.queuedRetryClaimed(
       QueuedQuestion(
         id: UUID(7091), conversationID: Self.conversationA,
@@ -845,7 +854,7 @@ private func awaitArmedFMWatch(
     await store.skipReceivedActions()
 
     #expect(declines.recorded == [questionID.uuidString])
-    #expect(reloads.recorded == [Self.conversationA.uuidString])
+    #expect(reloads.recorded.isEmpty)
     #expect(store.state.dismissedRetryJournalIDs.contains(questionID))
     #expect(store.state.retryClaimCleanupJournalID == nil)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
@@ -855,33 +864,35 @@ private func awaitArmedFMWatch(
     await store.skipInFlightEffects()
   }
 
-  @Test func lateDismissalRefreshCannotChangeSelection() async {
-    let summary = Self.appState().conversations[id: Self.conversationA]!
-    let snapshot = ConversationSnapshot(summary: summary)
-    let deferred = AppFeature.PendingDismissalFailure(
-      conversationID: Self.conversationA,
-      journalID: UUID(710),
-      failure: FailurePresentation(
-        code: "dismissal_failed", title: "Dismissal failed",
-        message: "Try again.", diagnostic: "test"))
-    var state = Self.appState(selected: Self.conversationB)
-    state.failedDismissalAwaitingRetryWrite = deferred
-    let store = TestStore(initialState: state) { AppFeature() }
-    store.exhaustivity = .off
-
-    await store.send(.failedDismissalReloaded(deferred, snapshot))
-    await store.skipReceivedActions()
-    #expect(store.state.chat?.conversationID == Self.conversationB)
-    var deletingState = Self.appState(selected: Self.conversationA)
-    deletingState.chat?.title = "Keep this selection"
-    deletingState.failedDismissalAwaitingRetryWrite = deferred
-    deletingState.pendingDeletion = AppFeature.PendingDeletion(
-      summary: summary, index: 0)
-    let deletingStore = TestStore(initialState: deletingState) { AppFeature() }
-    deletingStore.exhaustivity = .off
-    await deletingStore.send(.failedDismissalReloaded(deferred, snapshot))
-    await deletingStore.skipReceivedActions()
-    #expect(deletingStore.state.chat?.title == "Keep this selection")
+  @Test func failedDismissalCannotChangeSelectionOrRestoreDuringDeletion() async {
+    let journalID = UUID(710)
+    let deferred = AppFeature.PendingInterruptedDismissal(
+      conversationID: Self.conversationA, journalID: journalID, attemptID: UUID(7101),
+      interruption: InterruptedTurn(
+        question: "Retry", interruptedAt: Date(timeIntervalSince1970: 1), journalID: journalID))
+    let failure = FailurePresentation(
+      code: "dismissal_failed", title: "Dismissal failed",
+      message: "Try again.", diagnostic: "test")
+    for deleting in [false, true] {
+      var state = Self.appState(selected: deleting ? Self.conversationA : Self.conversationB)
+      state.chat?.title = "Keep this selection"
+      state.pendingInterruptedDismissals[journalID] = deferred
+      state.dismissedRetryJournalIDs.insert(journalID)
+      if deleting {
+        state.pendingDeletion = AppFeature.PendingDeletion(
+          summary: state.conversations[id: Self.conversationA]!, index: 0)
+      }
+      let store = TestStore(initialState: state) { AppFeature() }
+      store.exhaustivity = .off
+      await store.send(.interruptedDismissalFinished(
+        conversationID: Self.conversationA, journalID: journalID,
+        attemptID: deferred.attemptID, failure: failure))
+      await store.finish()
+      #expect(store.state.chat?.conversationID == state.chat?.conversationID)
+      #expect(store.state.chat?.title == "Keep this selection")
+      #expect(store.state.chat?.interruptedTurns.isEmpty == true)
+      #expect(store.state.failedDismissalManualRetryIDs.contains(journalID))
+    }
   }
 
   /// A manual Ask Again whose claim lands behind a closed gate is released
@@ -945,6 +956,7 @@ private func awaitArmedFMWatch(
     state.isSceneActive = false
     state.retryClaimInFlight = true
     state.retryClaimJournalID = user.id
+    state.retryClaimConversationID = Self.conversationA
     state.chat?.messages.append(user)
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
@@ -5014,6 +5026,26 @@ private func awaitArmedFMWatch(
 
     await store.finish()
     #expect(saved.recorded == ["helpful", "not_right"])
+    #expect(cleared.recorded == [messageID.uuidString])
+  }
+
+  @Test func helpfulMarkCanBeRemovedByTappingHelpfulAgain() async {
+    let cleared = CallRecorder()
+    var history = HistoryClient.noop()
+    history.clearFeedback = { _, messageID in cleared.record(messageID.uuidString) }
+    let messageID = UUID(7070)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: messageID))
+    state.feedback[messageID] = AnswerFeedback(
+      messageID: messageID, verdict: .helpful, updatedAt: Date(timeIntervalSince1970: 0))
+    let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+      $0.historyClient = history
+    }
+    store.exhaustivity = .off
+    await store.send(.feedbackHelpfulTapped(messageID: messageID))
+    await store.finish()
+    #expect(store.state.feedback[messageID] == nil)
+    #expect(store.state.correctionContext == nil)
     #expect(cleared.recorded == [messageID.uuidString])
   }
 

@@ -89,6 +89,7 @@ struct EmptyChatState: View {
         }
         .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
         .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(CREGBrand.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
         .contentShape(Rectangle())
       }
