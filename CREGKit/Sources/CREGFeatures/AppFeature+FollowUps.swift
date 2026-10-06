@@ -14,7 +14,7 @@ extension AppFeature {
     state.canStartLowPriorityInference
       && state.modelReadiness == .ready
       && state.fmAvailability == .available
-      && state.conversations[id: conversationID] != nil
+      && state.isConversationLive(conversationID)
   }
 
   /// Every path that hands a follow-up context to preparation shares this
@@ -45,6 +45,7 @@ extension AppFeature {
         context: context,
         generation: generation,
         scopeDiagnosisCompleted: scopeDiagnosisCompleted)
+      if state.isConversationPendingDeletion(conversationID) { return .none }
       let batch = PreparedFollowUpBatch(
         sourceAssistantMessageID: context.sourceAssistantMessageID,
         context: context, status: .preparing, updatedAt: now,
@@ -330,9 +331,11 @@ extension AppFeature {
           state: state, conversationID: $0.key,
           generation: $0.value.generation)
     }
+    let eligible = state.pendingSuggestionContexts.filter { state.isConversationLive($0.key) }
     let selectedID = state.chat?.conversationID
-    guard let pending = selectedID.flatMap({ state.pendingSuggestionContexts[$0] })
-      ?? state.pendingSuggestionContexts.values.min(by: {
+    guard
+      let pending = selectedID.flatMap({ eligible[$0] })
+        ?? eligible.values.min(by: {
         $0.conversationID.uuidString < $1.conversationID.uuidString
       })
     else { return .none }
@@ -393,6 +396,11 @@ extension AppFeature {
       ownsSuggestions(
         state: state, conversationID: conversationID, generation: generation)
     else { return .none }
+    if state.isConversationPendingDeletion(conversationID) {
+      state.pendingSuggestionContexts[conversationID] = PendingScopeDiagnosis(
+        conversationID: conversationID, messageID: messageID, context: context,
+        generation: generation, scopeDiagnosisCompleted: scopeDiagnosisCompleted)
+      return .none }
     // A context that already carries a verdict, or whose judge already
     // completed, is never judged again.
     let needsScopeDiagnosis: Bool = {
