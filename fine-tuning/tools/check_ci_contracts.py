@@ -74,7 +74,7 @@ ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS = (
 )
 ACCESSIBILITY_UI_TEST_COMMAND = (
     "/usr/bin/xcodebuild",
-    "test",
+    "test-without-building",
     "-project",
     "CREG.xcodeproj",
     "-scheme",
@@ -116,8 +116,20 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testMoreActionsRemainAccessibleInConstrainedHeight",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testSimpleChartValuesAreAccessible",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testSharingSurvivesConcurrentCompletionInLongTranscript",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testSupportWarningAtAX5PortraitAndLandscape",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
+)
+ACCESSIBILITY_UI_BUILD_COMMAND = (
+    "/usr/bin/xcodebuild", "build-for-testing",
+    "-project", "CREG.xcodeproj", "-scheme", "CREG",
+    "-destination", "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+    *(token for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS[:2] for token in argument),
+    "-skipPackagePluginValidation", "-skipMacroValidation",
+    "CODE_SIGNING_ALLOWED=NO", "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
 TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"
 TESTFLIGHT_PUBLISHER_RUNNER = "ubuntu-latest"
@@ -429,6 +441,7 @@ def reviewed_run_context_failures(
     expected_runner: str,
     expected_shell: str,
     expected_working_directory: str,
+    expected_job_timeout: int | None = None,
 ) -> list[str]:
     """Reject job and step metadata that can skip or reinterpret a reviewed run."""
     failures: list[str] = []
@@ -446,8 +459,10 @@ def reviewed_run_context_failures(
             "strategy",
             "timeout-minutes",
         )
-        if field in job
+        if field in job and not (field == "timeout-minutes" and job[field] == expected_job_timeout)
     ]
+    if expected_job_timeout is not None and "timeout-minutes" not in job:
+        failures.append(f"{prefix} {job_name} job timeout-minutes must be {expected_job_timeout}")
     if job_fields:
         failures.append(
             f"{prefix} {job_name} job must not override reviewed run context: "
@@ -641,76 +656,59 @@ def _accessibility_ui_job_contract_failures(
         workflow, job_name=ACCESSIBILITY_UI_JOB, prefix=prefix
     )
     if job is None or steps is None:
-        return failures
+        return list(dict.fromkeys(failures))
 
-    ui_test, step_failures = named_step(
-        steps,
-        name="Test focused accessibility UI contracts",
-        prefix=prefix,
-    )
-    failures.extend(step_failures)
-    if ui_test is not None:
-        failures.extend(
-            reviewed_bootstrap_failures(
-                steps,
-                ui_test,
-                accessibility_ui_bootstrap_steps(),
-                step_name="Test focused accessibility UI contracts",
-                prefix=prefix,
-            )
-        )
-        failures.extend(
-            reviewed_run_context_failures(
-                job,
-                ui_test,
-                job_name=ACCESSIBILITY_UI_JOB,
-                step_name="Test focused accessibility UI contracts",
-                prefix=prefix,
-                expected_runner=ACCESSIBILITY_UI_RUNNER,
-                expected_shell=ACCESSIBILITY_UI_SHELL,
-                expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY,
-            )
-        )
-        if ui_test.get("timeout-minutes") != 30:
-            failures.append(f"{prefix} UI test timeout must be 30 minutes")
-        run = ui_test.get("run")
+    ui_build, build_failures = named_step(steps, name="Build focused accessibility UI contracts", prefix=prefix)
+    failures.extend(build_failures)
+    ui_test, test_failures = named_step(steps, name="Test focused accessibility UI contracts", prefix=prefix)
+    failures.extend(test_failures)
+    build_bootstrap_valid = True
+    for step, step_name, command_tokens, quoted_arguments, label in (
+        (ui_build, "Build focused accessibility UI contracts", ACCESSIBILITY_UI_BUILD_COMMAND,
+         ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS[:2], "build"),
+        (ui_test, "Test focused accessibility UI contracts", ACCESSIBILITY_UI_TEST_COMMAND,
+         ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS, "test"),
+    ):
+        if step is None:
+            continue
+        bootstrap = accessibility_ui_bootstrap_steps()
+        if step is ui_test and ui_build is not None:
+            # The preceding build is independently validated by this loop.
+            bootstrap = (*bootstrap, ui_build)
+        bootstrap_failures = reviewed_bootstrap_failures(
+            steps, step, bootstrap, step_name=step_name, prefix=prefix)
+        if step is ui_build:
+            build_bootstrap_valid = not bootstrap_failures
+        if step is ui_build or build_bootstrap_valid:
+            failures.extend(bootstrap_failures)
+        failures.extend(reviewed_run_context_failures(
+            job, step, job_name=ACCESSIBILITY_UI_JOB, step_name=step_name, prefix=prefix,
+            expected_runner=ACCESSIBILITY_UI_RUNNER, expected_shell=ACCESSIBILITY_UI_SHELL,
+            expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY, expected_job_timeout=75))
+        if step.get("timeout-minutes") != 30:
+            failures.append(f"{prefix} UI {label} timeout must be 30 minutes")
+        run = step.get("run")
         if not isinstance(run, str):
-            failures.append(f"{prefix} UI test step must contain a shell command")
-        else:
-            try:
-                command = _parse_single_shell_command(run)
-            except ValueError as error:
-                failures.append(f"{prefix} UI test shell command is malformed: {error}")
-            else:
-                if command.tokens[:2] != ("/usr/bin/xcodebuild", "test"):
-                    failures.append(
-                        f"{prefix} UI test step must run xcodebuild test directly"
-                    )
-                else:
-                    mismatch = exact_command_mismatch(
-                        command.tokens, ACCESSIBILITY_UI_TEST_COMMAND
-                    )
-                    misquoted_values = [
-                        value
-                        for flag, value in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
-                        if command.double_quoted_words.count(value) != 1
-                        and (
-                            mismatch is None
-                            or has_unquoted_value_after_flag(
-                                command.tokens, flag=flag, value=value
-                            )
-                        )
-                    ]
-                    if misquoted_values:
-                        failures.append(
-                            f"{prefix} UI test runner paths must be "
-                            "double-quoted: " + ", ".join(misquoted_values)
-                        )
-                    elif mismatch is not None:
-                        failures.append(
-                            f"{prefix} UI test command argument errors: "
-                            f"{mismatch}"
-                        )
+            failures.append(f"{prefix} UI {label} step must contain a shell command")
+            continue
+        try:
+            command = _parse_single_shell_command(run)
+        except ValueError as error:
+            failures.append(f"{prefix} UI {label} shell command is malformed: {error}")
+            continue
+        if command.tokens[:2] != command_tokens[:2]:
+            failures.append(f"{prefix} UI {label} step must run xcodebuild {command_tokens[1]} directly")
+            continue
+        mismatch = exact_command_mismatch(command.tokens, command_tokens)
+        misquoted_values = [
+            value for flag, value in quoted_arguments
+            if command.double_quoted_words.count(value) != 1
+            and (mismatch is None or has_unquoted_value_after_flag(command.tokens, flag=flag, value=value))
+        ]
+        if misquoted_values:
+            failures.append(f"{prefix} UI {label} runner paths must be double-quoted: " + ", ".join(misquoted_values))
+        elif mismatch is not None:
+            failures.append(f"{prefix} UI {label} command argument errors: {mismatch}")
 
     upload, step_failures = named_step(
         steps,
@@ -733,7 +731,7 @@ def _accessibility_ui_job_contract_failures(
         ):
             failures.append(f"{prefix} result upload path is incorrect")
 
-    return failures
+    return list(dict.fromkeys(failures))
 
 
 def accessibility_ui_contract_failures(

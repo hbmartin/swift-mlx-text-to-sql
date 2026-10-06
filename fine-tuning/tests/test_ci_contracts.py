@@ -640,7 +640,7 @@ def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
         )
     )
     reviewed_prefix = (
-        "/usr/bin/xcodebuild test -project CREG.xcodeproj -scheme CREG "
+        "/usr/bin/xcodebuild test-without-building -project CREG.xcodeproj -scheme CREG "
         "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'"
     )
     ui_test["run"] = (
@@ -727,13 +727,13 @@ def test_accessibility_ui_contract_requires_a_direct_xcodebuild_invocation():
         if step.get("name") == "Test focused accessibility UI contracts"
     )
     ui_test["run"] = ui_test["run"].replace(
-        "/usr/bin/xcodebuild test", "env /usr/bin/xcodebuild test", 1
+        "/usr/bin/xcodebuild test-without-building", "env /usr/bin/xcodebuild test-without-building", 1
     )
 
     failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
     assert len(failures) == 1
-    assert "must run xcodebuild test directly" in failures[0]
+    assert "must run xcodebuild test-without-building directly" in failures[0]
 
 
 @pytest.mark.parametrize(
@@ -913,7 +913,7 @@ def test_accessibility_ui_contract_reports_a_missing_final_flag_value():
         for step in steps
         if step.get("name") == "Test focused accessibility UI contracts"
     )
-    ui_test["run"] = "/usr/bin/xcodebuild test -project"
+    ui_test["run"] = "/usr/bin/xcodebuild test-without-building -project"
 
     failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
@@ -990,7 +990,7 @@ def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():
         if step.get("name") == "Test focused accessibility UI contracts"
     )
     reviewed_arguments = (
-        "/usr/bin/xcodebuild test -project CREG.xcodeproj -scheme CREG "
+        "/usr/bin/xcodebuild test-without-building -project CREG.xcodeproj -scheme CREG "
         "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'"
     )
     decoy_command = (
@@ -1404,3 +1404,44 @@ def test_xcode_app_is_iphone_only():
     assert 'TARGETED_DEVICE_FAMILY = "1,2";' not in project
     assert "UISupportedInterfaceOrientations_iPad" not in project
     assert '"idiom" : "ipad"' not in app_icons
+
+
+@pytest.mark.parametrize("step_name", ["Build focused accessibility UI contracts", "Test focused accessibility UI contracts"])
+@pytest.mark.parametrize("budget", [None, 29, 31])
+def test_accessibility_commands_each_require_the_reviewed_budget(step_name, budget):
+    path, workflow = accessibility_workflow()
+    step = next(item for item in workflow["jobs"]["accessibility"]["steps"] if item.get("name") == step_name)
+    if budget is None:
+        step.pop("timeout-minutes")
+    else:
+        step["timeout-minutes"] = budget
+    assert any("timeout must be 30" in failure for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
+
+
+@pytest.mark.parametrize("budget", [None, 74, 76])
+def test_accessibility_job_requires_the_reviewed_budget(budget):
+    path, workflow = accessibility_workflow()
+    job = workflow["jobs"]["accessibility"]
+    if budget is None:
+        job.pop("timeout-minutes")
+    else:
+        job["timeout-minutes"] = budget
+    assert any("timeout-minutes" in failure for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
+
+
+@pytest.mark.parametrize("mutation", ["action", "path", "shell", "operator", "missing"])
+def test_accessibility_build_command_is_independently_checked(mutation):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["accessibility"]["steps"]
+    build = next(item for item in steps if item.get("name") == "Build focused accessibility UI contracts")
+    if mutation == "action":
+        build["run"] = build["run"].replace("build-for-testing", "test")
+    elif mutation == "path":
+        build["run"] = build["run"].replace("creg-derived-data", "other-derived-data")
+    elif mutation == "shell":
+        build["shell"] = "/bin/bash {0}"
+    elif mutation == "operator":
+        build["run"] += " && true"
+    else:
+        steps.remove(build)
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)

@@ -70,7 +70,7 @@ final class AccessibilityUITests: XCTestCase {
 
   func testSharingReturnsToAnswerWithMoreClosed() {
     let app = launch(scenario: "answered-chat", dynamicType: "large")
-    scrollToControl("More answer actions", in: app).tap()
+    tapMoreClearOfChatHeader(in: app)
     let share = app.buttons["Share answer"]
     XCTAssertTrue(share.waitForExistence(timeout: 5))
     share.tap()
@@ -79,7 +79,7 @@ final class AccessibilityUITests: XCTestCase {
     copy.tap()
     XCTAssertTrue(copy.waitForNonExistence(timeout: 5))
     XCTAssertFalse(app.buttons["Helpful"].exists, "More should close after sharing completes")
-    scrollToControl("More answer actions", in: app).tap()
+    tapMoreClearOfChatHeader(in: app)
     XCTAssertTrue(app.buttons["Helpful"].waitForExistence(timeout: 5))
   }
 
@@ -87,7 +87,7 @@ final class AccessibilityUITests: XCTestCase {
     for size in ["large", "xxxlarge", "ax5"] {
       XCUIDevice.shared.orientation = .portrait
       let app = launch(scenario: "answered-chat", dynamicType: size)
-      scrollToControl("More answer actions", in: app).tap()
+      tapMoreClearOfChatHeader(in: app)
       let helpful = app.buttons["Helpful"]
       XCTAssertTrue(helpful.waitForExistence(timeout: 5))
       XCUIDevice.shared.orientation = .landscapeLeft
@@ -103,23 +103,60 @@ final class AccessibilityUITests: XCTestCase {
 
   func testCancellingSharingReturnsToAnswerWithMoreClosed() {
     let app = launch(scenario: "answered-chat", dynamicType: "large")
-    scrollToControl("More answer actions", in: app).tap()
+    tapMoreClearOfChatHeader(in: app)
     app.buttons["Share answer"].tap()
     let activities = app.otherElements["ActivityListView"].firstMatch
     XCTAssertTrue(activities.waitForExistence(timeout: 5), app.debugDescription)
-    let close = app.buttons["Close"].firstMatch
-    if close.exists {
-      close.tap()
-    } else {
-      activities.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02))
-        .press(
-          forDuration: 0.1,
-          thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
-    }
+    closeActivitySheet(in: app)
     XCTAssertTrue(activities.waitForNonExistence(timeout: 5))
     XCTAssertFalse(app.buttons["Helpful"].exists)
-    scrollToControl("More answer actions", in: app).tap()
+    tapMoreClearOfChatHeader(in: app)
     XCTAssertTrue(app.buttons["Helpful"].waitForExistence(timeout: 5))
+  }
+
+  func testSharingSurvivesConcurrentCompletionInLongTranscript() {
+    let app = launch(scenario: "long-transcript-sharing", dynamicType: "large")
+    tapMoreClearOfChatHeader(in: app)
+    app.buttons["Share answer"].tap()
+    let activities = app.otherElements["ActivityListView"].firstMatch
+    XCTAssertTrue(activities.waitForExistence(timeout: 5), app.debugDescription)
+    // The fixture completes another turn when the stable share coordinator
+    // presents. That completion scrolls the older owning row out of the stack.
+    XCTAssertTrue(activities.isHittable, "Sharing must stay open across completion")
+    closeActivitySheet(in: app)
+    XCTAssertTrue(activities.waitForNonExistence(timeout: 5))
+    let completed = app.staticTexts["Concurrent answer completed"]
+    for _ in 0..<8 {
+      if completed.exists && completed.isHittable { break }
+      app.swipeUp()
+    }
+    XCTAssertTrue(completed.waitForExistence(timeout: 5), app.debugDescription)
+    tapMoreClearOfChatHeader(in: app)
+    let helpful = app.buttons["Helpful"]
+    XCTAssertTrue(helpful.waitForExistence(timeout: 5))
+    XCTAssertFalse(activities.exists, "Returning to the old row must not reopen sharing")
+    helpful.tap()
+    XCTAssertTrue(helpful.waitForNonExistence(timeout: 5))
+    XCTAssertFalse(activities.exists)
+  }
+
+  func testSupportWarningAtAX5PortraitAndLandscape() throws {
+    for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+      XCUIDevice.shared.orientation = orientation
+      let app = launch(scenario: "support-bundle-fallback", dynamicType: "ax5")
+      let warning = app.staticTexts["support-bundle-warning"]
+      XCTAssertTrue(warning.waitForExistence(timeout: 5))
+      XCTAssertTrue(warning.label.contains("full history database snapshot"))
+      assertAccessibleControl(
+        scrollToControl("Share support bundle", in: app), label: "Share support bundle")
+      assertAccessibleControl(scrollToControl("Done", in: app), label: "Done")
+      try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
+      let screenshot = XCTAttachment(screenshot: app.screenshot())
+      screenshot.name = "Support-warning-AX5-\(orientation.rawValue)"
+      screenshot.lifetime = .keepAlways
+      add(screenshot)
+      app.terminate()
+    }
   }
 
   func testMoreActionsRemainAccessibleInConstrainedHeight() throws {
@@ -127,12 +164,12 @@ final class AccessibilityUITests: XCTestCase {
       for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
         XCUIDevice.shared.orientation = orientation
         let app = launch(scenario: "answered-chat-reading", dynamicType: size)
-        scrollToControl("More answer actions", in: app).tap()
+        tapMoreClearOfChatHeader(in: app)
         for label in ["Share answer", "Helpful", "Stop reading"] {
           let control = app.buttons[label]
           for _ in 0..<6 {
             if control.exists && control.isHittable { break }
-            app.popovers.firstMatch.swipeUp()
+            app.scrollViews["answer-more-scroll"].swipeUp()
           }
           assertAccessibleControl(control, label: label)
         }
@@ -156,7 +193,7 @@ final class AccessibilityUITests: XCTestCase {
     for size in ["large", "ax5"] {
       let app = launch(scenario: "answered-chat-helpful", dynamicType: size)
       assertAccessibleControl(scrollToControl("Listen", in: app), label: "Listen")
-      scrollToControl("More answer actions", in: app).tap()
+      tapMoreClearOfChatHeader(in: app)
       let helpful = app.buttons["Helpful"]
       assertAccessibleControl(helpful, label: "Helpful")
       XCTAssertTrue(helpful.isSelected)
@@ -458,6 +495,15 @@ final class AccessibilityUITests: XCTestCase {
       .matching(NSPredicate(format: "label BEGINSWITH %@", label))
       .firstMatch
     assertAccessibleControl(control, label: label, file: file, line: line)
+  }
+
+  private func closeActivitySheet(in app: XCUIApplication) {
+    let close = app.buttons["header.closeButton"].firstMatch
+    XCTAssertTrue(close.waitForExistence(timeout: 5), app.debugDescription)
+    let hittable = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "hittable == true"), object: close)
+    XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed, app.debugDescription)
+    close.tap()
   }
 
   private func scrollToControl(_ label: String, in app: XCUIApplication) -> XCUIElement {

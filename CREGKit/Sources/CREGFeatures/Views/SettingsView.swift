@@ -252,27 +252,57 @@ struct SupportBundleSendView: View {
   }
 
   private var fallback: some View {
-    VStack(spacing: 16) {
-      Image(systemName: "envelope.badge")
-        .font(.largeTitle)
-        .foregroundStyle(CREGBrand.blue)
-      Text("Mail isn’t configured on this iPhone")
-        .font(.headline)
-      Text(
-        "Share the bundle another way and send it to \(Self.supportAddress). \(Self.sensitiveContentsWarning)"
-      )
-      .font(.footnote)
-      .foregroundStyle(.secondary)
-      .multilineTextAlignment(.center)
-      ShareLink(item: export.url) {
-        Label("Share support bundle", systemImage: "square.and.arrow.up")
-          .frame(maxWidth: .infinity)
+    SupportBundleFallbackView(url: export.url, done: { dismiss() })
+  }
+}
+
+struct SupportBundleFallbackView: View {
+  let url: URL
+  var done: () -> Void
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @State private var selectedDetent: PresentationDetent = .large
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 16) {
+        Image(systemName: "envelope.badge")
+          .font(.largeTitle)
+          .foregroundStyle(CREGBrand.blue)
+        Text("Mail isn’t configured on this iPhone")
+          .font(.headline)
+          .fixedSize(horizontal: false, vertical: true)
+        Text(
+          "Share the bundle another way and send it to \(SupportBundleSendView.supportAddress). \(SupportBundleSendView.sensitiveContentsWarning)"
+        )
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("support-bundle-warning")
+        ShareLink(item: url) {
+          Label {
+            Text("Share support bundle")
+              .fixedSize(horizontal: false, vertical: true)
+              .multilineTextAlignment(.center)
+          } icon: {
+            Image(systemName: "square.and.arrow.up")
+          }
+          .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.borderedProminent)
+        Button(action: done) {
+          Text("Done").frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.bordered)
       }
-      .buttonStyle(.borderedProminent)
-      Button("Done") { dismiss() }
+      .padding(24)
+      .frame(maxWidth: .infinity)
     }
-    .padding(24)
-    .presentationDetents([.medium])
+    .presentationDetents([.medium, .large], selection: $selectedDetent)
+    .onAppear { selectedDetent = dynamicTypeSize.isAccessibilitySize ? .large : .medium }
+    .onChange(of: dynamicTypeSize) {
+      if dynamicTypeSize.isAccessibilitySize { selectedDetent = .large }
+    }
   }
 }
 

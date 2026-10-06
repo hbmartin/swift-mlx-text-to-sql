@@ -10,6 +10,8 @@ struct MessageCell: View {
   let readAloud: ChatFeature.ReadAloudState?
   let developerMode: Bool
   let store: StoreOf<ChatFeature>
+  var shareRequested: (UUID, String) -> Void = { _, _ in }
+  var moreDismissed: (UUID) -> Void = { _ in }
 
   var body: some View {
     switch message.role {
@@ -140,7 +142,7 @@ struct MessageCell: View {
           runtimeMode: message.devInfo?.runtimeMode ?? .evaluated,
           feedback: feedback,
           readAloud: readAloud,
-          store: store)
+          store: store, shareRequested: shareRequested, moreDismissed: moreDismissed)
         if developerMode {
           DevInfoSectionsView(sql: sql, devInfo: message.devInfo)
         }
@@ -263,13 +265,12 @@ struct AnswerActionsRow: View {
   let feedback: AnswerFeedback?
   let readAloud: ChatFeature.ReadAloudState?
   let store: StoreOf<ChatFeature>
+  var shareRequested: (UUID, String) -> Void = { _, _ in }
+  var moreDismissed: (UUID) -> Void = { _ in }
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   @State private var isMorePresented = false
   @State private var moreButtonFrame = CGRect.zero
-  #if canImport(UIKit)
-    @State private var pendingShare: AnswerShare?
-    @State private var presentedShare: AnswerShare?
-  #endif
+  @State private var morePresentationID = UUID()
 
   var body: some View {
     ViewThatFits(in: .horizontal) {
@@ -295,11 +296,6 @@ struct AnswerActionsRow: View {
     .popover(isPresented: $isMorePresented, attachmentAnchor: .rect(.rect(moreButtonFrame))) {
       moreActions
     }
-    #if canImport(UIKit)
-      .sheet(item: $presentedShare) { share in
-        AnswerActivitySheet(markdown: share.markdown)
-      }
-    #endif
   }
 
   @ViewBuilder
@@ -384,6 +380,7 @@ struct AnswerActionsRow: View {
 
   private func moreMenu(stacked: Bool) -> some View {
     Button {
+      morePresentationID = UUID()
       isMorePresented = true
     } label: {
       if stacked || dynamicTypeSize.isAccessibilitySize {
@@ -403,7 +400,10 @@ struct AnswerActionsRow: View {
   }
 
   private var moreActions: some View {
-    AnswerMoreActions(
+    // Capture one identity for both callbacks: SwiftUI can retain the
+    // popover content from an earlier evaluation of this row.
+    let moreID = morePresentationID
+    return AnswerMoreActions(
       exportedAnswer: exportedAnswer,
       isHelpful: feedback?.verdict == .helpful,
       markHelpful: {
@@ -415,26 +415,26 @@ struct AnswerActionsRow: View {
           store.send(.readAloudStopTapped)
           isMorePresented = false
         } : nil,
-      share: shareAction
+      share: shareAction(moreID: moreID)
     )
     .environment(\.dynamicTypeSize, dynamicTypeSize)
     .presentationCompactAdaptation(.popover)
     #if canImport(UIKit)
       .background {
         AnswerMoreDismissalObserver {
-          guard !isMorePresented, let pendingShare else { return }
-          self.pendingShare = nil
-          presentedShare = pendingShare
+          guard !isMorePresented else { return }
+          moreDismissed(moreID)
         }
+        .id(moreID)
         .frame(width: 0, height: 0)
       }
     #endif
   }
 
-  private var shareAction: (() -> Void)? {
+  private func shareAction(moreID: UUID) -> (() -> Void)? {
     #if canImport(UIKit)
       return {
-        pendingShare = AnswerShare(markdown: exportedAnswer)
+        shareRequested(moreID, exportedAnswer)
         isMorePresented = false
       }
     #else
@@ -469,6 +469,7 @@ struct AnswerMoreActions: View {
           contentHeight = height
         }
     }
+    .accessibilityIdentifier("answer-more-scroll")
     .scrollBounceBehavior(.basedOnSize)
     .frame(idealHeight: contentHeight, maxHeight: contentHeight)
     .frame(minWidth: 220, maxWidth: 360)

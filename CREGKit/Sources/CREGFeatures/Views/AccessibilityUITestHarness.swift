@@ -1,5 +1,6 @@
 import AutoTableCharts
 import CREGEngine
+import ComposableArchitecture
 import SwiftUI
 
 #if DEBUG
@@ -11,6 +12,8 @@ import SwiftUI
       case answeredChat = "answered-chat"
       case answeredChatHelpful = "answered-chat-helpful"
       case answeredChatReading = "answered-chat-reading"
+      case longTranscriptSharing = "long-transcript-sharing"
+      case supportBundleFallback = "support-bundle-fallback"
       case processingQueue = "processing-queue"
       case error
       case recovery
@@ -99,6 +102,57 @@ import SwiftUI
   }
 
   @MainActor
+  private struct LongTranscriptSharingAccessibilityHarness: View {
+    @State private var didComplete = false
+    @State private var store = StoreOf<ChatFeature>(initialState: Self.initialState()) {
+      BindingReducer()
+    }
+
+    private static func initialState() -> ChatFeature.State {
+      var state = PreviewFixtures.answeredChatState()
+      for index in 0..<24 {
+        state.messages.append(
+          ChatMessage(
+            id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", 6000 + index))!,
+            role: .user, body: .text("Later transcript question \(index + 1)."),
+            createdAt: PreviewFixtures.now.addingTimeInterval(Double(index))))
+      }
+      return state
+    }
+
+    var body: some View {
+      ChatView(
+        store: store, chrome: PreviewFixtures.chrome,
+        answerSharePresented: {
+          guard !didComplete else { return }
+          didComplete = true
+          let fixture = PreviewFixtures.answeredChatState().messages.last!
+          var completion = fixture
+          completion.id = UUID(uuidString: "00000000-0000-0000-0000-000000006100")!
+          if case .answer(let result, _, let sql, let notice) = completion.body {
+            completion.body = .answer(
+              result: result, narration: "Concurrent answer completed", sql: sql, notice: notice)
+          }
+          store.messages.append(completion)
+        })
+    }
+  }
+
+  private struct SupportBundleFallbackAccessibilityHarness: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var isPresented = true
+    var body: some View {
+      Color.clear.sheet(isPresented: $isPresented) {
+        SupportBundleFallbackView(
+          url: URL(fileURLWithPath: "/tmp/creg-preview-support.zip"), done: { isPresented = false }
+        )
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+        .accessibilityIdentifier("ui-test-support-bundle-fallback")
+      }
+    }
+  }
+
+  @MainActor
   struct AccessibilityScenarioView: View {
     let scenario: AccessibilityUITestConfiguration.Scenario
     @State private var resultExplorerPreference = ResultPresentationPreference.automatic
@@ -125,6 +179,12 @@ import SwiftUI
         ChatView(
           store: PreviewFixtures.chatStore(readingChatState),
           chrome: PreviewFixtures.chrome)
+
+      case .longTranscriptSharing:
+        LongTranscriptSharingAccessibilityHarness()
+
+      case .supportBundleFallback:
+        SupportBundleFallbackAccessibilityHarness()
 
       case .resultExplorer:
         // This scenario has no transcript store, matching the preview harness.

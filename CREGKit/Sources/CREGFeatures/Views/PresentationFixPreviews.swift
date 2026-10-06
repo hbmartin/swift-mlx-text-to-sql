@@ -208,4 +208,16 @@ private struct AnswerActionsPreviewFrame: View {
     .preferredColorScheme(.dark)
 }
 
+#Preview("Support Warning — AX5 Portrait") {
+    SupportBundleFallbackView(url: URL(fileURLWithPath: "/tmp/creg-preview-support.zip"), done: {})
+      .environment(\.dynamicTypeSize, .accessibility5)
+      .frame(width: 402, height: 874)
+  }
+
+  #Preview("Support Warning — AX5 Landscape") {
+    SupportBundleFallbackView(url: URL(fileURLWithPath: "/tmp/creg-preview-support.zip"), done: {})
+      .environment(\.dynamicTypeSize, .accessibility5)
+      .frame(width: 874, height: 402)
+  }
+
 #endif
