@@ -1869,8 +1869,7 @@ public struct AppFeature: Sendable {
           submission: submission,
           suggestionGeneration: generation,
           submittedAt: now)
-        state.queue.append(queued)
-        syncSchedulerProjection(into: &state)
+        insertQueuedQuestion(queued, into: &state)
         diagnostics.info(
           category: .submission,
           code: "question_queued",

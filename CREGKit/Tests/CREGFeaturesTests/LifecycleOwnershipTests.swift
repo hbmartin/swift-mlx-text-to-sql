@@ -63,6 +63,24 @@ struct LifecycleOwnershipTests {
     return (state, queued, interruption)
   }
 
+  @Test func newlyAcceptedQuestionUsesDeterministicAgeOrdering() async {
+    var state = Scheduler.appState()
+    state.activeTurn = AppFeature.ActiveTurn(questionID: UUID(12082), conversationID: b,
+      question: "Active elsewhere", startedAt: Date(timeIntervalSince1970: 4))
+    let equal = question(12080, a, 5)
+    let later = question(12081, a, 6)
+    state.queue = [equal, later]
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.uuid = .incrementing; $0.continuousClock = TestClock(); $0.historyClient = .noop()
+    }
+    store.exhaustivity = .off
+    await store.send(.chat(.delegate(.submitQuestion(QuestionSubmission(question: "New question")))))
+    await store.finish()
+    #expect(store.state.queue.map(\.question) == ["New question", equal.question, later.question])
+    #expect(store.state.queue.dropFirst() == [equal, later])
+  }
+
   @Test func undoRestoresQueueIdentityOrderingAndRetryEligibility() async {
     var state = Scheduler.appState(selected: b)
     state.isSceneActive = false
