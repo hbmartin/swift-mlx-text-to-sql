@@ -237,6 +237,54 @@ struct LifecycleOwnershipTests {
     await store.skipInFlightEffects()
   }
 
+  @Test(arguments: [false, true])
+  func interruptionFailureDefersForUndoAndIsSuppressedAfterDeletion(undo: Bool) async {
+    var state = Scheduler.appState(selected: b)
+    let user = ChatMessage(id: UUID(12032), role: .user, body: .text("Interrupted"), createdAt: Date(timeIntervalSince1970: 1))
+    var active = AppFeature.ActiveTurn(questionID: user.id, conversationID: a,
+      question: user.previewText, startedAt: user.createdAt)
+    active.optimisticUserTurn = .init(message: user, previousSummary: nil, previousChatTitle: nil)
+    state.activeTurn = active
+    let write = HeldLifecycleOperation()
+    let clock = TestClock()
+    let deleted = CallRecorder()
+    let error = NSError(domain: "Interruption", code: 1)
+    let failure = FailurePresentation.history(operation: .messageSave, error: error)
+    var history = HistoryClient.noop()
+    history.markTurnInterrupted = { _, _, _ in await write.hold(); throw error }
+    history.deleteConversation = { _ in deleted.record("delete") }
+    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.uuid = .incrementing; $0.continuousClock = clock; $0.historyClient = history
+    }
+    store.exhaustivity = .off
+    await store.send(.deleteConversationTapped(a))
+    await write.wait()
+    if !undo { await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token)) }
+    #expect(store.state.pendingInterruptedTurn?.questionID == user.id)
+    await write.finish()
+    await store.receive(\.turnInterruptionRecorded)
+    await store.receive(\.conversationWriteFailed)
+    #expect(store.state.presentedFailure == nil)
+    if undo {
+      #expect(store.state.pendingDeletion?.deferredFailure == failure)
+      await store.send(.undoDeleteTapped)
+      await store.receive(.operationFailed(failure))
+      #expect(store.state.isConversationLive(a))
+      #expect(store.state.retryJournals[user.id]?.interruption?.status == .manualRetryRequired)
+      #expect(deleted.recorded.isEmpty)
+    } else {
+      await store.skipReceivedActions(strict: false)
+      await clock.advance(by: .seconds(5))
+      #expect(deleted.recorded == ["delete"])
+      #expect(store.state.conversationDeletions[a]?.phase == .committed)
+      #expect(store.state.presentedFailure == nil)
+    }
+    #expect(store.state.pendingInterruptedTurn == nil)
+    #expect(store.state.chat?.conversationID == b)
+    await store.finish()
+  }
+
   @Test func thrownManualClaimDoesNotReadAppendOrRedispatch() async {
     let (state, queued, _) = retryFixture()
     let reads = CallRecorder()

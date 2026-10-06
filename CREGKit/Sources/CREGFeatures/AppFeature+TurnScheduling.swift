@@ -488,8 +488,9 @@ extension AppFeature {
           await send(.turnInterruptionRecorded(
             questionID: active.questionID,
             userPersisted: false, marked: false))
-          await send(.operationFailed(
-            .history(operation: .messageSave, error: error)))
+          await send(.conversationWriteFailed(
+            conversationID: active.conversationID,
+            failure: .history(operation: .messageSave, error: error)))
           return
         }
         do {
@@ -502,8 +503,9 @@ extension AppFeature {
           await send(.turnInterruptionRecorded(
             questionID: active.questionID,
             userPersisted: true, marked: false))
-          await send(.operationFailed(
-            .history(operation: .messageSave, error: error)))
+          await send(.conversationWriteFailed(
+            conversationID: active.conversationID,
+            failure: .history(operation: .messageSave, error: error)))
         }
       })
   }

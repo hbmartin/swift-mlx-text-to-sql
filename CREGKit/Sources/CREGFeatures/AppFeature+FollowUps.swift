@@ -79,8 +79,9 @@ extension AppFeature {
       } catch HistoryStoreError.staleFollowUpBatch {
         return
       } catch {
-        await send(.operationFailed(
-          .history(operation: .messageSave, error: error)))
+        await send(.conversationWriteFailed(
+          conversationID: conversationID,
+          failure: .history(operation: .messageSave, error: error)))
       }
     }
   }
@@ -448,8 +449,9 @@ extension AppFeature {
       } catch HistoryStoreError.staleFollowUpBatch {
         return
       } catch {
-        await send(.operationFailed(
-          .history(operation: .messageSave, error: error)))
+        await send(.conversationWriteFailed(
+          conversationID: conversationID,
+          failure: .history(operation: .messageSave, error: error)))
       }
       guard !Task.isCancelled else { return }
       let verdict = await scopeDiagnosis.judge(question)
