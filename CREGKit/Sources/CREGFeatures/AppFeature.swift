@@ -244,6 +244,17 @@ public struct AppFeature: Sendable {
   public struct RetryDeclineWrites: Equatable, Sendable {
     public var conversationID: UUID
     public var operationIDs: Set<UUID> = []
+    public var purposes: [UUID: RetryDeclinePurpose] = [:]
+  }
+
+  public enum RetryDeclinePurpose: Equatable, Sendable {
+    case cancellation
+    case refusedClaimCleanup
+  }
+
+  public struct RetryStaleCheck: Equatable, Sendable {
+    public var conversationID: UUID
+    public var requestID: UUID
   }
 
   /// The in-app banner for a background completion; never changes selection
@@ -308,6 +319,7 @@ public struct AppFeature: Sendable {
       Set(failedDismissalRecoveries.keys)
     }
     public var pendingRetryDeclines: [UUID: RetryDeclineWrites] = [:]
+    public var pendingRetryStaleChecks: [UUID: RetryStaleCheck] = [:]
     /// The completed turn whose history write currently gates queue dispatch.
     public var pendingTurnPersistence: PendingTurnPersistence?
     /// Compatibility projection used by diagnostics and reducer tests.
@@ -554,7 +566,7 @@ public struct AppFeature: Sendable {
       questionID: UUID, userPersisted: Bool, marked: Bool)
     case interruptedDismissalFinished(
       conversationID: UUID, journalID: UUID, attemptID: UUID, failure: FailurePresentation?)
-    case dismissedRetryClaimSettled(UUID)
+    case dismissedRetryClaimSettled(UUID, FailurePresentation? = nil)
     /// The durable retry count after a successful claim, or nil when the
     /// journal refused it.
     case queuedRetryClaimed(QueuedQuestion, Int?, FailurePresentation? = nil)
@@ -1226,12 +1238,14 @@ public struct AppFeature: Sendable {
         state.retryClaimJournalID = nil
         state.retryClaimConversationID = nil
         let claimed = retryCount != nil
+        if let retryCount {
+          updateRetryCount(
+            state: &state, conversationID: queued.conversationID,
+            journalID: journalID, count: retryCount)
+        }
         if state.dismissedRetryJournalIDs.contains(journalID) {
           if let claimFailure {
             recordSuppressedRetryFailure(claimFailure, journalID: journalID)
-          }
-          if let retryCount {
-            state.pendingInterruptedDismissals[journalID]?.interruption.autoRetryCount = retryCount
           }
           return settleDismissedRetryClaim(
             state: &state, conversationID: queued.conversationID,
@@ -1309,6 +1323,8 @@ public struct AppFeature: Sendable {
               ? "Ask Again to retry this question."
               : "Please tap Ask Again to try once more.",
             diagnostic: "The interruption journal claim did not succeed.")
+          state.pendingRetryStaleChecks[journalID] = RetryStaleCheck(
+            conversationID: queued.conversationID, requestID: queued.id)
           return .merge(handleConversationWriteFailure(
             state: &state, conversationID: queued.conversationID, failure: failure), .run { send in
             let snapshot = try? await history.loadConversation(queued.conversationID)
@@ -1317,6 +1333,9 @@ public struct AppFeature: Sendable {
             }) == true
             await send(.queuedRetryStaleChecked(queued, exists))
           })
+        }
+        if state.pendingDeletion?.summary.id == queued.conversationID {
+          return releaseRetryClaim(state: &state, queued: queued)
         }
         guard state.conversations[id: queued.conversationID] != nil else {
           // The conversation is gone; its row was deleted with it.
@@ -1347,15 +1366,17 @@ public struct AppFeature: Sendable {
         guard let journalID = queued.retryJournalID,
           state.retryReleaseJournalID == journalID
         else { return .none }
+        if releaseFailure == nil, queued.automaticRetry {
+          updateRetryCount(
+            state: &state, conversationID: queued.conversationID,
+            journalID: journalID, count: 0)
+        }
         if state.dismissedRetryJournalIDs.contains(journalID) {
           // Dismissal owns the row and any user-facing write failure. The
           // release may have failed because dismissal already removed it.
           state.retryReleaseJournalID = nil
           state.retryReleaseConversationID = nil
           state.cancelledRetryJournalIDs.remove(journalID)
-          if releaseFailure == nil, queued.automaticRetry {
-            state.pendingInterruptedDismissals[journalID]?.interruption.autoRetryCount = 0
-          }
           if let releaseFailure {
             recordSuppressedRetryFailure(releaseFailure, journalID: journalID)
           }
@@ -1433,7 +1454,10 @@ public struct AppFeature: Sendable {
         }
         syncSchedulerProjection(into: &state)
         return .merge(
-          releaseFailure.map { .send(.operationFailed($0)) } ?? .none,
+          releaseFailure.map {
+            handleConversationWriteFailure(
+              state: &state, conversationID: queued.conversationID, failure: $0)
+          } ?? .none,
           .send(.dispatchNextIfIdle))
 
       case .retryCancellationSettled(let queued, let failure):
@@ -1467,7 +1491,10 @@ public struct AppFeature: Sendable {
         }
         syncSchedulerProjection(into: &state)
         return .merge(
-          dismissed ? .none : (failure.map { .send(.operationFailed($0)) } ?? .none),
+          dismissed ? .none : (failure.map {
+            handleConversationWriteFailure(
+              state: &state, conversationID: queued.conversationID, failure: $0)
+          } ?? .none),
           finishDeferredDismissalIfReady(state: &state, journalID: journalID),
           .send(.dispatchNextIfIdle))
 
@@ -1476,6 +1503,7 @@ public struct AppFeature: Sendable {
         guard state.pendingRetryDeclines[journalID]?.conversationID == conversationID,
           state.pendingRetryDeclines[journalID]?.operationIDs.remove(operationID) != nil
         else { return .none }
+        let purpose = state.pendingRetryDeclines[journalID]?.purposes.removeValue(forKey: operationID)
         if state.pendingRetryDeclines[journalID]?.operationIDs.isEmpty == true {
           state.pendingRetryDeclines.removeValue(forKey: journalID)
         }
@@ -1485,7 +1513,14 @@ public struct AppFeature: Sendable {
         }
         syncSchedulerProjection(into: &state)
         let failureEffect: Effect<Action>
-        if !dismissed, let failure {
+        if !dismissed, let failure, purpose == .refusedClaimCleanup {
+          diagnostics.record(DiagnosticEvent(
+            level: .error, category: .history, code: "retry_claim_cleanup_failed",
+            summary: "Cleanup after a refused retry claim failed.",
+            details: failure.diagnostic,
+            context: ["journal_id": journalID.uuidString, "failure_code": failure.code]))
+          failureEffect = .none
+        } else if !dismissed, let failure {
           failureEffect = handleConversationWriteFailure(
             state: &state, conversationID: conversationID, failure: failure)
         } else {
@@ -1498,7 +1533,13 @@ public struct AppFeature: Sendable {
 
       case .queuedRetryStaleChecked(let queued, let journalExists):
         guard let journalID = queued.retryJournalID,
-          !state.dismissedRetryJournalIDs.contains(journalID)
+          state.pendingRetryStaleChecks[journalID]?.conversationID == queued.conversationID,
+          state.pendingRetryStaleChecks[journalID]?.requestID == queued.id
+        else { return .send(.dispatchNextIfIdle) }
+        state.pendingRetryStaleChecks.removeValue(forKey: journalID)
+        guard !state.dismissedRetryJournalIDs.contains(journalID),
+          state.conversations[id: queued.conversationID] != nil,
+          state.pendingDeletion?.summary.id != queued.conversationID
         else { return .send(.dispatchNextIfIdle) }
         guard journalExists else { return .send(.dispatchNextIfIdle) }
         if queued.automaticRetry {
@@ -1510,7 +1551,8 @@ public struct AppFeature: Sendable {
             state.chat?.interruptedTurns[index].status = .manualRetryRequired
           }
           return declineCancelledRetry(
-            state: &state, conversationID: queued.conversationID, journalID: journalID)
+            state: &state, conversationID: queued.conversationID, journalID: journalID,
+            purpose: .refusedClaimCleanup)
         }
         let appended = QueuedQuestion(
           id: queued.id, conversationID: queued.conversationID,
@@ -1543,9 +1585,10 @@ public struct AppFeature: Sendable {
         state.pendingInterruptedDismissals[journalID]?.failure = failure
         return finishDeferredDismissalIfReady(state: &state, journalID: journalID)
 
-      case .dismissedRetryClaimSettled(let journalID):
+      case .dismissedRetryClaimSettled(let journalID, let failure):
         guard state.retryClaimCleanupJournalID == journalID else { return .none }
         state.retryClaimCleanupJournalID = nil
+        if let failure { recordSuppressedRetryFailure(failure, journalID: journalID) }
         return .merge(
           finishDeferredDismissalIfReady(state: &state, journalID: journalID),
           .send(.dispatchNextIfIdle))
@@ -1620,6 +1663,7 @@ public struct AppFeature: Sendable {
         let replacedInterruptedTurn =
           state.activeTurn?.replacedInterruptedTurn
           ?? state.pendingTurnPersistence?.replacedInterruptedTurn
+        let failedPersistence = state.pendingTurnPersistence
         rollBackOptimisticUserTurn(
           state: &state,
           questionID: questionID,
@@ -1634,6 +1678,10 @@ public struct AppFeature: Sendable {
           },
           .send(.dispatchNextIfIdle),
         ]
+        if let failedPersistence, failedPersistence.questionID == questionID {
+          effects.append(finishDeferredDeletion(
+            state: &state, conversationID: failedPersistence.conversationID))
+        }
         if let replacedInterruptedTurn,
           state.chat?.conversationID == conversationID
         {
@@ -1722,11 +1770,8 @@ public struct AppFeature: Sendable {
                 generation: pending.suggestionGeneration))
           }
         }
-        if state.deletionAwaitingTurnPersistence == pending.conversationID {
-          state.deletionAwaitingTurnPersistence = nil
-          clearDismissalRecovery(state: &state, conversationID: pending.conversationID)
-          effects.append(commitDeletionEffect(conversationID: pending.conversationID))
-        }
+        effects.append(finishDeferredDeletion(
+          state: &state, conversationID: pending.conversationID))
         return .merge(effects)
 
       case .turnPersistenceTimedOut(let questionID):
@@ -1961,6 +2006,7 @@ public struct AppFeature: Sendable {
             || state.pendingDeletion?.summary.id == conversationID
         else { return .none }
         let attemptID = uuid()
+        state.pendingRetryStaleChecks.removeValue(forKey: journalID)
         state.pendingInterruptedDismissals[journalID] = PendingInterruptedDismissal(
           conversationID: conversationID, journalID: journalID,
           attemptID: attemptID, interruption: interruption)
@@ -1985,10 +2031,16 @@ public struct AppFeature: Sendable {
               conversationID: conversationID, journalID: journalID,
               attemptID: attemptID, failure: nil))
           } catch {
-            try? await history.declineAutoRetry(conversationID, journalID)
+            let dismissalFailure = FailurePresentation.history(operation: .messageSave, error: error)
+            do {
+              try await history.declineAutoRetry(conversationID, journalID)
+            } catch {
+              recordSuppressedRetryFailure(
+                .history(operation: .messageSave, error: error), journalID: journalID)
+            }
             await send(.interruptedDismissalFinished(
               conversationID: conversationID, journalID: journalID,
-              attemptID: attemptID, failure: .history(operation: .messageSave, error: error)))
+              attemptID: attemptID, failure: dismissalFailure))
           }
         }
 

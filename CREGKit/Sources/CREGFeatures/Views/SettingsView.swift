@@ -94,7 +94,7 @@ struct SettingsView: View {
           .disabled(store.isBuildingSupportBundle)
         } footer: {
           Text(
-            "Includes questions, results, drafts, answer feedback and corrections, event history, and diagnostics. Review the ZIP before sending."
+            "Includes all stored conversations: questions, results, generated SQL, drafts, answer feedback and corrections, event history, diagnostics, and a full history database snapshot. Review the ZIP before sending."
           )
         }
 
@@ -236,7 +236,7 @@ struct SupportBundleSendView: View {
 
   static let supportAddress = "harold.martin@gmail.com"
   static let sensitiveContentsWarning =
-    "This bundle contains your portfolio questions, results, drafts, answer feedback and corrections, event history, and diagnostics. Send it only if you are comfortable sharing that data with support."
+    "This bundle contains all stored conversations, including your portfolio questions, results, generated SQL, drafts, answer feedback and corrections, event history, diagnostics, and a full history database snapshot. Send it only if you are comfortable sharing that data with support."
 
   var body: some View {
     #if canImport(MessageUI)

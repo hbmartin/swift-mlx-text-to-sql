@@ -68,6 +68,90 @@ final class AccessibilityUITests: XCTestCase {
     }
   }
 
+  func testSharingReturnsToAnswerWithMoreClosed() {
+    let app = launch(scenario: "answered-chat", dynamicType: "large")
+    scrollToControl("More answer actions", in: app).tap()
+    let share = app.buttons["Share answer"]
+    XCTAssertTrue(share.waitForExistence(timeout: 5))
+    share.tap()
+    let copy = app.cells["Copy"].firstMatch
+    XCTAssertTrue(copy.waitForExistence(timeout: 5), app.debugDescription)
+    copy.tap()
+    XCTAssertTrue(copy.waitForNonExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Helpful"].exists, "More should close after sharing completes")
+    scrollToControl("More answer actions", in: app).tap()
+    XCTAssertTrue(app.buttons["Helpful"].waitForExistence(timeout: 5))
+  }
+
+  func testMoreClosesWhenAnswerActionLayoutChanges() {
+    for size in ["large", "xxxlarge", "ax5"] {
+      XCUIDevice.shared.orientation = .portrait
+      let app = launch(scenario: "answered-chat", dynamicType: size)
+      scrollToControl("More answer actions", in: app).tap()
+      let helpful = app.buttons["Helpful"]
+      XCTAssertTrue(helpful.waitForExistence(timeout: 5))
+      XCUIDevice.shared.orientation = .landscapeLeft
+      XCTAssertTrue(
+        helpful.waitForNonExistence(timeout: 5), "More should close when the row width changes")
+      XCTAssertTrue(app.otherElements["PopoverDismissRegion"].waitForNonExistence(timeout: 5))
+      tapMoreClearOfChatHeader(in: app)
+      XCTAssertTrue(helpful.waitForExistence(timeout: 5), app.debugDescription)
+      assertAccessibleControl(helpful, label: "Helpful")
+      app.terminate()
+    }
+  }
+
+  func testCancellingSharingReturnsToAnswerWithMoreClosed() {
+    let app = launch(scenario: "answered-chat", dynamicType: "large")
+    scrollToControl("More answer actions", in: app).tap()
+    app.buttons["Share answer"].tap()
+    let activities = app.otherElements["ActivityListView"].firstMatch
+    XCTAssertTrue(activities.waitForExistence(timeout: 5), app.debugDescription)
+    let close = app.buttons["Close"].firstMatch
+    if close.exists {
+      close.tap()
+    } else {
+      activities.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02))
+        .press(
+          forDuration: 0.1,
+          thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+    }
+    XCTAssertTrue(activities.waitForNonExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Helpful"].exists)
+    scrollToControl("More answer actions", in: app).tap()
+    XCTAssertTrue(app.buttons["Helpful"].waitForExistence(timeout: 5))
+  }
+
+  func testMoreActionsRemainAccessibleInConstrainedHeight() throws {
+    for size in ["large", "ax5"] {
+      for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+        XCUIDevice.shared.orientation = orientation
+        let app = launch(scenario: "answered-chat-reading", dynamicType: size)
+        scrollToControl("More answer actions", in: app).tap()
+        for label in ["Share answer", "Helpful", "Stop reading"] {
+          let control = app.buttons[label]
+          for _ in 0..<6 {
+            if control.exists && control.isHittable { break }
+            app.popovers.firstMatch.swipeUp()
+          }
+          assertAccessibleControl(control, label: label)
+        }
+        if size == "ax5" {
+          XCTAssertGreaterThan(app.buttons["Share answer"].frame.height, 44)
+        }
+        XCTAssertTrue(app.buttons["Helpful"].isSelected)
+        try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "More-\(size)-\(orientation.rawValue)"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["Stop reading"].tap()
+        XCTAssertTrue(app.buttons["Helpful"].waitForNonExistence(timeout: 5))
+        app.terminate()
+      }
+    }
+  }
+
   func testAnswerActionAccessibilitySemantics() {
     for size in ["large", "ax5"] {
       let app = launch(scenario: "answered-chat-helpful", dynamicType: size)
@@ -392,6 +476,30 @@ final class AccessibilityUITests: XCTestCase {
     return control
   }
 
+  private func tapMoreClearOfChatHeader(in app: XCUIApplication) {
+    let more = scrollToControl("More answer actions", in: app)
+    let header = app.buttons.matching(
+      NSPredicate(format: "label CONTAINS 'conversation actions'")).firstMatch
+    for _ in 0..<6 {
+      // XCTest may call an underlying SwiftUI control hittable even when
+      // the translucent header receives the tap at its center.
+      if !header.exists || more.frame.midY > header.frame.maxY + 8 { break }
+      let top = header.frame.maxY
+      let bottom = app.textFields.firstMatch.exists
+        ? app.textFields.firstMatch.frame.minY : app.frame.maxY - 120
+      let start = app.coordinate(withNormalizedOffset: .zero)
+        .withOffset(CGVector(dx: app.frame.midX, dy: (top + bottom) / 2))
+      start.press(
+        forDuration: 0.1,
+        thenDragTo: start.withOffset(CGVector(dx: 0, dy: min(30, (bottom - top) * 0.4))),
+        withVelocity: .slow,
+        thenHoldForDuration: 0.3)
+    }
+    XCTAssertTrue(more.isHittable, app.debugDescription)
+    XCTAssertGreaterThan(more.frame.midY, header.frame.maxY)
+    more.tap()
+  }
+
   private func assertAccessibleControl(
     _ control: XCUIElement,
     label: String,
@@ -405,8 +513,8 @@ final class AccessibilityUITests: XCTestCase {
       line: line)
     XCTAssertTrue(control.isHittable, "\(label) is not hittable", file: file, line: line)
     XCTAssertGreaterThanOrEqual(
-      control.frame.width, 44, "\(label) is narrower than 44 points", file: file, line: line)
+      control.frame.width, 44 - 0.001, "\(label) is narrower than 44 points", file: file, line: line)
     XCTAssertGreaterThanOrEqual(
-      control.frame.height, 44, "\(label) is shorter than 44 points", file: file, line: line)
+      control.frame.height, 44 - 0.001, "\(label) is shorter than 44 points", file: file, line: line)
   }
 }

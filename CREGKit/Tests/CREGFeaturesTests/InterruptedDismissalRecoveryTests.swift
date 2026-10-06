@@ -308,7 +308,8 @@ struct InterruptedDismissalRecoveryTests {
             conversationID: Self.conversationID, journalID: user.id,
             interruption: InterruptedTurn(
               question: user.previewText, interruptedAt: user.createdAt,
-              journalID: user.id, executionID: user.id, status: .manualRetryRequired)))))
+              journalID: user.id, executionID: user.id, status: .manualRetryRequired,
+              autoRetryCount: 1)))))
     let pending = store.state.pendingInterruptedDismissals[user.id]!
     let originalFailure = FailurePresentation.history(operation: .messageSave, error: error)
     await store.receive(completion(pending, failure: originalFailure))
@@ -472,12 +473,13 @@ struct InterruptedDismissalRecoveryTests {
       await store.finish()
       #expect(store.state.pendingInterruptedDismissals.isEmpty)
       #expect(store.state.failedDismissalRecoveries.isEmpty)
-      #expect(store.state.pendingRetryDeclines.isEmpty)
+      #expect(store.state.pendingRetryDeclines[UUID(9801)]?.operationIDs == [UUID(9802)])
       await store.send(completion(pending, failure: failure(10)))
       await store.send(
         .retryDeclineFinished(
           conversationID: Self.conversationID, journalID: UUID(9801),
           operationID: UUID(9802), failure: failure(10)))
+      #expect(store.state.pendingRetryDeclines.isEmpty)
       #expect(store.state.failedDismissalRecoveries.isEmpty)
       #expect(store.state.presentedFailure == nil)
     }
@@ -644,6 +646,8 @@ struct InterruptedDismissalRecoveryTests {
     state.isSceneActive = false
     state.chat?.messages.append(user)
     state.chat?.interruptedTurns = [original.interruption]
+    state.pendingRetryStaleChecks[user.id] = .init(
+      conversationID: Self.conversationID, requestID: queued.id)
     let held = DismissalHeldOperation()
     let declines = CallRecorder()
     let diagnostics = DiagnosticEventRecorder()

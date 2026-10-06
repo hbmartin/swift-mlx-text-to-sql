@@ -107,6 +107,14 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testAnswerActionAccessibilitySemantics",
     "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testSharingReturnsToAnswerWithMoreClosed",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testCancellingSharingReturnsToAnswerWithMoreClosed",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testMoreClosesWhenAnswerActionLayoutChanges",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testMoreActionsRemainAccessibleInConstrainedHeight",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
     "testSimpleChartValuesAreAccessible",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",

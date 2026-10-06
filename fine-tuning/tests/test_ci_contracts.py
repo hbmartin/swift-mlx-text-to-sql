@@ -692,6 +692,10 @@ def test_accessibility_ui_contract_rejects_duplicate_pinned_arguments(
     "testAnswerActionsAreAtLeast44Points",
     "testKnownIconControlsAreAtLeast44Points",
     "testAnswerActionAccessibilitySemantics",
+    "testSharingReturnsToAnswerWithMoreClosed",
+    "testCancellingSharingReturnsToAnswerWithMoreClosed",
+    "testMoreClosesWhenAnswerActionLayoutChanges",
+    "testMoreActionsRemainAccessibleInConstrainedHeight",
     "testSimpleChartValuesAreAccessible",
 ])
 def test_accessibility_ui_contract_requires_answer_action_targets(method):

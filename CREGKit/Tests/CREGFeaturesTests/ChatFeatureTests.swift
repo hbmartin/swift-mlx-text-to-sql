@@ -768,6 +768,8 @@ private func awaitArmedFMWatch(
     }
     var state = Self.appState()
     state.retryClaimInFlight = true
+    state.retryClaimJournalID = questionID
+    state.retryClaimConversationID = Self.conversationA
     state.queue = [QueuedQuestion(
       id: UUID(709), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: "Retry"),
@@ -795,8 +797,11 @@ private func awaitArmedFMWatch(
           createdAt: Date(timeIntervalSince1970: 1)),
         automaticRetry: true, submittedAt: Date(timeIntervalSince1970: 1)),
       1))
+    await store.receive(.dismissedRetryClaimSettled(questionID))
     await store.finish()
     #expect(store.state.activeTurn == nil)
+    #expect(!store.state.retryClaimInFlight)
+    #expect(store.state.retryClaimCleanupJournalID == nil)
     #expect(endings.recorded == [questionID.uuidString])
   }
 

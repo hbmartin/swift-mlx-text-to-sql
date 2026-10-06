@@ -265,6 +265,11 @@ struct AnswerActionsRow: View {
   let store: StoreOf<ChatFeature>
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   @State private var isMorePresented = false
+  @State private var moreButtonFrame = CGRect.zero
+  #if canImport(UIKit)
+    @State private var pendingShare: AnswerShare?
+    @State private var presentedShare: AnswerShare?
+  #endif
 
   var body: some View {
     ViewThatFits(in: .horizontal) {
@@ -278,6 +283,23 @@ struct AnswerActionsRow: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.top, 2)
+    .coordinateSpace(name: messageID)
+    .onGeometryChange(for: CGFloat.self) {
+      $0.size.width
+    } action: { _ in
+      isMorePresented = false
+    }
+    .onChange(of: dynamicTypeSize) {
+      isMorePresented = false
+    }
+    .popover(isPresented: $isMorePresented, attachmentAnchor: .rect(.rect(moreButtonFrame))) {
+      moreActions
+    }
+    #if canImport(UIKit)
+      .sheet(item: $presentedShare) { share in
+        AnswerActivitySheet(markdown: share.markdown)
+      }
+    #endif
   }
 
   @ViewBuilder
@@ -373,20 +395,51 @@ struct AnswerActionsRow: View {
     }
     .buttonStyle(.bordered)
     .accessibilityLabel("More answer actions")
-    .popover(isPresented: $isMorePresented, arrowEdge: .bottom) {
-      AnswerMoreActions(
-        exportedAnswer: exportedAnswer,
-        isHelpful: feedback?.verdict == .helpful,
-        markHelpful: {
-          store.send(.feedbackHelpfulTapped(messageID: messageID))
-          isMorePresented = false
-        },
-        stopReading: readAloud?.messageID == messageID ? {
+    .onGeometryChange(for: CGRect.self) {
+      $0.frame(in: .named(messageID))
+    } action: { frame in
+      moreButtonFrame = frame
+    }
+  }
+
+  private var moreActions: some View {
+    AnswerMoreActions(
+      exportedAnswer: exportedAnswer,
+      isHelpful: feedback?.verdict == .helpful,
+      markHelpful: {
+        store.send(.feedbackHelpfulTapped(messageID: messageID))
+        isMorePresented = false
+      },
+      stopReading: readAloud?.messageID == messageID
+        ? {
           store.send(.readAloudStopTapped)
           isMorePresented = false
-        } : nil)
-      .presentationCompactAdaptation(.popover)
-    }
+        } : nil,
+      share: shareAction
+    )
+    .environment(\.dynamicTypeSize, dynamicTypeSize)
+    .presentationCompactAdaptation(.popover)
+    #if canImport(UIKit)
+      .background {
+        AnswerMoreDismissalObserver {
+          guard !isMorePresented, let pendingShare else { return }
+          self.pendingShare = nil
+          presentedShare = pendingShare
+        }
+        .frame(width: 0, height: 0)
+      }
+    #endif
+  }
+
+  private var shareAction: (() -> Void)? {
+    #if canImport(UIKit)
+      return {
+        pendingShare = AnswerShare(markdown: exportedAnswer)
+        isMorePresented = false
+      }
+    #else
+      return nil
+    #endif
   }
 
   private func actionLabel(_ title: String, systemImage: String, stacked: Bool) -> some View {
@@ -403,11 +456,35 @@ struct AnswerMoreActions: View {
   let isHelpful: Bool
   let markHelpful: () -> Void
   var stopReading: (() -> Void)?
+  var share: (() -> Void)?
+  @State private var contentHeight: CGFloat?
 
   var body: some View {
+    ScrollView {
+      actions
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) {
+          $0.size.height
+        } action: { height in
+          contentHeight = height
+        }
+    }
+    .scrollBounceBehavior(.basedOnSize)
+    .frame(idealHeight: contentHeight, maxHeight: contentHeight)
+    .frame(minWidth: 220, maxWidth: 360)
+    .padding(8)
+  }
+
+  private var actions: some View {
     VStack(spacing: 0) {
-      ShareLink(item: exportedAnswer) {
-        actionLabel("Share answer", systemImage: "square.and.arrow.up")
+      if let share {
+        Button(action: share) {
+          actionLabel("Share answer", systemImage: "square.and.arrow.up")
+        }
+      } else {
+        ShareLink(item: exportedAnswer) {
+          actionLabel("Share answer", systemImage: "square.and.arrow.up")
+        }
       }
       Button(action: markHelpful) {
         actionLabel("Helpful", systemImage: isHelpful ? "hand.thumbsup.fill" : "hand.thumbsup")
@@ -421,8 +498,6 @@ struct AnswerMoreActions: View {
       }
     }
     .buttonStyle(.plain)
-    .frame(minWidth: 220, maxWidth: 360)
-    .padding(8)
   }
 
   private func actionLabel(_ title: String, systemImage: String) -> some View {
