@@ -178,7 +178,7 @@ struct AppRootView: View {
             modelPreparationReport: store.modelPreparationReport,
             developerMode: store.developerMode,
             resultTableTextSize: $store.resultTableTextSize,
-            hasUnreadElsewhere: store.conversations.contains { $0.isUnread },
+            hasUnreadElsewhere: store.visibleConversations.contains { $0.isUnread },
             debugModelIdentity: store.debugModelIdentity,
             presentedFailure: store.presentedFailure,
             dismissFailure: { store.send(.dismissFailure) },

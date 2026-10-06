@@ -101,18 +101,21 @@ extension AppFeature {
     activeTurn.replacingJournalID = replacingJournalID
     activeTurn.suggestionGeneration = suggestionGeneration
     if let replacingJournalID {
-      activeTurn.replacedInterruptedTurn = state.chat?.interruptedTurns.first {
-        $0.journalID == replacingJournalID
-      }
+      activeTurn.replacedInterruptedTurn = state.retryJournals[replacingJournalID]?.interruption
+        ?? (state.chat?.conversationID == conversationID
+          ? state.chat?.interruptedTurns.first { $0.journalID == replacingJournalID } : nil)
       // The transferred journal keeps the count it already spent, so the
       // dispatched turn carries it too and never re-arms automatic retry.
-      if existingUserMessage == nil,
-        let replaced = activeTurn.replacedInterruptedTurn
-      {
-        activeTurn.autoRetryCount = max(autoRetryCount, replaced.autoRetryCount)
+      if existingUserMessage == nil {
+        activeTurn.autoRetryCount = max(
+          autoRetryCount,
+          state.retryJournals[replacingJournalID]?.knownDurableCount ?? activeTurn
+            .replacedInterruptedTurn?.autoRetryCount ?? 0)
       }
     }
     activeTurn.optimisticUserTurn = optimisticTurn
+    state.seedRetry(questionID, conversationID: conversationID)
+    state.retryJournals[questionID]?.knownDurableCount = activeTurn.autoRetryCount
     state.activeTurn = activeTurn
     if let replacingJournalID, state.chat?.conversationID == conversationID {
       state.chat?.interruptedTurns.removeAll { $0.journalID == replacingJournalID }
@@ -202,7 +205,8 @@ extension AppFeature {
   func insertQueuedQuestion(_ queued: QueuedQuestion, into state: inout State) {
     let index = state.queue.firstIndex {
       $0.submittedAt > queued.submittedAt
-    } ?? state.queue.endIndex
+          || ($0.submittedAt == queued.submittedAt && $0.id.uuidString > queued.id.uuidString)
+      } ?? state.queue.endIndex
     state.queue.insert(queued, at: index)
     syncSchedulerProjection(into: &state)
   }
@@ -214,16 +218,16 @@ extension AppFeature {
   func cancelQueuedRetry(
     state: inout State, conversationID: UUID, journalID: UUID
   ) -> Effect<Action> {
-    state.pendingRetryStaleChecks.removeValue(forKey: journalID)
+    state.invalidateRetryInspection(journalID)
     state.queue.removeAll {
       $0.conversationID == conversationID && $0.retryJournalID == journalID
     }
-    state.automaticRetryCandidates.removeValue(forKey: journalID)
-    state.userPromotedRetryJournalIDs.remove(journalID)
+    state.removeAutomaticCandidate(journalID)
+    state.removeRetryPromotion(journalID)
     if state.retryClaimJournalID == journalID
       || state.retryReleaseJournalID == journalID
     {
-      state.cancelledRetryJournalIDs.insert(journalID)
+      state.retryJournals[journalID]?.intent = .cancelled(manualRequested: false)
     }
     if state.chat?.conversationID == conversationID,
       let index = state.chat?.interruptedTurns.firstIndex(where: {
@@ -243,6 +247,7 @@ extension AppFeature {
       return .none
     }
     return .merge(
+      .cancel(id: RetryInspectionID(journalID: journalID)),
       declineCancelledRetry(state: &state, conversationID: conversationID, journalID: journalID),
       dispatchNextIfIdle(state: &state))
   }
@@ -252,10 +257,8 @@ extension AppFeature {
     purpose: RetryDeclinePurpose = .cancellation
   ) -> Effect<Action> {
     let operationID = uuid()
-    state.pendingRetryDeclines[
-      journalID, default: RetryDeclineWrites(conversationID: conversationID)
-    ].operationIDs.insert(operationID)
-    state.pendingRetryDeclines[journalID]?.purposes[operationID] = purpose
+    state.seedRetry(journalID, conversationID: conversationID)
+    state.retryJournals[journalID]?.operations[operationID] = .decline(purpose)
     return .run { send in
       do {
         try await history.declineAutoRetry(conversationID, journalID)
@@ -277,7 +280,7 @@ extension AppFeature {
       !active.pipelineStarted
     else { return .none }
     guard state.conversations[id: active.conversationID] != nil,
-      state.pendingDeletion?.summary.id != active.conversationID
+      state.isConversationLive(active.conversationID)
     else {
       state.activeTurn = nil
       if state.chat?.conversationID == active.conversationID {
@@ -523,18 +526,18 @@ extension AppFeature {
       let interrupted = chat.interruptedTurns.first(where: {
         let candidateID = $0.journalID ?? $0.executionID
         guard let candidateID,
-          (!state.dismissedRetryJournalIDs.contains(candidateID)
+          !state.dismissedRetryJournalIDs.contains(candidateID)
             || (state.failedDismissalManualRetryIDs.contains(candidateID)
               && state.retryClaimJournalID != candidateID
               && state.retryClaimCleanupJournalID != candidateID
               && state.retryReleaseJournalID != candidateID
-              && state.pendingRetryDeclines[candidateID] == nil))
+              && state.pendingRetryDeclines[candidateID] == nil)
         else { return false }
         if let requestedID { return $0.journalID == requestedID }
         return true
       }),
       state.conversations[id: chat.conversationID] != nil,
-      state.pendingDeletion?.summary.id != chat.conversationID
+      state.isConversationLive(chat.conversationID)
     else { return .none }
     let last = chat.messages.last
     let trailingMessage: ChatMessage? = {
@@ -548,33 +551,38 @@ extension AppFeature {
     let resolvedJournalID = interrupted.journalID ?? interrupted.executionID
       ?? trailingMessage?.id
     guard let resolvedJournalID else { return .none }
-    state.pendingRetryStaleChecks.removeValue(forKey: resolvedJournalID)
-    if state.failedDismissalRecoveries.removeValue(forKey: resolvedJournalID) != nil {
-      state.dismissedRetryJournalIDs.remove(resolvedJournalID)
+    state.seedRetry(
+      resolvedJournalID, conversationID: chat.conversationID, interruption: interrupted)
+    state.invalidateRetryInspection(resolvedJournalID)
+    state.promoteRetry(resolvedJournalID)
+    if state.clearFailedDismissal(resolvedJournalID) {
+      state.retryJournals[resolvedJournalID]?.intent = .idle
     }
     let cancellationSettling =
       state.retryReleaseJournalID == resolvedJournalID
       && state.cancelledRetryJournalIDs.contains(resolvedJournalID)
     if !cancellationSettling {
-      state.cancelledRetryJournalIDs.remove(resolvedJournalID)
+      state.removeRetryCancellation(resolvedJournalID)
     }
     // An Ask Again request supersedes the automatic allowance; it is never
     // replenished by the manual request.
-    state.automaticRetryCandidates.removeValue(forKey: resolvedJournalID)
+    state.removeAutomaticCandidate(resolvedJournalID)
     if let index = state.queue.firstIndex(where: {
       $0.retryJournalID == resolvedJournalID
     }) {
       state.queue[index].automaticRetry = false
-      state.userPromotedRetryJournalIDs.insert(resolvedJournalID)
+      state.promoteRetry(resolvedJournalID)
       syncSchedulerProjection(into: &state)
-      return dispatchNextIfIdle(state: &state)
+      return .merge(
+        .cancel(id: RetryInspectionID(journalID: resolvedJournalID)),
+        dispatchNextIfIdle(state: &state))
     }
     if state.retryClaimJournalID == resolvedJournalID
       || state.retryReleaseJournalID == resolvedJournalID
     {
-      state.userPromotedRetryJournalIDs.insert(resolvedJournalID)
+      state.promoteRetry(resolvedJournalID)
       syncSchedulerProjection(into: &state)
-      return .none
+      return .cancel(id: RetryInspectionID(journalID: resolvedJournalID))
     }
     let submission = QuestionSubmission(
       question: interrupted.question, source: interrupted.source)
@@ -584,14 +592,16 @@ extension AppFeature {
         submission: submission, retryJournalID: resolvedJournalID,
         existingUserMessage: trailingMessage,
         automaticRetry: false,
-        submittedAt: trailingMessage?.createdAt ?? now),
+        submittedAt: trailingMessage?.createdAt ?? interrupted.interruptedAt),
       into: &state)
     diagnostics.info(
       category: .submission,
       code: "chat_interrupted_turn_retry_queued",
       summary: "An Ask Again request was queued for the scheduler.",
       context: ["retries_in_place": String(trailingMessage != nil)])
-    return dispatchNextIfIdle(state: &state)
+    return .merge(
+      .cancel(id: RetryInspectionID(journalID: resolvedJournalID)),
+      dispatchNextIfIdle(state: &state))
   }
 
   func settleDismissedRetryClaim(
@@ -600,7 +610,9 @@ extension AppFeature {
     journalID: UUID,
     claimed: Bool
   ) -> Effect<Action> {
-    state.retryClaimCleanupJournalID = journalID
+    state.seedRetry(journalID, conversationID: conversationID)
+    let operationID = uuid()
+    state.retryJournals[journalID]?.operations[operationID] = .cleanup
     return .run { send in
       // A failed dismissal must restore Ask Again without re-arming an
       // automatic claim that may already have consumed its budget.
@@ -609,11 +621,12 @@ extension AppFeature {
           try await history.declineAutoRetry(conversationID, journalID)
         } catch {
           await send(.dismissedRetryClaimSettled(
-            journalID, .history(operation: .messageSave, error: error)))
+            journalID, operationID: operationID,
+              failure: .history(operation: .messageSave, error: error)))
           return
         }
       }
-      await send(.dismissedRetryClaimSettled(journalID))
+      await send(.dismissedRetryClaimSettled(journalID, operationID: operationID, failure: nil))
     }
   }
 
@@ -628,17 +641,20 @@ extension AppFeature {
     guard let journalID = queued.retryJournalID,
       let executionID = queued.existingUserMessage?.id
     else { return .send(.dispatchNextIfIdle) }
-    state.retryReleaseJournalID = journalID
-    state.retryReleaseConversationID = queued.conversationID
+    state.seedRetry(journalID, conversationID: queued.conversationID)
+    let operationID = uuid()
+    state.retryJournals[journalID]?.operations[operationID] = .release(queued)
     syncSchedulerProjection(into: &state)
     return .run { send in
       do {
         try await history.releaseAutoRetryClaim(
           queued.conversationID, journalID, executionID, queued.automaticRetry)
-        await send(.retryClaimReleased(queued, nil))
+        await send(.retryClaimReleased(queued, operationID: operationID, failure: nil))
       } catch {
-        await send(.retryClaimReleased(
-          queued, .history(operation: .messageSave, error: error)))
+        await send(
+          .retryClaimReleased(
+            queued, operationID: operationID,
+            failure: .history(operation: .messageSave, error: error)))
       }
     }
   }
@@ -649,12 +665,17 @@ extension AppFeature {
   /// deactivated scene merely leaves it waiting for the next open gate.
   func enqueueEligibleAutomaticRetry(state: inout State) {
     let candidates = state.automaticRetryCandidates.values.sorted {
-      $0.userMessage.createdAt < $1.userMessage.createdAt
+      if $0.userMessage.createdAt != $1.userMessage.createdAt {
+        return $0.userMessage.createdAt < $1.userMessage.createdAt
+      }
+      return $0.journalID.uuidString < $1.journalID.uuidString
     }
     for candidate in candidates {
       let journalID = candidate.journalID
-      guard retryJournalEligibleForQueue(
-        state: state, conversationID: candidate.conversationID, journalID: journalID),
+      guard
+        retryJournalEligibleForQueue(
+          state: state, conversationID: candidate.conversationID, journalID: journalID),
+        state.retryJournals[journalID]?.knownDurableCount == 0,
         !state.cancelledRetryJournalIDs.contains(journalID),
         state.retryClaimJournalID != journalID,
         state.retryReleaseJournalID != journalID,
@@ -717,30 +738,43 @@ extension AppFeature {
     if state.retryClaimInFlight || state.retryReleaseJournalID != nil { return .none }
     let visibleID = state.chat?.conversationID
     let next =
-      state.queue.first { $0.conversationID == visibleID }
-      ?? state.queue.first
+      state.runnableQueue.first { $0.conversationID == visibleID }
+      ?? state.runnableQueue.first
     guard let next else { return .none }
     state.queue.removeAll { $0.id == next.id }
     guard state.conversations[id: next.conversationID] != nil,
-      state.pendingDeletion?.summary.id != next.conversationID
+      state.isConversationLive(next.conversationID)
     else {
       syncSchedulerProjection(into: &state)
       return .send(.dispatchNextIfIdle)
     }
-    if let journalID = next.retryJournalID, let userMessage = next.existingUserMessage {
-      state.pendingRetryStaleChecks.removeValue(forKey: journalID)
-      state.retryClaimInFlight = true
-      state.retryClaimJournalID = journalID
-      state.retryClaimConversationID = next.conversationID
+    if let journalID = next.retryJournalID, next.retryTransferConfirmed,
+      state.retryJournals[journalID]?.knownDurableCount == nil
+    {
+      return inspectRetry(state: &state, queued: next)
+    }
+    if let journalID = next.retryJournalID, !next.retryTransferConfirmed {
+      let executionID =
+        next.existingUserMessage?.id ?? state.retryJournals[journalID]?.interruption?.executionID
+        ?? journalID
+      state.invalidateRetryInspection(journalID)
+      state.seedRetry(journalID, conversationID: next.conversationID)
+      let operationID = uuid()
+      state.retryJournals[journalID]?.operations[operationID] = .claim(next)
       syncSchedulerProjection(into: &state)
       return .run { send in
         do {
           let retryCount = try await history.claimTurnRetry(
-            next.conversationID, journalID, userMessage.id, next.automaticRetry)
-          await send(.queuedRetryClaimed(next, retryCount))
+            next.conversationID, journalID, executionID, next.automaticRetry)
+          await send(
+            .queuedRetryClaimed(
+              next, retryCount.map(RetryClaimOutcome.claimed) ?? .refused, operationID: operationID)
+          )
         } catch {
-          await send(.queuedRetryClaimed(
-            next, nil, .history(operation: .messageSave, error: error)))
+          await send(
+            .queuedRetryClaimed(
+              next, .failed(.history(operation: .messageSave, error: error)),
+              operationID: operationID))
         }
       }
     }
@@ -751,6 +785,8 @@ extension AppFeature {
         conversationID: next.conversationID,
         submission: next.submission,
         existingUserMessage: next.existingUserMessage,
+        autoRetryCount: next.retryJournalID.flatMap { state.retryJournals[$0]?.knownDurableCount }
+          ?? 0,
         directlyUserStarted: next.retryJournalID != nil && !next.automaticRetry,
         acceptedSuggestionGeneration: next.suggestionGeneration,
         replacingJournalID: next.existingUserMessage == nil ? next.retryJournalID : nil))

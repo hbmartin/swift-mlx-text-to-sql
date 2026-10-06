@@ -462,8 +462,8 @@ enum PreviewFixtures {
     state.answerReadyBanner = AppFeature.AnswerReadyBanner(
       conversationID: summaries[1].id,
       title: summaries[1].displayTitle)
-    state.pendingDeletion = AppFeature.PendingDeletion(
-      summary: summaries[2], index: 2)
+    state.conversationDeletions[summaries[2].id] = .init(token: UUID(), summary: summaries[2])
+    state.undoDeletionID = summaries[2].id
     return state
   }
 

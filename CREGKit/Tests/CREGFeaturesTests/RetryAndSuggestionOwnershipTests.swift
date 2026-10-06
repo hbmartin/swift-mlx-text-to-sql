@@ -79,6 +79,7 @@ private actor HeldOperation {
       marks.record("\(id.uuidString):\(ambiguous)")
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -122,6 +123,7 @@ private actor HeldOperation {
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -149,9 +151,10 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.automaticRetryCandidates[user.id] = AppFeature.AutomaticRetryCandidate(
-      journalID: user.id, conversationID: Self.conversationA,
-      submission: QuestionSubmission(question: user.previewText), userMessage: user)
+    state.installAutomaticCandidate(
+      .init(
+        journalID: user.id, conversationID: Self.conversationA,
+        submission: QuestionSubmission(question: user.previewText), userMessage: user))
     state.queue = [QueuedQuestion(
       id: UUID(9021), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -164,6 +167,7 @@ private actor HeldOperation {
     history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
     history.endTurnJournal = { _, id in endings.record(id.uuidString) }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -198,9 +202,7 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     state.chat?.queuedRetryJournalIDs = [user.id]
     let queued = QueuedQuestion(
       id: UUID(9031), conversationID: Self.conversationA,
@@ -211,6 +213,7 @@ private actor HeldOperation {
     var history = HistoryClient.noop()
     history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -223,7 +226,7 @@ private actor HeldOperation {
     #expect(store.state.cancelledRetryJournalIDs.contains(user.id))
     #expect(store.state.retryClaimInFlight)
     #expect(store.state.chat?.queuedRetryJournalIDs.isEmpty == true)
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await store.finish()
     await store.skipReceivedActions()
 
@@ -255,6 +258,7 @@ private actor HeldOperation {
     var history = HistoryClient.noop()
     history.declineAutoRetry = { _, _ in throw error }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.diagnostics = diagnostics.client
@@ -278,11 +282,12 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     state.chat?.queuedRetryJournalIDs = [user.id]
-    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.uuid = .incrementing
     }
@@ -318,8 +323,17 @@ private actor HeldOperation {
         begins.record(String(directlyStarted))
         return false
       }, progress: { _, _ in }, finish: { _, _ in })
-    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
-      $0.historyClient = .noop()
+    var retryHistory = HistoryClient.noop()
+    let snapshot = ConversationSnapshot(
+      summary: state.conversations[id: Self.conversationA]!,
+      messages: [user, later], interruptedTurns: state.chat!.interruptedTurns)
+    retryHistory.loadConversation = { _ in snapshot }
+    retryHistory.claimTurnRetry = { _, _, _, _ in nil }
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.continuousClock = ContinuousClock()
+      $0.historyClient = retryHistory
       $0.backgroundTurn = background
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -328,7 +342,9 @@ private actor HeldOperation {
     store.exhaustivity = .off
 
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
-    await store.skipReceivedActions()
+    await store.receive(\.queuedRetryClaimed)
+    await store.receive(\.queuedRetryStaleChecked)
+    await store.receive(\.backgroundTurnReady)
     #expect(store.state.activeTurn?.replacingJournalID == user.id)
     #expect(store.state.activeTurn?.directlyUserStarted == true)
     #expect(begins.recorded == ["true"])
@@ -346,7 +362,8 @@ private actor HeldOperation {
       }, progress: { _, _ in }, finish: { _, _ in })
     let queuedStore = TestStore(initialState: queuedState) { AppFeature() }
       withDependencies: {
-        $0.historyClient = .noop()
+      $0.continuousClock = ContinuousClock()
+      $0.historyClient = .noop()
         $0.backgroundTurn = queuedBackground
         $0.queryPipeline = Scheduler.hangingPipeline()
         $0.uuid = .incrementing
@@ -371,9 +388,7 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let queued = QueuedQuestion(
       id: UUID(9036), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -392,6 +407,7 @@ private actor HeldOperation {
       await decline.hold()
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -399,7 +415,7 @@ private actor HeldOperation {
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await release.waitUntilHeld()
     #expect(store.state.chat?.queuedRetryJournalIDs == [user.id])
     await store.send(.chat(.cancelQueuedRetryTapped(user.id)))
@@ -409,14 +425,14 @@ private actor HeldOperation {
     #expect(writes.recorded.isEmpty)
 
     await release.finish()
-    await store.receive(.retryClaimReleased(queued, nil))
+    await store.receive(releaseCompletion(queued, nil, state: store.state))
     await decline.waitUntilHeld()
     #expect(writes.recorded == ["release", "decline"])
     #expect(store.state.retryReleaseJournalID == user.id)
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
     #expect(store.state.chat?.queuedRetryJournalIDs == [user.id])
     await decline.finish()
-    await store.receive(.retryCancellationSettled(queued, nil))
+    await store.receive(cancellationCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.queue.map(\.retryJournalID) == [user.id])
@@ -439,9 +455,7 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     state.queue = [QueuedQuestion(
       id: UUID(9045), conversationID: Self.conversationA,
       question: "Next after dismissal",
@@ -457,6 +471,7 @@ private actor HeldOperation {
     history.releaseAutoRetryClaim = { _, _, _, _ in await release.hold() }
     history.declineAutoRetry = { _, _ in await decline.hold() }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -464,11 +479,11 @@ private actor HeldOperation {
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await release.waitUntilHeld()
     await store.send(.chat(.cancelQueuedRetryTapped(user.id)))
     await release.finish()
-    await store.receive(.retryClaimReleased(queued, nil))
+    await store.receive(releaseCompletion(queued, nil, state: store.state))
     await decline.waitUntilHeld()
 
     await store.send(.chat(.delegate(.dismissInterruptedTurn(
@@ -484,7 +499,7 @@ private actor HeldOperation {
     #expect(store.state.activeTurn == nil)
 
     await decline.finish()
-    await store.receive(.retryCancellationSettled(queued, nil))
+    await store.receive(cancellationCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.cancelledRetryJournalIDs.isEmpty)
@@ -503,9 +518,7 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     state.queue = [QueuedQuestion(
       id: UUID(9048), conversationID: Self.conversationA,
       question: "Next after release",
@@ -525,6 +538,7 @@ private actor HeldOperation {
     }
     history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -532,7 +546,7 @@ private actor HeldOperation {
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await release.waitUntilHeld()
     await store.send(.chat(.delegate(.dismissInterruptedTurn(
       conversationID: Self.conversationA, journalID: user.id,
@@ -546,8 +560,9 @@ private actor HeldOperation {
     #expect(store.state.retryReleaseJournalID == user.id)
 
     await release.finish()
-    await store.receive(.retryClaimReleased(
-      queued, .history(operation: .messageSave, error: releaseError)))
+    await store.receive(
+      releaseCompletion(
+        queued, .history(operation: .messageSave, error: releaseError), state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.activeTurn?.question == "Next after release")
@@ -566,9 +581,7 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let queued = QueuedQuestion(
       id: UUID(9038), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -585,19 +598,22 @@ private actor HeldOperation {
     }
     history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await release.waitUntilHeld()
     await store.send(.chat(.cancelQueuedRetryTapped(user.id)))
     await store.skipReceivedActions()
     await release.finish()
-    await store.receive(.retryClaimReleased(
-      queued, .history(operation: .messageSave, error: releaseError)))
-    await store.receive(.retryCancellationSettled(queued, nil))
+    await store.receive(
+      releaseCompletion(
+        queued, .history(operation: .messageSave, error: releaseError), state: store.state))
+    await store.receive(cancellationCompletion(queued, nil, state: store.state))
     await store.finish()
     await store.skipReceivedActions()
     #expect(declines.recorded == [user.id.uuidString])
@@ -622,9 +638,8 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryReleaseJournalID = user.id
-    state.retryReleaseConversationID = Self.conversationA
-    state.cancelledRetryJournalIDs.insert(user.id)
+    state.holdRetryRelease(journalID: user.id, conversationID: Self.conversationA)
+    state.retryJournals[user.id]?.intent = .cancelled(manualRequested: false)
     let queued = QueuedQuestion(
       id: UUID(9042), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -634,13 +649,16 @@ private actor HeldOperation {
     var history = HistoryClient.noop()
     history.declineAutoRetry = { _, _ in throw declineError }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
     }
     store.exhaustivity = .off
 
-    await store.send(.retryClaimReleased(queued, nil))
-    await store.receive(.retryCancellationSettled(
-      queued, .history(operation: .messageSave, error: declineError)))
+    await store.send(releaseCompletion(queued, nil, state: store.state))
+    await store.receive(
+      cancellationCompletion(
+        queued, .history(operation: .messageSave, error: declineError), state: store.state))
     await store.finish()
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
@@ -658,9 +676,8 @@ private actor HeldOperation {
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .manualRetryRequired,
       autoRetryCount: 1)
-    state.retryReleaseJournalID = user.id
-    state.retryReleaseConversationID = Self.conversationA
-    state.cancelledRetryJournalIDs.insert(user.id)
+    state.holdRetryRelease(journalID: user.id, conversationID: Self.conversationA)
+    state.retryJournals[user.id]?.intent = .cancelled(manualRequested: false)
     let queued = QueuedQuestion(
       id: UUID(9053), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -679,6 +696,7 @@ private actor HeldOperation {
       return 1
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -686,13 +704,14 @@ private actor HeldOperation {
     }
     store.exhaustivity = .off
 
-    await store.send(.retryClaimReleased(queued, nil))
+    await store.send(releaseCompletion(queued, nil, state: store.state))
     await decline.waitUntilHeld()
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
     #expect(store.state.chat?.queuedRetryJournalIDs == [user.id])
     await decline.finish()
-    await store.receive(.retryCancellationSettled(
-      queued, .history(operation: .messageSave, error: declineError)))
+    await store.receive(
+      cancellationCompletion(
+        queued, .history(operation: .messageSave, error: declineError), state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.queue.isEmpty)
@@ -721,9 +740,8 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryReleaseJournalID = user.id
-    state.retryReleaseConversationID = Self.conversationA
-    state.userPromotedRetryJournalIDs.insert(user.id)
+    state.holdRetryRelease(journalID: user.id, conversationID: Self.conversationA)
+    state.promoteRetry(user.id)
     let queued = QueuedQuestion(
       id: UUID(9055), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -733,12 +751,13 @@ private actor HeldOperation {
       code: "release_failed", title: "Release failed",
       message: "Try again.", diagnostic: "test")
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
-    await store.send(.retryClaimReleased(queued, failure))
+    await store.send(releaseCompletion(queued, failure, state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.queue.isEmpty)
@@ -761,10 +780,9 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .manualRetryRequired)
-    state.retryReleaseJournalID = user.id
-    state.retryReleaseConversationID = Self.conversationA
-    state.cancelledRetryJournalIDs.insert(user.id)
-    state.userPromotedRetryJournalIDs.insert(user.id)
+    state.holdRetryRelease(journalID: user.id, conversationID: Self.conversationA)
+    state.retryJournals[user.id]?.intent = .cancelled(manualRequested: false)
+    state.promoteRetry(user.id)
     let queued = QueuedQuestion(
       id: UUID(9057), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -772,11 +790,13 @@ private actor HeldOperation {
       automaticRetry: false, submittedAt: user.createdAt)
     state.queue = [queued]
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
     }
     store.exhaustivity = .off
 
-    await store.send(.retryCancellationSettled(queued, nil))
+    await store.send(cancellationCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.queue.map(\.retryJournalID) == [user.id])
     #expect(store.state.retryReleaseJournalID == nil)
@@ -792,9 +812,7 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let queued = QueuedQuestion(
       id: UUID(9059), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -823,13 +841,14 @@ private actor HeldOperation {
       return snapshot
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await release.waitUntilHeld()
     await store.send(.chat(.delegate(.dismissInterruptedTurn(
       conversationID: Self.conversationA, journalID: user.id,
@@ -845,7 +864,7 @@ private actor HeldOperation {
     #expect(store.state.queue.isEmpty)
 
     await release.finish()
-    await store.receive(.retryClaimReleased(queued, releaseFailure))
+    await store.receive(releaseCompletion(queued, releaseFailure, state: store.state))
     #expect(store.state.presentedFailure == nil)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
     await store.receive(.operationFailed(dismissalFailure))
@@ -871,9 +890,7 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let queued = QueuedQuestion(
       id: UUID(9061), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -899,19 +916,20 @@ private actor HeldOperation {
       return snapshot
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await release.waitUntilHeld()
     await store.send(.chat(.delegate(.dismissInterruptedTurn(
       conversationID: Self.conversationA, journalID: user.id,
       interruption: state.chat!.interruptedTurn!))))
     await dismissal.waitUntilHeld()
     await release.finish()
-    await store.receive(.retryClaimReleased(queued, nil))
+    await store.receive(releaseCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.presentedFailure == nil)
     await dismissal.finish()
@@ -933,9 +951,8 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .manualRetryRequired)
-    state.retryReleaseJournalID = user.id
-    state.retryReleaseConversationID = Self.conversationA
-    state.cancelledRetryJournalIDs.insert(user.id)
+    state.holdRetryRelease(journalID: user.id, conversationID: Self.conversationA)
+    state.retryJournals[user.id]?.intent = .cancelled(manualRequested: false)
     let queued = QueuedQuestion(
       id: UUID(9063), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -966,13 +983,14 @@ private actor HeldOperation {
       return snapshot
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
 
-    await store.send(.retryClaimReleased(queued, nil))
+    await store.send(releaseCompletion(queued, nil, state: store.state))
     await decline.waitUntilHeld()
     await store.send(.chat(.delegate(.dismissInterruptedTurn(
       conversationID: Self.conversationA, journalID: user.id,
@@ -987,8 +1005,9 @@ private actor HeldOperation {
     #expect(store.state.userPromotedRetryJournalIDs.isEmpty)
 
     await decline.finish()
-    await store.receive(.retryCancellationSettled(
-      queued, .history(operation: .messageSave, error: declineError)))
+    await store.receive(
+      cancellationCompletion(
+        queued, .history(operation: .messageSave, error: declineError), state: store.state))
     #expect(store.state.presentedFailure == nil)
     await store.receive(.operationFailed(dismissalFailure))
     await store.skipReceivedActions()
@@ -1012,12 +1031,11 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.automaticRetryCandidates[user.id] = AppFeature.AutomaticRetryCandidate(
-      journalID: user.id, conversationID: Self.conversationA,
-      submission: QuestionSubmission(question: user.previewText), userMessage: user)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.installAutomaticCandidate(
+      .init(
+        journalID: user.id, conversationID: Self.conversationA,
+        submission: QuestionSubmission(question: user.previewText), userMessage: user))
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let queued = QueuedQuestion(
       id: UUID(9041), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
@@ -1034,6 +1052,7 @@ private actor HeldOperation {
       return automatic ? 1 : 0
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Scheduler.hangingPipeline()
       $0.uuid = .incrementing
@@ -1041,8 +1060,8 @@ private actor HeldOperation {
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
-    await store.receive(.retryClaimReleased(queued, nil))
+    await store.send(claimCompletion(queued, 1, state: store.state))
+    await store.receive(releaseCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions()
     #expect(releases.recorded == ["\(user.id):true"])
     #expect(store.state.automaticRetryCandidates[user.id] != nil)
@@ -1067,9 +1086,10 @@ private actor HeldOperation {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.automaticRetryCandidates[user.id] = AppFeature.AutomaticRetryCandidate(
-      journalID: user.id, conversationID: Self.conversationA,
-      submission: QuestionSubmission(question: user.previewText), userMessage: user)
+    state.installAutomaticCandidate(
+      .init(
+        journalID: user.id, conversationID: Self.conversationA,
+        submission: QuestionSubmission(question: user.previewText), userMessage: user))
     state.queue = [QueuedQuestion(
       id: UUID(9051), conversationID: Self.conversationA,
       question: "Next question", submittedAt: Date(timeIntervalSince1970: 3))]
@@ -1093,7 +1113,7 @@ private actor HeldOperation {
     #expect(store.state.queue.isEmpty)
     #expect(store.state.automaticRetryCandidates.isEmpty)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
-    #expect(store.state.presentedFailure?.code == "retry_claim_failed")
+    #expect(store.state.presentedFailure == nil)
   }
 
   // MARK: Inactive versus background
@@ -1109,6 +1129,8 @@ private actor HeldOperation {
       waitUntilInferenceIdle: {},
       run: { _, _ in AsyncStream { $0.finish() } })
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.queryPipeline = pipeline
       $0.modelPreparationJournal = .noop
     }
@@ -1133,6 +1155,7 @@ private actor HeldOperation {
     var history = HistoryClient.noop()
     history.saveDraft = { id, text in drafts.record("\(id):\(text)") }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 50))
@@ -1170,6 +1193,7 @@ private actor HeldOperation {
     }
     let summaryB = state.conversations[id: Self.conversationB]!
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 50))
@@ -1201,6 +1225,7 @@ private actor HeldOperation {
       throw HistoryStoreError.conversationNotFound
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 50))
@@ -1302,6 +1327,8 @@ private actor HeldOperation {
     var summary = state.conversations[id: Self.conversationA]!
     summary.suggestionGeneration = 1
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 3))
     }
@@ -1350,6 +1377,7 @@ private actor HeldOperation {
       })
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       [history, pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = history
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
@@ -1405,6 +1433,7 @@ private actor HeldOperation {
       })
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
@@ -1449,6 +1478,7 @@ private actor HeldOperation {
       })
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
@@ -1497,6 +1527,7 @@ private actor HeldOperation {
       })
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in

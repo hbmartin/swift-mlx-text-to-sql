@@ -56,9 +56,7 @@ struct RetrySettlementRegressionTests {
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id, status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationID
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationID)
     return (state, queued)
   }
 
@@ -104,20 +102,20 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 3))
       $0.queryPipeline = Scheduler.hangingPipeline()
     }
     store.exhaustivity = .off
-    await store.send(.queuedRetryClaimed(queued, nil))
+    await store.send(claimCompletion(queued, nil, state: store.state))
     await read.wait()
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(queued.retryJournalID!))))
     await store.receive(\.queuedRetryClaimed)
     #expect(store.state.activeTurn?.directlyUserStarted == true)
     let activeID = store.state.activeTurn?.questionID
     await read.finish()
-    await store.receive(\.queuedRetryStaleChecked)
     await store.skipReceivedActions(strict: false)
     #expect(store.state.activeTurn?.questionID == activeID)
     #expect(store.state.pendingRetryStaleChecks.isEmpty)
@@ -131,11 +129,9 @@ struct RetrySettlementRegressionTests {
 
   @Test func staleCheckBeforeAskAgainKeepsPrimaryFailureAndDispatchesOnce() async {
     var (state, queued) = fixture()
-    state.retryClaimInFlight = false
-    state.retryClaimJournalID = nil
-    state.retryClaimConversationID = nil
-    state.pendingRetryStaleChecks[queued.retryJournalID!] = .init(
-      conversationID: Self.conversationID, requestID: queued.id)
+    state.clearHeldRetryClaims()
+    state.holdRetryInspection(
+      journalID: queued.retryJournalID!, conversationID: Self.conversationID, requestID: queued.id)
     let primary = FailurePresentation(
       code: "retry_claim_failed", title: "Could not retry automatically",
       message: "Ask Again to retry this question.", diagnostic: "refused")
@@ -156,6 +152,7 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
       $0.uuid = .incrementing
@@ -163,7 +160,7 @@ struct RetrySettlementRegressionTests {
       $0.queryPipeline = Scheduler.hangingPipeline()
     }
     store.exhaustivity = .off
-    await store.send(.queuedRetryStaleChecked(queued, true))
+    await store.send(inspectionCompletion(queued, true, state: store.state))
     await decline.wait()
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(queued.retryJournalID!))))
     #expect(store.state.queue.count == 1)
@@ -176,7 +173,7 @@ struct RetrySettlementRegressionTests {
     #expect(store.state.activeTurn?.directlyUserStarted == true)
     #expect(claims.recorded == ["manual"])
     #expect(diagnostics.events.filter { $0.code == "retry_claim_cleanup_failed" }.count == 1)
-    await store.send(.queuedRetryStaleChecked(queued, true))
+    await store.send(inspectionCompletion(queued, true, state: store.state))
     #expect(store.state.pendingRetryDeclines.isEmpty)
     await store.skipInFlightEffects()
   }
@@ -184,9 +181,7 @@ struct RetrySettlementRegressionTests {
   @Test(arguments: [false, true])
   func deletionRetainsHeldDeclineAndWakesAnotherConversation(declineFails: Bool) async throws {
     var (state, queued) = fixture()
-    state.retryClaimInFlight = false
-    state.retryClaimJournalID = nil
-    state.retryClaimConversationID = nil
+    state.clearHeldRetryClaims()
     state.queue = [
       queued,
       QueuedQuestion(
@@ -223,13 +218,14 @@ struct RetrySettlementRegressionTests {
     await store.send(.chat(.delegate(.cancelQueued(queued.id))))
     await decline.wait()
     await store.send(.deleteConversationTapped(Self.conversationID))
-    await store.send(.deleteCountdownFinished)
-    await deletion.wait()
-    #expect(!(try await live.listConversations()).contains { $0.id == Self.conversationID })
+    await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
+    #expect(store.state.conversationDeletions[Self.conversationID]?.phase == .awaitingSettlement)
     #expect(!store.state.pendingRetryDeclines.isEmpty)
-    await deletion.finish()
     await decline.finish()
     await store.receive(\.retryDeclineFinished)
+    await deletion.wait()
+    #expect(!(try await live.listConversations()).contains { $0.id == Self.conversationID })
+    await deletion.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.pendingRetryDeclines.isEmpty)
     #expect(store.state.activeTurn?.conversationID == Scheduler.conversationB)
@@ -254,8 +250,10 @@ struct RetrySettlementRegressionTests {
     state.suspendedModelPreparationMode = .evaluated
     let journal = UUID(11003)
     let operation = UUID(11004)
-    state.pendingRetryDeclines[journal] = .init(
-      conversationID: Self.conversationID, operationIDs: [operation])
+    state.installRetryDeclines(
+      journalID: journal,
+      writes: .init(
+        conversationID: Self.conversationID, operationIDs: [operation]))
     let preparation = SettlementGate()
     let starts = CallRecorder()
     let pipeline = QueryPipeline(
@@ -267,6 +265,7 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.queryPipeline = pipeline
       $0.uuid = .incrementing
@@ -315,18 +314,19 @@ struct RetrySettlementRegressionTests {
         Self.conversationID, queued.retryJournalID!, queued.existingUserMessage!.id, automatic))
     let summary = state.conversations[id: Self.conversationID]!
     state.conversations.remove(id: Self.conversationID)
-    state.pendingDeletion = .init(summary: summary, index: 0)
+    state.installUndoDeletion(summary: summary)
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = live
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 3))
       $0.queryPipeline = Scheduler.hangingPipeline()
     }
     store.exhaustivity = .off
-    await store.send(.queuedRetryClaimed(queued, count))
-    await store.receive(.retryClaimReleased(queued, nil))
+    await store.send(claimCompletion(queued, count, state: store.state))
+    await store.receive(releaseCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions(strict: false)
     let released = try #require(
       try await live.loadConversation(Self.conversationID).interruptedTurns.first)
@@ -334,21 +334,19 @@ struct RetrySettlementRegressionTests {
     #expect(released.autoRetryCount == (automatic ? 0 : 1))
     #expect(store.state.activeTurn == nil)
     await store.send(.undoDeleteTapped)
-    await store.send(.chat(.delegate(.retryInterruptedTurnFor(queued.retryJournalID!))))
     await store.receive(\.queuedRetryClaimed)
-    #expect(store.state.activeTurn?.directlyUserStarted == true)
+    #expect(store.state.activeTurn?.directlyUserStarted == !automatic)
     await store.skipInFlightEffects()
   }
 
-  @Test func failedStoppedUserWriteCompletesDeferredDeletionOnce() async throws {
+  @Test(arguments: [false, true])
+  func failedStoppedUserWriteCompletesDeferredDeletionOnce(timedOut: Bool) async throws {
     var (state, queued) = fixture()
     let (live, directory) = try database()
     defer { try? FileManager.default.removeItem(at: directory) }
     try await seed(live, queued: queued)
     _ = try await live.createConversation(Scheduler.conversationB, queued.submittedAt)
-    state.retryClaimInFlight = false
-    state.retryClaimJournalID = nil
-    state.retryClaimConversationID = nil
+    state.clearHeldRetryClaims()
     state.chat?.interruptedTurns = []
     var active = AppFeature.ActiveTurn(
       questionID: queued.existingUserMessage!.id, conversationID: Self.conversationID,
@@ -379,17 +377,22 @@ struct RetrySettlementRegressionTests {
     store.exhaustivity = .off
     await store.send(.chat(.delegate(.stopActiveTurn)))
     await write.wait()
+    if timedOut {
+      await store.send(.turnPersistenceTimedOut(queued.existingUserMessage!.id))
+      #expect(store.state.presentedFailure?.code == "turn_persistence_barrier_timed_out")
+    }
     await store.send(.deleteConversationTapped(Self.conversationID))
-    await store.send(.deleteCountdownFinished)
-    #expect(store.state.deletionAwaitingTurnPersistence == Self.conversationID)
+    await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
+    #expect(store.state.conversationDeletions[Self.conversationID]?.phase == .awaitingSettlement)
     await write.finish()
     await store.receive(\.userTurnPersistenceFailed)
     await store.receive(.turnPersistenceFinished(queued.existingUserMessage!.id))
     await store.skipReceivedActions(strict: false)
     await clock.advance(by: .seconds(5))
     await store.finish()
-    #expect(store.state.deletionAwaitingTurnPersistence == nil)
+    #expect(!store.state.conversationDeletions.values.contains { $0.phase == .awaitingSettlement })
     #expect(store.state.pendingTurnPersistence == nil)
+    #expect(store.state.presentedFailure?.code != "turn_persistence_barrier_timed_out")
     #expect(deletions.recorded == ["delete"])
     #expect(!(try await live.listConversations()).contains { $0.id == Self.conversationID })
     await store.send(.turnPersistenceFinished(queued.existingUserMessage!.id))
@@ -400,7 +403,7 @@ struct RetrySettlementRegressionTests {
   func cancellationClaimAndFailedReleaseRetainConsumedCount(cancelled: Bool) async {
     var (state, queued) = fixture()
     state.isSceneActive = false
-    if cancelled { state.cancelledRetryJournalIDs.insert(queued.retryJournalID!) }
+    if cancelled { state.retryJournals[queued.retryJournalID!]?.intent = .cancelled(manualRequested: false) }
     let releaseError = NSError(domain: "CREG.Release", code: 5)
     var history = HistoryClient.noop()
     history.releaseAutoRetryClaim = { _, _, _, _ in throw releaseError }
@@ -408,12 +411,13 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 3))
     }
     store.exhaustivity = .off
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.chat?.interruptedTurn?.autoRetryCount == 1)
@@ -436,23 +440,25 @@ struct RetrySettlementRegressionTests {
   @Test(arguments: ["release", "cancellation"])
   func retryWriteErrorsAreDeferredUntilUndo(operation: String) async {
     var (state, queued) = fixture()
-    state.retryClaimInFlight = false
-    state.retryReleaseJournalID = queued.retryJournalID
-    state.retryReleaseConversationID = Self.conversationID
+    state.clearHeldRetryClaims()
+    state.holdRetryRelease(journalID: queued.retryJournalID, conversationID: Self.conversationID)
     let summary = state.conversations[id: Self.conversationID]!
     state.conversations.remove(id: Self.conversationID)
-    state.pendingDeletion = .init(summary: summary, index: 0)
+    state.installUndoDeletion(summary: summary)
     let failure = FailurePresentation.history(
       operation: .messageSave, error: NSError(domain: "CREG.Release", code: 6))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
     }
     store.exhaustivity = .off
     await store.send(
       operation == "cancellation"
-        ? .retryCancellationSettled(queued, failure) : .retryClaimReleased(queued, failure))
+        ? cancellationCompletion(queued, failure, state: store.state)
+        : releaseCompletion(queued, failure, state: store.state))
     await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.presentedFailure == nil)
@@ -467,15 +473,18 @@ struct RetrySettlementRegressionTests {
     var (state, queued) = fixture()
     let journal = queued.retryJournalID!
     let operationID = UUID(11020)
-    state.retryClaimInFlight = false
+    state.clearHeldRetryClaims()
     state.conversations.remove(id: Self.conversationID)
     state.chat = nil
-    state.retryReleaseJournalID = operation == "decline" ? nil : journal
-    state.retryReleaseConversationID = operation == "decline" ? nil : Self.conversationID
+    state.holdRetryRelease(
+      journalID: operation == "decline" ? nil : journal,
+      conversationID: operation == "decline" ? nil : Self.conversationID)
     if operation == "decline" {
-      state.pendingRetryDeclines[journal] = .init(
-        conversationID: Self.conversationID, operationIDs: [operationID],
-        purposes: [operationID: .cancellation])
+      state.installRetryDeclines(
+        journalID: journal,
+        writes: .init(
+          conversationID: Self.conversationID, operationIDs: [operationID],
+          purposes: [operationID: .cancellation]))
     }
     let failure = FailurePresentation.history(
       operation: .messageSave, error: NSError(domain: "CREG.Deleted", code: 10))
@@ -483,14 +492,16 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
     let action: AppFeature.Action =
       switch operation {
-      case "release": .retryClaimReleased(queued, failure)
-      case "cancellation": .retryCancellationSettled(queued, failure)
+      case "release": releaseCompletion(queued, failure, state: store.state)
+      case "cancellation": cancellationCompletion(queued, failure, state: store.state)
       default:
         .retryDeclineFinished(
           conversationID: Self.conversationID, journalID: journal,
@@ -508,9 +519,7 @@ struct RetrySettlementRegressionTests {
 
   @Test func dismissalFallbackFailurePreservesPrimaryAndRecordsOnce() async {
     var (state, queued) = fixture()
-    state.retryClaimInFlight = false
-    state.retryClaimJournalID = nil
-    state.retryClaimConversationID = nil
+    state.clearHeldRetryClaims()
     state.isSceneActive = false
     let primaryError = NSError(domain: "CREG.Dismissal", code: 11)
     let cleanupError = NSError(domain: "CREG.Cleanup", code: 12)
@@ -522,6 +531,7 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
       $0.uuid = .incrementing
@@ -547,12 +557,15 @@ struct RetrySettlementRegressionTests {
     var (state, queued) = fixture(automatic: automatic)
     let journal = UUID(11010)
     let operation = UUID(11011)
-    state.pendingRetryDeclines[journal] = .init(
-      conversationID: Scheduler.conversationB, operationIDs: [operation])
+    state.installRetryDeclines(
+      journalID: journal,
+      writes: .init(
+        conversationID: Scheduler.conversationB, operationIDs: [operation]))
     if automatic {
-      state.automaticRetryCandidates[queued.retryJournalID!] = .init(
-        journalID: queued.retryJournalID!, conversationID: Self.conversationID,
-        submission: queued.submission, userMessage: queued.existingUserMessage!)
+      state.installAutomaticCandidate(
+        .init(
+          journalID: queued.retryJournalID!, conversationID: Self.conversationID,
+          submission: queued.submission, userMessage: queued.existingUserMessage!))
     }
     let claims = CallRecorder()
     var history = HistoryClient.noop()
@@ -563,14 +576,15 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 3))
       $0.queryPipeline = Scheduler.hangingPipeline()
     }
     store.exhaustivity = .off
-    await store.send(.queuedRetryClaimed(queued, automatic ? 1 : 0))
-    await store.receive(.retryClaimReleased(queued, nil))
+    await store.send(claimCompletion(queued, automatic ? 1 : 0, state: store.state))
+    await store.receive(releaseCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions(strict: false)
     #expect(store.state.activeTurn == nil)
     #expect(store.state.queue.contains { $0.retryJournalID == queued.retryJournalID })
@@ -595,32 +609,32 @@ struct RetrySettlementRegressionTests {
   func dismissedReleaseRestoresAuthoritativeCount(fails: Bool) async {
     var (state, queued) = fixture()
     let journal = queued.retryJournalID!
-    state.retryClaimInFlight = false
-    state.retryClaimJournalID = nil
-    state.retryClaimConversationID = nil
-    state.retryReleaseJournalID = journal
-    state.retryReleaseConversationID = Self.conversationID
-    state.dismissedRetryJournalIDs.insert(journal)
+    state.clearHeldRetryClaims()
+    state.holdRetryRelease(journalID: journal, conversationID: Self.conversationID)
+    state.retryJournals[journal]?.intent = .dismissed
     var interruption = state.chat!.interruptedTurn!
     interruption.autoRetryCount = 1
     state.chat?.interruptedTurns = []
     let primary = FailurePresentation(
       code: "dismiss_failed", title: "Dismiss failed", message: "Try again.", diagnostic: "dismiss")
-    state.pendingInterruptedDismissals[journal] = .init(
-      conversationID: Self.conversationID, journalID: journal, attemptID: UUID(11012),
-      interruption: interruption, failure: primary)
+    state.installDismissal(
+      .init(
+        conversationID: Self.conversationID, journalID: journal, attemptID: UUID(11012),
+        interruption: interruption, failure: primary))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
     }
     store.exhaustivity = .off
     await store.send(
-      .retryClaimReleased(
+      releaseCompletion(
         queued,
         fails
-          ? .history(operation: .messageSave, error: NSError(domain: "CREG.Release", code: 9)) : nil
-      ))
+          ? .history(operation: .messageSave, error: NSError(domain: "CREG.Release", code: 9))
+          : nil, state: store.state))
     await store.receive(.operationFailed(primary))
     await store.finish()
     #expect(store.state.chat?.interruptedTurn?.autoRetryCount == (fails ? 1 : 0))
@@ -637,11 +651,12 @@ struct RetrySettlementRegressionTests {
     let interruption = state.chat!.interruptedTurn!
     let dismissalFailure = FailurePresentation.history(
       operation: .messageSave, error: NSError(domain: "CREG.Dismissal", code: 7))
-    state.dismissedRetryJournalIDs.insert(journal)
+    state.retryJournals[journal]?.intent = .dismissed
     state.chat?.interruptedTurns = []
-    state.pendingInterruptedDismissals[journal] = .init(
-      conversationID: Self.conversationID, journalID: journal, attemptID: UUID(11005),
-      interruption: interruption, failure: dismissalFailure)
+    state.installDismissal(
+      .init(
+        conversationID: Self.conversationID, journalID: journal, attemptID: UUID(11005),
+        interruption: interruption, failure: dismissalFailure))
     let cleanupError = NSError(domain: "CREG.Cleanup", code: 8)
     let diagnostics = DiagnosticEventRecorder()
     var history = HistoryClient.noop()
@@ -649,18 +664,20 @@ struct RetrySettlementRegressionTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     let cleanupFailure = FailurePresentation.history(operation: .messageSave, error: cleanupError)
-    await store.receive(.dismissedRetryClaimSettled(journal, cleanupFailure))
+    await store.receive(cleanupCompletion(journal, cleanupFailure, state: store.state))
     await store.receive(.operationFailed(dismissalFailure))
     await store.finish()
     #expect(store.state.chat?.interruptedTurn?.autoRetryCount == 1)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
-    await store.send(.dismissedRetryClaimSettled(journal, cleanupFailure))
+    await store.send(cleanupCompletion(journal, cleanupFailure, state: store.state))
     #expect(
       diagnostics.events.filter { $0.code == "retry_write_failed_after_dismissal" }.count == 1)
     #expect(store.state.presentedFailure == dismissalFailure)

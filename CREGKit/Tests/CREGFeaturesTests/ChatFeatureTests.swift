@@ -417,10 +417,11 @@ private func awaitArmedFMWatch(
       interruptedAt: Date(timeIntervalSince1970: 10),
       journalID: first.id, executionID: first.id,
       status: .knownInterruption)
-    state.automaticRetryCandidates[first.id] = AppFeature.AutomaticRetryCandidate(
-      journalID: first.id, conversationID: Self.conversationA,
-      submission: QuestionSubmission(question: first.previewText),
-      userMessage: first)
+    state.installAutomaticCandidate(
+      .init(
+        journalID: first.id, conversationID: Self.conversationA,
+        submission: QuestionSubmission(question: first.previewText),
+        userMessage: first))
     state.queue = [QueuedQuestion(
       id: UUID(706), conversationID: Self.conversationA,
       question: "Second question", submittedAt: Date(timeIntervalSince1970: 2))]
@@ -455,6 +456,7 @@ private func awaitArmedFMWatch(
     let snapshot = ConversationSnapshot(
       summary: summary, messages: [user], interruptedTurn: interrupted)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
@@ -484,15 +486,14 @@ private func awaitArmedFMWatch(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id,
       status: .knownInterruption)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let queued = QueuedQuestion(
       id: UUID(7063), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
       retryJournalID: user.id, existingUserMessage: user,
       automaticRetry: true, submittedAt: user.createdAt)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
@@ -502,7 +503,7 @@ private func awaitArmedFMWatch(
 
     await store.send(.chat(.delegate(.retryInterruptedTurnFor(user.id))))
     #expect(store.state.userPromotedRetryJournalIDs.contains(user.id))
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.activeTurn?.question == user.previewText)
     #expect(store.state.activeTurn?.directlyUserStarted == true)
@@ -538,7 +539,7 @@ private func awaitArmedFMWatch(
     var state = Self.appState(selected: Self.conversationA)
     let deleted = state.conversations[id: Self.conversationB]!
     state.conversations.remove(id: Self.conversationB)
-    state.pendingDeletion = AppFeature.PendingDeletion(summary: deleted, index: 1)
+    state.installUndoDeletion(summary: deleted)
     let questionID = UUID(720)
     state.activeTurn = AppFeature.ActiveTurn(
       questionID: questionID, conversationID: Self.conversationB,
@@ -571,7 +572,7 @@ private func awaitArmedFMWatch(
   @Test func submissionToPendingDeletionConversationIsSavedInANewChat() async {
     var state = Self.appState(selected: Self.conversationB)
     let deleted = state.conversations[id: Self.conversationB]!
-    state.pendingDeletion = AppFeature.PendingDeletion(summary: deleted, index: 1)
+    state.installUndoDeletion(summary: deleted)
     let drafts = CallRecorder()
     let created = CallRecorder()
     var history = HistoryClient.noop()
@@ -584,6 +585,7 @@ private func awaitArmedFMWatch(
         id: id, title: "", startedAt: startedAt, lastActivityAt: startedAt)
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 50))
@@ -617,6 +619,7 @@ private func awaitArmedFMWatch(
       retryJournalID: user.id, existingUserMessage: user,
       automaticRetry: true, submittedAt: user.createdAt)]
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
@@ -648,10 +651,11 @@ private func awaitArmedFMWatch(
         journalID: user.id, executionID: user.id,
         status: .knownInterruption),
     ]
-    state.automaticRetryCandidates[user.id] = AppFeature.AutomaticRetryCandidate(
-      journalID: user.id, conversationID: Self.conversationA,
-      submission: QuestionSubmission(question: user.previewText),
-      userMessage: user)
+    state.installAutomaticCandidate(
+      .init(
+        journalID: user.id, conversationID: Self.conversationA,
+        submission: QuestionSubmission(question: user.previewText),
+        userMessage: user))
     let availability = LockIsolated<FMAvailability>(
       .unavailable(reason: .modelNotReady))
     let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
@@ -677,7 +681,8 @@ private func awaitArmedFMWatch(
     #expect(store.state.queue.first?.automaticRetry == true)
     await awaitArmedFMWatch(watchers)
     availability.setValue(.available)
-    watchers.value.forEach { $0.yield(.available); $0.finish() }
+    watchers.value.forEach { $0.yield(.available)
+      $0.finish() }
     await store.skipReceivedActions(strict: false)
     await store.finish()
     await store.skipReceivedActions(strict: false)
@@ -698,15 +703,14 @@ private func awaitArmedFMWatch(
       releases.record("\(conversationID):\(journalID):\(executionID)")
     }
     var state = Self.appState(selected: Self.conversationB)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let queued = QueuedQuestion(
       id: UUID(7071), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: user.previewText),
       retryJournalID: user.id, existingUserMessage: user,
       automaticRetry: true, submittedAt: user.createdAt)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
@@ -714,7 +718,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await store.skipReceivedActions()
     #expect(store.state.activeTurn?.conversationID == Self.conversationA)
     #expect(store.state.activeTurn?.isAutomaticRetry == true)
@@ -741,6 +745,7 @@ private func awaitArmedFMWatch(
       questionID: later.id, conversationID: Self.conversationA,
       question: later.previewText, startedAt: later.createdAt)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 3))
@@ -767,15 +772,14 @@ private func awaitArmedFMWatch(
       endings.record(journalID.uuidString)
     }
     var state = Self.appState()
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = questionID
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: questionID, conversationID: Self.conversationA)
     state.queue = [QueuedQuestion(
       id: UUID(709), conversationID: Self.conversationA,
       submission: QuestionSubmission(question: "Retry"),
       retryJournalID: questionID,
       submittedAt: Date(timeIntervalSince1970: 2))]
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
     }
@@ -787,7 +791,8 @@ private func awaitArmedFMWatch(
         question: "Retry", interruptedAt: Date(timeIntervalSince1970: 1),
         journalID: questionID, executionID: questionID)))))
     #expect(store.state.queue.isEmpty)
-    await store.send(.queuedRetryClaimed(
+    await store.send(
+      claimCompletion(
       QueuedQuestion(
         id: UUID(709), conversationID: Self.conversationA,
         submission: QuestionSubmission(question: "Retry"),
@@ -796,8 +801,8 @@ private func awaitArmedFMWatch(
           id: questionID, role: .user, body: .text("Retry"),
           createdAt: Date(timeIntervalSince1970: 1)),
         automaticRetry: true, submittedAt: Date(timeIntervalSince1970: 1)),
-      1))
-    await store.receive(.dismissedRetryClaimSettled(questionID))
+      1, state: store.state))
+    await store.receive(cleanupCompletion(questionID, state: store.state))
     await store.finish()
     #expect(store.state.activeTurn == nil)
     #expect(!store.state.retryClaimInFlight)
@@ -826,17 +831,19 @@ private func awaitArmedFMWatch(
     }
     history.declineAutoRetry = { _, id in declines.record(id.uuidString) }
     var state = Self.appState()
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = questionID
-    state.retryClaimConversationID = Self.conversationA
-    state.dismissedRetryJournalIDs.insert(questionID)
+    state.holdRetryClaim(journalID: questionID, conversationID: Self.conversationA)
+    state.retryJournals[questionID]?.intent = .dismissed
     let failure = FailurePresentation(
       code: "history_message_save_failed", title: "Dismiss failed",
       message: "Try again.", diagnostic: "test")
-    state.pendingInterruptedDismissals[questionID] = AppFeature.PendingInterruptedDismissal(
-      conversationID: Self.conversationA, journalID: questionID, attemptID: UUID(7092),
-      interruption: interruption)
-    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+    state.installDismissal(
+      AppFeature.PendingInterruptedDismissal(
+        conversationID: Self.conversationA, journalID: questionID, attemptID: UUID(7092),
+        interruption: interruption))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
@@ -848,13 +855,14 @@ private func awaitArmedFMWatch(
       conversationID: Self.conversationA, journalID: questionID,
       attemptID: UUID(7092), failure: failure))
     #expect(store.state.pendingInterruptedDismissals[questionID]?.journalID == questionID)
-    await store.send(.queuedRetryClaimed(
+    await store.send(
+      claimCompletion(
       QueuedQuestion(
         id: UUID(7091), conversationID: Self.conversationA,
         submission: QuestionSubmission(question: "Retry"),
         retryJournalID: questionID, existingUserMessage: user,
         automaticRetry: true, submittedAt: user.createdAt),
-      1))
+      1, state: store.state))
     await store.finish()
     await store.skipReceivedActions()
 
@@ -881,11 +889,11 @@ private func awaitArmedFMWatch(
     for deleting in [false, true] {
       var state = Self.appState(selected: deleting ? Self.conversationA : Self.conversationB)
       state.chat?.title = "Keep this selection"
-      state.pendingInterruptedDismissals[journalID] = deferred
-      state.dismissedRetryJournalIDs.insert(journalID)
+      state.installDismissal(deferred)
+      state.retryJournals[journalID]?.intent = .dismissed
       if deleting {
-        state.pendingDeletion = AppFeature.PendingDeletion(
-          summary: state.conversations[id: Self.conversationA]!, index: 0)
+        state.installUndoDeletion(
+          summary: state.conversations[id: Self.conversationA]!)
       }
       let store = TestStore(initialState: state) { AppFeature() }
       store.exhaustivity = .off
@@ -909,9 +917,7 @@ private func awaitArmedFMWatch(
       createdAt: Date(timeIntervalSince1970: 1))
     var state = Self.appState()
     state.isSceneActive = false
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = questionID
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: questionID, conversationID: Self.conversationA)
     state.chat?.messages = IdentifiedArray(uniqueElements: [user])
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
@@ -928,6 +934,7 @@ private func awaitArmedFMWatch(
       releases.record("\(journalID):\(automatic)")
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
@@ -935,8 +942,8 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 0))
-    await store.receive(.retryClaimReleased(queued, nil))
+    await store.send(claimCompletion(queued, 0, state: store.state))
+    await store.receive(releaseCompletion(queued, nil, state: store.state))
     await store.skipReceivedActions()
     #expect(releases.recorded == ["\(questionID):false"])
     #expect(store.state.queue.map(\.retryJournalID) == [questionID])
@@ -959,9 +966,7 @@ private func awaitArmedFMWatch(
       createdAt: Date(timeIntervalSince1970: 1))
     var state = Self.appState()
     state.isSceneActive = false
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     state.chat?.messages.append(user)
     state.chat?.interruptedTurn = InterruptedTurn(
       question: user.previewText, interruptedAt: user.createdAt,
@@ -977,11 +982,13 @@ private func awaitArmedFMWatch(
       throw HistoryStoreError.conversationNotFound
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await store.finish()
     await store.skipReceivedActions()
     #expect(store.state.queue.isEmpty)
@@ -997,9 +1004,7 @@ private func awaitArmedFMWatch(
       id: UUID(7068), role: .user, body: .text("Ask again elsewhere"),
       createdAt: Date(timeIntervalSince1970: 1))
     var state = Self.appState(selected: Self.conversationB)
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationA
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationA)
     let releases = CallRecorder()
     var history = HistoryClient.noop()
     history.releaseAutoRetryClaim = { conversationID, journalID, executionID, _ in
@@ -1011,6 +1016,7 @@ private func awaitArmedFMWatch(
       retryJournalID: user.id, existingUserMessage: user,
       automaticRetry: false, submittedAt: user.createdAt)
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.queryPipeline = Self.hangingPipeline()
       $0.uuid = .incrementing
@@ -1018,7 +1024,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await store.skipReceivedActions()
     #expect(releases.recorded.isEmpty)
     #expect(store.state.queue.isEmpty)
@@ -1178,6 +1184,8 @@ private func awaitArmedFMWatch(
       id: UUID(8121), conversationID: Self.conversationB,
       question: "Later", submittedAt: Date(timeIntervalSince1970: 2))]
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 3))
     }
@@ -1331,9 +1339,8 @@ private func awaitArmedFMWatch(
       previousSummary: deletedSummary,
       previousChatTitle: state.chat?.title)
     state.conversations.remove(id: Self.conversationA)
-    state.pendingDeletion = AppFeature.PendingDeletion(
+    state.installUndoDeletion(
       summary: deletedSummary,
-      index: 0,
       deferredFailure: deferredDeletionFailure)
     let store = TestStore(initialState: state) {
       AppFeature()
@@ -1369,8 +1376,8 @@ private func awaitArmedFMWatch(
       previousSummary: deletedSummary,
       previousChatTitle: state.chat?.title)
     state.conversations.remove(id: Self.conversationA)
-    state.pendingDeletion = AppFeature.PendingDeletion(
-      summary: deletedSummary, index: 0)
+    state.installUndoDeletion(
+      summary: deletedSummary)
     let failure = FailurePresentation(
       code: "history_message_save_failed",
       title: "Couldn’t save message",
@@ -1749,6 +1756,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: Self.appState()) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.fmStatus = FMStatusClient(availability: {
         .unavailable(reason: .appleIntelligenceNotEnabled)
       })
@@ -2075,6 +2084,9 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
+
       $0.historyClient = history
     }
     store.exhaustivity = .off
@@ -2113,6 +2125,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
     }
     store.exhaustivity = .off
@@ -2228,6 +2242,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 5))
@@ -2292,6 +2307,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.continuousClock = ContinuousClock()
+
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.uuid = .incrementing
@@ -2346,6 +2363,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.fmStatus = FMStatusClient(
@@ -2426,6 +2444,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 5))
@@ -2486,6 +2505,7 @@ private func awaitArmedFMWatch(
         }
       })
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
@@ -2557,6 +2577,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
@@ -2616,6 +2637,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.queryPipeline = QueryPipeline { _, _ in AsyncStream { $0.finish() } }
       $0.historyClient = .noop()
       $0.fmStatus = FMStatusClient(
@@ -2690,8 +2713,7 @@ private func awaitArmedFMWatch(
     let questionID = UUID(90)
     let messageID = UUID(91)
     var state = Self.appState()
-    state.conversations.remove(id: Self.conversationB)
-    state.deletionAwaitingTurnPersistence = Self.conversationB
+    state.installAwaitingDeletion(Self.conversationB)
     var pending = AppFeature.PendingTurnPersistence(
       questionID: questionID,
       conversationID: Self.conversationB)
@@ -2709,6 +2731,9 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
+
       $0.historyClient = history
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
         judged.withValue { $0 += 1 }
@@ -2751,6 +2776,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: Self.appState()) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 5))
@@ -2801,6 +2827,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 5))
@@ -2891,6 +2918,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 5))
@@ -2937,6 +2965,9 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
+
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 2))
@@ -2995,6 +3026,9 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
+
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.fmStatus = FMStatusClient(
@@ -3444,6 +3478,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
@@ -3485,7 +3520,7 @@ private func awaitArmedFMWatch(
           id: provisionalID,
           role: .assistant,
           body: .preparedAnswer(prepared),
-          createdAt: Date(timeIntervalSince1970: 2))
+          createdAt: Date(timeIntervalSince1970: 2)),
       ],
       interruptedTurn: InterruptedTurn(
         question: prepared.question,
@@ -3499,6 +3534,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
@@ -3584,6 +3620,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
@@ -3649,6 +3686,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
@@ -3696,6 +3734,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
@@ -3730,6 +3769,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
@@ -3750,13 +3790,14 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: Self.appState()) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = clock
     }
     store.exhaustivity = .off
 
     await store.send(.deleteConversationTapped(Self.conversationB))
-    #expect(store.state.conversations[id: Self.conversationB] == nil)
+    #expect(store.state.visibleConversations[id: Self.conversationB] == nil)
     #expect(store.state.pendingDeletion?.summary.id == Self.conversationB)
 
     await store.send(.undoDeleteTapped)
@@ -3782,6 +3823,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
       $0.continuousClock = clock
     }
     store.exhaustivity = .off
@@ -3811,6 +3853,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: Self.appState()) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = clock
     }
@@ -3829,8 +3872,8 @@ private func awaitArmedFMWatch(
     var state = Self.appState()
     let deletedSummary = state.conversations[id: Self.conversationB]!
     state.conversations.remove(id: Self.conversationB)
-    state.pendingDeletion = AppFeature.PendingDeletion(
-      summary: deletedSummary, index: 1)
+    state.installUndoDeletion(
+      summary: deletedSummary)
     let questionID = UUID(95)
     state.pendingTurnPersistence = AppFeature.PendingTurnPersistence(
       questionID: questionID,
@@ -3841,14 +3884,15 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
-    await store.send(.deleteCountdownFinished)
+    await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
     #expect(deletes.recorded.isEmpty)
-    #expect(store.state.deletionAwaitingTurnPersistence == Self.conversationB)
+    #expect(store.state.conversationDeletions[Self.conversationB]?.phase == .awaitingSettlement)
 
     await store.send(.turnPersistenceFinished(questionID))
     await store.finish()
@@ -3870,6 +3914,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: Self.appState(selected: Self.conversationA)) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = clock
     }
@@ -3891,6 +3936,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: Self.appState()) {
       AppFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = ImmediateClock()
     }
@@ -4555,6 +4601,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.queryPipeline = Self.hangingPipeline()
       $0.historyClient = .noop()
     }
@@ -4684,6 +4732,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
+      $0.continuousClock = ContinuousClock()
+
       $0.queryPipeline = pipeline
       $0.historyClient = .noop()
       $0.uuid = .incrementing
@@ -4720,6 +4770,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
         judged.withValue { $0 += 1 }
         return nil
@@ -4741,6 +4793,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.scopeDiagnosis = ScopeDiagnosisClient { _ in
         judged.withValue { $0 += 1 }
         return nil
@@ -4959,6 +5013,9 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       ChatFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
+
       $0.historyClient = history
     }
     store.exhaustivity = .off
@@ -5009,6 +5066,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       ChatFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.continuousClock = ImmediateClock()
@@ -5044,6 +5102,8 @@ private func awaitArmedFMWatch(
     state.feedback[messageID] = AnswerFeedback(
       messageID: messageID, verdict: .helpful, updatedAt: Date(timeIntervalSince1970: 0))
     let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
     }
     store.exhaustivity = .off
@@ -5066,6 +5126,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       ChatFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.continuousClock = ImmediateClock()
@@ -5094,6 +5155,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       ChatFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
       $0.historyClient = .noop()
       $0.date = .constant(Date(timeIntervalSince1970: 1))
       $0.continuousClock = ImmediateClock()
@@ -5115,6 +5177,8 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) {
       ChatFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.readAloud = .noop
       $0.historyClient = .noop()
     }
@@ -5143,6 +5207,7 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: Self.chatState()) {
       ChatFeature()
     } withDependencies: { [history] in
+      $0.uuid = .incrementing
       $0.historyClient = history
       $0.continuousClock = clock
     }

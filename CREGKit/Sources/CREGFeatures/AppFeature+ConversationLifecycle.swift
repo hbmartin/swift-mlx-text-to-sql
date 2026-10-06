@@ -7,7 +7,7 @@ extension AppFeature {
     state: State, conversationID: UUID, journalID: UUID
   ) -> Bool {
     state.conversations[id: conversationID] != nil
-      && state.pendingDeletion?.summary.id != conversationID
+      && state.isConversationLive(conversationID)
       && !state.dismissedRetryJournalIDs.contains(journalID)
   }
 
@@ -18,18 +18,16 @@ extension AppFeature {
   ) -> Effect<Action> {
     guard var deferred = state.pendingInterruptedDismissals[journalID],
       let failure = deferred.failure,
-      state.retryClaimJournalID != journalID,
-      state.retryClaimCleanupJournalID != journalID,
-      state.retryReleaseJournalID != journalID,
-      state.pendingRetryDeclines[journalID] == nil
+      state.retryJournals[journalID]?.operations.values.contains(where: \.holdsScheduler) != true
     else { return .none }
-    state.pendingInterruptedDismissals.removeValue(forKey: journalID)
+    state.retryJournals[journalID]?.dismissalRecovery = nil
     guard
       state.conversations[id: deferred.conversationID] != nil
-        || state.pendingDeletion?.summary.id == deferred.conversationID
+        || state.isConversationPendingDeletion(deferred.conversationID)
     else { return .none }
     deferred.interruption.status = .manualRetryRequired
-    state.failedDismissalRecoveries[journalID] = deferred
+    state.retryJournals[journalID]?.dismissalRecovery = deferred
+    state.retryJournals[journalID]?.dismissalIsSettled = true
     syncDismissalProjection(into: &state)
     syncSchedulerProjection(into: &state)
     return handleConversationWriteFailure(
@@ -40,7 +38,7 @@ extension AppFeature {
   /// Recovery changes only interruption banners, preserving the live chat.
   func syncDismissalProjection(into state: inout State) {
     guard var chat = state.chat,
-      state.pendingDeletion?.summary.id != chat.conversationID
+      state.isConversationLive(chat.conversationID)
     else { return }
     chat.interruptedTurns.removeAll {
       guard let journalID = $0.journalID ?? $0.executionID else { return false }
@@ -77,28 +75,13 @@ extension AppFeature {
         context: ["journal_id": journalID.uuidString, "failure_code": failure.code]))
   }
 
-  func clearDismissalRecovery(state: inout State, conversationID: UUID) {
-    let journals = Set(
-      state.pendingInterruptedDismissals.values.filter { $0.conversationID == conversationID }
-        .map(\.journalID)
-        + state.failedDismissalRecoveries.values.filter { $0.conversationID == conversationID }
-        .map(\.journalID))
-    for journalID in journals {
-      state.pendingInterruptedDismissals.removeValue(forKey: journalID)
-      state.failedDismissalRecoveries.removeValue(forKey: journalID)
-    }
-    // Write ownership survives presentation cleanup. Its completion must
-    // release the dispatch gate and wake work queued in other conversations.
-    state.pendingRetryStaleChecks = state.pendingRetryStaleChecks.filter {
-      $0.value.conversationID != conversationID
-    }
-  }
-
   func updateRetryCount(
     state: inout State, conversationID: UUID, journalID: UUID, count: Int
   ) {
-    state.pendingInterruptedDismissals[journalID]?.interruption.autoRetryCount = count
-    state.failedDismissalRecoveries[journalID]?.interruption.autoRetryCount = count
+    state.seedRetry(journalID, conversationID: conversationID)
+    state.retryJournals[journalID]?.knownDurableCount = count
+    state.retryJournals[journalID]?.interruption?.autoRetryCount = count
+    state.retryJournals[journalID]?.dismissalRecovery?.interruption.autoRetryCount = count
     if state.chat?.conversationID == conversationID,
       let index = state.chat?.interruptedTurns.firstIndex(where: {
         ($0.journalID ?? $0.executionID) == journalID
@@ -112,98 +95,84 @@ extension AppFeature {
     state: inout State,
     summary: ConversationSummary
   ) -> Effect<Action> {
+    guard state.isConversationLive(summary.id) else { return .none }
     var effects: [Effect<Action>] = []
-
-    // A second delete inside the Undo window commits the first immediately.
     if let previous = state.pendingDeletion {
-      let id = previous.summary.id
-      effects.append(
-        commitOrDeferDeletion(state: &state, conversationID: id))
+      state.undoDeletionID = nil
+      effects.append(.cancel(id: DeletionCountdownID(token: previous.token)))
+      effects.append(commitOrDeferDeletion(state: &state, conversationID: previous.summary.id))
     }
-
-    let index = state.conversations.index(id: summary.id) ?? 0
-    state.conversations.remove(id: summary.id)
-    state.pendingDeletion = PendingDeletion(summary: summary, index: index)
-    state.pendingRetryStaleChecks = state.pendingRetryStaleChecks.filter {
-      $0.value.conversationID != summary.id
-    }
-    state.queue.removeAll { $0.conversationID == summary.id }
-    if state.activeTurn?.conversationID == summary.id {
-      let executionID = state.activeTurn?.questionID
-      state.activeTurn = nil
-      effects.append(.cancel(id: CancelID.pipeline))
-      if let executionID {
-        effects.append(.run { _ in
-          await backgroundTurn.finish(executionID, false)
-        })
+    let token = uuid()
+    state.conversationDeletions[summary.id] = .init(token: token, summary: summary)
+    state.undoDeletionID = summary.id
+    for (journalID, journal) in state.retryJournals where journal.conversationID == summary.id {
+      for operation in journal.operations.values {
+        if case .inspection(let queued, _) = operation {
+          insertQueuedQuestion(queued, into: &state)
+        }
       }
-      effects.append(.send(.dispatchNextIfIdle))
+      state.invalidateRetryInspection(journalID)
+      effects.append(.cancel(id: RetryInspectionID(journalID: journalID)))
     }
-    if state.pendingInterruptedTurn?.conversationID == summary.id {
-      state.pendingInterruptedTurn = nil
+    if state.answerReadyBanner?.conversationID == summary.id {
+      state.answerReadyBanner = nil
+      effects.append(.cancel(id: CancelID.bannerTimeout))
     }
-    if state.followUpPreparation?.conversationID == summary.id {
+    if let active = state.activeTurn, active.conversationID == summary.id {
+      // Deletion cancels the running turn, retaining its durable interruption
+      // for manual Ask Again after Undo. It cannot consume automatic retry.
+      state.seedRetry(active.questionID, conversationID: summary.id)
+      state.retryJournals[active.questionID]?.intent = .cancelled(manualRequested: false)
+      effects.append(interruptActiveTurn(state: &state, ambiguous: false))
+    }
+    if let preparation = state.followUpPreparation, preparation.conversationID == summary.id {
+      state.pendingSuggestionContexts[summary.id] = PendingScopeDiagnosis(
+        conversationID: summary.id, messageID: preparation.context.sourceAssistantMessageID,
+        context: preparation.context, generation: preparation.generation,
+        scopeDiagnosisCompleted: true)
       state.followUpPreparation = nil
       effects.append(.cancel(id: CancelID.followUpPreparation))
     }
-    if state.pendingScopeDiagnosis?.conversationID == summary.id {
-      // A diagnosis for a deleted conversation can never resume, and a
-      // retained one gates preparation and model maintenance session-long.
+    if let diagnosis = state.pendingScopeDiagnosis, diagnosis.conversationID == summary.id {
+      state.pendingSuggestionContexts[summary.id] = diagnosis
       state.pendingScopeDiagnosis = nil
       state.isScopeDiagnosisInFlight = false
       effects.append(.cancel(id: CancelID.scopeDiagnosis))
     }
-    state.pendingSuggestionContexts.removeValue(forKey: summary.id)
-    state.automaticRetryCandidates = state.automaticRetryCandidates.filter {
-      $0.value.conversationID != summary.id
-    }
-
     if state.chat?.conversationID == summary.id {
-      if let nextSummary = state.conversations.first {
-        effects.append(loadConversationEffect(id: nextSummary.id))
+      state.chat = nil
+      if let next = state.visibleConversations.first {
+        effects.append(loadConversationEffect(id: next.id))
       } else {
         effects.append(createConversationEffect())
       }
     }
     syncSchedulerProjection(into: &state)
-
-    diagnostics.info(
-      category: .history,
-      code: "conversation_delete_pending",
-      summary: "A conversation entered the undo window before deletion.")
     effects.append(
       .run { send in
         try await clock.sleep(for: .seconds(5))
-        await send(.deleteCountdownFinished)
-      }
-      .cancellable(id: CancelID.deleteCountdown, cancelInFlight: true))
+        await send(.deleteCountdownFinished(token))
+      }.cancellable(id: DeletionCountdownID(token: token)))
     return .merge(effects)
   }
 
-  /// Commits a confirmed delete only after its terminal transcript write has
-  /// settled. Removing the row sooner would allow the still-live write to fail
-  /// visibly or recreate orphaned journal/event data after deletion.
-  func commitOrDeferDeletion(
-    state: inout State,
-    conversationID: UUID
-  ) -> Effect<Action> {
-    if state.pendingTurnPersistence?.conversationID == conversationID {
-      state.deletionAwaitingTurnPersistence = conversationID
-      diagnostics.info(
-        category: .history,
-        code: "conversation_delete_waiting_for_persistence",
-        summary: "Conversation deletion is waiting for its final history write.")
+  func commitOrDeferDeletion(state: inout State, conversationID: UUID) -> Effect<Action> {
+    guard let deletion = state.conversationDeletions[conversationID],
+      deletion.phase == .undoWindow || deletion.phase == .awaitingSettlement
+    else { return .none }
+    if state.hasOutstandingWrites(in: conversationID) {
+      state.conversationDeletions[conversationID]?.phase = .awaitingSettlement
       return .none
     }
-    clearDismissalRecovery(state: &state, conversationID: conversationID)
-    return commitDeletionEffect(conversationID: conversationID)
+    state.conversationDeletions[conversationID]?.phase = .committing
+    return commitDeletionEffect(conversationID: conversationID, token: deletion.token)
   }
 
   func finishDeferredDeletion(state: inout State, conversationID: UUID) -> Effect<Action> {
-    guard state.deletionAwaitingTurnPersistence == conversationID else { return .none }
-    state.deletionAwaitingTurnPersistence = nil
-    clearDismissalRecovery(state: &state, conversationID: conversationID)
-    return commitDeletionEffect(conversationID: conversationID)
+    guard state.conversationDeletions[conversationID]?.phase == .awaitingSettlement else {
+      return .none
+    }
+    return commitOrDeferDeletion(state: &state, conversationID: conversationID)
   }
 
   func handleConversationWriteFailure(
@@ -211,8 +180,8 @@ extension AppFeature {
     conversationID: UUID,
     failure: FailurePresentation
   ) -> Effect<Action> {
-    if state.pendingDeletion?.summary.id == conversationID {
-      state.pendingDeletion?.deferredFailure = failure
+    if state.isConversationPendingDeletion(conversationID) {
+      state.conversationDeletions[conversationID]?.deferredFailure = failure
       diagnostics.info(
         category: .history,
         code: "conversation_write_failure_deferred_for_undo",
@@ -220,7 +189,7 @@ extension AppFeature {
           "A conversation write failure is deferred until the pending deletion is resolved.")
       return .none
     }
-    guard state.conversations[id: conversationID] != nil else {
+    guard state.isConversationLive(conversationID) else {
       diagnostics.record(DiagnosticEvent(
         level: .error, category: .history,
         code: "conversation_write_failed_after_deletion",
@@ -276,16 +245,18 @@ extension AppFeature {
     syncSchedulerProjection(into: &state)
   }
 
-  func commitDeletionEffect(conversationID: UUID) -> Effect<Action> {
+  func commitDeletionEffect(conversationID: UUID, token: UUID) -> Effect<Action> {
     .run { send in
       await messageUpdateQueue.beginDeletingConversation(conversationID)
       do {
         try await history.deleteConversation(conversationID)
         await messageUpdateQueue.confirmConversationDeletion(conversationID)
+        await send(.conversationDeletionFinished(conversationID, token: token, failure: nil))
       } catch {
         await messageUpdateQueue.cancelConversationDeletion(conversationID)
         await send(
-          .operationFailed(.history(operation: .delete, error: error)))
+          .conversationDeletionFinished(
+            conversationID, token: token, failure: .history(operation: .delete, error: error)))
       }
     }
   }
@@ -366,8 +337,8 @@ extension AppFeature {
     if state.retryReleaseConversationID == chat.conversationID,
       let releasing = state.retryReleaseJournalID,
       !state.dismissedRetryJournalIDs.contains(releasing),
-      (!state.cancelledRetryJournalIDs.contains(releasing)
-        || state.userPromotedRetryJournalIDs.contains(releasing))
+      !state.cancelledRetryJournalIDs.contains(releasing)
+        || state.userPromotedRetryJournalIDs.contains(releasing)
     {
       queuedRetries.insert(releasing)
     }
@@ -539,10 +510,8 @@ extension AppFeature {
         ? state.isInferenceIdleIgnoringScopeDiagnosis
           || (state.activeTurn == nil && state.pendingInterruptedTurn == nil
             && state.pendingTurnPersistence == nil
-            && !state.retryClaimInFlight
-            && state.retryReleaseJournalID == nil
-            && state.pendingRetryDeclines.isEmpty
-            && state.queue.allSatisfy(\.automaticRetry)
+            && !state.retryOperationsHoldScheduler
+            && state.runnableQueue.allSatisfy(\.automaticRetry)
             && state.followUpPreparation == nil
             && !state.isCapturingAnswerability)
         : state.isModelRecoveryIdle)
