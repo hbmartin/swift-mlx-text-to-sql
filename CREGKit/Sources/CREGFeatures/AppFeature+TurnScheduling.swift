@@ -214,6 +214,7 @@ extension AppFeature {
   func cancelQueuedRetry(
     state: inout State, conversationID: UUID, journalID: UUID
   ) -> Effect<Action> {
+    state.pendingRetryStaleChecks.removeValue(forKey: journalID)
     state.queue.removeAll {
       $0.conversationID == conversationID && $0.retryJournalID == journalID
     }
@@ -247,12 +248,14 @@ extension AppFeature {
   }
 
   func declineCancelledRetry(
-    state: inout State, conversationID: UUID, journalID: UUID
+    state: inout State, conversationID: UUID, journalID: UUID,
+    purpose: RetryDeclinePurpose = .cancellation
   ) -> Effect<Action> {
     let operationID = uuid()
     state.pendingRetryDeclines[
       journalID, default: RetryDeclineWrites(conversationID: conversationID)
     ].operationIDs.insert(operationID)
+    state.pendingRetryDeclines[journalID]?.purposes[operationID] = purpose
     return .run { send in
       do {
         try await history.declineAutoRetry(conversationID, journalID)
@@ -545,6 +548,7 @@ extension AppFeature {
     let resolvedJournalID = interrupted.journalID ?? interrupted.executionID
       ?? trailingMessage?.id
     guard let resolvedJournalID else { return .none }
+    state.pendingRetryStaleChecks.removeValue(forKey: resolvedJournalID)
     if state.failedDismissalRecoveries.removeValue(forKey: resolvedJournalID) != nil {
       state.dismissedRetryJournalIDs.remove(resolvedJournalID)
     }
@@ -601,7 +605,13 @@ extension AppFeature {
       // A failed dismissal must restore Ask Again without re-arming an
       // automatic claim that may already have consumed its budget.
       if claimed {
-        try? await history.declineAutoRetry(conversationID, journalID)
+        do {
+          try await history.declineAutoRetry(conversationID, journalID)
+        } catch {
+          await send(.dismissedRetryClaimSettled(
+            journalID, .history(operation: .messageSave, error: error)))
+          return
+        }
       }
       await send(.dismissedRetryClaimSettled(journalID))
     }
@@ -698,7 +708,8 @@ extension AppFeature {
     refreshFMAvailability(state: &state)
     enqueueEligibleAutomaticRetry(state: &state)
     let requestedModel = resumeRequestedModelPreparation(state: &state)
-    if state.modelPreparationInFlight { return requestedModel }
+    let suspendedModel = resumeSuspendedModelPreparation(state: &state)
+    if state.modelPreparationInFlight { return .merge(requestedModel, suspendedModel) }
     guard state.canDispatchTurn else { return .none }
     guard state.fmAvailability == .available else {
       return watchFMAvailabilityIfStranded(state: &state)
@@ -717,6 +728,7 @@ extension AppFeature {
       return .send(.dispatchNextIfIdle)
     }
     if let journalID = next.retryJournalID, let userMessage = next.existingUserMessage {
+      state.pendingRetryStaleChecks.removeValue(forKey: journalID)
       state.retryClaimInFlight = true
       state.retryClaimJournalID = journalID
       state.retryClaimConversationID = next.conversationID

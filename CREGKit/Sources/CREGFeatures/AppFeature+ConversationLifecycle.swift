@@ -87,10 +87,27 @@ extension AppFeature {
       state.pendingInterruptedDismissals.removeValue(forKey: journalID)
       state.failedDismissalRecoveries.removeValue(forKey: journalID)
     }
-    state.pendingRetryDeclines = state.pendingRetryDeclines.filter {
+    // Write ownership survives presentation cleanup. Its completion must
+    // release the dispatch gate and wake work queued in other conversations.
+    state.pendingRetryStaleChecks = state.pendingRetryStaleChecks.filter {
       $0.value.conversationID != conversationID
     }
   }
+
+  func updateRetryCount(
+    state: inout State, conversationID: UUID, journalID: UUID, count: Int
+  ) {
+    state.pendingInterruptedDismissals[journalID]?.interruption.autoRetryCount = count
+    state.failedDismissalRecoveries[journalID]?.interruption.autoRetryCount = count
+    if state.chat?.conversationID == conversationID,
+      let index = state.chat?.interruptedTurns.firstIndex(where: {
+        ($0.journalID ?? $0.executionID) == journalID
+      })
+    {
+      state.chat?.interruptedTurns[index].autoRetryCount = count
+    }
+  }
+
   func deleteConversation(
     state: inout State,
     summary: ConversationSummary
@@ -107,6 +124,9 @@ extension AppFeature {
     let index = state.conversations.index(id: summary.id) ?? 0
     state.conversations.remove(id: summary.id)
     state.pendingDeletion = PendingDeletion(summary: summary, index: index)
+    state.pendingRetryStaleChecks = state.pendingRetryStaleChecks.filter {
+      $0.value.conversationID != summary.id
+    }
     state.queue.removeAll { $0.conversationID == summary.id }
     if state.activeTurn?.conversationID == summary.id {
       let executionID = state.activeTurn?.questionID
@@ -179,6 +199,13 @@ extension AppFeature {
     return commitDeletionEffect(conversationID: conversationID)
   }
 
+  func finishDeferredDeletion(state: inout State, conversationID: UUID) -> Effect<Action> {
+    guard state.deletionAwaitingTurnPersistence == conversationID else { return .none }
+    state.deletionAwaitingTurnPersistence = nil
+    clearDismissalRecovery(state: &state, conversationID: conversationID)
+    return commitDeletionEffect(conversationID: conversationID)
+  }
+
   func handleConversationWriteFailure(
     state: inout State,
     conversationID: UUID,
@@ -193,7 +220,15 @@ extension AppFeature {
           "A conversation write failure is deferred until the pending deletion is resolved.")
       return .none
     }
-    guard state.conversations[id: conversationID] != nil else { return .none }
+    guard state.conversations[id: conversationID] != nil else {
+      diagnostics.record(DiagnosticEvent(
+        level: .error, category: .history,
+        code: "conversation_write_failed_after_deletion",
+        summary: "An obsolete conversation write failed after deletion.",
+        details: failure.diagnostic,
+        context: ["conversation_id": conversationID.uuidString, "failure_code": failure.code]))
+      return .none
+    }
     return .send(.operationFailed(failure))
   }
 

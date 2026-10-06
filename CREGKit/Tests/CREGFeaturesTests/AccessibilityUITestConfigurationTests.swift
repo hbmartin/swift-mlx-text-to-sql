@@ -10,6 +10,7 @@ import Testing
         "empty-chat",
         "answered-chat",
         "answered-chat-helpful",
+        "answered-chat-reading",
         "processing-queue",
         "error",
         "recovery",

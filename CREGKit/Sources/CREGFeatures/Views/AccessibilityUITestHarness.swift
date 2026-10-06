@@ -10,6 +10,7 @@ import SwiftUI
       case emptyChat = "empty-chat"
       case answeredChat = "answered-chat"
       case answeredChatHelpful = "answered-chat-helpful"
+      case answeredChatReading = "answered-chat-reading"
       case processingQueue = "processing-queue"
       case error
       case recovery
@@ -120,6 +121,11 @@ import SwiftUI
           store: PreviewFixtures.chatStore(PreviewFixtures.helpfulChatState()),
           chrome: PreviewFixtures.chrome)
 
+      case .answeredChatReading:
+        ChatView(
+          store: PreviewFixtures.chatStore(readingChatState),
+          chrome: PreviewFixtures.chrome)
+
       case .resultExplorer:
         // This scenario has no transcript store, matching the preview harness.
         ResultViewerView(
@@ -185,6 +191,12 @@ import SwiftUI
               chat: PreviewFixtures.answeredChatState())),
           now: PreviewFixtures.now)
       }
+    }
+
+    private var readingChatState: ChatFeature.State {
+      var state = PreviewFixtures.helpfulChatState()
+      state.readAloud = .init(messageID: PreviewFixtures.id("2"), phase: .playing)
+      return state
     }
 
     private var errorChat: some View {
