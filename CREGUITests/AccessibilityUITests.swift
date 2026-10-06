@@ -514,14 +514,36 @@ final class AccessibilityUITests: XCTestCase {
     let scroll = moreScroll.exists ? moreScroll : app.scrollViews.firstMatch
     for _ in 0..<6 {
       if control.exists && control.isHittable { return control }
-      scroll.swipeUp()
+      swipeScrollableContent(scroll, in: app, up: true)
     }
     for _ in 0..<6 {
       if control.exists && control.isHittable { return control }
-      scroll.swipeDown()
+      swipeScrollableContent(scroll, in: app, up: false)
     }
     XCTAssertTrue(control.waitForExistence(timeout: 5), "Missing control named \(label)")
     return control
+  }
+
+  private func swipeScrollableContent(
+    _ scroll: XCUIElement, in app: XCUIApplication, up: Bool
+  ) {
+    let frame = scroll.frame
+    if scroll.identifier == "answer-more-scroll" || frame.height >= frame.width {
+      if up { scroll.swipeUp() } else { scroll.swipeDown() }
+      return
+    }
+    let header = app.buttons.matching(
+      NSPredicate(format: "label CONTAINS 'conversation actions'")).firstMatch
+    let composer = app.textFields.firstMatch
+    let top = max(frame.minY + 16, header.exists ? header.frame.maxY + 16 : frame.minY + 16)
+    let bottom = min(frame.maxY - 16, composer.exists ? composer.frame.minY - 16 : frame.maxY - 16)
+    // Landscape scroll views extend under the chrome. Keep the stroke in
+    // visible content and clear of the centered Jump to latest control.
+    let start = scroll.coordinate(withNormalizedOffset: .zero)
+      .withOffset(CGVector(dx: frame.width * 0.7, dy: (up ? bottom : top) - frame.minY))
+    let end = scroll.coordinate(withNormalizedOffset: .zero)
+      .withOffset(CGVector(dx: frame.width * 0.7, dy: (up ? top : bottom) - frame.minY))
+    start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
   }
 
   private func tapMoreClearOfChatHeader(in app: XCUIApplication) {
