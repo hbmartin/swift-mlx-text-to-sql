@@ -169,7 +169,7 @@ final class AccessibilityUITests: XCTestCase {
           let control = app.buttons[label]
           for _ in 0..<6 {
             if control.exists && control.isHittable { break }
-            app.scrollViews["answer-more-scroll"].swipeUp()
+            swipeScrollableContent(app.scrollViews["answer-more-scroll"], in: app, up: true)
           }
           assertAccessibleControl(control, label: label)
         }
@@ -528,7 +528,23 @@ final class AccessibilityUITests: XCTestCase {
     _ scroll: XCUIElement, in app: XCUIApplication, up: Bool
   ) {
     let frame = scroll.frame
-    if scroll.identifier == "answer-more-scroll" || frame.height >= frame.width {
+    if scroll.identifier == "answer-more-scroll" {
+      // SwiftUI can report a zero-sized ancestor for a visible popover.
+      // XCTest's automatic swipe then rejects its visible scroll view.
+      let visible = frame.intersection(app.frame)
+      XCTAssertFalse(visible.isEmpty, "More scrolling content is offscreen: \(scroll.debugDescription)")
+      guard !visible.isEmpty else { return }
+      let origin = app.coordinate(withNormalizedOffset: .zero)
+      let start = origin.withOffset(CGVector(
+        dx: visible.midX - app.frame.minX,
+        dy: visible.minY + visible.height * (up ? 0.8 : 0.2) - app.frame.minY))
+      let end = origin.withOffset(CGVector(
+        dx: visible.midX - app.frame.minX,
+        dy: visible.minY + visible.height * (up ? 0.2 : 0.8) - app.frame.minY))
+      start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+      return
+    }
+    if frame.height >= frame.width {
       if up { scroll.swipeUp() } else { scroll.swipeDown() }
       return
     }
