@@ -57,6 +57,7 @@ jobs:
   accessibility:
     name: Accessibility UI contracts
     runs-on: xcode-27
+    timeout-minutes: 75
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -75,12 +76,28 @@ jobs:
             ${{ runner.temp }}/creg-source-packages
           key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', 'CREG.xcodeproj/project.pbxproj', 'CREG/**', 'CREGUITests/**') }}
 
+      - name: Build focused accessibility UI contracts
+        timeout-minutes: 30
+        shell: /usr/bin/env -i HOME=/Users/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
+        working-directory: ${{ github.workspace }}
+        run: |
+          /usr/bin/xcodebuild build-for-testing \
+            -project CREG.xcodeproj \
+            -scheme CREG \
+            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
+            -clonedSourcePackagesDirPath "${{ runner.temp }}/creg-source-packages" \
+            -derivedDataPath "${{ runner.temp }}/creg-derived-data" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CREG_ACCESSIBILITY_HARNESS_BUILD=YES
+
       - name: Test focused accessibility UI contracts
         timeout-minutes: 30
         shell: /usr/bin/env -i HOME=/Users/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
         working-directory: ${{ github.workspace }}
         run: |
-          /usr/bin/xcodebuild test \
+          /usr/bin/xcodebuild test-without-building \
             -project CREG.xcodeproj \
             -scheme CREG \
             -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
@@ -103,6 +120,8 @@ jobs:
             -only-testing:CREGUITests/AccessibilityUITests/testMoreClosesWhenAnswerActionLayoutChanges \
             -only-testing:CREGUITests/AccessibilityUITests/testMoreActionsRemainAccessibleInConstrainedHeight \
             -only-testing:CREGUITests/AccessibilityUITests/testSimpleChartValuesAreAccessible \
+            -only-testing:CREGUITests/AccessibilityUITests/testSharingSurvivesConcurrentCompletionInLongTranscript \
+            -only-testing:CREGUITests/AccessibilityUITests/testSupportWarningAtAX5PortraitAndLandscape \
             CODE_SIGNING_ALLOWED=NO \
             CREG_ACCESSIBILITY_HARNESS_BUILD=YES
 

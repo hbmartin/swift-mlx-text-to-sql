@@ -587,6 +587,10 @@ private actor PreparationDrainGate {
       run: { _, _ in AsyncStream { $0.finish() } })
 
     var queuedState = AppFeature.State()
+    let summary = ConversationSummary(
+      id: UUID(2), title: "Owned conversation",
+      startedAt: Date(timeIntervalSince1970: 0), lastActivityAt: Date(timeIntervalSince1970: 1))
+    queuedState.conversations = [summary]
     queuedState.modelReadiness = .ready
     queuedState.modelPreparationReport = ModelPreparationReport(
       mode: .compatibility, elapsedMilliseconds: 0)
@@ -617,6 +621,7 @@ private actor PreparationDrainGate {
     #expect(queuedStore.state.pendingScopeDiagnosis == queuedDiagnosis)
 
     var activeState = AppFeature.State()
+    activeState.conversations = [summary]
     activeState.$developerMode.withLock { $0 = true }
     activeState.modelReadiness = .failed(
       ModelPreparationFailure(

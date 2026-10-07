@@ -252,6 +252,9 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
   public var retryJournalID: UUID?
   public var existingUserMessage: ChatMessage?
   public var automaticRetry: Bool = false
+  /// Set only by a durable history inspection confirming a non-trailing
+  /// interruption. The scheduler may then transfer it to a new user turn.
+  public var retryTransferConfirmed = false
   /// Ownership assigned when a new question is accepted, before it queues.
   /// Retries without a new submission acquire ownership at dispatch instead.
   public var suggestionGeneration: Int?

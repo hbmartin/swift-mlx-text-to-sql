@@ -8,6 +8,8 @@ import SwiftUI
 struct ChatView: View {
   @Bindable var store: StoreOf<ChatFeature>
   let chrome: ChatChrome
+  var answerSharePresented: (() -> Void)? = nil
+  @State private var answerSharing = AnswerShareCoordinator()
   @FocusState private var composerIsFocused: Bool
   /// Sentinel at the end of the transcript, outside the `LazyVStack` so it is
   /// always realized. Scrolling to it lands exactly at the bottom no matter
@@ -25,6 +27,14 @@ struct ChatView: View {
     ScrollViewReader { proxy in
       transcript(proxy: proxy)
     }
+    #if canImport(UIKit)
+      .sheet(item: $answerSharing.presented, onDismiss: { answerSharing.reset() }) { share in
+        AnswerActivitySheet(markdown: share.markdown)
+      }
+      .onChange(of: answerSharing.presented?.id) { _, id in
+        if id != nil { answerSharePresented?() }
+      }
+    #endif
   }
 
   private var transcriptSnapshot: ChatTranscriptSnapshot {
@@ -53,7 +63,12 @@ struct ChatView: View {
               feedback: store.feedback[message.id],
               readAloud: store.readAloud,
               developerMode: chrome.developerMode,
-              store: store
+              store: store,
+              shareRequested: { moreID, markdown in
+                answerSharing.request(
+                  conversationID: store.conversationID, moreID: moreID, markdown: markdown)
+              },
+              moreDismissed: { answerSharing.moreDidDismiss($0) }
             )
             .id(message.id)
           }
@@ -124,6 +139,7 @@ struct ChatView: View {
         store.send(.delegate(.deleteRequested))
       }
     }
+    .onChange(of: store.conversationID) { answerSharing.reset() }
     .sheet(item: exportItem) { item in
       ExportShareSheet(url: item.url)
     }

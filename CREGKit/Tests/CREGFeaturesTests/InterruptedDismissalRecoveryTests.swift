@@ -73,16 +73,17 @@ struct InterruptedDismissalRecoveryTests {
     let successful = dismissal(9302, at: 3)
     var state = Scheduler.appState()
     state.isSceneActive = false
-    state.retryReleaseJournalID = first.journalID
-    state.retryReleaseConversationID = Self.conversationID
+    state.holdRetryRelease(journalID: first.journalID, conversationID: Self.conversationID)
     for pending in [first, second, successful] {
-      state.pendingInterruptedDismissals[pending.journalID] = pending
-      state.dismissedRetryJournalIDs.insert(pending.journalID)
+      state.installDismissal(pending)
+      state.retryJournals[pending.journalID]?.intent = .dismissed
     }
     let diagnostics = DiagnosticEventRecorder()
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
       $0.diagnostics = diagnostics.client
     }
@@ -105,7 +106,7 @@ struct InterruptedDismissalRecoveryTests {
       submission: QuestionSubmission(question: first.interruption.question),
       retryJournalID: first.journalID,
       existingUserMessage: user, automaticRetry: true, submittedAt: user.createdAt)
-    await store.send(.retryClaimReleased(queued, nil))
+    await store.send(releaseCompletion(queued, nil, state: store.state))
     await store.receive(.operationFailed(failure(1)))
     await store.finish()
     #expect(store.state.pendingInterruptedDismissals.isEmpty)
@@ -162,6 +163,7 @@ struct InterruptedDismissalRecoveryTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
       $0.uuid = .incrementing
@@ -225,10 +227,12 @@ struct InterruptedDismissalRecoveryTests {
     let first = UUID(9501)
     let second = UUID(9502)
     var state = Scheduler.appState()
-    state.pendingInterruptedDismissals[pending.journalID] = pending
-    state.dismissedRetryJournalIDs.insert(pending.journalID)
-    state.pendingRetryDeclines[pending.journalID] = AppFeature.RetryDeclineWrites(
-      conversationID: Self.conversationID, operationIDs: [first, second])
+    state.installDismissal(pending)
+    state.retryJournals[pending.journalID]?.intent = .dismissed
+    state.installRetryDeclines(
+      journalID: pending.journalID,
+      writes: .init(
+        conversationID: Self.conversationID, operationIDs: [first, second]))
     let store = TestStore(initialState: state) { AppFeature() }
     store.exhaustivity = .off
     await store.send(completion(pending, failure: failure(6)))
@@ -237,7 +241,7 @@ struct InterruptedDismissalRecoveryTests {
         .retryDeclineFinished(
           conversationID: Self.conversationID, journalID: pending.journalID,
           operationID: first, failure: nil))
-      if repetition == 0 { await store.receive(.dispatchNextIfIdle) }
+      #expect(store.state.retryOperationsHoldScheduler)
       #expect(store.state.pendingRetryDeclines[pending.journalID]?.operationIDs == [second])
       #expect(store.state.pendingInterruptedDismissals[pending.journalID] != nil)
       #expect(store.state.presentedFailure == nil)
@@ -263,9 +267,7 @@ struct InterruptedDismissalRecoveryTests {
     state.chat?.messages.append(user)
     state.chat?.interruptedTurns = [original.interruption]
     state.chat?.queuedRetryJournalIDs = [user.id]
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = user.id
-    state.retryClaimConversationID = Self.conversationID
+    state.holdRetryClaim(journalID: user.id, conversationID: Self.conversationID)
     let queued = QueuedQuestion(
       id: UUID(9551), conversationID: Self.conversationID,
       submission: QuestionSubmission(question: user.previewText),
@@ -288,6 +290,7 @@ struct InterruptedDismissalRecoveryTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.uuid = .incrementing
     }
@@ -295,7 +298,7 @@ struct InterruptedDismissalRecoveryTests {
     await store.send(.chat(.delegate(.cancelQueuedRetry(user.id))))
     await first.waitUntilHeld()
     let firstID = store.state.pendingRetryDeclines[user.id]!.operationIDs.first!
-    await store.send(.queuedRetryClaimed(queued, 1))
+    await store.send(claimCompletion(queued, 1, state: store.state))
     await second.waitUntilHeld()
     let operations = store.state.pendingRetryDeclines[user.id]!.operationIDs
     #expect(operations.count == 2)
@@ -337,15 +340,14 @@ struct InterruptedDismissalRecoveryTests {
     recovered.interruption.status = .manualRetryRequired
     recovered.failure = failure(57)
     var state = Scheduler.appState()
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = UUID(9571)
-    state.retryClaimConversationID = Self.conversationID
-    state.failedDismissalRecoveries[recovered.journalID] = recovered
-    state.dismissedRetryJournalIDs.insert(recovered.journalID)
+    state.holdRetryClaim(journalID: UUID(9571), conversationID: Self.conversationID)
+    state.installDismissal(recovered, settled: true)
+    state.retryJournals[recovered.journalID]?.intent = .dismissed
     state.chat?.interruptedTurns = [recovered.interruption]
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 4))
     }
@@ -374,8 +376,8 @@ struct InterruptedDismissalRecoveryTests {
     state.activeTurn = AppFeature.ActiveTurn(
       questionID: activeUser.id, conversationID: Self.conversationID,
       question: activeUser.previewText, startedAt: activeUser.createdAt)
-    state.pendingInterruptedDismissals[pending.journalID] = pending
-    state.dismissedRetryJournalIDs.insert(pending.journalID)
+    state.installDismissal(pending)
+    state.retryJournals[pending.journalID]?.intent = .dismissed
     let store = TestStore(initialState: state) { AppFeature() }
     store.exhaustivity = .off
     await store.send(
@@ -409,12 +411,16 @@ struct InterruptedDismissalRecoveryTests {
     var state = Scheduler.appState(selected: Scheduler.conversationB)
     state.isSceneActive = false
     let summary = state.conversations[id: Self.conversationID]!
-    state.pendingInterruptedDismissals[pending.journalID] = pending
-    state.pendingInterruptedDismissals[failed.journalID] = failed
-    state.dismissedRetryJournalIDs = [pending.journalID, failed.journalID, successful.journalID]
+    state.installDismissal(pending)
+    state.installDismissal(failed)
+    for recovery in [pending, failed, successful] {
+      state.seedRetry(recovery.journalID, conversationID: recovery.conversationID)
+      state.retryJournals[recovery.journalID]?.intent = .dismissed
+    }
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.uuid = .incrementing
       $0.date = .constant(Date(timeIntervalSince1970: 4))
     }
@@ -445,16 +451,20 @@ struct InterruptedDismissalRecoveryTests {
     state.isSceneActive = false
     let summary = state.conversations[id: Self.conversationID]!
     state.conversations.remove(id: Self.conversationID)
-    state.pendingDeletion = .init(summary: summary, index: 0)
-    state.pendingInterruptedDismissals[pending.journalID] = pending
-    state.dismissedRetryJournalIDs.insert(pending.journalID)
+    state.installUndoDeletion(summary: summary)
+    state.installDismissal(pending)
+    state.retryJournals[pending.journalID]?.intent = .dismissed
     if !undo {
-      state.pendingRetryDeclines[UUID(9801)] = AppFeature.RetryDeclineWrites(
-        conversationID: Self.conversationID, operationIDs: [UUID(9802)])
+      state.installRetryDeclines(
+        journalID: UUID(9801),
+        writes: .init(
+          conversationID: Self.conversationID, operationIDs: [UUID(9802)]))
     }
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
     }
     store.exhaustivity = .off
@@ -469,16 +479,19 @@ struct InterruptedDismissalRecoveryTests {
       #expect(store.state.chat?.interruptedTurn?.journalID == pending.journalID)
       #expect(store.state.presentedFailure == failure(9))
     } else {
-      await store.send(.deleteCountdownFinished)
+      await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
       await store.finish()
       #expect(store.state.pendingInterruptedDismissals.isEmpty)
-      #expect(store.state.failedDismissalRecoveries.isEmpty)
+      #expect(store.state.conversationDeletions[Self.conversationID]?.phase == .awaitingSettlement)
+      #expect(!store.state.failedDismissalRecoveries.isEmpty)
       #expect(store.state.pendingRetryDeclines[UUID(9801)]?.operationIDs == [UUID(9802)])
       await store.send(completion(pending, failure: failure(10)))
       await store.send(
         .retryDeclineFinished(
           conversationID: Self.conversationID, journalID: UUID(9801),
           operationID: UUID(9802), failure: failure(10)))
+      await store.finish()
+      await store.skipReceivedActions(strict: false)
       #expect(store.state.pendingRetryDeclines.isEmpty)
       #expect(store.state.failedDismissalRecoveries.isEmpty)
       #expect(store.state.presentedFailure == nil)
@@ -501,7 +514,9 @@ struct InterruptedDismissalRecoveryTests {
     state.chat?.messages.append(user)
     state.chat?.interruptedTurns = [original.interruption]
     state.queue = [queued]
-    if promoted { state.userPromotedRetryJournalIDs.insert(user.id) }
+    if promoted { state.seedRetry(
+        user.id, conversationID: Self.conversationID, interruption: original.interruption)
+      state.promoteRetry(user.id) }
     let held = DismissalHeldOperation()
     let claims = CallRecorder()
     let loads = CallRecorder()
@@ -524,13 +539,14 @@ struct InterruptedDismissalRecoveryTests {
       throw DiagnosticsTestError.failed("Recovery must not load history")
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
       $0.uuid = .incrementing
     }
     store.exhaustivity = .off
     await store.send(.dispatchNextIfIdle)
-    if promoted { await store.receive(.queuedRetryClaimed(queued, 1)) }
+    if promoted { await store.receive(claimCompletion(queued, 1, state: store.state)) }
     await held.waitUntilHeld()
     await store.send(.appBecameInactive)
     let removed = store.state.chat!.interruptedTurn!
@@ -545,9 +561,9 @@ struct InterruptedDismissalRecoveryTests {
     await held.finish()
     var completed = queued
     completed.automaticRetry = !promoted
-    await store.receive(.queuedRetryClaimed(completed, nil, claimFailure))
+    await store.receive(claimCompletion(completed, nil, claimFailure, state: store.state))
     #expect(store.state.presentedFailure == nil)
-    await store.receive(.dismissedRetryClaimSettled(user.id))
+    await store.receive(cleanupCompletion(user.id, state: store.state))
     if dismissalFails { await store.receive(.operationFailed(dismissalFailure)) }
     await store.finish()
     await store.skipReceivedActions(strict: false)
@@ -564,7 +580,7 @@ struct InterruptedDismissalRecoveryTests {
     let presented = diagnostics.events.filter { $0.code == "history_message_save_failed" }
     #expect(presented.count == (dismissalFails ? 1 : 0))
     #expect(presented.first?.details == (dismissalFails ? dismissalFailure.diagnostic : nil))
-    await store.send(.queuedRetryClaimed(completed, nil, claimFailure))
+    await store.send(claimCompletion(completed, nil, claimFailure, state: store.state))
     #expect(diagnostics.events.filter { $0.code == "retry_write_failed_after_dismissal" }.count == 1)
     if dismissalFails {
       await store.send(.chat(.askAgainTappedFor(user.id)))
@@ -584,14 +600,16 @@ struct InterruptedDismissalRecoveryTests {
       submission: QuestionSubmission(question: user.previewText), retryJournalID: user.id,
       existingUserMessage: user, automaticRetry: true, submittedAt: user.createdAt)
     var state = Scheduler.appState()
-    state.retryClaimInFlight = true
-    state.retryClaimJournalID = UUID(9712)
-    state.retryClaimConversationID = Self.conversationID
+    state.holdRetryClaim(journalID: UUID(9712), conversationID: Self.conversationID)
     let diagnostics = DiagnosticEventRecorder()
-    let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.diagnostics = diagnostics.client
     }
-    await store.send(.queuedRetryClaimed(queued, nil, failure(99)))
+    await store.send(claimCompletion(queued, nil, failure(99), state: store.state))
     #expect(store.state == state)
     #expect(diagnostics.events.isEmpty)
   }
@@ -618,12 +636,14 @@ struct InterruptedDismissalRecoveryTests {
     history.claimTurnRetry = { _, _, _, _ in throw error }
     history.loadConversation = { _ in snapshot }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
     }
     store.exhaustivity = .off
     await store.send(.dispatchNextIfIdle)
-    await store.receive(.queuedRetryClaimed(queued, nil, actual))
+    await store.receive(claimCompletion(queued, nil, actual, state: store.state))
     await store.receive(.operationFailed(actual))
     await store.finish()
     await store.skipReceivedActions(strict: false)
@@ -646,8 +666,8 @@ struct InterruptedDismissalRecoveryTests {
     state.isSceneActive = false
     state.chat?.messages.append(user)
     state.chat?.interruptedTurns = [original.interruption]
-    state.pendingRetryStaleChecks[user.id] = .init(
-      conversationID: Self.conversationID, requestID: queued.id)
+    state.holdRetryInspection(
+      journalID: user.id, conversationID: Self.conversationID, requestID: queued.id)
     let held = DismissalHeldOperation()
     let declines = CallRecorder()
     let diagnostics = DiagnosticEventRecorder()
@@ -664,12 +684,13 @@ struct InterruptedDismissalRecoveryTests {
       }
     }
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+      $0.continuousClock = ContinuousClock()
       $0.historyClient = history
       $0.diagnostics = diagnostics.client
       $0.uuid = .incrementing
     }
     store.exhaustivity = .off
-    await store.send(.queuedRetryStaleChecked(queued, true))
+    await store.send(inspectionCompletion(queued, true, state: store.state))
     await held.waitUntilHeld()
     let operationID = store.state.pendingRetryDeclines[user.id]!.operationIDs.first!
     let removed = store.state.chat!.interruptedTurn!

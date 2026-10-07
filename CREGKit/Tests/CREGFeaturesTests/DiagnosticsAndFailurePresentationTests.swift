@@ -892,9 +892,11 @@ import Testing
   {
     let recorder = DiagnosticEventRecorder()
     var config = configuration()
+    // Exercise the generation deadline without racing the whole-turn
+    // backstop when the parallel suite delays task scheduling.
     config.deadlines = PipelineDeadlines(
       generationSeconds: 0.01,
-      wholeTurnSeconds: 1)
+      wholeTurnSeconds: 30)
     let pipeline = QueryPipeline.live(
       fm: .fallback(),
       sqlGen: testSQLGenClient { _ in

@@ -98,7 +98,7 @@ struct ConversationBrowserView: View {
         .padding(.horizontal, 20)
       ScrollView {
         LazyVStack(spacing: 2) {
-          ForEach(store.conversations) { summary in
+          ForEach(store.visibleConversations) { summary in
             ConversationRow(
               summary: summary,
               isSelected: store.chat?.conversationID == summary.id,
@@ -120,14 +120,14 @@ struct ConversationBrowserView: View {
   private var searchResults: some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 2) {
-        if store.searchHits.isEmpty {
+        if store.visibleSearchHits.isEmpty {
           Text("No matches")
             .font(.subheadline)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 20)
             .padding(.top, 12)
         }
-        ForEach(store.searchHits) { hit in
+        ForEach(store.visibleSearchHits) { hit in
           Button {
             store.send(.conversationSelected(hit.conversationID))
           } label: {

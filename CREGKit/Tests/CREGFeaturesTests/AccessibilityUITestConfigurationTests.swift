@@ -11,6 +11,8 @@ import Testing
         "answered-chat",
         "answered-chat-helpful",
         "answered-chat-reading",
+        "long-transcript-sharing",
+        "support-bundle-fallback",
         "processing-queue",
         "error",
         "recovery",
