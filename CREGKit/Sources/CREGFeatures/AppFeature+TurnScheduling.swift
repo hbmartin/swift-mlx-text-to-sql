@@ -200,8 +200,8 @@ extension AppFeature {
 
   // MARK: - Retry queue
 
-  /// Inserts by original question time so a retry precedes every later
-  /// question in its conversation while the queue stays oldest-first.
+  /// Returns a retry by its original question time, preserving the relative
+  /// acceptance order of questions already in the queue.
   func insertQueuedQuestion(_ queued: QueuedQuestion, into state: inout State) {
     let index = state.queue.firstIndex {
       $0.submittedAt > queued.submittedAt
@@ -398,15 +398,33 @@ extension AppFeature {
     .cancellable(id: CancelID.pipeline, cancelInFlight: true)
   }
 
+  enum TurnInterruptionReason: String {
+    case backgroundEntry = "background_entry"
+    case backgroundTaskExpiration = "background_task_expiration"
+    case conversationDeletion = "conversation_deletion"
+
+    var summary: String {
+      switch self {
+      case .backgroundEntry: "Background entry stopped the active model turn."
+      case .backgroundTaskExpiration: "An expired background task stopped the active model turn."
+      case .conversationDeletion: "Conversation deletion stopped the active model turn."
+      }
+    }
+  }
+
   /// Without a granted background-GPU task, background entry stops the turn.
   /// The journal write owns the scheduler barrier;
   /// the serializer independently keeps any cancelled raw model call's slot
   /// until it actually settles.
   func interruptActiveTurn(
     state: inout State,
-    ambiguous: Bool = false
+    ambiguous: Bool = false,
+    reason: TurnInterruptionReason = .backgroundEntry
   ) -> Effect<Action> {
     guard let active = state.activeTurn else { return .none }
+    diagnostics.info(category: .submission, code: "chat_turn_interrupted", summary: reason.summary,
+      context: ["execution_id": active.questionID.uuidString,
+        "ambiguous": String(ambiguous), "reason": reason.rawValue])
     if let provisionalID = active.provisionalAssistantMessageID,
       case .preparedFollowUp(let prepared) = active.submission.source
     {
@@ -448,14 +466,6 @@ extension AppFeature {
     interrupted.interruptionAmbiguous = ambiguous
     state.pendingInterruptedTurn = interrupted
     syncSchedulerProjection(into: &state)
-    diagnostics.info(
-      category: .submission,
-      code: "chat_turn_interrupted",
-      summary: "A scene interruption stopped the active model turn.",
-      context: [
-        "execution_id": active.questionID.uuidString,
-        "ambiguous": String(ambiguous),
-      ])
     return .concatenate(
       .cancel(id: CancelID.pipeline),
       .run { send in
@@ -641,7 +651,7 @@ extension AppFeature {
     queued: QueuedQuestion
   ) -> Effect<Action> {
     guard let journalID = queued.retryJournalID,
-      let executionID = queued.existingUserMessage?.id
+      let executionID = queued.retryExecutionID ?? queued.existingUserMessage?.id
     else { return .send(.dispatchNextIfIdle) }
     state.seedRetry(journalID, conversationID: queued.conversationID)
     let operationID = uuid()
@@ -757,8 +767,12 @@ extension AppFeature {
     }
     if let journalID = next.retryJournalID, !next.retryTransferConfirmed {
       let executionID =
-        next.existingUserMessage?.id ?? state.retryJournals[journalID]?.interruption?.executionID
+        next.retryExecutionID ?? next.existingUserMessage?.id
+        ?? state.retryJournals[journalID]?.interruption?.executionID
         ?? journalID
+      var request = next
+      request.retryExecutionID = executionID
+      let next = request
       state.invalidateRetryInspection(journalID)
       state.seedRetry(journalID, conversationID: next.conversationID)
       let operationID = uuid()

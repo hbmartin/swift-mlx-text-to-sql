@@ -13,6 +13,7 @@ import SwiftUI
       case answeredChatHelpful = "answered-chat-helpful"
       case answeredChatReading = "answered-chat-reading"
       case longTranscriptSharing = "long-transcript-sharing"
+      case conversationLoadFailure = "conversation-load-failure"
       case supportBundleFallback = "support-bundle-fallback"
       case processingQueue = "processing-queue"
       case error
@@ -110,6 +111,9 @@ import SwiftUI
 
     private static func initialState() -> ChatFeature.State {
       var state = PreviewFixtures.answeredChatState()
+      var originalAnswer = state.messages.removeLast()
+      originalAnswer.id = UUID(uuidString: "00000000-0000-0000-0000-000000006099")!
+      state.messages.append(originalAnswer)
       for index in 0..<24 {
         state.messages.append(
           ChatMessage(
@@ -136,6 +140,36 @@ import SwiftUI
           store.messages.append(completion)
         })
     }
+  }
+
+  @MainActor
+  private struct ConversationLoadFailureAccessibilityHarness: View {
+    @State private var store = StoreOf<AppFeature>(initialState: initialState()) {
+      Reduce { state, action in
+        switch action {
+        case .browserButtonTapped: state.isBrowserRevealed = true
+        case .browserDismissTapped: state.isBrowserRevealed = false
+        case .dismissFailure: state.presentedFailure = nil
+        case .newChatTapped:
+          state.chat = PreviewFixtures.chatState()
+          state.presentedFailure = nil
+          state.isBrowserRevealed = false
+        default: break
+        }
+        return .none
+      }
+    }
+
+    private static func initialState() -> AppFeature.State {
+      var state = AppFeature.State(debugModelIdentity: nil, launchBenchmarkQuestion: nil)
+      state.chat = nil
+      state.presentedFailure = .history(operation: .load, error: PreviewHistoryError())
+      return state
+    }
+
+    var body: some View { AppRootView(store: store, now: PreviewFixtures.now) }
+
+    private struct PreviewHistoryError: Error {}
   }
 
   private struct SupportBundleFallbackAccessibilityHarness: View {
@@ -182,6 +216,9 @@ import SwiftUI
 
       case .longTranscriptSharing:
         LongTranscriptSharingAccessibilityHarness()
+
+      case .conversationLoadFailure:
+        ConversationLoadFailureAccessibilityHarness()
 
       case .supportBundleFallback:
         SupportBundleFallbackAccessibilityHarness()

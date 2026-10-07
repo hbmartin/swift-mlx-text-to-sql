@@ -116,7 +116,8 @@ final class AccessibilityUITests: XCTestCase {
 
   func testSharingSurvivesConcurrentCompletionInLongTranscript() {
     let app = launch(scenario: "long-transcript-sharing", dynamicType: "large")
-    tapMoreClearOfChatHeader(in: app)
+    let originalMoreID = "answer-more-00000000-0000-0000-0000-000000006099"
+    tapMoreClearOfChatHeader(in: app, identifier: originalMoreID)
     app.buttons["Share answer"].tap()
     let activities = app.otherElements["ActivityListView"].firstMatch
     XCTAssertTrue(activities.waitForExistence(timeout: 5), app.debugDescription)
@@ -128,16 +129,48 @@ final class AccessibilityUITests: XCTestCase {
     let completed = app.staticTexts["Concurrent answer completed"]
     for _ in 0..<8 {
       if completed.exists && completed.isHittable { break }
-      app.swipeUp()
+      swipeScrollableContent(app.scrollViews.firstMatch, in: app, up: true)
     }
     XCTAssertTrue(completed.waitForExistence(timeout: 5), app.debugDescription)
-    tapMoreClearOfChatHeader(in: app)
+    XCTAssertFalse(app.buttons[originalMoreID].isHittable,
+      "Concurrent completion must move the original answer out of view")
+    tapMoreClearOfChatHeader(in: app, identifier: originalMoreID)
     let helpful = app.buttons["Helpful"]
     XCTAssertTrue(helpful.waitForExistence(timeout: 5))
     XCTAssertFalse(activities.exists, "Returning to the old row must not reopen sharing")
     helpful.tap()
     XCTAssertTrue(helpful.waitForNonExistence(timeout: 5))
     XCTAssertFalse(activities.exists)
+  }
+
+  func testConversationLoadFailureOffersRecovery() throws {
+    for size in ["large", "ax5"] {
+      let app = launch(scenario: "conversation-load-failure", dynamicType: size)
+      XCTAssertTrue(app.staticTexts["History unavailable"].waitForExistence(timeout: 5))
+      XCTAssertFalse(app.descendants(matching: .any)["conversation-loading"].exists)
+      let conversations = scrollToControl("Conversations", in: app,
+        identifier: "conversation-recovery-browser")
+      assertAccessibleControl(conversations, label: "Conversations")
+      let newChat = scrollToControl("New chat", in: app,
+        identifier: "conversation-recovery-new-chat")
+      assertAccessibleControl(newChat, label: "New chat")
+      try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
+      scrollToControl("Conversations", in: app, identifier: "conversation-recovery-browser").tap()
+      XCTAssertTrue(app.textFields["Search"].waitForExistence(timeout: 5))
+      app.buttons["New Chat"].tap()
+      XCTAssertTrue(app.staticTexts["Ask about your portfolio"].waitForExistence(timeout: 5))
+      XCTAssertFalse(app.staticTexts["History unavailable"].exists)
+      app.terminate()
+
+      let directRecovery = launch(scenario: "conversation-load-failure", dynamicType: size)
+      let directNewChat = scrollToControl("New chat", in: directRecovery,
+        identifier: "conversation-recovery-new-chat")
+      XCTAssertTrue(directNewChat.waitForExistence(timeout: 5))
+      directNewChat.tap()
+      XCTAssertTrue(directRecovery.staticTexts["Ask about your portfolio"].waitForExistence(timeout: 5))
+      XCTAssertFalse(directRecovery.staticTexts["History unavailable"].exists)
+      directRecovery.terminate()
+    }
   }
 
   func testSupportWarningAtAX5PortraitAndLandscape() throws {
@@ -506,10 +539,11 @@ final class AccessibilityUITests: XCTestCase {
     close.tap()
   }
 
-  private func scrollToControl(_ label: String, in app: XCUIApplication) -> XCUIElement {
-    let control = app.descendants(matching: .any)
-      .matching(NSPredicate(format: "label BEGINSWITH %@", label))
-      .firstMatch
+  private func scrollToControl(
+    _ label: String, in app: XCUIApplication, identifier: String? = nil
+  ) -> XCUIElement {
+    let control = identifier.map { app.buttons[$0] } ?? app.descendants(matching: .any)
+      .matching(NSPredicate(format: "label BEGINSWITH %@", label)).firstMatch
     let moreScroll = app.scrollViews["answer-more-scroll"]
     let scroll = moreScroll.exists ? moreScroll : app.scrollViews.firstMatch
     for _ in 0..<6 {
@@ -562,8 +596,8 @@ final class AccessibilityUITests: XCTestCase {
     start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
   }
 
-  private func tapMoreClearOfChatHeader(in app: XCUIApplication) {
-    let more = scrollToControl("More answer actions", in: app)
+  private func tapMoreClearOfChatHeader(in app: XCUIApplication, identifier: String? = nil) {
+    let more = scrollToControl("More answer actions", in: app, identifier: identifier)
     let header = app.buttons.matching(
       NSPredicate(format: "label CONTAINS 'conversation actions'")).firstMatch
     for _ in 0..<6 {

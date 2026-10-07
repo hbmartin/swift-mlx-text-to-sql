@@ -263,6 +263,7 @@ def test_reviewed_run_contracts_reject_step_execution_overrides(
         ("services", {"decoy": {"image": "example.invalid/decoy"}}),
         ("strategy", {"matrix": {"include": []}}),
         ("timeout-minutes", 1),
+        ("timeout-minutes", None),
     ],
 )
 @pytest.mark.parametrize(
@@ -1418,15 +1419,19 @@ def test_accessibility_commands_each_require_the_reviewed_budget(step_name, budg
     assert any("timeout must be 30" in failure for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
 
 
-@pytest.mark.parametrize("budget", [None, 74, 76])
-def test_accessibility_job_requires_the_reviewed_budget(budget):
+@pytest.mark.parametrize("budget,expected_message", [
+    (None, "accessibility job timeout-minutes must be 75"),
+    (74, "accessibility job must not override reviewed run context: timeout-minutes"),
+    (76, "accessibility job must not override reviewed run context: timeout-minutes"),
+])
+def test_accessibility_job_requires_the_reviewed_budget(budget, expected_message):
     path, workflow = accessibility_workflow()
     job = workflow["jobs"]["accessibility"]
     if budget is None:
         job.pop("timeout-minutes")
     else:
         job["timeout-minutes"] = budget
-    assert any("timeout-minutes" in failure for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
+    assert any(failure.endswith(expected_message) for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
 
 
 @pytest.mark.parametrize("mutation", ["action", "path", "shell", "operator", "missing"])

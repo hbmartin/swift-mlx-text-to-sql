@@ -10,6 +10,7 @@ extension AppFeature {
     let operationID = uuid()
     state.retryJournals[journalID]?.operations[operationID] = .inspection(
       queued, generation: generation)
+    syncSchedulerProjection(into: &state)
     let cancellationID = RetryInspectionID(journalID: journalID)
     return .merge(
       .run { send in
@@ -50,6 +51,31 @@ extension AppFeature {
             operationID: operationID))
       }
     ).cancellable(id: cancellationID)
+  }
+
+  func retireMissingRetry(state: inout State, queued: QueuedQuestion) -> Effect<Action> {
+    guard let journalID = queued.retryJournalID else { return .none }
+    state.removeAutomaticCandidate(journalID)
+    state.removeRetryPromotion(journalID)
+    state.retryJournals[journalID]?.interruption = nil
+    state.queue.removeAll { $0.retryJournalID == journalID }
+    if state.chat?.conversationID == queued.conversationID {
+      state.chat?.interruptedTurns.removeAll { ($0.journalID ?? $0.executionID) == journalID }
+    }
+    syncSchedulerProjection(into: &state)
+    let failure = FailurePresentation(
+      code: "retry_journal_missing", title: "Retry unavailable",
+      message: "This interrupted question is no longer available to retry. Send it as a new question to try again.",
+      diagnostic: "History inspection found no journal for retry \(journalID.uuidString).")
+    if queued.automaticRetry {
+      diagnostics.record(DiagnosticEvent(
+        level: .info, category: .history, code: failure.code, summary: failure.title,
+        details: failure.diagnostic,
+        context: ["conversation_id": queued.conversationID.uuidString,
+          "journal_id": journalID.uuidString]))
+      return .none
+    }
+    return .send(.operationFailed(failure))
   }
 
   func restoreManualRetry(state: inout State, journalID: UUID) {

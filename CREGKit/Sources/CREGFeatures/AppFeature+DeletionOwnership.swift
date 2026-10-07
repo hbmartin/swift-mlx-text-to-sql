@@ -30,6 +30,7 @@ extension AppFeature.State {
     var candidateIDs: Set<UUID>
     var contextGenerations: [UUID: Int]
     var deletionPhases: [UUID: AppFeature.DeletionPhase]
+    var readyDeletionIDs: Set<UUID>
     var readiness: AppFeature.ModelReadiness
     var sceneActive: Bool
   }
@@ -40,7 +41,10 @@ extension AppFeature.State {
         || retryOperationsHoldScheduler,
       runnableIDs: runnableQueue.map(\.id), candidateIDs: Set(automaticRetryCandidates.keys),
       contextGenerations: pendingSuggestionContexts.mapValues(\.generation),
-      deletionPhases: conversationDeletions.mapValues(\.phase), readiness: modelReadiness,
+      deletionPhases: conversationDeletions.mapValues(\.phase),
+      readyDeletionIDs: Set(conversationDeletions.compactMap { id, deletion in
+        deletion.phase == .awaitingSettlement && !hasOutstandingWrites(in: id) ? id : nil
+      }), readiness: modelReadiness,
       sceneActive: isSceneActive)
   }
   public var pendingDeletion: AppFeature.ConversationDeletion? {

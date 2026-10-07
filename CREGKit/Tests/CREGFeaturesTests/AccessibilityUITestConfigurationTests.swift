@@ -12,6 +12,7 @@ import Testing
         "answered-chat-helpful",
         "answered-chat-reading",
         "long-transcript-sharing",
+        "conversation-load-failure",
         "support-bundle-fallback",
         "processing-queue",
         "error",
