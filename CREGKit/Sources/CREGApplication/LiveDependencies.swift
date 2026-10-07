@@ -473,27 +473,6 @@ enum LiveDependencies {
     let url = URL.applicationSupportDirectory
       .appendingPathComponent("CREG", isDirectory: true)
       .appendingPathComponent("history.sqlite")
-    diagnostics.info(
-      category: .history,
-      code: "history_store_open_started",
-      summary: "The local conversation history store open started.")
-    do {
-      let client = try HistoryClient.live(databaseURL: url)
-      diagnostics.info(
-        category: .history,
-        code: "history_store_open_finished",
-        summary: "The local conversation history store opened.")
-      return client
-    } catch {
-      diagnostics.record(
-        DiagnosticEvent(
-          level: .error,
-          category: .history,
-          code: "history_store_open_failed",
-          summary: "The local conversation history store could not be opened.",
-          details: DiagnosticDetails.describe(error)))
-      return .unavailable(
-        diagnostic: DiagnosticDetails.describe(error))
-    }
+    return .recoverableLive(databaseURL: url, diagnostics: diagnostics)
   }()
 }

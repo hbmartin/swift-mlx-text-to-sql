@@ -51,6 +51,7 @@ extension AppFeature {
     public var knownDurableCount: Int?
     public var intent: RetryIntent = .idle
     public var requestGeneration = 0
+    public var diagnosticOperationNumber: UInt64 = 0
     public var dismissalRecovery: PendingInterruptedDismissal?
     public var dismissalIsSettled = false
     public var automaticCandidate: AutomaticRetryCandidate?
@@ -165,7 +166,9 @@ extension AppFeature.State {
     _ journalID: UUID, conversationID: UUID, interruption: InterruptedTurn? = nil
   ) {
     if retryJournals[journalID] == nil {
+      let number = nextDiagnosticOperationNumber()
       retryJournals[journalID] = .init(conversationID: conversationID, interruption: interruption)
+      retryJournals[journalID]?.diagnosticOperationNumber = number
     } else if let interruption {
       retryJournals[journalID]?.interruption = interruption
       if retryJournals[journalID]?.knownDurableCount == nil {

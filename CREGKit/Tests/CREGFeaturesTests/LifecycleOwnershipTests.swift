@@ -278,9 +278,8 @@ struct LifecycleOwnershipTests {
     await store.receive(\.conversationWriteFailed)
     #expect(store.state.presentedFailure == nil)
     if undo {
-      #expect(store.state.pendingDeletion?.deferredFailure == failure)
+      #expect(store.state.pendingDeletion?.deferredFailures.first == failure)
       await store.send(.undoDeleteTapped)
-      await store.receive(.operationFailed(failure))
       #expect(store.state.isConversationLive(a))
       #expect(store.state.retryJournals[user.id]?.interruption?.status == .manualRetryRequired)
       #expect(deleted.recorded.isEmpty)

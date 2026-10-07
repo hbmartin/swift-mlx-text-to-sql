@@ -13,6 +13,8 @@ import Testing
         "answered-chat-reading",
         "long-transcript-sharing",
         "conversation-load-failure",
+        "history-store-unavailable",
+        "retry-inspection",
         "support-bundle-fallback",
         "processing-queue",
         "error",

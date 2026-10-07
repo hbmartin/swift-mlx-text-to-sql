@@ -1,7 +1,9 @@
 import AutoTableCharts
+import CREGCore
 import CREGEngine
 import ComposableArchitecture
 import SwiftUI
+import Synchronization
 
 #if DEBUG
   /// DEBUG-only entry into deterministic, inert screens for accessibility UI
@@ -14,6 +16,8 @@ import SwiftUI
       case answeredChatReading = "answered-chat-reading"
       case longTranscriptSharing = "long-transcript-sharing"
       case conversationLoadFailure = "conversation-load-failure"
+      case historyStoreUnavailable = "history-store-unavailable"
+      case retryInspection = "retry-inspection"
       case supportBundleFallback = "support-bundle-fallback"
       case processingQueue = "processing-queue"
       case error
@@ -144,30 +148,76 @@ import SwiftUI
 
   @MainActor
   private struct ConversationLoadFailureAccessibilityHarness: View {
-    @State private var store = StoreOf<AppFeature>(initialState: initialState()) {
-      Reduce { state, action in
-        switch action {
-        case .browserButtonTapped: state.isBrowserRevealed = true
-        case .browserDismissTapped: state.isBrowserRevealed = false
-        case .dismissFailure: state.presentedFailure = nil
-        case .newChatTapped:
-          state.chat = PreviewFixtures.chatState()
-          state.presentedFailure = nil
-          state.isBrowserRevealed = false
-        default: break
+    let scenario: AccessibilityUITestConfiguration.Scenario
+    @State private var store: StoreOf<AppFeature>
+    private static let journalID = UUID(uuidString: "00000000-0000-4000-8000-000000006201")!
+
+    init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationLoadFailure) {
+      self.scenario = scenario
+      let initial = Self.initialState(scenario: scenario)
+      let summary = ConversationSummary(id: PreviewFixtures.chatState().conversationID,
+        title: "Saved conversation", startedAt: PreviewFixtures.now, lastActivityAt: PreviewFixtures.now)
+      var history = HistoryClient.noop()
+      history.bootstrap = { [summary] }
+      switch scenario {
+      case .historyStoreUnavailable:
+        let attempts = Mutex(0)
+        let healthy = history
+        history = .recoverable(open: {
+          let attempt = attempts.withLock { $0 += 1; return $0 }
+          if attempt == 1 { throw PreviewHistoryError() }
+          return healthy
+        })
+      case .retryInspection:
+        history.claimTurnRetry = { _, _, _, _ in nil }
+        history.loadConversation = { _ in
+          // Cancellation settles this held read; a frozen clock keeps the
+          // inspection timeout deterministic while the UI exercises Dismiss.
+          try await Task.sleep(for: .seconds(30))
+          return ConversationSnapshot(summary: summary)
         }
-        return .none
+      default:
+        history.loadConversation = { _ in throw PreviewHistoryError() }
       }
+      let controlledHistory = history
+      _store = State(initialValue: Store(initialState: initial) { AppFeature() } withDependencies: {
+        $0.historyClient = controlledHistory
+        $0.fmStatus = FMStatusClient(availability: { .available })
+        $0.haptics = .noop
+        $0.diagnostics = .noop
+        $0.continuousClock = TestClock()
+      })
     }
 
-    private static func initialState() -> AppFeature.State {
+    private static func initialState(scenario: AccessibilityUITestConfiguration.Scenario) -> AppFeature.State {
       var state = AppFeature.State(debugModelIdentity: nil, launchBenchmarkQuestion: nil)
-      state.chat = nil
-      state.presentedFailure = .history(operation: .load, error: PreviewHistoryError())
+      state.modelReadiness = .ready
+      state.didRequestPreparationJournalInspection = true
+      state.didHandlePreparationJournalInspection = true
+      if scenario == .retryInspection {
+        var chat = PreviewFixtures.chatState()
+        let message = ChatMessage(id: UUID(uuidString: "00000000-0000-4000-8000-000000006202")!,
+          role: .user, body: .text("What is my portfolio worth?"), createdAt: PreviewFixtures.now)
+        chat.messages.append(message)
+        chat.interruptedTurns.append(InterruptedTurn(question: message.previewText,
+          interruptedAt: message.createdAt, journalID: journalID, executionID: message.id,
+          status: .knownInterruption))
+        state.chat = chat
+        state.conversations.append(ConversationSummary(id: chat.conversationID,
+          title: chat.title, startedAt: PreviewFixtures.now, lastActivityAt: PreviewFixtures.now))
+        state.historySummaryPhase = .loaded
+      }
       return state
     }
 
-    var body: some View { AppRootView(store: store, now: PreviewFixtures.now) }
+    var body: some View {
+      AppRootView(store: store, now: PreviewFixtures.now)
+        .task {
+          if scenario == .retryInspection {
+            store.send(.chat(.delegate(.retryInterruptedTurnFor(Self.journalID))))
+          }
+        }
+    }
 
     private struct PreviewHistoryError: Error {}
   }
@@ -219,6 +269,9 @@ import SwiftUI
 
       case .conversationLoadFailure:
         ConversationLoadFailureAccessibilityHarness()
+
+      case .historyStoreUnavailable, .retryInspection:
+        ConversationLoadFailureAccessibilityHarness(scenario: scenario)
 
       case .supportBundleFallback:
         SupportBundleFallbackAccessibilityHarness()

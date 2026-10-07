@@ -90,7 +90,7 @@ struct InterruptedDismissalRecoveryTests {
     store.exhaustivity = .off
     for pending in reverseOrder ? [second, first] : [first, second] {
       await store.send(completion(pending, failure: failure(pending == first ? 1 : 2)))
-      if pending == second { await store.receive(.operationFailed(failure(2))) }
+      if pending == second { await store.receive(.operationFailed(failure(2), owner: .conversation(Self.conversationID))) }
     }
     #expect(store.state.pendingInterruptedDismissals[first.journalID]?.failure == failure(1))
     #expect(store.state.chat?.interruptedTurns.map(\.journalID) == [second.journalID])
@@ -107,7 +107,7 @@ struct InterruptedDismissalRecoveryTests {
       retryJournalID: first.journalID,
       existingUserMessage: user, automaticRetry: true, submittedAt: user.createdAt)
     await store.send(releaseCompletion(queued, nil, state: store.state))
-    await store.receive(.operationFailed(failure(1)))
+    await store.receive(.operationFailed(failure(1), owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.pendingInterruptedDismissals.isEmpty)
     #expect(store.state.failedDismissalManualRetryIDs == [first.journalID, second.journalID])
@@ -203,7 +203,7 @@ struct InterruptedDismissalRecoveryTests {
     // Assert before the original error's presentation can conceal a late decline error.
     #expect(store.state.presentedFailure == nil)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
-    await store.receive(.operationFailed(dismissalFailure))
+    await store.receive(.operationFailed(dismissalFailure, owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.pendingRetryDeclines.isEmpty)
     #expect(store.state.pendingInterruptedDismissals.isEmpty)
@@ -250,7 +250,7 @@ struct InterruptedDismissalRecoveryTests {
       .retryDeclineFinished(
         conversationID: Self.conversationID, journalID: pending.journalID,
         operationID: second, failure: nil))
-    await store.receive(.operationFailed(failure(6)))
+    await store.receive(.operationFailed(failure(6), owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.pendingRetryDeclines.isEmpty)
     #expect(store.state.chat?.interruptedTurn?.journalID == pending.journalID)
@@ -331,7 +331,7 @@ struct InterruptedDismissalRecoveryTests {
         operationID: secondID, failure: nil))
     #expect(store.state.pendingRetryDeclines.isEmpty)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
-    await store.receive(.operationFailed(originalFailure))
+    await store.receive(.operationFailed(originalFailure, owner: .conversation(Self.conversationID)))
     await store.finish()
   }
 
@@ -426,7 +426,7 @@ struct InterruptedDismissalRecoveryTests {
     }
     store.exhaustivity = .off
     await store.send(completion(failed, failure: failure(8)))
-    await store.receive(.operationFailed(failure(8)))
+    await store.receive(.operationFailed(failure(8), owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.chat?.conversationID == Scheduler.conversationB)
     #expect(store.state.chat?.interruptedTurns.isEmpty == true)
@@ -473,7 +473,6 @@ struct InterruptedDismissalRecoveryTests {
     #expect(store.state.failedDismissalManualRetryIDs.contains(pending.journalID))
     if undo {
       await store.send(.undoDeleteTapped)
-      await store.receive(.operationFailed(failure(9)))
       await store.finish()
       #expect(store.state.conversations[id: Self.conversationID] != nil)
       #expect(store.state.chat?.interruptedTurn?.journalID == pending.journalID)
@@ -564,7 +563,7 @@ struct InterruptedDismissalRecoveryTests {
     await store.receive(claimCompletion(completed, nil, claimFailure, state: store.state))
     #expect(store.state.presentedFailure == nil)
     await store.receive(cleanupCompletion(user.id, state: store.state))
-    if dismissalFails { await store.receive(.operationFailed(dismissalFailure)) }
+    if dismissalFails { await store.receive(.operationFailed(dismissalFailure, owner: .conversation(Self.conversationID))) }
     await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(!store.state.retryClaimInFlight)
@@ -644,7 +643,7 @@ struct InterruptedDismissalRecoveryTests {
     store.exhaustivity = .off
     await store.send(.dispatchNextIfIdle)
     await store.receive(claimCompletion(queued, nil, actual, state: store.state))
-    await store.receive(.operationFailed(actual))
+    await store.receive(.operationFailed(actual, owner: .conversation(Self.conversationID)))
     await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.presentedFailure == actual)
@@ -705,7 +704,7 @@ struct InterruptedDismissalRecoveryTests {
     await store.receive(.retryDeclineFinished(
       conversationID: Self.conversationID, journalID: user.id, operationID: operationID,
       failure: declineFails ? .history(operation: .messageSave, error: declineError) : nil))
-    await store.receive(.operationFailed(originalFailure))
+    await store.receive(.operationFailed(originalFailure, owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.pendingRetryDeclines.isEmpty)
     #expect(store.state.pendingInterruptedDismissals.isEmpty)

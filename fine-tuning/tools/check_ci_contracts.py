@@ -121,6 +121,10 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testConversationLoadFailureOffersRecovery",
     "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testHistoryStoreRetryAtAX5PortraitAndLandscape",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testRetryInspectionOffersDismissOnlyAtAX5PortraitAndLandscape",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
     "testSupportWarningAtAX5PortraitAndLandscape",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",

@@ -139,6 +139,14 @@ public struct SupportBundleSource: Sendable {
 // MARK: - Live store
 
 extension HistoryClient {
+  /// Bootstrap opens (or retries opening) the store. All other operations use
+  /// the same successfully opened connection for the lifetime of this client.
+  public static func recoverableLive(
+    databaseURL: URL, diagnostics: DiagnosticsClient = .live
+  ) -> HistoryClient {
+    recoverable(open: { try live(databaseURL: databaseURL) }, diagnostics: diagnostics)
+  }
+
   public static func live(databaseURL: URL) throws -> HistoryClient {
     try FileManager.default.createDirectory(
       at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)

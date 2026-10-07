@@ -8,6 +8,10 @@ import SwiftUI
 private struct ConversationRecoveryPreviewFrame: View {
   let failure: FailurePresentation?
   var size: DynamicTypeSize = .large
+  var isLoading = false
+  var storeUnavailable = false
+  var canRetryOpening = false
+  var historyFailed = false
 
   static let loadFailure = FailurePresentation.history(
     operation: .load, error: NSError(domain: "Preview.History", code: 1))
@@ -17,7 +21,10 @@ private struct ConversationRecoveryPreviewFrame: View {
 
   var body: some View {
     ConversationUnavailableView(failure: failure, developerMode: false,
-      dismissFailure: {}, openBrowser: {}, newChat: {})
+      dismissFailure: {}, openBrowser: {}, newChat: {},
+      isLoading: isLoading, canCreate: !storeUnavailable,
+      retryHistory: storeUnavailable || historyFailed || isLoading ? {} : nil,
+      retryOpening: canRetryOpening ? {} : nil, historyIsLoading: isLoading)
       .environment(\.dynamicTypeSize, size)
       .frame(width: 370, height: 700)
       .background(CREGBrand.chatSurface)
@@ -25,22 +32,40 @@ private struct ConversationRecoveryPreviewFrame: View {
 }
 
 #Preview("Conversation Recovery — Loading — Standard", traits: .sizeThatFitsLayout) {
-  ConversationRecoveryPreviewFrame(failure: nil)
+  ConversationRecoveryPreviewFrame(failure: nil, isLoading: true)
 }
 #Preview("Conversation Recovery — Loading — AX5", traits: .sizeThatFitsLayout) {
-  ConversationRecoveryPreviewFrame(failure: nil, size: .accessibility5)
+  ConversationRecoveryPreviewFrame(failure: nil, size: .accessibility5, isLoading: true)
 }
 #Preview("Conversation Recovery — Load Failure — Standard", traits: .sizeThatFitsLayout) {
-  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.loadFailure)
+  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.loadFailure, canRetryOpening: true)
 }
 #Preview("Conversation Recovery — Load Failure — AX5", traits: .sizeThatFitsLayout) {
-  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.loadFailure, size: .accessibility5)
+  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.loadFailure, size: .accessibility5, canRetryOpening: true)
 }
 #Preview("Conversation Recovery — Combined Errors — Standard", traits: .sizeThatFitsLayout) {
   ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.combinedFailure)
 }
 #Preview("Conversation Recovery — Combined Errors — AX5", traits: .sizeThatFitsLayout) {
   ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.combinedFailure, size: .accessibility5)
+}
+
+#Preview("Conversation Recovery — Idle — AX5", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: nil, size: .accessibility5, canRetryOpening: true)
+}
+#Preview("Conversation Recovery — Store Unavailable — AX5", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: .history(operation: .load,
+    error: HistoryStoreUnavailableError(diagnostic: "Preview open failure")),
+    size: .accessibility5, storeUnavailable: true)
+}
+#Preview("Interrupted Retry — Checking — AX5", traits: .sizeThatFitsLayout) {
+  InterruptedTurnBanner(interrupted: PreviewFixtures.recoveryChatState().interruptedTurn!,
+    retryInspecting: true, askAgain: {}, dismiss: {})
+    .environment(\.dynamicTypeSize, .accessibility5).padding()
+}
+#Preview("Conversation Recovery — Summary Failure — AX5", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: .history(operation: .summaryLoad,
+    error: NSError(domain: "Preview.History", code: 1)), size: .accessibility5, historyFailed: true)
 }
 
 private struct AnswerActionsPreviewFrame: View {

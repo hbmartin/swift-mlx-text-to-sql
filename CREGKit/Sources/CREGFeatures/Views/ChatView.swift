@@ -219,6 +219,7 @@ struct ChatView: View {
       }
       .cregGlassCapsule(interactive: true)
       .accessibilityLabel("New chat")
+      .disabled(!chrome.canCreateConversation)
       .cregLargeContentViewer("New chat", systemImage: "square.and.pencil")
     }
   }
@@ -268,11 +269,21 @@ struct ChatView: View {
       // insets the transcript's safe area but not its frame, so a floating
       // pill anchored to the scroll view lands beneath this stack.
       jumpToLatest(proxy: proxy)
-      if let failure = chrome.presentedFailure {
+      if !chrome.ownedFailures.isEmpty {
+        OwnedFailureBanners(failures: chrome.ownedFailures, developerMode: chrome.developerMode,
+          dismiss: chrome.dismissOwnedFailure)
+      } else if let failure = chrome.presentedFailure {
         FailureBanner(
           failure: failure,
           developerMode: chrome.developerMode,
           dismiss: chrome.dismissFailure)
+      }
+      if chrome.canRetryHistory || chrome.historyIsLoading {
+        RetryHistoryButton(isLoading: chrome.historyIsLoading, retry: chrome.retryHistory)
+      }
+      if let retry = chrome.retryOpening {
+        Button(action: retry) { Text("Retry opening conversation").cregTextButtonLabelTarget() }
+          .accessibilityIdentifier("conversation-retry-opening")
       }
       readinessBanner
       fmAvailabilityBanner
@@ -282,6 +293,7 @@ struct ChatView: View {
           interrupted: interrupted,
           retryQueued: retryID.map { store.queuedRetryJournalIDs.contains($0) }
             ?? false,
+          retryInspecting: retryID.map { store.inspectingRetryJournalIDs.contains($0) } ?? false,
           askAgain: {
             if let id = interrupted.journalID { store.send(.askAgainTappedFor(id)) }
             else { store.send(.askAgainTapped) }

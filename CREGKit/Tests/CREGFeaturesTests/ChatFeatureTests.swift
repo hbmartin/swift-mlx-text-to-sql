@@ -1361,7 +1361,7 @@ private func awaitArmedFMWatch(
 
     #expect(store.state.chat?.messages[id: message.id] == nil)
     #expect(store.state.presentedFailure == nil)
-    #expect(store.state.pendingDeletion?.deferredFailure == deferredDeletionFailure)
+    #expect(store.state.pendingDeletion?.deferredFailures.first == deferredDeletionFailure)
   }
 
   @Test func staleUserPersistenceFailureIsDeferredDuringUndoWindow() async {
@@ -1398,7 +1398,7 @@ private func awaitArmedFMWatch(
 
     #expect(store.state.chat?.messages[id: message.id] == nil)
     #expect(store.state.presentedFailure == nil)
-    #expect(store.state.pendingDeletion?.deferredFailure == failure)
+    #expect(store.state.pendingDeletion?.deferredFailures.first == failure)
   }
 
   @Test func staleUserPersistenceFailureAfterUndoIsPresented() async {
@@ -1427,8 +1427,8 @@ private func awaitArmedFMWatch(
         questionID: UUID(94),
         optimisticTurn: optimisticTurn,
         failure: failure))
-    await store.receive(.operationFailed(failure)) {
-      $0.presentedFailure = failure
+    await store.receive(.operationFailed(failure, owner: .conversation(Self.conversationA))) {
+      $0.storeFailure(failure, owner: .conversation(Self.conversationA))
     }
     await store.finish()
 
@@ -3835,10 +3835,9 @@ private func awaitArmedFMWatch(
         questionID: questionID,
         failure: failure))
     #expect(store.state.presentedFailure == nil)
-    #expect(store.state.pendingDeletion?.deferredFailure == failure)
+    #expect(store.state.pendingDeletion?.deferredFailures.first == failure)
 
     await store.send(.undoDeleteTapped)
-    await store.receive(.operationFailed(failure))
 
     #expect(store.state.conversations[id: Self.conversationB] != nil)
     #expect(store.state.presentedFailure == failure)

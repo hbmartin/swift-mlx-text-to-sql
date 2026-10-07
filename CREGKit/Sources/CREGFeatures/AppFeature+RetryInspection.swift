@@ -55,6 +55,8 @@ extension AppFeature {
 
   func retireMissingRetry(state: inout State, queued: QueuedQuestion) -> Effect<Action> {
     guard let journalID = queued.retryJournalID else { return .none }
+    let manualRequested = !queued.automaticRetry || state.userPromotedRetryJournalIDs.contains(journalID)
+    let generation = state.retryJournals[journalID]?.requestGeneration ?? 0
     state.removeAutomaticCandidate(journalID)
     state.removeRetryPromotion(journalID)
     state.retryJournals[journalID]?.interruption = nil
@@ -67,15 +69,15 @@ extension AppFeature {
       code: "retry_journal_missing", title: "Retry unavailable",
       message: "This interrupted question is no longer available to retry. Send it as a new question to try again.",
       diagnostic: "History inspection found no journal for retry \(journalID.uuidString).")
-    if queued.automaticRetry {
+    if !manualRequested {
       diagnostics.record(DiagnosticEvent(
         level: .info, category: .history, code: failure.code, summary: failure.title,
         details: failure.diagnostic,
-        context: ["conversation_id": queued.conversationID.uuidString,
-          "journal_id": journalID.uuidString]))
+        context: ["operation_number": String(state.retryJournals[journalID]?.diagnosticOperationNumber ?? 0)]))
       return .none
     }
-    return .send(.operationFailed(failure))
+    return .send(.operationFailed(failure,
+      owner: .retry(conversationID: queued.conversationID, journalID: journalID, generation: generation)))
   }
 
   func restoreManualRetry(state: inout State, journalID: UUID) {

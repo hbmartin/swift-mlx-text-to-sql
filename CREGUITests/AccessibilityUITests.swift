@@ -145,31 +145,90 @@ final class AccessibilityUITests: XCTestCase {
 
   func testConversationLoadFailureOffersRecovery() throws {
     for size in ["large", "ax5"] {
-      let app = launch(scenario: "conversation-load-failure", dynamicType: size)
+      for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+        XCUIDevice.shared.orientation = orientation
+        let app = launch(scenario: "conversation-load-failure", dynamicType: size)
+        XCTAssertTrue(app.staticTexts["History unavailable"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["conversation-loading"].exists)
+        let conversations = scrollToControl("Conversations", in: app,
+          identifier: "conversation-recovery-browser")
+        assertAccessibleControl(conversations, label: "Conversations")
+        let newChat = scrollToControl("New chat", in: app,
+          identifier: "conversation-recovery-new-chat")
+        assertAccessibleControl(newChat, label: "New chat")
+        try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
+        scrollToControl("Conversations", in: app, identifier: "conversation-recovery-browser").tap()
+        XCTAssertTrue(app.textFields["Search"].waitForExistence(timeout: 5))
+        app.buttons["New Chat"].tap()
+        XCTAssertTrue(app.staticTexts["Ask about your portfolio"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["History unavailable"].exists)
+        app.terminate()
+
+        let directRecovery = launch(scenario: "conversation-load-failure", dynamicType: size)
+        let directNewChat = scrollToControl("New chat", in: directRecovery,
+          identifier: "conversation-recovery-new-chat")
+        XCTAssertTrue(directNewChat.waitForExistence(timeout: 5))
+        directNewChat.tap()
+        XCTAssertTrue(directRecovery.staticTexts["Ask about your portfolio"].waitForExistence(timeout: 5))
+        XCTAssertFalse(directRecovery.staticTexts["History unavailable"].exists)
+        directRecovery.terminate()
+      }
+    }
+  }
+
+  func testHistoryStoreRetryAtAX5PortraitAndLandscape() throws {
+    for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+      XCUIDevice.shared.orientation = orientation
+      let app = launch(scenario: "history-store-unavailable", dynamicType: "ax5")
       XCTAssertTrue(app.staticTexts["History unavailable"].waitForExistence(timeout: 5))
+      XCTAssertTrue(app.staticTexts[
+        "CREG couldn’t open your conversation history. Tap Retry to try again."].exists)
+      let newChat = app.buttons["conversation-recovery-new-chat"]
+      XCTAssertFalse(newChat.isEnabled)
+      assertAccessibleControl(scrollToControl("Retry history", in: app, identifier: "history-retry"),
+        label: "Retry history")
+      try auditRecovery(in: app)
+      scrollToControl("Dismiss error", in: app).tap()
+      XCTAssertTrue(app.staticTexts["conversation-recovery-idle"].waitForExistence(timeout: 5))
       XCTAssertFalse(app.descendants(matching: .any)["conversation-loading"].exists)
-      let conversations = scrollToControl("Conversations", in: app,
-        identifier: "conversation-recovery-browser")
-      assertAccessibleControl(conversations, label: "Conversations")
-      let newChat = scrollToControl("New chat", in: app,
-        identifier: "conversation-recovery-new-chat")
-      assertAccessibleControl(newChat, label: "New chat")
-      try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
-      scrollToControl("Conversations", in: app, identifier: "conversation-recovery-browser").tap()
-      XCTAssertTrue(app.textFields["Search"].waitForExistence(timeout: 5))
-      app.buttons["New Chat"].tap()
-      XCTAssertTrue(app.staticTexts["Ask about your portfolio"].waitForExistence(timeout: 5))
+      XCTAssertFalse(newChat.isEnabled)
+      if orientation == .landscapeLeft {
+        scrollToControl("Conversations", in: app, identifier: "conversation-recovery-browser").tap()
+        XCTAssertTrue(app.textFields["Search"].waitForExistence(timeout: 5))
+        assertAccessibleControl(
+          scrollToControl("Retry history", in: app, identifier: "browser-history-retry"),
+          label: "Retry history")
+        try auditRecovery(in: app)
+      }
+      scrollToControl("Retry history", in: app,
+        identifier: orientation == .landscapeLeft ? "browser-history-retry" : "history-retry").tap()
+      XCTAssertTrue(app.staticTexts["Ask about your portfolio"].waitForExistence(timeout: 5), app.debugDescription)
       XCTAssertFalse(app.staticTexts["History unavailable"].exists)
       app.terminate()
+    }
+  }
 
-      let directRecovery = launch(scenario: "conversation-load-failure", dynamicType: size)
-      let directNewChat = scrollToControl("New chat", in: directRecovery,
-        identifier: "conversation-recovery-new-chat")
-      XCTAssertTrue(directNewChat.waitForExistence(timeout: 5))
-      directNewChat.tap()
-      XCTAssertTrue(directRecovery.staticTexts["Ask about your portfolio"].waitForExistence(timeout: 5))
-      XCTAssertFalse(directRecovery.staticTexts["History unavailable"].exists)
-      directRecovery.terminate()
+  func testRetryInspectionOffersDismissOnlyAtAX5PortraitAndLandscape() throws {
+    for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+      XCUIDevice.shared.orientation = orientation
+      let app = launch(scenario: "retry-inspection", dynamicType: "ax5")
+      XCTAssertTrue(app.staticTexts["Checking retry…"].waitForExistence(timeout: 5))
+      XCTAssertFalse(app.buttons["Ask Again"].exists)
+      XCTAssertFalse(app.buttons["Cancel queued retry"].exists)
+      let dismiss = scrollToControl("Dismiss interrupted question", in: app)
+      assertAccessibleControl(dismiss, label: "Dismiss interrupted question")
+      try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
+      dismiss.tap()
+      XCTAssertTrue(app.staticTexts["Checking retry…"].waitForNonExistence(timeout: 5))
+      XCTAssertFalse(app.staticTexts["Retry unavailable"].exists)
+      app.terminate()
+    }
+  }
+
+  private func auditRecovery(in app: XCUIApplication) throws {
+    try app.performAccessibilityAudit(for: [.hitRegion, .textClipped]) { issue in
+      print("Recovery accessibility issue: \(issue.detailedDescription)\n\(issue.element?.debugDescription ?? "No owning element")")
+      return false
     }
   }
 
@@ -545,24 +604,68 @@ final class AccessibilityUITests: XCTestCase {
     let control = identifier.map { app.buttons[$0] } ?? app.descendants(matching: .any)
       .matching(NSPredicate(format: "label BEGINSWITH %@", label)).firstMatch
     let moreScroll = app.scrollViews["answer-more-scroll"]
-    let scroll = moreScroll.exists ? moreScroll : app.scrollViews.firstMatch
+    let recoveryScroll = app.scrollViews["conversation-recovery-scroll"]
+    let browserHistoryScroll = app.scrollViews["browser-history-scroll"]
+    let scroll: XCUIElement
+    if identifier == "browser-history-retry", browserHistoryScroll.exists {
+      scroll = browserHistoryScroll
+    } else if recoveryScroll.exists {
+      scroll = recoveryScroll
+    } else {
+      scroll = moreScroll.exists ? moreScroll
+        : (app.scrollViews.allElementsBoundByIndex.first { $0.isHittable } ?? app.scrollViews.firstMatch)
+    }
     for _ in 0..<6 {
-      if control.exists && control.isHittable { return control }
+      if control.exists && control.isHittable {
+        if settleVisibleControl(control, scroll: scroll, app: app) { return control }
+        continue
+      }
       swipeScrollableContent(scroll, in: app, up: true)
     }
     for _ in 0..<6 {
-      if control.exists && control.isHittable { return control }
+      if control.exists && control.isHittable {
+        if settleVisibleControl(control, scroll: scroll, app: app) { return control }
+        continue
+      }
       swipeScrollableContent(scroll, in: app, up: false)
     }
     XCTAssertTrue(control.waitForExistence(timeout: 5), "Missing control named \(label)")
     return control
   }
 
+  private func settleVisibleControl(
+    _ control: XCUIElement, scroll: XCUIElement, app: XCUIApplication
+  ) -> Bool {
+    if scroll.identifier == "ui-test-support-bundle-fallback" { return true }
+    // XCTest calls partially clipped buttons hittable, but their synthesized
+    // center tap can land in the system's top or bottom gesture region.
+    let viewport = app.frame.insetBy(dx: 0, dy: 64)
+    let frame = control.frame
+    let delta: CGFloat
+    if ["conversation-recovery-scroll", "browser-history-scroll"].contains(scroll.identifier) {
+      delta = frame.midY < viewport.minY ? max(24, viewport.minY - frame.midY + 12)
+        : (frame.midY > viewport.maxY ? min(-24, viewport.maxY - frame.midY - 12) : 0)
+    } else {
+      delta = frame.minY < viewport.minY ? viewport.minY - frame.minY
+        : (frame.maxY > viewport.maxY ? viewport.maxY - frame.maxY : 0)
+    }
+    guard delta != 0, frame.height <= viewport.height else { return true }
+    let visibleScroll = scroll.frame.intersection(app.frame)
+    guard !visibleScroll.isEmpty else { return true }
+    let start = app.coordinate(withNormalizedOffset: .zero)
+      .withOffset(CGVector(dx: visibleScroll.midX, dy: visibleScroll.midY))
+    start.press(forDuration: 0.1,
+      thenDragTo: start.withOffset(CGVector(dx: 0, dy: delta)),
+      withVelocity: .slow, thenHoldForDuration: 0.2)
+    return false
+  }
+
   private func swipeScrollableContent(
     _ scroll: XCUIElement, in app: XCUIApplication, up: Bool
   ) {
     let frame = scroll.frame
-    if scroll.identifier == "answer-more-scroll" {
+    if ["answer-more-scroll", "conversation-recovery-scroll", "browser-history-scroll",
+      "ui-test-support-bundle-fallback"].contains(scroll.identifier) {
       // SwiftUI can report a zero-sized ancestor for a visible popover.
       // XCTest's automatic swipe then rejects its visible scroll view.
       let visible = frame.intersection(app.frame)
