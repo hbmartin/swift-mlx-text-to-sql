@@ -63,7 +63,8 @@ struct LifecycleOwnershipTests {
     return (state, queued, interruption)
   }
 
-  @Test func newlyAcceptedQuestionUsesDeterministicAgeOrdering() async {
+  @Test(arguments: [1.0, 5.0, 6.0])
+  func newlyAcceptedQuestionPreservesAcceptanceOrder(time: Double) async {
     var state = Scheduler.appState()
     state.activeTurn = AppFeature.ActiveTurn(questionID: UUID(12082), conversationID: b,
       question: "Active elsewhere", startedAt: Date(timeIntervalSince1970: 4))
@@ -71,14 +72,25 @@ struct LifecycleOwnershipTests {
     let later = question(12081, a, 6)
     state.queue = [equal, later]
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
-      $0.date = .constant(Date(timeIntervalSince1970: 5))
+      $0.date = .constant(Date(timeIntervalSince1970: time))
       $0.uuid = .incrementing; $0.continuousClock = TestClock(); $0.historyClient = .noop()
     }
     store.exhaustivity = .off
     await store.send(.chat(.delegate(.submitQuestion(QuestionSubmission(question: "New question")))))
     await store.finish()
-    #expect(store.state.queue.map(\.question) == ["New question", equal.question, later.question])
-    #expect(store.state.queue.dropFirst() == [equal, later])
+    #expect(store.state.queue.map(\.question) == [equal.question, later.question, "New question"])
+    #expect(Array(store.state.queue.prefix(2)) == [equal, later])
+    let accepted = store.state.queue.last!
+    store.dependencies.date = .constant(Date(timeIntervalSince1970: time - 1))
+    await store.send(.chat(.delegate(.submitQuestion(QuestionSubmission(question: "After rollback")))))
+    store.dependencies.date = .constant(Date(timeIntervalSince1970: time - 1))
+    await store.send(.chat(.delegate(.submitQuestion(QuestionSubmission(question: "Same timestamp")))))
+    await store.finish()
+    #expect(store.state.queue.map(\.question) == [
+      equal.question, later.question, "New question", "After rollback", "Same timestamp",
+    ])
+    #expect(store.state.queue[2] == accepted)
+    #expect(store.state.chat?.queued.map(\.id) == store.state.queue.map(\.id))
   }
 
   @Test func undoRestoresQueueIdentityOrderingAndRetryEligibility() async {
@@ -154,7 +166,6 @@ struct LifecycleOwnershipTests {
     #expect(store.state.conversationDeletions[a]?.phase == .committing)
     await deletion.finish()
     await store.receive(\.conversationDeletionFinished)
-    await store.receive(\.operationFailed)
     await store.finish()
     #expect(store.state.isConversationLive(a))
     #expect(store.state.queue == [queued])

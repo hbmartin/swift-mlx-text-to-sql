@@ -119,6 +119,8 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testSharingSurvivesConcurrentCompletionInLongTranscript",
     "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testConversationLoadFailureOffersRecovery",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
     "testSupportWarningAtAX5PortraitAndLandscape",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
@@ -459,7 +461,11 @@ def reviewed_run_context_failures(
             "strategy",
             "timeout-minutes",
         )
-        if field in job and not (field == "timeout-minutes" and job[field] == expected_job_timeout)
+        if field in job and not (
+            field == "timeout-minutes"
+            and expected_job_timeout is not None
+            and job[field] == expected_job_timeout
+        )
     ]
     if expected_job_timeout is not None and "timeout-minutes" not in job:
         failures.append(f"{prefix} {job_name} job timeout-minutes must be {expected_job_timeout}")

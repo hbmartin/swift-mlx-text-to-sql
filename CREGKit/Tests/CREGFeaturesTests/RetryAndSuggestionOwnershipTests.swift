@@ -1112,7 +1112,7 @@ private actor HeldOperation {
     #expect(runs.recorded == ["Next question"])
     #expect(store.state.queue.isEmpty)
     #expect(store.state.automaticRetryCandidates.isEmpty)
-    #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
+    #expect(store.state.chat?.interruptedTurn == nil)
     #expect(store.state.presentedFailure == nil)
   }
 

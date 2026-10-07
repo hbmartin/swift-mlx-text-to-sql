@@ -250,6 +250,8 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
   public var conversationID: UUID
   public var submission: QuestionSubmission
   public var retryJournalID: UUID?
+  /// The execution identity captured by the durable claim, retained until release settles.
+  public var retryExecutionID: UUID? = nil
   public var existingUserMessage: ChatMessage?
   public var automaticRetry: Bool = false
   /// Set only by a durable history inspection confirming a non-trailing
@@ -289,6 +291,7 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     conversationID: UUID,
     submission: QuestionSubmission,
     retryJournalID: UUID? = nil,
+    retryExecutionID: UUID? = nil,
     existingUserMessage: ChatMessage? = nil,
     automaticRetry: Bool = false,
     suggestionGeneration: Int? = nil,
@@ -298,6 +301,7 @@ public struct QueuedQuestion: Identifiable, Equatable, Sendable {
     self.conversationID = conversationID
     self.submission = submission
     self.retryJournalID = retryJournalID
+    self.retryExecutionID = retryExecutionID
     self.existingUserMessage = existingUserMessage
     self.automaticRetry = automaticRetry
     self.suggestionGeneration = suggestionGeneration

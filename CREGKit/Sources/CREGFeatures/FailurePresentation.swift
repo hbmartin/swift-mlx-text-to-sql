@@ -26,6 +26,12 @@ public struct FailurePresentation: Error, Sendable, Equatable {
     guard developerMode else { return nil }
     return "[\(code)] \(diagnostic)"
   }
+
+  func combining(_ secondary: FailurePresentation) -> FailurePresentation {
+    FailurePresentation(
+      code: code, title: title, message: message + "\n\n" + secondary.message,
+      diagnostic: "[\(code)] \(diagnostic)\n\n[\(secondary.code)] \(secondary.diagnostic)")
+  }
 }
 
 extension FailurePresentation {

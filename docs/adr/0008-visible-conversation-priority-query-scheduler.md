@@ -19,6 +19,10 @@ visible Conversation; if it has none, it dispatches the globally oldest remainin
 Queued Question. A question receives its Conversation's latest completed history
 when dispatch begins.
 
+Fresh submissions append in acceptance order, independent of wall-clock changes
+or UUID tie breaking. Returning retries retain insertion by original question time;
+inserting a retry never changes the relative order of already accepted submissions.
+
 The queue exists only for the current process. A known interruption recorded
 by that process may retry once when the scene is active. The retry entry is
 built from the interrupted turn's own data — question, submission source, and

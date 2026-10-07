@@ -80,6 +80,20 @@ private func operationID(
 ) -> UUID {
   state.retryJournals[journalID]?.operations.first { matches($0.value) }?.key ?? journalID
 }
+
+private func claimedRequest(_ queued: QueuedQuestion, state: AppFeature.State) -> QueuedQuestion {
+  var request = queued
+  let capturedID = queued.retryJournalID.flatMap { journalID in
+    state.retryJournals[journalID]?.operations.values.compactMap { operation -> UUID? in
+      switch operation {
+      case .claim(let owned), .release(let owned), .cancellation(let owned): owned.retryExecutionID
+      default: nil
+      }
+    }.first
+  }
+  request.retryExecutionID = capturedID ?? queued.retryExecutionID ?? queued.existingUserMessage?.id
+  return request
+}
 func claimCompletion(
   _ queued: QueuedQuestion, _ count: Int?, _ failure: FailurePresentation? = nil,
   state: AppFeature.State
@@ -88,7 +102,7 @@ func claimCompletion(
     failure.map(AppFeature.RetryClaimOutcome.failed) ?? count.map(
       AppFeature.RetryClaimOutcome.claimed) ?? .refused
   return .queuedRetryClaimed(
-    queued, outcome,
+    claimedRequest(queued, state: state), outcome,
     operationID: operationID(state, queued.retryJournalID!) {
       if case .claim = $0 { true } else { false }
     })
@@ -97,7 +111,7 @@ func releaseCompletion(
   _ queued: QueuedQuestion, _ failure: FailurePresentation?, state: AppFeature.State
 ) -> AppFeature.Action {
   .retryClaimReleased(
-    queued,
+    claimedRequest(queued, state: state),
     operationID: operationID(state, queued.retryJournalID!) {
       if case .release = $0 { true } else { false }
     }, failure: failure)
@@ -106,7 +120,7 @@ func cancellationCompletion(
   _ queued: QueuedQuestion, _ failure: FailurePresentation?, state: AppFeature.State
 ) -> AppFeature.Action {
   .retryCancellationSettled(
-    queued,
+    claimedRequest(queued, state: state),
     operationID: operationID(state, queued.retryJournalID!) {
       switch $0 {
       case .release, .cancellation: true

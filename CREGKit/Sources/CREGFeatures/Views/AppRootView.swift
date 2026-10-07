@@ -187,8 +187,11 @@ struct AppRootView: View {
               store.send(.retryCompatibilityPreparation)
             }))
       } else {
-        ProgressView()
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ConversationUnavailableView(
+          failure: store.presentedFailure, developerMode: store.developerMode,
+          dismissFailure: { store.send(.dismissFailure) },
+          openBrowser: { store.send(.browserButtonTapped) },
+          newChat: { store.send(.newChatTapped) })
       }
     }
     .background {

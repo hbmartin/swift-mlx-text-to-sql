@@ -5,6 +5,44 @@ import ComposableArchitecture
 import SwiftUI
 
 #if DEBUG
+private struct ConversationRecoveryPreviewFrame: View {
+  let failure: FailurePresentation?
+  var size: DynamicTypeSize = .large
+
+  static let loadFailure = FailurePresentation.history(
+    operation: .load, error: NSError(domain: "Preview.History", code: 1))
+  static let combinedFailure = FailurePresentation.history(
+    operation: .delete, error: NSError(domain: "Preview.Deletion", code: 2))
+    .combining(.history(operation: .messageSave, error: NSError(domain: "Preview.Write", code: 3)))
+
+  var body: some View {
+    ConversationUnavailableView(failure: failure, developerMode: false,
+      dismissFailure: {}, openBrowser: {}, newChat: {})
+      .environment(\.dynamicTypeSize, size)
+      .frame(width: 370, height: 700)
+      .background(CREGBrand.chatSurface)
+  }
+}
+
+#Preview("Conversation Recovery — Loading — Standard", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: nil)
+}
+#Preview("Conversation Recovery — Loading — AX5", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: nil, size: .accessibility5)
+}
+#Preview("Conversation Recovery — Load Failure — Standard", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.loadFailure)
+}
+#Preview("Conversation Recovery — Load Failure — AX5", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.loadFailure, size: .accessibility5)
+}
+#Preview("Conversation Recovery — Combined Errors — Standard", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.combinedFailure)
+}
+#Preview("Conversation Recovery — Combined Errors — AX5", traits: .sizeThatFitsLayout) {
+  ConversationRecoveryPreviewFrame(failure: ConversationRecoveryPreviewFrame.combinedFailure, size: .accessibility5)
+}
+
 private struct AnswerActionsPreviewFrame: View {
   let width: CGFloat
   let size: DynamicTypeSize

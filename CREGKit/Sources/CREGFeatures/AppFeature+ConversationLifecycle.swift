@@ -123,7 +123,7 @@ extension AppFeature {
       // for manual Ask Again after Undo. It cannot consume automatic retry.
       state.seedRetry(active.questionID, conversationID: summary.id)
       state.retryJournals[active.questionID]?.intent = .cancelled(manualRequested: false)
-      effects.append(interruptActiveTurn(state: &state, ambiguous: false))
+      effects.append(interruptActiveTurn(state: &state, ambiguous: false, reason: .conversationDeletion))
     }
     if let preparation = state.followUpPreparation, preparation.conversationID == summary.id {
       state.pendingSuggestionContexts[summary.id] = PendingScopeDiagnosis(
@@ -148,6 +148,8 @@ extension AppFeature {
       }
     }
     syncSchedulerProjection(into: &state)
+    recordDeletionEvent(state.conversationDeletions[summary.id]!, code: "conversation_delete_pending",
+      summary: "A conversation entered the undo window before deletion.")
     effects.append(
       .run { send in
         try await clock.sleep(for: .seconds(5))
@@ -161,10 +163,17 @@ extension AppFeature {
       deletion.phase == .undoWindow || deletion.phase == .awaitingSettlement
     else { return .none }
     if state.hasOutstandingWrites(in: conversationID) {
+      if deletion.phase != .awaitingSettlement {
+        recordDeletionEvent(deletion, code: "conversation_delete_waiting_for_persistence",
+          summary: "Conversation deletion is waiting for outstanding history writes.")
+      }
       state.conversationDeletions[conversationID]?.phase = .awaitingSettlement
       return .none
     }
     state.conversationDeletions[conversationID]?.phase = .committing
+    recordDeletionEvent(deletion, code: "conversation_delete_commit_started",
+      summary: "Conversation deletion is committing.",
+      context: ["deferred": String(deletion.phase == .awaitingSettlement)])
     return commitDeletionEffect(conversationID: conversationID, token: deletion.token)
   }
 
@@ -190,15 +199,47 @@ extension AppFeature {
       return .none
     }
     guard state.isConversationLive(conversationID) else {
-      diagnostics.record(DiagnosticEvent(
-        level: .error, category: .history,
-        code: "conversation_write_failed_after_deletion",
-        summary: "An obsolete conversation write failed after deletion.",
-        details: failure.diagnostic,
-        context: ["conversation_id": conversationID.uuidString, "failure_code": failure.code]))
+      recordDeletedConversationWriteFailure(conversationID, failure: failure)
       return .none
     }
     return .send(.operationFailed(failure))
+  }
+
+  func recordDeletedConversationWriteFailure(_ conversationID: UUID, failure: FailurePresentation) {
+    diagnostics.record(DiagnosticEvent(
+      level: .error, category: .history, code: "conversation_write_failed_after_deletion",
+      summary: "An obsolete conversation write failed after deletion.",
+      details: failure.diagnostic,
+      context: ["conversation_id": conversationID.uuidString, "failure_code": failure.code]))
+  }
+
+  func recordDeletionEvent(
+    _ deletion: ConversationDeletion, code: String, summary: String,
+    context: [String: String] = [:]
+  ) {
+    diagnostics.info(category: .history, code: code, summary: summary,
+      context: context.merging([
+        "conversation_id": deletion.summary.id.uuidString,
+        "deletion_token": deletion.token.uuidString,
+      ]) { _, identity in identity })
+  }
+
+  func presentFailure(
+    state: inout State, primary: FailurePresentation, secondary: FailurePresentation? = nil
+  ) {
+    state.presentedFailure = secondary.map { primary.combining($0) } ?? primary
+    state.isBuildingSupportBundle = false
+    for failure in [primary, secondary].compactMap({ $0 }) {
+      diagnostics.record(DiagnosticEvent(level: .error, category: .history,
+        code: failure.code, summary: failure.title, details: failure.diagnostic))
+    }
+  }
+
+  func clearConversationOpeningFailure(state: inout State) {
+    if [HistoryFailureOperation.load.code, HistoryFailureOperation.conversationCreate.code]
+      .contains(state.presentedFailure?.code ?? "") {
+      state.presentedFailure = nil
+    }
   }
 
   func rollBackOptimisticUserTurn(
@@ -341,6 +382,17 @@ extension AppFeature {
         || state.userPromotedRetryJournalIDs.contains(releasing)
     {
       queuedRetries.insert(releasing)
+    }
+    for (journalID, journal) in state.retryJournals
+    where journal.conversationID == chat.conversationID
+      && !state.dismissedRetryJournalIDs.contains(journalID)
+      && !state.cancelledRetryJournalIDs.contains(journalID) {
+      if journal.operations.values.contains(where: {
+        if case .inspection(_, let generation) = $0 { return generation == journal.requestGeneration }
+        return false
+      }) {
+        queuedRetries.insert(journalID)
+      }
     }
     chat.queuedRetryJournalIDs = queuedRetries
     if let active = state.activeTurn,

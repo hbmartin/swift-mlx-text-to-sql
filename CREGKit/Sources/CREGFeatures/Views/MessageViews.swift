@@ -392,6 +392,7 @@ struct AnswerActionsRow: View {
     }
     .buttonStyle(.bordered)
     .accessibilityLabel("More answer actions")
+    .accessibilityIdentifier("answer-more-\(messageID.uuidString)")
     .onGeometryChange(for: CGRect.self) {
       $0.frame(in: .named(messageID))
     } action: { frame in

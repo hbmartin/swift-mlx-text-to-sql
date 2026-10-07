@@ -28,6 +28,42 @@ struct UnsupportedDeviceView: View {
   }
 }
 
+struct ConversationUnavailableView: View {
+  let failure: FailurePresentation?
+  let developerMode: Bool
+  let dismissFailure: () -> Void
+  let openBrowser: () -> Void
+  let newChat: () -> Void
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 16) {
+        if let failure {
+          FailureBanner(failure: failure, developerMode: developerMode, dismiss: dismissFailure)
+            .accessibilityIdentifier("conversation-recovery-failure")
+        } else {
+          ProgressView("Opening conversation…")
+            .accessibilityIdentifier("conversation-loading")
+        }
+        Button(action: openBrowser) {
+          Label("Conversations", systemImage: "sidebar.left")
+            .cregTextButtonLabelTarget()
+        }
+        .accessibilityIdentifier("conversation-recovery-browser")
+        Button(action: newChat) {
+          Label("New chat", systemImage: "square.and.pencil")
+            .cregTextButtonLabelTarget()
+        }
+        .accessibilityIdentifier("conversation-recovery-new-chat")
+      }
+      .buttonStyle(.bordered)
+      .padding(24)
+      .frame(maxWidth: .infinity)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
 struct FailureBanner: View {
   let failure: FailurePresentation
   let developerMode: Bool
