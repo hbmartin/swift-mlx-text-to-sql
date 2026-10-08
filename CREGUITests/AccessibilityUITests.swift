@@ -58,6 +58,7 @@ final class AccessibilityUITests: XCTestCase {
       }
       processing.terminate()
       let error = launch(scenario: "error", dynamicType: size)
+      error.buttons["conversation-notices"].tap()
       assertAccessibleControl("Dismiss error", in: error)
       error.terminate()
       let recovery = launch(scenario: "recovery", dynamicType: size)
@@ -182,7 +183,7 @@ final class AccessibilityUITests: XCTestCase {
       let app = launch(scenario: "history-store-unavailable", dynamicType: "ax5")
       XCTAssertTrue(app.staticTexts["History unavailable"].waitForExistence(timeout: 5))
       XCTAssertTrue(app.staticTexts[
-        "CREG couldn’t open your conversation history. Tap Retry to try again."].exists)
+        "CREG couldn’t open your conversation history. Tap Retry history to try again."].exists)
       let newChat = app.buttons["conversation-recovery-new-chat"]
       XCTAssertFalse(newChat.isEnabled)
       assertAccessibleControl(scrollToControl("Retry history", in: app, identifier: "history-retry"),
@@ -212,6 +213,8 @@ final class AccessibilityUITests: XCTestCase {
     for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
       XCUIDevice.shared.orientation = orientation
       let app = launch(scenario: "retry-inspection", dynamicType: "ax5")
+      XCTAssertTrue(app.buttons["conversation-notices"].waitForExistence(timeout: 5))
+      app.buttons["conversation-notices"].tap()
       XCTAssertTrue(app.staticTexts["Checking retry…"].waitForExistence(timeout: 5))
       XCTAssertFalse(app.buttons["Ask Again"].exists)
       XCTAssertFalse(app.buttons["Cancel queued retry"].exists)
@@ -222,6 +225,85 @@ final class AccessibilityUITests: XCTestCase {
       XCTAssertTrue(app.staticTexts["Checking retry…"].waitForNonExistence(timeout: 5))
       XCTAssertFalse(app.staticTexts["Retry unavailable"].exists)
       app.terminate()
+    }
+  }
+
+  func testConversationNoticesScrollAndRetainDismissalState() throws {
+    for size in ["large", "ax5"] {
+      for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+        XCUIDevice.shared.orientation = orientation
+        let app = launch(scenario: "conversation-notices", dynamicType: size)
+        let notice = app.buttons["conversation-notices"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        assertAccessibleControl(notice, label: "Conversation notices")
+        XCTAssertFalse(app.buttons["Dismiss error"].exists)
+        let originalLabel = notice.label
+        notice.tap()
+        let scroll = app.scrollViews["conversation-notices-scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        let firstError = scrollToControl("Dismiss error", in: app)
+        assertAccessibleControl(firstError, label: "Dismiss error")
+        firstError.tap()
+        let share = scrollToControl("Share JSONL export", in: app, identifier: "conversation-export-share")
+        assertAccessibleControl(share, label: "Share JSONL export")
+        try app.performAccessibilityAudit(for: [.hitRegion, .textClipped])
+        let done = app.buttons["conversation-notices-done"]
+        assertAccessibleControl(done, label: "Done")
+        done.tap()
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        XCTAssertNotEqual(notice.label, originalLabel)
+        notice.tap()
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        assertAccessibleControl(scrollToControl("Share JSONL export", in: app), label: "Share JSONL export")
+        app.terminate()
+      }
+    }
+  }
+
+  func testRetainedExportDoesNotAutomaticallyPresentSharing() {
+    let app = launch(scenario: "retained-export", dynamicType: "ax5")
+    let notice = app.buttons["conversation-notices"]
+    XCTAssertTrue(notice.waitForExistence(timeout: 5))
+    XCTAssertTrue(notice.label.contains("Export ready"))
+    notice.tap()
+    assertAccessibleControl(scrollToControl("Share JSONL export", in: app), label: "Share JSONL export")
+    app.buttons["conversation-notices-done"].tap()
+    XCTAssertTrue(notice.waitForExistence(timeout: 5))
+    notice.tap()
+    scrollToControl("Share JSONL export", in: app).tap()
+    XCTAssertTrue(app.staticTexts["Conversation events exported"].waitForExistence(timeout: 5))
+    scrollToControl("Done", in: app, identifier: "conversation-export-done").tap()
+    XCTAssertTrue(notice.waitForNonExistence(timeout: 5))
+    app.terminate()
+  }
+
+  func testBrowserRefreshPreservesSearchAndKeyboardFocus() {
+    for size in ["large", "ax5"] {
+      for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+        XCUIDevice.shared.orientation = orientation
+        let app = launch(scenario: "browser-refresh", dynamicType: size)
+        let search = app.textFields["Search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        if size == "large", orientation == .portrait {
+          let origin = app.coordinate(withNormalizedOffset: .zero)
+          // The dimmed foreground chat supports swiping the drawer closed.
+          let start = origin.withOffset(CGVector(dx: app.frame.width - 20, dy: app.frame.midY))
+          start.press(forDuration: 0.05,
+            thenDragTo: origin.withOffset(CGVector(dx: 20, dy: app.frame.midY)),
+            withVelocity: .fast, thenHoldForDuration: 0)
+          let sidebar = app.buttons["sidebar.leading"]
+          XCTAssertLessThan(sidebar.frame.minX, 100, "The chat must return to its closed-drawer position: \(app.debugDescription)")
+          sidebar.tap()
+          XCTAssertTrue(search.waitForExistence(timeout: 5))
+        }
+        search.tap()
+        search.typeText("Saved")
+        scrollToControl("Retry history", in: app, identifier: "browser-history-retry").tap()
+        XCTAssertTrue(app.buttons["browser-history-retry"].waitForNonExistence(timeout: 5))
+        XCTAssertEqual(search.value as? String, "Saved")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        app.terminate()
+      }
     }
   }
 
@@ -601,14 +683,21 @@ final class AccessibilityUITests: XCTestCase {
   private func scrollToControl(
     _ label: String, in app: XCUIApplication, identifier: String? = nil
   ) -> XCUIElement {
+    if ["Dismiss error", "Dismiss interrupted question", "Dismiss correction", "Ask Again", "Share JSONL export"].contains(label),
+      app.buttons["conversation-notices"].exists {
+      app.buttons["conversation-notices"].tap()
+    }
     let control = identifier.map { app.buttons[$0] } ?? app.descendants(matching: .any)
       .matching(NSPredicate(format: "label BEGINSWITH %@", label)).firstMatch
     let moreScroll = app.scrollViews["answer-more-scroll"]
     let recoveryScroll = app.scrollViews["conversation-recovery-scroll"]
+    let noticesScroll = app.scrollViews["conversation-notices-scroll"]
     let browserHistoryScroll = app.scrollViews["browser-history-scroll"]
     let scroll: XCUIElement
     if identifier == "browser-history-retry", browserHistoryScroll.exists {
       scroll = browserHistoryScroll
+    } else if noticesScroll.exists {
+      scroll = noticesScroll
     } else if recoveryScroll.exists {
       scroll = recoveryScroll
     } else {
@@ -616,21 +705,43 @@ final class AccessibilityUITests: XCTestCase {
         : (app.scrollViews.allElementsBoundByIndex.first { $0.isHittable } ?? app.scrollViews.firstMatch)
     }
     for _ in 0..<6 {
+      let before = scrollProgress(scroll)
       if control.exists && control.isHittable {
+        let frameBeforeGesture = control.frame
         if settleVisibleControl(control, scroll: scroll, app: app) { return control }
+        if control.frame == frameBeforeGesture {
+          XCTFail("Control \(label) did not move after a settling gesture and remains unreachable: \(control.debugDescription)")
+          return control
+        }
         continue
       }
       swipeScrollableContent(scroll, in: app, up: true)
+      if scrollProgress(scroll) == before { break }
     }
     for _ in 0..<6 {
+      let before = scrollProgress(scroll)
       if control.exists && control.isHittable {
+        let frameBeforeGesture = control.frame
         if settleVisibleControl(control, scroll: scroll, app: app) { return control }
+        if control.frame == frameBeforeGesture {
+          XCTFail("Control \(label) did not move after a settling gesture and remains unreachable: \(control.debugDescription)")
+          return control
+        }
         continue
       }
       swipeScrollableContent(scroll, in: app, up: false)
+      if scrollProgress(scroll) == before { break }
     }
-    XCTAssertTrue(control.waitForExistence(timeout: 5), "Missing control named \(label)")
+    let screenshot = XCTAttachment(screenshot: app.screenshot())
+    screenshot.lifetime = .keepAlways
+    add(screenshot)
+    XCTFail("Control \(label) remains unreachable after scrolling stopped making progress: \(control.debugDescription)")
     return control
+  }
+
+  private func scrollProgress(_ scroll: XCUIElement) -> String {
+    let anchor = scroll.descendants(matching: .staticText).firstMatch
+    return anchor.exists ? "\(anchor.label):\(anchor.frame)" : scroll.debugDescription
   }
 
   private func settleVisibleControl(
@@ -639,10 +750,12 @@ final class AccessibilityUITests: XCTestCase {
     if scroll.identifier == "ui-test-support-bundle-fallback" { return true }
     // XCTest calls partially clipped buttons hittable, but their synthesized
     // center tap can land in the system's top or bottom gesture region.
-    let viewport = app.frame.insetBy(dx: 0, dy: 64)
+    let keyboardTop = unobscuredBottom(in: app)
+    let viewport = CGRect(x: app.frame.minX, y: app.frame.minY + 64,
+      width: app.frame.width, height: max(0, min(app.frame.maxY - 24, keyboardTop) - app.frame.minY - 64))
     let frame = control.frame
     let delta: CGFloat
-    if ["conversation-recovery-scroll", "browser-history-scroll"].contains(scroll.identifier) {
+    if ["conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll"].contains(scroll.identifier) {
       delta = frame.midY < viewport.minY ? max(24, viewport.minY - frame.midY + 12)
         : (frame.midY > viewport.maxY ? min(-24, viewport.maxY - frame.midY - 12) : 0)
     } else {
@@ -650,7 +763,7 @@ final class AccessibilityUITests: XCTestCase {
         : (frame.maxY > viewport.maxY ? viewport.maxY - frame.maxY : 0)
     }
     guard delta != 0, frame.height <= viewport.height else { return true }
-    let visibleScroll = scroll.frame.intersection(app.frame)
+    let visibleScroll = visibleScrollFrame(scroll, in: app)
     guard !visibleScroll.isEmpty else { return true }
     let start = app.coordinate(withNormalizedOffset: .zero)
       .withOffset(CGVector(dx: visibleScroll.midX, dy: visibleScroll.midY))
@@ -664,11 +777,11 @@ final class AccessibilityUITests: XCTestCase {
     _ scroll: XCUIElement, in app: XCUIApplication, up: Bool
   ) {
     let frame = scroll.frame
-    if ["answer-more-scroll", "conversation-recovery-scroll", "browser-history-scroll",
+    if ["answer-more-scroll", "conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll", "conversation-export-scroll",
       "ui-test-support-bundle-fallback"].contains(scroll.identifier) {
       // SwiftUI can report a zero-sized ancestor for a visible popover.
       // XCTest's automatic swipe then rejects its visible scroll view.
-      let visible = frame.intersection(app.frame)
+      let visible = visibleScrollFrame(scroll, in: app)
       XCTAssertFalse(visible.isEmpty, "More scrolling content is offscreen: \(scroll.debugDescription)")
       guard !visible.isEmpty else { return }
       let origin = app.coordinate(withNormalizedOffset: .zero)
@@ -697,6 +810,19 @@ final class AccessibilityUITests: XCTestCase {
     let end = scroll.coordinate(withNormalizedOffset: .zero)
       .withOffset(CGVector(dx: frame.width * 0.7, dy: (up ? top : bottom) - frame.minY))
     start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+  }
+
+  private func visibleScrollFrame(_ scroll: XCUIElement, in app: XCUIApplication) -> CGRect {
+    let keyboardTop = unobscuredBottom(in: app)
+    let unobscured = CGRect(x: app.frame.minX, y: app.frame.minY,
+      width: app.frame.width, height: max(0, keyboardTop - app.frame.minY))
+    return scroll.frame.intersection(unobscured)
+  }
+
+  private func unobscuredBottom(in app: XCUIApplication) -> CGFloat {
+    // XCTest's keyboard frame excludes the prediction row in landscape.
+    // Keep gestures above that row rather than dragging its candidates.
+    app.keyboards.firstMatch.exists ? app.keyboards.firstMatch.frame.minY - 44 : app.frame.maxY
   }
 
   private func tapMoreClearOfChatHeader(in app: XCUIApplication, identifier: String? = nil) {

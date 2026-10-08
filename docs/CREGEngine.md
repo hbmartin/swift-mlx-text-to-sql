@@ -22,7 +22,9 @@ within one root store's lifetime. Both allocate from the same counter when
 ownership begins and reuse the number until settlement. These numbers are
 process-local, nonpersistent, and unrelated to database identifiers; they can
 restart in a later session. Conversation, journal, and deletion UUIDs continue
-to be redacted in diagnostics and support bundles.
+to be redacted in sanitized diagnostics, including the diagnostic text in support
+bundles. Shared support bundles also contain raw history identifiers, conversation
+content, and a full `history-snapshot.sqlite` database snapshot.
 
 The articles below document the architecture, experimental evidence, release
 verification, and decisions that define the engine's behavior.

@@ -15,12 +15,14 @@ struct SettingsView: View {
   var body: some View {
     NavigationStack {
       Form {
-        if let failure = store.presentedFailure {
+        if !store.visibleFailures.isEmpty {
           Section {
-            FailureBanner(
-              failure: failure,
-              developerMode: store.developerMode,
-              dismiss: { store.send(.dismissFailure) })
+            OwnedFailureBanners(failures: store.visibleFailures, developerMode: store.developerMode,
+              dismiss: { store.send(.dismissOwnedFailure($0)) })
+            if store.visibleFailures.contains(where: { $0.failure.recovery == .retryHistory }) {
+              RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
+                retry: { store.send(.retryHistoryTapped) }, isRetry: store.historyLoadIsRetry)
+            }
           }
         }
 

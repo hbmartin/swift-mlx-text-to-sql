@@ -302,7 +302,12 @@ public struct AppFeature: Sendable {
     /// Session-only Queued Questions across all Conversations, oldest first.
     public var queue: [QueuedQuestion] = []
     public var answerReadyBanner: AnswerReadyBanner?
-    public var isSettingsPresented = false
+    public var presentation: Presentation?
+    public var isSettingsPresented: Bool {
+      get { presentation == .settings }
+      set { if newValue { presentation = .settings } else if presentation == .settings { presentation = nil } }
+    }
+    public var conversationExports: [UUID: ConversationExport] = [:]
     @Shared(.appStorage(DeveloperModePreference.storageKey))
     public var developerMode = false
     /// Reader-controlled density for full-screen result tables. Inline table
@@ -335,12 +340,21 @@ public struct AppFeature: Sendable {
     public var isSceneActive = true
     public var failures: [OwnedFailure] = []
     public var historySummaryPhase: HistorySummaryPhase = .idle
-    public var historyStoreUnavailable = false
+    public var historyStoreAvailability: HistoryStoreAvailability = .unopened
+    public var historyStoreUnavailable: Bool {
+      get { historyStoreAvailability == .unavailable }
+      set { historyStoreAvailability = newValue ? .unavailable : .available }
+    }
+    public var historyLoadIsRetry = false
+    var summaryWrites: [UUID: UUID] = [:]
+    var conversationCreations: [UInt64: UUID] = [:]
+    var recordedOpeningFailureIDs: Set<UInt64> = []
     public var conversationOpening: ConversationOpening?
     public var conversationCreationInFlight: ConversationOpening?
     public var newChatRequestedDuringBootstrap = false
     var historyRequestSequence: UInt64 = 0
     var historySummaryBaseline: [UUID: ConversationSummary] = [:]
+    var historySummaryProtectedIDs: Set<UUID> = []
     var diagnosticOperationSequence: UInt64 = 0
     /// A rejected submission whose draft chat could not be created. The text
     /// is retained here so it is never silently lost.
@@ -503,14 +517,20 @@ public struct AppFeature: Sendable {
     case modelPrepared(ModelPreparationReport, attemptID: UUID? = nil)
     case modelPreparationFailed(ModelPreparationFailure, attemptID: UUID? = nil)
     case modelPreparationSuspended(UUID)
-    case bootstrapFinished([ConversationSummary], requestID: UInt64? = nil)
+    case bootstrapFinished([ConversationSummary], requestID: UInt64)
+    case historySummaryTimedOut(UInt64)
+    case summaryWriteSettled(UUID, FailurePresentation?)
+    case noticesTapped
+    case sheetDismissed
+    case shareConversationExport(UUID)
+    case conversationExportFinished(UUID, requestID: UUID, Result<URL, FailurePresentation>)
     case historyBootstrapFailed(UInt64, FailurePresentation, storeUnavailable: Bool)
     case retryHistoryTapped
     case conversationOpeningFailed(UInt64, FailurePresentation)
     case retryConversationOpeningTapped
     case dismissOwnedFailure(FailureOwner)
-    case conversationCreated(ConversationSummary, requestID: UInt64? = nil)
-    case conversationLoaded(ConversationSnapshot, requestID: UInt64? = nil)
+    case conversationCreated(ConversationSummary, requestID: UInt64)
+    case conversationLoaded(ConversationSnapshot, requestID: UInt64)
     /// A rejected submission's draft chat was created durably.
     case rejectedSubmissionSaved(
       ConversationSummary, draft: String, selectionID: UUID)
@@ -589,6 +609,7 @@ public struct AppFeature: Sendable {
   }
 
   enum CancelID {
+    case historySummaries
     case conversationLoad
     case pipeline
     case followUpPreparation
@@ -913,44 +934,46 @@ public struct AppFeature: Sendable {
         return .none
 
       case .bootstrapFinished(let summaries, let requestID):
-        if let requestID {
-          guard state.historySummaryPhase == .loading(requestID) else { return .none }
-          state.mergeHistorySummaries(summaries)
-        } else {
-          state.conversations = IdentifiedArray(uniqueElements: summaries)
-        }
+        guard state.historySummaryPhase == .loading(requestID) else { return .none }
+        state.mergeHistorySummaries(summaries)
         state.historySummaryPhase = .loaded
         state.historyStoreUnavailable = false
         state.clearSummaryFailures()
+        state.failures.removeAll { $0.failure.cause == .historyStoreUnavailable }
+        let cancelWatchdog = Effect<Action>.cancel(id: HistorySummaryTimeoutID(requestID: requestID))
         diagnostics.info(
           category: .history,
           code: "history_bootstrap_finished",
           summary: "Conversation summaries loaded.",
           context: ["conversation_count": String(summaries.count)])
-        if state.newChatRequestedDuringBootstrap { return beginConversationCreation(state: &state) }
-        guard state.chat == nil, state.conversationOpening == nil else { return .none }
-        guard let mostRecent = state.visibleConversations.first else {
-          return beginConversationCreation(state: &state)
+        if state.newChatRequestedDuringBootstrap {
+          return .merge(cancelWatchdog, beginConversationCreation(state: &state))
         }
-        return beginConversationLoad(state: &state, id: mostRecent.id)
+        guard state.chat == nil, state.conversationOpening == nil else { return cancelWatchdog }
+        guard let mostRecent = state.visibleConversations.first else {
+          return .merge(cancelWatchdog, beginConversationCreation(state: &state))
+        }
+        return .merge(cancelWatchdog, beginConversationLoad(state: &state, id: mostRecent.id))
 
       case .conversationCreated(let summary, let requestID):
+        state.conversationCreations.removeValue(forKey: requestID)
         // Creation is a durable write: even an obsolete completion belongs in
         // Recents, but only its current opening request may select the chat.
         if state.conversationCreationInFlight?.requestID == requestID {
           state.conversationCreationInFlight = nil
         }
-        if state.conversationDeletions[summary.id]?.phase != .committed {
+        if state.conversationDeletions[summary.id]?.phase != .committed,
+          state.conversations[id: summary.id] == nil {
           state.conversations[id: summary.id] = summary
         }
         state.conversations.sort { $0.lastActivityAt > $1.lastActivityAt }
-        if let requestID {
-          guard state.conversationOpening?.requestID == requestID,
-            state.conversationOpening?.kind == .create(summary.id) else { return .none }
-        } else if state.conversationOpening != nil { return .none }
+        guard state.conversationOpening?.requestID == requestID,
+          state.conversationOpening?.kind == .create(summary.id) else { return .none }
         guard state.isConversationLive(summary.id) else { return .none }
         state.clearOpeningFailures()
         state.conversationOpening = nil
+        state.closeConversationPresentation()
+        state.historyStoreAvailability = .available
         state.chat = ChatFeature.State(conversationID: summary.id)
         syncSchedulerProjection(into: &state)
         state.isBrowserRevealed = false
@@ -958,16 +981,16 @@ public struct AppFeature: Sendable {
         return startLaunchBenchmarkIfReady(state: &state)
 
       case .conversationLoaded(let snapshot, let requestID):
-        if let requestID {
-          guard state.conversationOpening?.requestID == requestID,
-            state.conversationOpening?.kind == .load(snapshot.summary.id) else { return .none }
-        } else if state.conversationOpening != nil { return .none }
+        guard state.conversationOpening?.requestID == requestID,
+          state.conversationOpening?.kind == .load(snapshot.summary.id) else { return .none }
         guard state.isConversationLive(snapshot.summary.id) else {
           state.conversationOpening = nil
           return .none
         }
         state.clearOpeningFailures()
         state.conversationOpening = nil
+        state.closeConversationPresentation()
+        state.historyStoreAvailability = .available
         for interruption in snapshot.interruptedTurns {
           if let journalID = interruption.journalID ?? interruption.executionID {
             state.seedRetry(
@@ -1037,8 +1060,16 @@ public struct AppFeature: Sendable {
         if snapshot.summary.isUnread {
           state.conversations[id: snapshot.summary.id]?.isUnread = false
           let id = snapshot.summary.id
-          effects.append(
-            .run { _ in try? await history.setUnread(id, false) })
+          let operationID = uuid()
+          state.summaryWrites[operationID] = id
+          effects.append(.run { send in
+            do {
+              try await history.setUnread(id, false)
+              await send(.summaryWriteSettled(operationID, nil))
+            } catch {
+              await send(.summaryWriteSettled(operationID, .history(operation: .messageSave, error: error)))
+            }
+          })
         }
         if state.answerReadyBanner?.conversationID == snapshot.summary.id {
           state.answerReadyBanner = nil
@@ -1106,7 +1137,10 @@ public struct AppFeature: Sendable {
         guard state.isConversationLive(id) else { return .none }
         guard state.chat?.conversationID != id else {
           state.isBrowserRevealed = false
-          return .none
+          state.newChatRequestedDuringBootstrap = false
+          state.conversationOpening = nil
+          state.clearOpeningFailures()
+          return .cancel(id: CancelID.conversationLoad)
         }
         diagnostics.info(
           category: .history,
@@ -1119,14 +1153,17 @@ public struct AppFeature: Sendable {
         if state.conversationCreationInFlight != nil {
           return beginConversationCreation(state: &state)
         }
-        if state.historySummaryPhase.isLoading {
+        if state.chat != nil, state.historyStoreAvailability == .unopened {
+          state.historyStoreAvailability = .available
+        }
+        if state.historyStoreAvailability == .unopened {
           state.newChatRequestedDuringBootstrap = true
           if case .load = state.conversationOpening?.kind {
             state.conversationOpening = nil
             state.clearOpeningFailures()
             return .cancel(id: CancelID.conversationLoad)
           }
-          return .none
+          return bootstrapHistory(state: &state)
         }
         return beginConversationCreation(state: &state)
 
@@ -1185,6 +1222,15 @@ public struct AppFeature: Sendable {
         state.pendingSuggestionContexts.removeValue(forKey: id)
         state.retryJournals = state.retryJournals.filter { $0.value.conversationID != id }
         state.searchHits.removeAll { $0.conversationID == id }
+        state.failures.removeAll {
+          switch $0.owner {
+          case .conversation(let ownerID), .retry(let ownerID, _, _): ownerID == id
+          default: false
+          }
+        }
+        if let export = state.conversationExports.removeValue(forKey: id), case .ready(let url) = export.phase {
+          return removeExportFile(url)
+        }
         return .none
 
       case .answerReadyBannerTapped:
@@ -1730,9 +1776,7 @@ public struct AppFeature: Sendable {
           return .none
         }
         state.pendingTurnPersistence?.phase = .drainingInference
-        if state.presentedFailure?.code == "turn_persistence_barrier_timed_out" {
-          state.presentedFailure = nil
-        }
+        state.failures.removeAll { $0.owner == .turnPersistence(questionID) }
         return .merge(
           .cancel(id: TurnPersistenceTimeoutID(questionID: questionID)),
           turnPersistenceDrainWatchdog(questionID: questionID))
@@ -1756,15 +1800,14 @@ public struct AppFeature: Sendable {
             summary:
               "Queue dispatch remains paused because a completed-turn history write stopped responding.",
             context: ["question_id": questionID.uuidString]))
-        if state.presentedFailure == nil {
-          state.presentedFailure = FailurePresentation(
+        state.storeFailure(FailurePresentation(
             code: "turn_persistence_barrier_timed_out",
             title: "Saving is taking longer than expected",
             message:
               "CREG is still saving this conversation. New questions will remain paused to keep your history in order. Restart CREG if saving does not recover.",
             diagnostic:
-              "The completed-turn history write exceeded the five-second persistence watchdog.")
-        }
+              "The completed-turn history write exceeded the five-second persistence watchdog."),
+          owner: .turnPersistence(questionID))
         return .none
 
       case .turnPersistenceDrainTimedOut(let questionID):
@@ -1782,15 +1825,14 @@ public struct AppFeature: Sendable {
           summary:
             "Queue dispatch remains paused because a cancelled model operation has not released the inference serializer.",
           context: ["question_id": questionID.uuidString]))
-        if state.presentedFailure == nil {
-          state.presentedFailure = FailurePresentation(
+        state.storeFailure(FailurePresentation(
             code: "turn_inference_drain_timed_out",
             title: "Finishing model work is taking longer than expected",
             message:
               "CREG is waiting for the previous model operation to finish. New questions remain paused so model work cannot overlap. Restart CREG if it does not recover.",
             diagnostic:
-              "The inference serializer remained occupied five seconds after the turn's history write settled.")
-        }
+              "The inference serializer remained occupied five seconds after the turn's history write settled."),
+          owner: .turnPersistence(questionID))
         return .none
 
       case .dispatchNextIfIdle:
@@ -2044,12 +2086,6 @@ public struct AppFeature: Sendable {
         return cancelQueuedRetry(
           state: &state, conversationID: conversationID, journalID: journalID)
 
-      case .chat(.delegate(.renamed(let title))):
-        guard let id = state.chat?.conversationID else { return .none }
-        state.conversations[id: id]?.title = title
-        state.conversations[id: id]?.isManuallyTitled = true
-        return .none
-
       case .chat(.resultPresentationChanged(let messageID, let preference)):
         guard
           state.activeTurn?.conversationID == state.chat?.conversationID,
@@ -2077,6 +2113,61 @@ public struct AppFeature: Sendable {
           return .none
         case nil: return .send(.operationFailed(failure))
         }
+
+      case .historySummaryTimedOut(let requestID):
+        guard state.historySummaryPhase == .loading(requestID) else { return .none }
+        state.historySummaryPhase = .failed(requestID)
+        state.historySummaryBaseline = [:]
+        state.historySummaryProtectedIDs = []
+        presentFailure(state: &state, primary: FailurePresentation(
+          code: "history_summary_timed_out", title: "History is taking longer than expected",
+          message: "Tap Retry history to try loading your conversations again.",
+          diagnostic: "History summaries exceeded the five-second watchdog.", recovery: .retryHistory),
+          owner: .historySummaries(requestID))
+        return .cancel(id: CancelID.historySummaries)
+
+      case .summaryWriteSettled(let operationID, let failure):
+        guard let id = state.summaryWrites.removeValue(forKey: operationID) else { return .none }
+        if let failure { return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure) }
+        return .none
+
+      case .chat(.delegate(.renameRequested(let id, let title))):
+        guard state.isConversationLive(id) else { return .none }
+        state.conversations[id: id]?.title = title
+        state.conversations[id: id]?.isManuallyTitled = true
+        let operationID = uuid()
+        state.summaryWrites[operationID] = id
+        return .run { send in
+          do {
+            try await history.renameConversation(id, title)
+            await send(.summaryWriteSettled(operationID, nil))
+          } catch {
+            await send(.summaryWriteSettled(operationID, .history(operation: .rename, error: error)))
+          }
+        }
+
+      case .chat(.delegate(.exportRequested(let id))):
+        return beginConversationExport(state: &state, conversationID: id)
+      case .conversationExportFinished(let id, let requestID, let result):
+        return finishConversationExport(state: &state, conversationID: id, requestID: requestID, result: result)
+      case .shareConversationExport(let id):
+        guard state.chat?.conversationID == id, state.isConversationLive(id),
+          let export = state.conversationExports[id], case .ready = export.phase else { return .none }
+        state.presentation = .conversationExport(export)
+        return .none
+      case .noticesTapped:
+        if let id = state.chat?.conversationID { state.presentation = .notices(id) }
+        return .none
+      case .sheetDismissed:
+        let presentation = state.presentation
+        state.presentation = nil
+        if case .conversationExport(let export) = presentation,
+          state.conversationExports[export.conversationID]?.requestID == export.requestID,
+          case .ready(let url) = export.phase {
+          state.conversationExports.removeValue(forKey: export.conversationID)
+          return removeExportFile(url)
+        }
+        return .none
 
       case .chat:
         return .none
@@ -2231,19 +2322,26 @@ public struct AppFeature: Sendable {
         guard state.historySummaryPhase == .loading(requestID) else { return .none }
         state.historySummaryPhase = .failed(requestID)
         state.historySummaryBaseline = [:]
+        state.historySummaryProtectedIDs = []
         state.historyStoreUnavailable = unavailable
+        let cancelWatchdog = Effect<Action>.cancel(id: HistorySummaryTimeoutID(requestID: requestID))
         state.clearSummaryFailures()
         presentFailure(state: &state, primary: failure, owner: .historySummaries(requestID))
         if state.newChatRequestedDuringBootstrap, !unavailable {
-          return beginConversationCreation(state: &state)
+          return .merge(cancelWatchdog, beginConversationCreation(state: &state))
         }
         // An accepted New chat intent survives an unavailable store. Retry
         // can fulfill it once opening succeeds, without an extra user tap.
-        return .none
+        return cancelWatchdog
 
       case .conversationOpeningFailed(let requestID, let failure):
+        guard state.recordedOpeningFailureIDs.insert(requestID).inserted else { return .none }
+        state.conversationCreations.removeValue(forKey: requestID)
         if state.conversationCreationInFlight?.requestID == requestID { state.conversationCreationInFlight = nil }
-        guard state.conversationOpening?.requestID == requestID else { return .none }
+        guard state.conversationOpening?.requestID == requestID else {
+          recordFailure(failure)
+          return .none
+        }
         state.conversationOpening?.phase = .failed
         presentFailure(state: &state, primary: failure, owner: .conversationOpening(requestID))
         return .none
@@ -2271,7 +2369,10 @@ public struct AppFeature: Sendable {
         return .none
 
       case .dismissOwnedFailure(let owner):
+        guard let failure = state.failures.first(where: { $0.owner == owner })?.failure else { return .none }
         state.failures.removeAll { $0.owner == owner }
+        diagnostics.info(category: .submission, code: "failure_presentation_dismissed",
+          summary: "A failure presentation was dismissed.", context: ["failure_code": failure.code])
         return .none
 
       case .dismissFailure:

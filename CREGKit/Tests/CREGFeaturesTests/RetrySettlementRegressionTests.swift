@@ -465,6 +465,7 @@ struct RetrySettlementRegressionTests {
     #expect(store.state.pendingDeletion?.deferredFailures.first == failure)
     await store.send(.undoDeleteTapped)
     await store.finish()
+    #expect(store.state.failures.contains { $0.failure == failure })
   }
 
   @Test(arguments: ["release", "cancellation", "decline"])

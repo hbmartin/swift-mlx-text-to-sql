@@ -178,6 +178,7 @@ extension AppFeature.State {
   }
 
   mutating func invalidateRetryInspection(_ journalID: UUID) {
+    clearRetryFailures(journalID)
     guard let journal = retryJournals[journalID] else { return }
     retryJournals[journalID]?.requestGeneration += 1
     retryJournals[journalID]?.operations = journal.operations.filter {

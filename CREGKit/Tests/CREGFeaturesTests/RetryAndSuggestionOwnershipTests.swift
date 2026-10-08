@@ -1183,7 +1183,7 @@ private actor HeldOperation {
   }
 
   @Test func rejectedSubmissionDoesNotFollowWhenTheUserNavigatedDuringCreation() async {
-    let state = Scheduler.appState(selected: Self.conversationA)
+    var state = Scheduler.appState(selected: Self.conversationA)
     let held = HeldOperation()
     var history = HistoryClient.noop()
     history.createConversationWithDraft = { id, startedAt, _ in
@@ -1192,6 +1192,7 @@ private actor HeldOperation {
         id: id, title: "", startedAt: startedAt, lastActivityAt: startedAt)
     }
     let summaryB = state.conversations[id: Self.conversationB]!
+    state.conversationOpening = .init(requestID: 9000, kind: .load(summaryB.id))
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.continuousClock = ContinuousClock()
       $0.historyClient = history
@@ -1205,7 +1206,7 @@ private actor HeldOperation {
         question: "Late draft", originConversationID: Self.conversationB,
         clearsComposerOnAcceptance: true)))))
     await held.waitUntilHeld()
-    await store.send(.conversationLoaded(ConversationSnapshot(summary: summaryB)))
+    await store.send(.conversationLoaded(ConversationSnapshot(summary: summaryB), requestID: 9000))
     #expect(store.state.chat?.conversationID == Self.conversationB)
     await held.finish()
     await store.finish()
@@ -1326,6 +1327,7 @@ private actor HeldOperation {
     state.conversations[id: Self.conversationA]?.suggestionGeneration = 2
     var summary = state.conversations[id: Self.conversationA]!
     summary.suggestionGeneration = 1
+    state.conversationOpening = .init(requestID: 9000, kind: .load(summary.id))
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = ContinuousClock()
@@ -1335,7 +1337,7 @@ private actor HeldOperation {
     store.exhaustivity = .off
 
     await store.send(.conversationLoaded(
-      ConversationSnapshot(summary: summary, followUpBatch: stale)))
+      ConversationSnapshot(summary: summary, followUpBatch: stale), requestID: 9000))
     await store.finish()
     #expect(store.state.chat?.followUpBatch == nil)
     // The durable generation can only raise the in-memory one.

@@ -29,6 +29,9 @@ import Testing
         "result-chart-terminal-recovery",
         "result-chart-unresolved-selection",
         "transient-banners",
+        "conversation-notices",
+        "retained-export",
+        "browser-refresh",
       ]
 
       #expect(

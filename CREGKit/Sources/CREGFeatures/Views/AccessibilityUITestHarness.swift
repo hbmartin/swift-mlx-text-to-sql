@@ -32,6 +32,9 @@ import Synchronization
       case resultChartTerminalRecovery = "result-chart-terminal-recovery"
       case resultChartUnresolvedSelection = "result-chart-unresolved-selection"
       case transientBanners = "transient-banners"
+      case conversationNotices = "conversation-notices"
+      case retainedExport = "retained-export"
+      case browserRefresh = "browser-refresh"
     }
 
     enum Request: Equatable, Sendable {
@@ -314,12 +317,10 @@ import Synchronization
           chrome: PreviewFixtures.chrome)
 
       case .error:
-        errorChat
+        NoticesAccessibilityHarness(scenario: .error)
 
       case .recovery:
-        ChatView(
-          store: PreviewFixtures.chatStore(PreviewFixtures.recoveryChatState()),
-          chrome: PreviewFixtures.chrome)
+        NoticesAccessibilityHarness(scenario: .recovery)
 
       case .browser:
         AppRootView(
@@ -332,6 +333,9 @@ import Synchronization
       case .settings:
         SettingsView(
           store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
+
+      case .conversationNotices, .retainedExport, .browserRefresh:
+        NoticesAccessibilityHarness(scenario: scenario)
 
       case .transientBanners:
         AppRootView(
@@ -356,6 +360,52 @@ import Synchronization
         store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
         chrome: chrome)
     }
+  }
+
+  @MainActor
+  struct NoticesAccessibilityHarness: View {
+    @State private var store: StoreOf<AppFeature>
+    init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationNotices) {
+      var initial = PreviewFixtures.appState(revealed: scenario == .browserRefresh,
+        chat: scenario == .recovery ? PreviewFixtures.recoveryChatState() : PreviewFixtures.answeredChatState())
+      initial.historyStoreAvailability = .available
+      initial.historySummaryPhase = .loaded
+      initial.launchBenchmarkQuestion = nil
+      initial.didRequestPreparationJournalInspection = true
+      initial.didHandlePreparationJournalInspection = true
+      let id = initial.chat!.conversationID
+      if scenario == .error || scenario == .conversationNotices {
+        for index in 0..<(scenario == .error ? 1 : 6) {
+          initial.storeFailure(PreviewFixtures.presentationFailure, owner: .historySummaries(UInt64(index)))
+        }
+      }
+      if scenario == .conversationNotices {
+        initial.chat?.interruptedTurns = PreviewFixtures.recoveryChatState().interruptedTurns
+        initial.chat?.correctionContext = PreviewFixtures.recoveryChatState().correctionContext
+      }
+      if scenario == .retainedExport || scenario == .conversationNotices {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("creg-conversation-preview-\(UUID()).jsonl")
+        try? Data("{}\n".utf8).write(to: url)
+        initial.conversationExports[id] = .init(conversationID: id, requestID: PreviewFixtures.id("9"), phase: .ready(url))
+      }
+      if scenario == .browserRefresh {
+        initial.historySummaryPhase = .failed(1)
+        initial.storeFailure(.history(operation: .summaryLoad, error: NSError(domain: "Preview.History", code: 1)),
+          owner: .historySummaries(1))
+      }
+      let summaries = Array(initial.conversations)
+      var history = HistoryClient.noop()
+      history.bootstrap = { try await Task.sleep(for: .milliseconds(300)); return summaries }
+      let controlledHistory = history
+      _store = State(initialValue: Store(initialState: initial) { AppFeature() } withDependencies: {
+        $0.historyClient = controlledHistory
+        $0.fmStatus = FMStatusClient(availability: { .available })
+        $0.haptics = .noop
+        $0.diagnostics = .noop
+        $0.continuousClock = ContinuousClock()
+      })
+    }
+    var body: some View { AppRootView(store: store, now: PreviewFixtures.now) }
   }
 
   @MainActor

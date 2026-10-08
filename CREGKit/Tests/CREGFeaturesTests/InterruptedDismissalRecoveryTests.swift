@@ -417,6 +417,7 @@ struct InterruptedDismissalRecoveryTests {
       state.seedRetry(recovery.journalID, conversationID: recovery.conversationID)
       state.retryJournals[recovery.journalID]?.intent = .dismissed
     }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
@@ -434,7 +435,7 @@ struct InterruptedDismissalRecoveryTests {
       .conversationLoaded(
         ConversationSnapshot(
           summary: summary,
-          interruptedTurns: [pending.interruption, failed.interruption, successful.interruption])))
+          interruptedTurns: [pending.interruption, failed.interruption, successful.interruption]), requestID: 9000))
     await store.finish()
     #expect(store.state.chat?.interruptedTurns.map(\.journalID) == [failed.journalID])
     #expect(store.state.chat?.interruptedTurn?.canAutoRetry == false)

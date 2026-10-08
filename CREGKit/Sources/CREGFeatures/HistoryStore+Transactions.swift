@@ -572,7 +572,7 @@ extension HistoryStore {
     }
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent(
-        "creg-conversation-\(conversationID.uuidString.prefix(8)).jsonl")
+        "creg-conversation-\(conversationID.uuidString.prefix(8))-\(UUID().uuidString).jsonl")
     try lines.joined(separator: "\n").appending("\n")
       .write(to: url, atomically: true, encoding: .utf8)
     return url

@@ -84,6 +84,36 @@ import Testing
     return nil
   }
 
+  private struct MultilineOpenError: Error, CustomStringConvertible, Sendable {
+    let description: String
+  }
+
+  @Test func wrappedUnavailableDiagnosticsKeepMultilineFormattingAndRedaction() async throws {
+    let id = "17AE93D3-94B8-4A7E-B881-CC51CBB9E100"
+    let diagnostic = "Open failed at /Users/example/private/history.sqlite for \(id)\nSELECT * FROM confidential_table WHERE account_id = 41"
+    let history = HistoryClient.recoverable(open: { throw MultilineOpenError(description: diagnostic) })
+    let error: HistoryStoreUnavailableError
+    do {
+      _ = try await history.bootstrap()
+      Issue.record("Expected the real recoverable-client boundary to wrap the opening error")
+      return
+    } catch let wrapped as HistoryStoreUnavailableError { error = wrapped }
+    #expect(String(describing: error) == diagnostic)
+    #expect(DiagnosticDetails.describe(error) == diagnostic)
+    for operation in [HistoryFailureOperation.search, .supportBundle, .rename, .export] {
+      let failure = FailurePresentation.history(operation: operation, error: error)
+      #expect(failure.code == operation.code)
+      #expect(failure.cause == .historyStoreUnavailable)
+      #expect(failure.recovery == .retryHistory)
+      let safe = DiagnosticPrivacy.redact(failure.diagnostic)
+      #expect(!safe.contains(id))
+      #expect(!safe.contains("/Users/example"))
+      #expect(!safe.contains("confidential_table"))
+      #expect(!safe.contains("account_id"))
+      #expect(safe.contains("<redacted SQL>"))
+    }
+  }
+
   @Test func diagnosticRedactionPreservesOrdinaryEnglishAndDecodingContext() {
     let ordinary =
       "No value associated with key quantization. The operation could not be completed with error 14; update the bundle and create a new build."

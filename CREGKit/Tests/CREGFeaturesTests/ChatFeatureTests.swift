@@ -451,10 +451,11 @@ private func awaitArmedFMWatch(
       question: user.previewText, interruptedAt: user.createdAt,
       journalID: user.id, executionID: user.id,
       status: .knownInterruption)
-    let state = Self.appState()
+    var state = Self.appState()
     let summary = state.conversations[id: Self.conversationA]!
     let snapshot = ConversationSnapshot(
       summary: summary, messages: [user], interruptedTurn: interrupted)
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
       $0.continuousClock = ContinuousClock()
       $0.historyClient = .noop()
@@ -464,7 +465,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     await store.send(.appBecameActive)
     #expect(store.state.queue.isEmpty)
     #expect(store.state.activeTurn == nil)
@@ -1290,6 +1291,7 @@ private func awaitArmedFMWatch(
       throw SchedulerPersistenceTestError.failed
     }
     let clock = TestClock()
+    state.conversationOpening = .init(requestID: 9000, kind: .load(Self.conversationB))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -1309,7 +1311,7 @@ private func awaitArmedFMWatch(
 
     let loadedSummary = state.conversations[id: Self.conversationB]!
     await store.send(
-      .conversationLoaded(ConversationSnapshot(summary: loadedSummary)))
+      .conversationLoaded(ConversationSnapshot(summary: loadedSummary), requestID: 9000))
     #expect(store.state.chat?.title == "Lease expirations")
 
     await gate.releaseUserWrite()
@@ -1954,6 +1956,7 @@ private func awaitArmedFMWatch(
         writes.record(message.resultPresentation.mode.rawValue)
       }
     }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(Self.conversationB))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -1995,7 +1998,7 @@ private func awaitArmedFMWatch(
 
     let backgroundSnapshot = ConversationSnapshot(
       summary: try #require(state.conversations[id: Self.conversationB]))
-    await store.send(.conversationLoaded(backgroundSnapshot))
+    await store.send(.conversationLoaded(backgroundSnapshot, requestID: 9000))
     await store.send(
       .pipelineEvent(
         conversationID: Self.conversationA,
@@ -2634,6 +2637,7 @@ private func awaitArmedFMWatch(
     let availability = LockIsolated<FMAvailability>(
       .unavailable(reason: .modelNotReady))
     let watchers = LockIsolated<[AsyncStream<FMAvailability>.Continuation]>([])
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
@@ -2654,7 +2658,7 @@ private func awaitArmedFMWatch(
     store.exhaustivity = .off
 
     await store.send(.appBecameInactive)
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     for _ in 0..<50 { await Task.yield() }
 
     #expect(watchers.value.isEmpty)
@@ -3023,6 +3027,7 @@ private func awaitArmedFMWatch(
           continuation.finish()
         }
       })
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [pipeline] in
@@ -3043,7 +3048,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     await awaitArmedFMWatch(watchers)
 
     #expect(preparations.recorded.isEmpty)
@@ -3237,7 +3242,8 @@ private func awaitArmedFMWatch(
     await store.send(.turnPersistenceTimedOut(questionID))
 
     #expect(store.state.pendingTurnPersistence?.didTimeOut == true)
-    #expect(store.state.presentedFailure == existingFailure)
+    #expect(store.state.visibleFailures.contains { $0.failure == existingFailure })
+    #expect(store.state.visibleFailures.contains { $0.owner == .turnPersistence(questionID) })
     #expect(store.state.isBuildingSupportBundle)
   }
 
@@ -3531,6 +3537,7 @@ private func awaitArmedFMWatch(
     var history = HistoryClient.noop()
     history.updateMessage = { _, _ in recoveryWrites.record("update") }
     history.endTurnJournal = { _, _ in recoveryWrites.record("end") }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -3540,7 +3547,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     await store.finish()
 
     guard case .preparedAnswer? = store.state.chat?.messages[id: provisionalID]?.body else {
@@ -3572,10 +3579,11 @@ private func awaitArmedFMWatch(
       interruptedTurn: InterruptedTurn(
         question: prepared.question, interruptedAt: active.startedAt,
         journalID: questionID, executionID: questionID))
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) { AppFeature() }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     #expect(store.state.chat?.processing?.questionID == questionID)
     #expect(store.state.chat?.interruptedTurn == nil)
     #expect(store.state.chat?.messages.last?.id == questionID)
@@ -3588,7 +3596,7 @@ private func awaitArmedFMWatch(
     let secondUserID = UUID(83)
     let firstJournalID = UUID(84)
     let secondJournalID = UUID(85)
-    let state = Self.appState(selected: Self.conversationB)
+    var state = Self.appState(selected: Self.conversationB)
     let snapshot = ConversationSnapshot(
       summary: state.conversations[id: Self.conversationA]!,
       messages: [
@@ -3617,6 +3625,7 @@ private func awaitArmedFMWatch(
     var history = HistoryClient.noop()
     history.updateMessage = { _, message in writes.record("update:\(message.id)") }
     history.endTurnJournal = { _, journalID in writes.record("end:\(journalID)") }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -3626,7 +3635,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     await store.finish()
 
     #expect(writes.recorded == ["update:\(firstAnswerID)", "end:\(firstJournalID)"])
@@ -3683,6 +3692,7 @@ private func awaitArmedFMWatch(
     var history = HistoryClient.noop()
     history.updateMessage = { _, message in writes.record("update:\(message.id)") }
     history.endTurnJournal = { _, journalID in writes.record("end:\(journalID)") }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -3692,7 +3702,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     await store.finish()
 
     #expect(writes.recorded == ["update:\(oldAnswerID)", "end:\(oldJournalID)"])
@@ -3708,7 +3718,7 @@ private func awaitArmedFMWatch(
     let userID = UUID(81)
     let answerID = UUID(82)
     let journalID = UUID(83)
-    let state = Self.appState(selected: Self.conversationB)
+    var state = Self.appState(selected: Self.conversationB)
     let snapshot = ConversationSnapshot(
       summary: state.conversations[id: Self.conversationA]!,
       messages: [
@@ -3731,6 +3741,7 @@ private func awaitArmedFMWatch(
       throw SchedulerPersistenceTestError.failed
     }
     history.endTurnJournal = { _, journalID in ends.record(journalID.uuidString) }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -3740,7 +3751,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     await store.finish()
 
     #expect(updates.recorded == ["attempted"])
@@ -3750,7 +3761,7 @@ private func awaitArmedFMWatch(
   @Test func recoveredAnswerWithoutPrecedingUserKeepsModernJournal() async {
     let prepared = Self.preparedFollowUp()
     let answerID = UUID(82)
-    let state = Self.appState(selected: Self.conversationB)
+    var state = Self.appState(selected: Self.conversationB)
     let snapshot = ConversationSnapshot(
       summary: state.conversations[id: Self.conversationA]!,
       messages: [
@@ -3766,6 +3777,7 @@ private func awaitArmedFMWatch(
     var history = HistoryClient.noop()
     history.updateMessage = { _, _ in writes.record("update") }
     history.endTurnJournal = { _, _ in writes.record("end") }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(snapshot.summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: { [history] in
@@ -3775,7 +3787,7 @@ private func awaitArmedFMWatch(
     }
     store.exhaustivity = .off
 
-    await store.send(.conversationLoaded(snapshot))
+    await store.send(.conversationLoaded(snapshot, requestID: 9000))
     await store.finish()
 
     #expect(writes.recorded == ["update"])

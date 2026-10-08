@@ -23,6 +23,10 @@ struct ChatChrome {
   var retryHistory: () -> Void = {}
   var retryOpening: (() -> Void)?
   var canCreateConversation = true
+  var historyLoadIsRetry = false
+  var reviewNotices: () -> Void = {}
+  var exportPhase: AppFeature.ConversationExport.Phase?
+  var shareExport: () -> Void = {}
 }
 
 /// The minimum transcript state needed to distinguish a completed assistant

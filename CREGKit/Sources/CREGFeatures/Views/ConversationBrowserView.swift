@@ -9,31 +9,39 @@ struct ConversationBrowserView: View {
   /// Fixed for previews; live rendering uses the current date.
   var now: Date = Date()
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @FocusState private var isSearchFocused: Bool
 
-  private var needsRecoveryScroll: Bool {
-    dynamicTypeSize.isAccessibilitySize
-      && (store.canRetryHistory || store.historySummaryPhase.isLoading)
-  }
-
-  @ViewBuilder
   var body: some View {
-    if needsRecoveryScroll {
-      ScrollView { content }
+    VStack(alignment: .leading, spacing: 12) {
+      // Keep the focused field outside scrolling recovery content. Collapsing
+      // the brand heading leaves room for controls above a landscape keyboard.
+      if !isSearchFocused {
+        Text("CREG")
+          .font(.largeTitle.bold())
+          .padding(.horizontal, 20)
+          .padding(.top, 8)
+      }
+      searchField
+      GeometryReader { geometry in
+        ScrollView {
+          content.frame(minHeight: geometry.size.height, alignment: .top)
+        }
+        .scrollDismissesKeyboard(.never)
         .accessibilityIdentifier("browser-history-scroll")
-    } else {
-      content
+      }
+    }
+    .onChange(of: store.isBrowserRevealed) { _, revealed in
+      if !revealed { isSearchFocused = false }
     }
   }
 
   private var content: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("CREG")
-        .font(.largeTitle.bold())
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
-
-      searchField
-
+      if store.canRetryHistory || store.historySummaryPhase.isLoading {
+        RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
+          retry: { store.send(.retryHistoryTapped) }, accessibilityID: "browser-history-retry", isRetry: store.historyLoadIsRetry)
+          .padding(.horizontal, 20)
+      }
       Button {
         store.send(.newChatTapped)
       } label: {
@@ -49,20 +57,10 @@ struct ConversationBrowserView: View {
       .disabled(!store.canCreateConversation)
       .padding(.horizontal, 8)
 
-      if store.canRetryHistory || store.historySummaryPhase.isLoading {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(store.historySummaryPhase.isLoading ? "Loading history…" : "History unavailable")
-            .font(.caption).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-          RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
-            retry: { store.send(.retryHistoryTapped) }, accessibilityID: "browser-history-retry")
-        }.padding(.horizontal, 20)
-      }
-
       if isSearching {
-        searchResults.frame(minHeight: needsRecoveryScroll ? 200 : nil)
+        searchResults.frame(minHeight: 200)
       } else {
-        recents.frame(minHeight: needsRecoveryScroll ? 200 : nil)
+        recents.frame(minHeight: 200)
       }
 
       Spacer(minLength: 0)
@@ -96,6 +94,7 @@ struct ConversationBrowserView: View {
         .foregroundStyle(.secondary)
       TextField("Search", text: $store.browserSearchText)
         .textFieldStyle(.plain)
+        .focused($isSearchFocused)
       if isSearching {
         Button {
           store.browserSearchText = ""
@@ -140,6 +139,7 @@ struct ConversationBrowserView: View {
         }
         .padding(.horizontal, 8)
       }
+      .scrollDismissesKeyboard(.never)
     }
   }
 
@@ -177,6 +177,7 @@ struct ConversationBrowserView: View {
       }
       .padding(.horizontal, 8)
     }
+    .scrollDismissesKeyboard(.never)
   }
 }
 

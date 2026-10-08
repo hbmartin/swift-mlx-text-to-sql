@@ -5,21 +5,29 @@ import Foundation
 /// User-facing recovery copy plus a stable developer diagnostic kept outside
 /// the normal UI unless Developer Mode is enabled.
 public struct FailurePresentation: Error, Sendable, Equatable {
+  public enum Cause: Equatable, Sendable { case historyStoreUnavailable }
+  public enum Recovery: Equatable, Sendable { case retryHistory, askAgain }
   public var code: String
   public var title: String
   public var message: String
   public var diagnostic: String
+  public var cause: Cause?
+  public var recovery: Recovery?
 
   public init(
     code: String,
     title: String,
     message: String,
-    diagnostic: String
+    diagnostic: String,
+    cause: Cause? = nil,
+    recovery: Recovery? = nil
   ) {
     self.code = code
     self.title = title
     self.message = message
     self.diagnostic = diagnostic
+    self.cause = cause
+    self.recovery = recovery
   }
 
   public func technicalDetails(developerMode: Bool) -> String? {
@@ -30,7 +38,9 @@ public struct FailurePresentation: Error, Sendable, Equatable {
   func combining(_ secondary: FailurePresentation) -> FailurePresentation {
     FailurePresentation(
       code: code, title: title, message: message + "\n\n" + secondary.message,
-      diagnostic: "\(diagnostic)\n\n[\(secondary.code)] \(secondary.diagnostic)")
+      diagnostic: "\(diagnostic)\n\n[\(secondary.code)] \(secondary.diagnostic)",
+      cause: cause == secondary.cause ? cause : nil,
+      recovery: recovery ?? secondary.recovery)
   }
 }
 
@@ -211,9 +221,10 @@ extension FailurePresentation {
     error: any Error
   ) -> FailurePresentation {
     if error is HistoryStoreUnavailableError {
-      return FailurePresentation(code: "history_store_unavailable", title: "History unavailable",
-        message: "CREG couldn’t open your conversation history. Tap Retry to try again.",
-        diagnostic: DiagnosticDetails.describe(error))
+      return FailurePresentation(code: operation.code, title: "History unavailable",
+        message: "CREG couldn’t open your conversation history. Tap Retry history to try again.",
+        diagnostic: DiagnosticDetails.describe(error),
+        cause: .historyStoreUnavailable, recovery: .retryHistory)
     }
     let title: String
     let message: String
@@ -255,7 +266,8 @@ extension FailurePresentation {
       code: operation.code,
       title: title,
       message: message,
-      diagnostic: DiagnosticDetails.describe(error))
+      diagnostic: DiagnosticDetails.describe(error),
+      recovery: operation == .summaryLoad ? .retryHistory : nil)
   }
 }
 

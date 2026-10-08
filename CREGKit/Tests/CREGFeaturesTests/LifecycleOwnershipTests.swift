@@ -188,6 +188,7 @@ struct LifecycleOwnershipTests {
       loads.record("load")
       return ConversationSnapshot(summary: summary)
     }
+    state.conversationOpening = .init(requestID: 9000, kind: .load(summary.id))
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
@@ -199,7 +200,7 @@ struct LifecycleOwnershipTests {
     store.exhaustivity = .off
     await store.send(.answerReadyBannerTapped)
     await store.send(.conversationSelected(a))
-    await store.send(.conversationLoaded(ConversationSnapshot(summary: summary)))
+    await store.send(.conversationLoaded(ConversationSnapshot(summary: summary), requestID: 9000))
     await store.finish()
     #expect(store.state.chat?.conversationID == b)
     #expect(loads.recorded.isEmpty)
@@ -283,6 +284,7 @@ struct LifecycleOwnershipTests {
       #expect(store.state.isConversationLive(a))
       #expect(store.state.retryJournals[user.id]?.interruption?.status == .manualRetryRequired)
       #expect(deleted.recorded.isEmpty)
+      #expect(store.state.failures.contains { $0.failure == failure })
     } else {
       await store.skipReceivedActions(strict: false)
       await clock.advance(by: .seconds(5))

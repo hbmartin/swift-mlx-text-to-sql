@@ -4,33 +4,31 @@ import SwiftUI
 
 // MARK: - Supporting cells
 
-struct ExportedFile: Identifiable {
-  var url: URL
-  var id: URL { url }
-}
-
 struct ExportShareSheet: View {
   let url: URL
   @Environment(\.dismiss) private var dismiss
 
   var body: some View {
-    VStack(spacing: 16) {
-      Text("Conversation events exported")
-        .font(.headline)
-      Text(
-        "Structured JSONL for offline accuracy analysis. Exports include questions, generated SQL, errors, and full result rows; treat them as portfolio data."
-      )
-      .font(.footnote)
-      .foregroundStyle(.secondary)
-      ShareLink(item: url) {
-        Label("Share JSONL", systemImage: "square.and.arrow.up")
-          .frame(maxWidth: .infinity)
-      }
-      .buttonStyle(.borderedProminent)
-      Button("Done") { dismiss() }
+    ScrollView {
+      VStack(spacing: 16) {
+        Text("Conversation events exported")
+          .font(.headline)
+          .fixedSize(horizontal: false, vertical: true)
+        Text("Structured JSONL for offline accuracy analysis. Exports include questions, generated SQL, errors, and full result rows; treat them as portfolio data.")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        ShareLink(item: url) {
+          Label("Share JSONL", systemImage: "square.and.arrow.up")
+            .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.borderedProminent)
+        Button(action: { dismiss() }) { Text("Done").frame(minWidth: 44).cregTextButtonLabelTarget() }
+          .accessibilityIdentifier("conversation-export-done")
+      }.padding(24)
     }
-    .padding(24)
-    .presentationDetents([.medium])
+    .accessibilityIdentifier("conversation-export-scroll")
+    .presentationDetents([.large])
   }
 }
 
@@ -286,7 +284,7 @@ struct InterruptedTurnBanner: View {
         Text(interrupted.question)
           .font(.footnote)
           .foregroundStyle(.secondary)
-          .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+          .fixedSize(horizontal: false, vertical: true)
       }
     } actions: {
       HStack(spacing: 4) {
@@ -344,7 +342,7 @@ struct CorrectionContextBanner: View {
         Text(context.answerNarration)
           .font(.footnote)
           .foregroundStyle(.secondary)
-          .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+          .fixedSize(horizontal: false, vertical: true)
       }
     } actions: {
       Button(action: dismiss) {

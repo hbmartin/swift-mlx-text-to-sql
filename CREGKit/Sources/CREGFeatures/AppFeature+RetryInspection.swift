@@ -33,7 +33,13 @@ extension AppFeature {
             result = .missingJournal
           }
         } catch {
-          result = .failed(.history(operation: .load, error: error))
+          var failure = FailurePresentation.history(operation: .load, error: error)
+          if failure.cause == nil {
+            failure.title = "Could not check this retry"
+            failure.message = "Please tap Ask Again to try once more."
+            failure.recovery = .askAgain
+          }
+          result = .failed(failure)
         }
         guard !Task.isCancelled else { return }
         await send(.queuedRetryStaleChecked(queued, result, operationID: operationID))
@@ -47,7 +53,7 @@ extension AppFeature {
               FailurePresentation(
                 code: "retry_inspection_timed_out", title: "Could not check this retry",
                 message: "Please tap Ask Again to try once more.",
-                diagnostic: "History inspection did not settle within five seconds.")),
+                diagnostic: "History inspection did not settle within five seconds.", recovery: .askAgain)),
             operationID: operationID))
       }
     ).cancellable(id: cancellationID)

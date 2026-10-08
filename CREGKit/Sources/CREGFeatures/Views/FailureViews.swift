@@ -39,6 +39,7 @@ struct ConversationUnavailableView: View {
   var retryHistory: (() -> Void)?
   var retryOpening: (() -> Void)?
   var historyIsLoading = false
+  var historyLoadIsRetry = false
   var ownedFailures: [AppFeature.OwnedFailure] = []
   var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
 
@@ -55,13 +56,13 @@ struct ConversationUnavailableView: View {
           ProgressView("Opening conversation…")
             .accessibilityIdentifier("conversation-loading")
         } else if ownedFailures.isEmpty && failure == nil {
-          Text(canCreate ? "Choose a conversation or start a new chat." : "History is unavailable. Tap Retry history to try again.")
+          Text(retryOpening != nil ? "Opening this conversation failed. Tap Retry opening to try again." : canCreate ? "Choose a conversation or start a new chat." : "History is unavailable. Tap Retry history to try again.")
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .accessibilityIdentifier("conversation-recovery-idle")
         }
         if let retryHistory {
-          RetryHistoryButton(isLoading: historyIsLoading, retry: retryHistory)
+          RetryHistoryButton(isLoading: historyIsLoading, retry: retryHistory, isRetry: historyLoadIsRetry)
         }
         if let retryOpening {
           Button(action: retryOpening) { Text("Retry opening conversation").cregTextButtonLabelTarget() }
@@ -104,14 +105,19 @@ struct RetryHistoryButton: View {
   let isLoading: Bool
   let retry: () -> Void
   var accessibilityID = "history-retry"
+  var isRetry = true
   var body: some View {
-    Button(action: retry) {
-      Text(isLoading ? "Retrying history…" : "Retry history")
-        .fixedSize(horizontal: false, vertical: true)
-        .cregTextButtonLabelTarget()
+    if isLoading && !isRetry {
+      ProgressView("Loading history…").accessibilityIdentifier("history-loading")
+    } else {
+      Button(action: retry) {
+        Text(isLoading ? "Retrying history…" : "Retry history")
+          .fixedSize(horizontal: false, vertical: true)
+          .cregTextButtonLabelTarget()
+      }
+      .disabled(isLoading)
+      .accessibilityIdentifier(accessibilityID)
     }
-    .disabled(isLoading)
-    .accessibilityIdentifier(accessibilityID)
   }
 }
 

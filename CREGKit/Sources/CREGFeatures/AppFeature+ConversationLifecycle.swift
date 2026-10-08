@@ -153,7 +153,10 @@ extension AppFeature {
     }
     if state.chat?.conversationID == summary.id || (state.chat == nil && deletedOpening) {
       state.chat = nil
-      if let next = state.visibleConversations.first {
+      state.closeConversationPresentation()
+      if state.conversationOpening != nil || state.newChatRequestedDuringBootstrap {
+        // Preserve a newer explicit selection or accepted New chat intent.
+      } else if let next = state.visibleConversations.first {
         effects.append(beginConversationLoad(state: &state, id: next.id))
       } else {
         effects.append(beginConversationCreation(state: &state))
