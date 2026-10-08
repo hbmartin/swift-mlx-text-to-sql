@@ -315,6 +315,14 @@ struct ResultViewerView: View {
     } ?? result.rowCount
     NavigationStack {
       VStack(spacing: 0) {
+        if dynamicTypeSize.isAccessibilitySize {
+          Text("Result")
+            .font(.headline)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .accessibilityAddTraits(.isHeader)
+        }
         PortfolioSnapshotContextView()
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal)
@@ -409,7 +417,7 @@ struct ResultViewerView: View {
           .accessibilityIdentifier("result-table-explorer")
         }
       }
-      .navigationTitle("Result")
+      .navigationTitle(dynamicTypeSize.isAccessibilitySize ? "" : "Result")
       .inlineNavigationTitle()
       .toolbar {
         ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }

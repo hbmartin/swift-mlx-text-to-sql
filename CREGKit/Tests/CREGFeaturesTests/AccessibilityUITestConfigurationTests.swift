@@ -32,6 +32,8 @@ import Testing
         "conversation-notices",
         "retained-export",
         "browser-refresh",
+        "browser-performance",
+        "apple-intelligence-disabled",
       ]
 
       #expect(

@@ -137,11 +137,7 @@ extension AppFeature {
     } else {
       // Every offscreen answer is unread. Only work the user explicitly
       // started produces an immediate banner and haptic.
-      state.conversations[id: conversationID]?.isUnread = true
-      effects.append(
-        .run { _ in
-          try? await history.setUnread(conversationID, true)
-        })
+      effects.append(setConversationUnread(state: &state, id: conversationID, unread: true))
       if !active.isAutomaticRetry {
         state.answerReadyBanner = AnswerReadyBanner(
           conversationID: conversationID,

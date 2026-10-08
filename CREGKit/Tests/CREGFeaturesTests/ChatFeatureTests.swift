@@ -3227,7 +3227,7 @@ private func awaitArmedFMWatch(
     state.pendingTurnPersistence = AppFeature.PendingTurnPersistence(
       questionID: questionID,
       conversationID: Self.conversationA)
-    state.isBuildingSupportBundle = true
+    state.supportBuildRequestID = UUID()
     let existingFailure = FailurePresentation(
       code: "existing_failure",
       title: "Existing failure",
@@ -5266,5 +5266,73 @@ private func awaitArmedFMWatch(
         ConversationTurn(question: "first question", answerSummary: "first summary"),
         ConversationTurn(question: "second question", answerSummary: "second summary"),
       ])
+  }
+}
+
+extension ChatFeatureConversationTests {
+  @Test func starterChipPreservesCorrectionContextAndTypedDraft() async {
+    let id = UUID(19001)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: id))
+    state.feedback[id] = AnswerFeedback(messageID: id, verdict: .notRight, updatedAt: Date())
+    state.correctionContext = .init(messageID: id, answerNarration: "Source answer")
+    state.composerText = "My typed correction"
+    let context = state.correctionContext
+    let calls = CallRecorder()
+    var history = HistoryClient.noop()
+    history.saveFeedback = { _, _ in calls.record("feedback") }
+    let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+      $0.historyClient = history
+    }
+    store.exhaustivity = .off
+    await store.send(.starterQuestionTapped(.portfolioValueByFundV1))
+    await store.receive(\.delegate)
+    await store.finish()
+    #expect(store.state.correctionContext == context)
+    #expect(store.state.composerText == "My typed correction")
+    #expect(store.state.feedback[id]?.correction == nil)
+    #expect(calls.recorded.isEmpty)
+  }
+}
+
+extension ChatFeatureConversationTests {
+  @Test(arguments: ["followUp", "tryAgain", "askAgain", "focusSettled"])
+  func correctionCaptureBelongsOnlyToTypedComposerSubmission(source: String) async {
+    let answerID = UUID(19002), failedID = UUID(19003)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: answerID))
+    state.feedback[answerID] = AnswerFeedback(messageID: answerID, verdict: .notRight, updatedAt: Date())
+    state.correctionContext = .init(messageID: answerID, answerNarration: "Source")
+    state.composerText = "Typed correction"
+    let context = state.correctionContext
+    let prepared = AppFeatureSchedulerTests.preparedFollowUp()
+    state.followUpBatch = .init(sourceAssistantMessageID: prepared.sourceAssistantMessageID, suggestions: [prepared], updatedAt: Date())
+    var telemetry = TurnTelemetry(originalQuestion: "Retry question")
+    telemetry.failureReason = .generationExhausted
+    state.messages.append(.init(id: failedID, role: .assistant,
+      body: .failedTurn(reason: .generationExhausted, scopeVerdict: nil), createdAt: Date(), devInfo: telemetry))
+    state.interruptedTurn = .init(question: "Interrupted question", interruptedAt: Date())
+    state.isSubmissionPending = source == "focusSettled"
+    let calls = CallRecorder()
+    var history = HistoryClient.noop()
+    history.saveFeedback = { _, feedback in calls.record(feedback.correction ?? "none") }
+    let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+      $0.historyClient = history
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+    let action: ChatFeature.Action
+    switch source {
+    case "followUp": action = .preparedFollowUpTapped(prepared.id)
+    case "tryAgain": action = .retryFailedTurnTapped(messageID: failedID)
+    case "askAgain": action = .askAgainTapped
+    default: action = .submissionFocusSettled
+    }
+    await store.send(action)
+    await store.receive(\.delegate)
+    await store.finish()
+    #expect(store.state.composerText == "Typed correction")
+    #expect(store.state.correctionContext == (source == "focusSettled" ? nil : context))
+    #expect(calls.recorded == (source == "focusSettled" ? ["Typed correction"] : []))
   }
 }

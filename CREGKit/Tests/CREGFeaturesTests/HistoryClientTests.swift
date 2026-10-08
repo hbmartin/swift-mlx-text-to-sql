@@ -1322,3 +1322,72 @@ import Testing
     #expect(HistoryStore.autoTitle(from: long).count == HistoryStore.titleLimit)
   }
 }
+
+extension HistoryClientTests {
+  @Test func repeatedExportsReadLatestPersistedEvents() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let id = UUID()
+    _ = try await client.createConversation(id, Date())
+    let firstMessage = userMessage("first", at: 1)
+    try await client.appendMessage(id, firstMessage)
+    try await client.appendEvents(id, firstMessage.id, ["{\"question\":\"first\"}"])
+    let first = try await client.exportJSONL(id)
+    defer { try? FileManager.default.removeItem(at: first) }
+    let before = try String(contentsOf: first, encoding: .utf8)
+    for (text, seconds) in [("second", 2.0), ("third", 3.0)] {
+      let message = userMessage(text, at: seconds)
+      try await client.appendMessage(id, message)
+      try await client.appendEvents(id, message.id, ["{\"question\":\"\(text)\"}"])
+    }
+    let second = try await client.exportJSONL(id)
+    let share = try await client.exportJSONL(id)
+    defer { try? FileManager.default.removeItem(at: second); try? FileManager.default.removeItem(at: share) }
+    for url in [second, share] {
+      let latest = try String(contentsOf: url, encoding: .utf8)
+      #expect(latest.contains("second")); #expect(latest.contains("third"))
+      #expect(latest.split(separator: "\n").count == before.split(separator: "\n").count + 2)
+    }
+    #expect(try String(contentsOf: first, encoding: .utf8) == before)
+  }
+
+  @Test func supportBuildsHaveIndependentArtifactDirectories() async throws {
+    let client = try makeClient(temporaryDatabaseURL())
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("creg-bundle-isolation-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    let firstSource = try await client.supportBundleSource()
+    let secondSource = try await client.supportBundleSource()
+    let context = SupportBundleBuilder.Context(appVersion: "test", buildNumber: "1",
+      modelIdentity: (key: "test", revision: "test"), createdAt: Date())
+    let first = try SupportBundleBuilder.build(source: firstSource, context: context,
+      bundledModelManifest: nil, bundledModelReceipt: nil, bundledPortfolioDatabase: nil,
+      diagnosticsText: "first", scratchDirectory: scratch)
+    let original = try Data(contentsOf: first.url)
+    let second = try SupportBundleBuilder.build(source: secondSource, context: context,
+      bundledModelManifest: nil, bundledModelReceipt: nil, bundledPortfolioDatabase: nil,
+      diagnosticsText: "second", scratchDirectory: scratch)
+    #expect(first.url.deletingLastPathComponent() != second.url.deletingLastPathComponent())
+    #expect(try Data(contentsOf: first.url) == original)
+    for export in [first, second] {
+      #expect(!FileManager.default.fileExists(atPath: export.url.deletingLastPathComponent().appendingPathComponent("staging").path))
+    }
+  }
+}
+
+extension HistoryClientTests {
+  @Test func snapshotCleanupRejectsDirectoriesAndSymlinks() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("creg-snapshot-cleanup-\(UUID()).sqlite")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let snapshot = directory.appendingPathComponent("snapshot.sqlite")
+    let link = directory.appendingPathComponent("alias.sqlite")
+    try Data("snapshot".utf8).write(to: snapshot)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: snapshot)
+    SupportBundleBuilder.removeSnapshot(directory)
+    SupportBundleBuilder.removeSnapshot(link)
+    #expect(FileManager.default.fileExists(atPath: snapshot.path))
+    #expect(FileManager.default.fileExists(atPath: link.path))
+    SupportBundleBuilder.removeSnapshot(snapshot)
+    #expect(!FileManager.default.fileExists(atPath: snapshot.path))
+    #expect(FileManager.default.fileExists(atPath: directory.path))
+  }
+}

@@ -6,7 +6,7 @@ import Foundation
 /// the normal UI unless Developer Mode is enabled.
 public struct FailurePresentation: Error, Sendable, Equatable {
   public enum Cause: Equatable, Sendable { case historyStoreUnavailable }
-  public enum Recovery: Equatable, Sendable { case retryHistory, askAgain }
+  public enum Recovery: Equatable, Sendable { case retryHistory }
   public var code: String
   public var title: String
   public var message: String

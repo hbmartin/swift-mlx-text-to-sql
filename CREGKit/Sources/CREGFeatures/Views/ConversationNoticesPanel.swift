@@ -3,56 +3,116 @@ import ComposableArchitecture
 import SwiftUI
 
 @MainActor
+struct ChatNotice {
+  enum Kind {
+    case failure(AppFeature.OwnedFailure)
+    case genericFailure(FailurePresentation)
+    case history, opening, sql, intelligence
+    case interrupted(InterruptedTurn)
+    case export
+  }
+  var kind: Kind
+  var priority: Int
+  var title: String
+  var description: String
+  var isError = false
+
+  static func items(store: StoreOf<ChatFeature>, chrome: ChatChrome) -> [Self] {
+    var items: [Self] = []
+    func failure(_ value: FailurePresentation, kind: Kind) -> Self {
+      let blocking =
+        value.code == "turn_persistence_barrier_timed_out"
+        || value.code == "turn_inference_drain_timed_out"
+      let progress = value.code == "history_summary_timed_out"
+      return .init(
+        kind: kind, priority: blocking ? 0 : (progress ? 5 : 2),
+        title: value.title, description: value.title + ". " + value.message, isError: !progress)
+    }
+    if chrome.ownedFailures.isEmpty {
+      if let value = chrome.presentedFailure {
+        items.append(failure(value, kind: .genericFailure(value)))
+      }
+    } else {
+      items += chrome.ownedFailures.map { failure($0.failure, kind: .failure($0)) }
+    }
+    let hasHistory = items.contains {
+      if case .failure(let owned) = $0.kind { return owned.failure.recovery == .retryHistory }
+      if case .genericFailure(let value) = $0.kind { return value.recovery == .retryHistory }
+      return false
+    }
+    if (chrome.historyIsLoading || chrome.canRetryHistory) && !hasHistory {
+      items.append(
+        .init(
+          kind: .history, priority: 5, title: "Loading history",
+          description: "Loading conversation history."))
+    }
+    if chrome.retryOpening != nil
+      && !chrome.ownedFailures.contains(where: {
+        if case .conversationOpening = $0.owner { true } else { false }
+      })
+    {
+      items.append(
+        .init(
+          kind: .opening, priority: 2, title: "Conversation could not open",
+          description: "Retry opening conversation.", isError: true))
+    }
+    switch chrome.modelReadiness {
+    case .ready:
+      if chrome.modelPreparationReport?.mode == .compatibility {
+        items.append(
+          .init(
+            kind: .sql, priority: 1, title: "Compatibility mode",
+            description: "Compatibility mode uses unevaluated results.", isError: true))
+      }
+    case .preparing:
+      items.append(
+        .init(
+          kind: .sql, priority: 3, title: "Preparing the SQL model",
+          description: "Preparing the SQL model."))
+    case .failed(let value):
+      let title = value.isPaused ? "SQL model preparation paused" : "SQL model unavailable"
+      items.append(
+        .init(
+          kind: .sql, priority: 1, title: title,
+          description: title + ". CREG cannot answer new questions yet.", isError: !value.isPaused))
+    }
+    if case .unavailable(let reason) = chrome.fmAvailability {
+      let preparing = reason == .modelNotReady
+      let title = preparing ? "Preparing Apple Intelligence" : "Apple Intelligence unavailable"
+      items.append(
+        .init(
+          kind: .intelligence, priority: preparing ? 3 : 1, title: title,
+          description: title + ". CREG cannot answer new questions yet.", isError: !preparing))
+    }
+    items += store.interruptedTurns.map {
+      .init(
+        kind: .interrupted($0), priority: 4,
+        title: "Interrupted question", description: "An interrupted question can be asked again.")
+    }
+    if let phase = chrome.exportPhase {
+      let title = phase == .exporting ? "Exporting conversation" : "Export ready"
+      items.append(.init(kind: .export, priority: 6, title: title, description: title))
+    }
+    return items.enumerated().sorted { lhs, rhs in
+      lhs.element.priority == rhs.element.priority
+        ? lhs.offset < rhs.offset : lhs.element.priority < rhs.element.priority
+    }.map(\.element)
+  }
+}
+
+@MainActor
 struct ChatNoticeSummary {
   var count: Int
   var title: String
   var accessibilityDescription: String
+  var isError: Bool
+  var symbol: String { isError ? "exclamationmark.bubble" : "info.bubble" }
   init(store: StoreOf<ChatFeature>, chrome: ChatChrome) {
-    count =
-      chrome.ownedFailures.isEmpty
-      ? (chrome.presentedFailure == nil ? 0 : 1) : chrome.ownedFailures.count
-    let historyFailure =
-      chrome.ownedFailures.contains { $0.failure.recovery == .retryHistory }
-      || chrome.presentedFailure?.recovery == .retryHistory
-    count += (chrome.historyIsLoading || (chrome.canRetryHistory && !historyFailure)) ? 1 : 0
-    let openingFailure = chrome.ownedFailures.contains {
-      if case .conversationOpening = $0.owner { true } else { false }
-    }
-    count += (chrome.retryOpening != nil && !openingFailure) ? 1 : 0
-    count += store.interruptedTurns.count + (store.correctionContext == nil ? 0 : 1)
-    count += chrome.exportPhase == nil ? 0 : 1
-    if chrome.modelReadiness != .ready || chrome.modelPreparationReport?.mode == .compatibility {
-      count += 1
-    }
-    if chrome.fmAvailability != .available { count += 1 }
-    if let blocking = chrome.ownedFailures.first(where: {
-      $0.failure.code == "turn_persistence_barrier_timed_out"
-        || $0.failure.code == "turn_inference_drain_timed_out"
-    }) {
-      title = blocking.failure.title
-    } else if chrome.modelReadiness != .ready {
-      title =
-        chrome.modelReadiness == .preparing ? "Preparing the SQL model" : "SQL model unavailable"
-    } else if chrome.fmAvailability != .available {
-      title = "Apple Intelligence unavailable"
-    } else if case .ready = chrome.exportPhase {
-      title = "Export ready"
-    } else {
-      title = "Conversation notices"
-    }
-    accessibilityDescription = title
-    if chrome.ownedFailures.contains(where: {
-      $0.failure.code == "turn_persistence_barrier_timed_out"
-    }) {
-      accessibilityDescription += ". New questions are paused while CREG saves this conversation."
-    } else if chrome.ownedFailures.contains(where: {
-      $0.failure.code == "turn_inference_drain_timed_out"
-    }) {
-      accessibilityDescription +=
-        ". New questions are paused until the previous model operation finishes."
-    } else if chrome.modelReadiness != .ready || chrome.fmAvailability != .available {
-      accessibilityDescription += ". CREG cannot answer new questions yet."
-    }
+    let items = ChatNotice.items(store: store, chrome: chrome)
+    count = items.count
+    title = items.first?.title ?? "Conversation notices"
+    accessibilityDescription = items.first?.description ?? title
+    isError = items.first?.isError ?? false
   }
 }
 
@@ -92,69 +152,76 @@ struct ChatNoticesContent: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   var body: some View {
     VStack(spacing: 12) {
-      if !chrome.ownedFailures.isEmpty {
-        OwnedFailureBanners(
-          failures: chrome.ownedFailures, developerMode: chrome.developerMode,
-          dismiss: chrome.dismissOwnedFailure)
-      } else if let failure = chrome.presentedFailure {
-        FailureBanner(
-          failure: failure,
-          developerMode: chrome.developerMode,
-          dismiss: chrome.dismissFailure)
-      }
-      if chrome.canRetryHistory || chrome.historyIsLoading {
-        RetryHistoryButton(
-          isLoading: chrome.historyIsLoading, retry: chrome.retryHistory,
-          isRetry: chrome.historyLoadIsRetry)
-      }
-      if let retry = chrome.retryOpening {
-        Button(action: retry) { Text("Retry opening conversation").cregTextButtonLabelTarget() }
-          .accessibilityIdentifier("conversation-retry-opening")
-      }
-      readinessBanner
-      fmAvailabilityBanner
-      ForEach(Array(store.interruptedTurns.enumerated()), id: \.offset) { _, interrupted in
-        let retryID = interrupted.journalID ?? interrupted.executionID
-        InterruptedTurnBanner(
-          interrupted: interrupted,
-          retryQueued: retryID.map { store.queuedRetryJournalIDs.contains($0) }
-            ?? false,
-          retryInspecting: retryID.map { store.inspectingRetryJournalIDs.contains($0) } ?? false,
-          askAgain: {
-            if let id = interrupted.journalID {
-              store.send(.askAgainTappedFor(id))
-            } else {
-              store.send(.askAgainTapped)
-            }
-          },
-          cancelRetry: {
-            if let retryID { store.send(.cancelQueuedRetryTapped(retryID)) }
-          },
-          dismiss: {
-            if let id = interrupted.journalID {
-              store.send(.interruptedDismissedFor(id))
-            } else {
-              store.send(.interruptedDismissed)
-            }
-          })
-      }
-      if let context = store.correctionContext {
-        CorrectionContextBanner(
-          context: context,
-          dismiss: { store.send(.correctionDismissed) })
-      }
-      if let phase = chrome.exportPhase {
-        switch phase {
-        case .exporting: ProgressView("Exporting conversation…")
-        case .ready:
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Export ready").font(.headline)
-            Button(action: chrome.shareExport) {
-              Label("Share JSONL export", systemImage: "square.and.arrow.up")
-                .cregTextButtonLabelTarget()
-            }.accessibilityIdentifier("conversation-export-share")
-          }.frame(maxWidth: .infinity, alignment: .leading)
+      ForEach(Array(ChatNotice.items(store: store, chrome: chrome).enumerated()), id: \.offset) {
+        _, notice in
+        switch notice.kind {
+        case .failure(let owned):
+          FailureBanner(
+            failure: owned.failure, developerMode: chrome.developerMode,
+            dismiss: { chrome.dismissOwnedFailure(owned.owner) }, isError: notice.isError)
+          if owned.failure.recovery == .retryHistory { historyControl }
+          if case .conversationOpening = owned.owner { openingControl }
+        case .genericFailure(let failure):
+          FailureBanner(
+            failure: failure, developerMode: chrome.developerMode, dismiss: chrome.dismissFailure,
+            isError: notice.isError)
+          if failure.recovery == .retryHistory { historyControl }
+        case .history: historyControl
+        case .opening: openingControl
+        case .sql: readinessBanner
+        case .intelligence: fmAvailabilityBanner
+        case .interrupted(let interrupted): interruptionBanner(interrupted)
+        case .export: exportContent
         }
+      }
+    }
+  }
+
+  private var historyControl: some View {
+    RetryHistoryButton(
+      isLoading: chrome.historyIsLoading, retry: chrome.retryHistory,
+      isRetry: chrome.historyLoadIsRetry, isSlow: chrome.historyIsSlow)
+  }
+  @ViewBuilder private var openingControl: some View {
+    if let retry = chrome.retryOpening {
+      Button(action: retry) { Text("Retry opening conversation").cregTextButtonLabelTarget() }
+        .accessibilityIdentifier("conversation-retry-opening")
+    }
+  }
+  private func interruptionBanner(_ interrupted: InterruptedTurn) -> some View {
+    let retryID = interrupted.journalID ?? interrupted.executionID
+    return InterruptedTurnBanner(
+      interrupted: interrupted,
+      retryQueued: retryID.map { store.queuedRetryJournalIDs.contains($0) } ?? false,
+      retryInspecting: retryID.map { store.inspectingRetryJournalIDs.contains($0) } ?? false,
+      askAgain: {
+        if let id = interrupted.journalID {
+          store.send(.askAgainTappedFor(id))
+        } else {
+          store.send(.askAgainTapped)
+        }
+      },
+      cancelRetry: { if let retryID { store.send(.cancelQueuedRetryTapped(retryID)) } },
+      dismiss: {
+        if let id = interrupted.journalID {
+          store.send(.interruptedDismissedFor(id))
+        } else {
+          store.send(.interruptedDismissed)
+        }
+      })
+  }
+  @ViewBuilder private var exportContent: some View {
+    if let phase = chrome.exportPhase {
+      switch phase {
+      case .exporting: ProgressView("Exporting conversation…")
+      case .ready:
+        VStack(alignment: .leading, spacing: 8) {
+          Text("Export ready").font(.headline)
+          Button(action: chrome.shareExport) {
+            Label("Share JSONL export", systemImage: "square.and.arrow.up")
+              .cregTextButtonLabelTarget()
+          }.accessibilityIdentifier("conversation-export-share")
+        }.frame(maxWidth: .infinity, alignment: .leading)
       }
     }
   }

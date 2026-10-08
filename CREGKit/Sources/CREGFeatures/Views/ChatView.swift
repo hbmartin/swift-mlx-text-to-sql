@@ -9,6 +9,7 @@ struct ChatView: View {
   @Bindable var store: StoreOf<ChatFeature>
   let chrome: ChatChrome
   var answerSharePresented: (() -> Void)? = nil
+  var retainPendingExport: () -> Void = {}
   @State private var answerSharing = AnswerShareCoordinator()
   @FocusState private var composerIsFocused: Bool
   /// Sentinel at the end of the transcript, outside the `LazyVStack` so it is
@@ -22,14 +23,28 @@ struct ChatView: View {
   @State private var isDeleteConfirmationPresented = false
   @Namespace private var glassNamespace
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+  #if DEBUG
+    @Environment(\.cregUITestReduceMotion) private var testReduceMotion
+    private var reduceMotion: Bool { testReduceMotion ?? systemReduceMotion }
+  #else
+    private var reduceMotion: Bool { systemReduceMotion }
+  #endif
 
   var body: some View {
-    ScrollViewReader { proxy in
-      transcript(proxy: proxy)
+    GeometryReader { geometry in
+      ScrollViewReader { proxy in
+        transcript(
+          proxy: proxy,
+          compactComposer: geometry.size.height < 450
+            || (composerIsFocused && dynamicTypeSize.isAccessibilitySize))
+      }
     }
     #if canImport(UIKit)
       .sheet(item: $answerSharing.presented, onDismiss: { answerSharing.reset() }) { share in
         AnswerActivitySheet(markdown: share.markdown)
+          .cregPresentedSurfaceProbe()
+          .environment(\.dynamicTypeSize, dynamicTypeSize)
       }
       .onChange(of: answerSharing.presented?.id) { _, id in
         if id != nil { answerSharePresented?() }
@@ -44,10 +59,11 @@ struct ChatView: View {
       suggestionCount: store.followUpBatch?.suggestions.count ?? 0)
   }
 
-  private func transcript(proxy: ScrollViewProxy) -> some View {
+  private func transcript(proxy: ScrollViewProxy, compactComposer: Bool) -> some View {
     ScrollView {
       VStack(spacing: 0) {
         LazyVStack(alignment: .leading, spacing: 14) {
+          if compactComposer { appleIntelligenceCallout }
           if let identity = chrome.debugModelIdentity {
             ExperimentalModelBanner(identity: identity)
           }
@@ -65,6 +81,7 @@ struct ChatView: View {
               developerMode: chrome.developerMode,
               store: store,
               shareRequested: { moreID, markdown in
+                retainPendingExport()
                 answerSharing.request(
                   conversationID: store.conversationID, moreID: moreID, markdown: markdown)
               },
@@ -123,8 +140,10 @@ struct ChatView: View {
         scrollToLatest(proxy: proxy)
       }
     }
-    .safeAreaInset(edge: .top, spacing: 0) { header }
-    .safeAreaInset(edge: .bottom, spacing: 0) { bottomStack(proxy: proxy) }
+    .safeAreaInset(edge: .top, spacing: 0) { if !compactComposer || !composerIsFocused { header } }
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      bottomStack(proxy: proxy, compact: compactComposer)
+    }
     .alert("Rename Conversation", isPresented: $store.isRenamePresented) {
       TextField("Title", text: $store.renameDraft)
       Button("Save") { store.send(.renameCommitted) }
@@ -142,7 +161,8 @@ struct ChatView: View {
     .onChange(of: store.conversationID) { answerSharing.reset() }
     .resultViewerPresentation(
       store: store,
-      textSize: chrome.resultTableTextSize)
+      textSize: chrome.resultTableTextSize,
+      dynamicTypeSize: dynamicTypeSize)
   }
 
   // MARK: Header
@@ -221,6 +241,7 @@ struct ChatView: View {
     Menu {
       Text(store.displayTitle)
       Button {
+        retainPendingExport()
         store.send(.renameTapped)
       } label: {
         Label("Rename", systemImage: "pencil")
@@ -231,6 +252,7 @@ struct ChatView: View {
         Label("Export JSONL", systemImage: "square.and.arrow.up")
       }
       Button(role: .destructive) {
+        retainPendingExport()
         isDeleteConfirmationPresented = true
       } label: {
         Label("Delete", systemImage: "trash")
@@ -240,13 +262,14 @@ struct ChatView: View {
         Text(store.displayTitle)
           .font(.headline)
           .lineLimit(lineLimit)
+          .fixedSize(horizontal: false, vertical: true)
           .multilineTextAlignment(.center)
         Image(systemName: "chevron.down")
           .font(.caption2.weight(.semibold))
       }
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .cregGlassCapsule(interactive: true)
+      .padding(.horizontal, 14)
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .cregGlassCapsule(interactive: true)
     }
     .accessibilityLabel("\(store.displayTitle), conversation actions")
   }
@@ -254,53 +277,130 @@ struct ChatView: View {
   // MARK: Bottom stack
 
   @ViewBuilder
-  private func bottomStack(proxy: ScrollViewProxy) -> some View {
-    VStack(spacing: 8) {
-      // In the stack's normal flow rather than an overlay: `safeAreaInset`
-      // insets the transcript's safe area but not its frame, so a floating
-      // pill anchored to the scroll view lands beneath this stack.
-      jumpToLatest(proxy: proxy)
-      let summary = ChatNoticeSummary(store: store, chrome: chrome)
-      if summary.count > 0 {
-        Button(action: chrome.reviewNotices) {
-          HStack {
-            Image(systemName: "exclamationmark.bubble")
-            Text(summary.title).lineLimit(1)
-            Spacer(minLength: 4)
-            Text("\(summary.count)").monospacedDigit()
-            Image(systemName: "chevron.up")
-          }
-          .font(.callout)
-          .frame(maxWidth: .infinity, minHeight: 44)
-          .contentShape(Rectangle())
+  private func noticeButton(_ summary: ChatNoticeSummary, compact: Bool) -> some View {
+    Button(action: chrome.reviewNotices) {
+      if compact {
+        Image(systemName: summary.symbol).cregIconButtonTarget()
+      } else {
+        CREGAccessibilityActionLayout(horizontalSpacing: 8, accessibilitySpacing: 4) {
+          Label(summary.title, systemImage: summary.symbol)
+            .fixedSize(horizontal: false, vertical: true)
+        } actions: {
+          Text("\(summary.count)").monospacedDigit()
+          Image(systemName: "chevron.up")
         }
-        .accessibilityLabel("\(summary.accessibilityDescription), \(summary.count) conversation notices")
-        .accessibilityIdentifier("conversation-notices")
+        .font(.callout)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .contentShape(Rectangle())
       }
-      composer
     }
-    .padding(.horizontal, 16)
-    .padding(.bottom, 12)
+    .foregroundStyle(summary.isError ? Color.orange : Color.primary)
+    .accessibilityLabel(
+      "\(summary.accessibilityDescription), \(summary.count) conversation notices"
+    )
+    .accessibilityIdentifier("conversation-notices")
   }
 
-  private var composer: some View {
+  private func correctionContext(proxy: ScrollViewProxy, compact: Bool) -> some View {
+    Group {
+      if let context = store.correctionContext {
+        CorrectionContextBanner(
+          context: context,
+          showSource: {
+            withAnimation(reduceMotion ? nil : .default) {
+              proxy.scrollTo(context.messageID, anchor: .center)
+            }
+          },
+          dismiss: { store.send(.correctionDismissed) }, isCompact: compact)
+      }
+    }
+  }
+
+  private func bottomStack(proxy: ScrollViewProxy, compact: Bool) -> some View {
+    let summary = ChatNoticeSummary(store: store, chrome: chrome)
+    return VStack(spacing: compact ? 4 : 8) {
+      if compact {
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 8) {
+            if composerIsFocused { browserButton }
+            correctionContext(proxy: proxy, compact: true)
+            if summary.count > 0 { noticeButton(summary, compact: true) }
+            if composerIsFocused {
+              newChatButton
+              dismissKeyboardButton
+            }
+          }
+          VStack(spacing: 4) {
+            correctionContext(proxy: proxy, compact: true)
+            HStack(spacing: 8) {
+              if composerIsFocused { browserButton }
+              Spacer(minLength: 0)
+              if summary.count > 0 { noticeButton(summary, compact: true) }
+              if composerIsFocused {
+                newChatButton
+                dismissKeyboardButton
+              }
+            }
+          }
+        }
+      } else {
+        jumpToLatest(proxy: proxy)
+        if summary.count > 0 { noticeButton(summary, compact: false) }
+        appleIntelligenceCallout
+        correctionContext(proxy: proxy, compact: false)
+      }
+      composer(compact: compact)
+    }
+    .padding(.horizontal, 16)
+    .padding(.bottom, compact ? 4 : 12)
+  }
+
+  @ViewBuilder
+  private var appleIntelligenceCallout: some View {
+    if case .unavailable(.appleIntelligenceNotEnabled) = chrome.fmAvailability {
+      Label(
+        "Turn on Apple Intelligence in Settings › Apple Intelligence & Siri.",
+        systemImage: "apple.intelligence"
+      )
+      .font(.footnote).fixedSize(horizontal: false, vertical: true)
+      .accessibilityIdentifier("apple-intelligence-callout")
+    }
+  }
+
+  private var dismissKeyboardButton: some View {
+    Button {
+      composerIsFocused = false
+    } label: {
+      Image(systemName: "keyboard.chevron.compact.down").cregIconButtonTarget()
+    }
+    .accessibilityLabel("Dismiss keyboard")
+  }
+
+  private func composer(compact: Bool) -> some View {
     // The container's spacing is the glass merge radius: keep it below the
     // stack's gap so the field and the Send control read as two controls
     // rather than blending into one blob.
     CREGGlassContainer(spacing: 6) {
       HStack(alignment: .bottom, spacing: 14) {
         TextField(
-          "Ask about your portfolio…",
+          store.correctionContext == nil
+            ? "Ask about your portfolio…" : "Tell CREG what was wrong…",
           text: $store.composerText,
           axis: .vertical
         )
-        .lineLimit(1...5)
+        .lineLimit(compact || dynamicTypeSize.isAccessibilitySize ? 1...1 : 1...5)
+        .accessibilityIdentifier("conversation-composer")
         .textFieldStyle(.plain)
+        .accessibilityValue(
+          store.correctionContext == nil
+            ? store.composerText : "Correction mode. \(store.composerText)"
+        )
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, compact ? 8 : 12)
         .disabled(
           chrome.modelReadiness != .ready
-            || chrome.fmAvailability != .available)
+            || chrome.fmAvailability != .available
+        )
         .focused($composerIsFocused)
         .onSubmit { requestSend() }
         .onChange(of: composerIsFocused) {

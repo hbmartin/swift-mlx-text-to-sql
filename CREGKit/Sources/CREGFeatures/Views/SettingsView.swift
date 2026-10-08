@@ -11,6 +11,7 @@ import SwiftUI
 struct SettingsView: View {
   @Bindable var store: StoreOf<AppFeature>
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @State private var presentedSupportID: UUID?
 
   var body: some View {
     NavigationStack {
@@ -21,7 +22,7 @@ struct SettingsView: View {
               dismiss: { store.send(.dismissOwnedFailure($0)) })
             if store.visibleFailures.contains(where: { $0.failure.recovery == .retryHistory }) {
               RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
-                retry: { store.send(.retryHistoryTapped) }, isRetry: store.historyLoadIsRetry)
+                retry: { store.send(.retryHistoryTapped) }, isRetry: store.historyLoadIsRetry, isSlow: store.slowHistoryRequestID != nil)
             }
           }
         }
@@ -114,9 +115,16 @@ struct SettingsView: View {
       .sheet(
         item: Binding(
           get: { store.supportBundleExport },
-          set: { if $0 == nil { store.send(.supportBundleDismissed) } })
+          set: { _ in }),
+        onDismiss: {
+          if let id = presentedSupportID { store.send(.supportBundleDismissed(id)) }
+          presentedSupportID = nil
+        }
       ) { export in
         SupportBundleSendView(export: export)
+          .cregPresentedSurfaceProbe()
+          .environment(\.dynamicTypeSize, dynamicTypeSize)
+          .onAppear { presentedSupportID = export.requestID }
       }
     }
   }
@@ -227,7 +235,7 @@ enum PortfolioAsOfDateDisplay {
 }
 
 extension AppFeature.SupportBundleExport: Identifiable {
-  public var id: URL { url }
+  public var id: UUID { requestID }
 }
 
 /// Pre-addressed Mail composition for the Support Bundle, with a share-sheet
@@ -261,8 +269,6 @@ struct SupportBundleSendView: View {
 struct SupportBundleFallbackView: View {
   let url: URL
   var done: () -> Void
-  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-  @State private var selectedDetent: PresentationDetent = .large
 
   var body: some View {
     ScrollView {
@@ -273,6 +279,8 @@ struct SupportBundleFallbackView: View {
         Text("Mail isn’t configured on this iPhone")
           .font(.headline)
           .fixedSize(horizontal: false, vertical: true)
+          .multilineTextAlignment(.center)
+          .frame(maxWidth: .infinity)
         Text(
           "Share the bundle another way and send it to \(SupportBundleSendView.supportAddress). \(SupportBundleSendView.sensitiveContentsWarning)"
         )
@@ -280,6 +288,7 @@ struct SupportBundleFallbackView: View {
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
         .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity)
         .accessibilityIdentifier("support-bundle-warning")
         ShareLink(item: url) {
           Label {
@@ -300,11 +309,7 @@ struct SupportBundleFallbackView: View {
       .padding(24)
       .frame(maxWidth: .infinity)
     }
-    .presentationDetents([.medium, .large], selection: $selectedDetent)
-    .onAppear { selectedDetent = dynamicTypeSize.isAccessibilitySize ? .large : .medium }
-    .onChange(of: dynamicTypeSize) {
-      if dynamicTypeSize.isAccessibilitySize { selectedDetent = .large }
-    }
+    .presentationDetents([.large])
   }
 }
 

@@ -227,7 +227,7 @@ Starter Queries follow the typed deterministic path in ADR 0006. They are review
 - Chart recommendations use typed values, frozen-schema hints, conservative SQL projection semantics, completeness, and deterministic task cues. Unsafe implicit aggregation, identifier measures, and incomplete composition are rejected. Truncated trends, scatterplots, and distributions remain available only with a visible first-returned-rows warning.
 - The Result Viewer can copy, share, or export the full returned table as CSV or Markdown. Export scope is never reduced by chart selection.
 - Answer actions include: copy the complete answer as Markdown (narration plus returned table); Read Aloud for narration only using on-device speech with play, pause, and stop; and share the combined answer. The table menu separately handles CSV and full-table export.
-- **Helpful** and **Not right** are reversible, local feedback attached to a completed answer. Not right opens correction context in the composer tied to that answer but does not send automatically. Feedback is included in the Support Bundle.
+- **Helpful** and **Not right** are reversible, local feedback attached to a completed answer. Not right opens compact correction context beside the composer, with a link to the source answer and a dismissal control. The placeholder becomes “Tell CREG what was wrong…”. Only typed Send or its focus-settled submission records correction feedback. Starter chips, prepared follow-ups, Try again, and Ask Again preserve the correction context and typed draft. Feedback is included in the Support Bundle.
 
 ### Visual design and verification
 

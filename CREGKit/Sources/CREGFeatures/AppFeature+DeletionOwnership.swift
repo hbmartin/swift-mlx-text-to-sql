@@ -13,6 +13,7 @@ extension AppFeature {
     public var summary: ConversationSummary
     public var phase: DeletionPhase = .undoWindow
     public var deferredFailures: [FailurePresentation] = []
+    public var deferredOperationFailures: [OwnedFailure] = []
     public var diagnosticOperationNumber: UInt64 = 0
     public init(token: UUID, summary: ConversationSummary) {
       self.token = token
@@ -70,7 +71,7 @@ extension AppFeature.State {
     searchHits.filter { isConversationLive($0.conversationID) }
   }
   public func hasOutstandingWrites(in id: UUID) -> Bool {
-    conversationCreations.values.contains(id) || summaryWrites.values.contains(id)
+    conversationCreations.values.contains(id) || summaryWrites.values.contains { $0.conversationID == id }
       || pendingTurnPersistence?.conversationID == id || pendingInterruptedTurn?.conversationID == id
       || activeTurn?.conversationID == id
       || retryJournals.values.contains {

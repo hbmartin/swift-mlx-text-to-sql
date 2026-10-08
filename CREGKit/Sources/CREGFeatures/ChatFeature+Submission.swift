@@ -10,6 +10,7 @@ extension ChatFeature {
     state: inout State,
     submittedQuestion: String? = nil,
     clearsComposer: Bool = true,
+    capturesCorrection: Bool = false,
     starter: StarterQueryID? = nil,
     preparedFollowUp: PreparedFollowUp? = nil
   ) -> Effect<Action> {
@@ -37,8 +38,8 @@ extension ChatFeature {
               clearsComposerOnAcceptance: clearsComposer))))
     ]
 
-    // A pending Not right correction records the question that follows it.
-    if let context = state.correctionContext,
+    // Only an explicit typed composer submission records pending correction feedback.
+    if capturesCorrection, let context = state.correctionContext,
       var existing = state.feedback[context.messageID]
     {
       existing.correction = question

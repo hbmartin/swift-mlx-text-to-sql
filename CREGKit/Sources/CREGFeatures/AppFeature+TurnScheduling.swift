@@ -573,12 +573,6 @@ extension AppFeature {
     state.seedRetry(
       resolvedJournalID, conversationID: chat.conversationID, interruption: interrupted)
     state.invalidateRetryInspection(resolvedJournalID)
-    state.failures.removeAll {
-      if case .retry(let conversationID, let journalID, _) = $0.owner {
-        return conversationID == chat.conversationID && journalID == resolvedJournalID
-      }
-      return false
-    }
     state.promoteRetry(resolvedJournalID)
     if state.clearFailedDismissal(resolvedJournalID) {
       state.retryJournals[resolvedJournalID]?.intent = .idle

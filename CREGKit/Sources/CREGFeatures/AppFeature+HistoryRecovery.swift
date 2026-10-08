@@ -3,15 +3,33 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
-  public enum HistoryStoreAvailability: Equatable, Sendable { case unopened, available, unavailable }
+  public enum HistoryStoreAvailability: Equatable, Sendable {
+    case unopened, available, unavailable
+  }
   struct HistorySummaryTimeoutID: Hashable { var requestID: UInt64 }
+
+  struct SummaryWrite: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+      case rename
+      case unread(previous: Bool)
+    }
+    var conversationID: UUID
+    var kind: Kind
+  }
+  public enum ConversationOperation: Equatable, Hashable, Sendable { case rename, export }
   public enum HistorySummaryPhase: Equatable, Sendable {
-    case idle, loading(UInt64), loaded, failed(UInt64)
+    case idle
+    case loading(UInt64)
+    case loaded
+    case failed(UInt64)
     public var isLoading: Bool { if case .loading = self { true } else { false } }
   }
 
   public struct ConversationOpening: Equatable, Sendable {
-    public enum Kind: Equatable, Sendable { case load(UUID), create(UUID) }
+    public enum Kind: Equatable, Sendable {
+      case load(UUID)
+      case create(UUID)
+    }
     public enum Phase: Equatable, Sendable { case loading, failed }
     public var requestID: UInt64
     public var kind: Kind
@@ -23,6 +41,7 @@ extension AppFeature {
     case historySummaries(UInt64)
     case conversationOpening(UInt64)
     case conversation(UUID)
+    case conversationOperation(UUID, ConversationOperation)
     case turnPersistence(UUID)
     case retry(conversationID: UUID, journalID: UUID, generation: Int)
   }
@@ -32,15 +51,19 @@ extension AppFeature {
     public var failure: FailurePresentation
   }
 
-  func bootstrapHistory(state: inout State) -> Effect<Action> {
-    guard !state.historySummaryPhase.isLoading else { return .none }
+  func bootstrapHistory(state: inout State, restart: Bool = false) -> Effect<Action> {
+    guard restart || !state.historySummaryPhase.isLoading else { return .none }
+    let cancelWarning = cancelHistoryWarning(state: &state)
+    state.clearSummaryFailures()
+    state.slowHistoryRequestID = nil
     let requestID = state.nextHistoryRequestID()
     if state.chat != nil, state.historyStoreAvailability == .unopened {
       state.historyStoreAvailability = .available
     }
     state.historyLoadIsRetry = state.historySummaryPhase != .idle
     state.historySummaryPhase = .loading(requestID)
-    state.historySummaryBaseline = Dictionary(uniqueKeysWithValues: state.conversations.map { ($0.id, $0) })
+    state.historySummaryBaseline = Dictionary(
+      uniqueKeysWithValues: state.conversations.map { ($0.id, $0) })
     state.historySummaryProtectedIDs = state.summaryProtectedConversationIDs
     let load = Effect<Action>.run { send in
       do {
@@ -49,14 +72,49 @@ extension AppFeature {
         await send(.bootstrapFinished(summaries, requestID: requestID))
       } catch {
         guard !Task.isCancelled else { return }
-        await send(.historyBootstrapFailed(requestID,
-          .history(operation: .summaryLoad, error: error), storeUnavailable: error is HistoryStoreUnavailableError))
+        await send(
+          .historyBootstrapFailed(
+            requestID,
+            .history(operation: .summaryLoad, error: error),
+            storeUnavailable: error is HistoryStoreUnavailableError))
       }
     }.cancellable(id: CancelID.historySummaries, cancelInFlight: true)
-    return .merge(load, .run { send in
+    return .merge(cancelWarning, load, armHistoryWarning(state: &state))
+  }
+
+  func cancelHistoryWarning(state: inout State) -> Effect<Action> {
+    state.historyWatchdogGeneration += 1
+    guard case .loading(let requestID) = state.historySummaryPhase else { return .none }
+    return .cancel(id: HistorySummaryTimeoutID(requestID: requestID))
+  }
+
+  func armHistoryWarning(state: inout State) -> Effect<Action> {
+    guard state.isSceneActive, case .loading(let requestID) = state.historySummaryPhase,
+      state.slowHistoryRequestID != requestID
+    else { return .none }
+    state.historyWatchdogGeneration += 1
+    let generation = state.historyWatchdogGeneration
+    return .run { send in
       try await clock.sleep(for: .seconds(5))
-      await send(.historySummaryTimedOut(requestID))
-    }.cancellable(id: HistorySummaryTimeoutID(requestID: requestID)))
+      await send(.historySummaryTimedOut(requestID, generation: generation))
+    }.cancellable(id: HistorySummaryTimeoutID(requestID: requestID), cancelInFlight: true)
+  }
+
+  func setConversationUnread(state: inout State, id: UUID, unread: Bool) -> Effect<Action> {
+    let previous = state.conversations[id: id]?.isUnread ?? false
+    let operationID = uuid()
+    state.conversations[id: id]?.isUnread = unread
+    state.unreadMutationOwners[id] = operationID
+    state.summaryWrites[operationID] = .init(conversationID: id, kind: .unread(previous: previous))
+    return .run { send in
+      do {
+        try await history.setUnread(id, unread)
+        await send(.summaryWriteSettled(operationID, nil))
+      } catch {
+        await send(
+          .summaryWriteSettled(operationID, .history(operation: .messageSave, error: error)))
+      }
+    }
   }
 
   func beginConversationCreation(state: inout State) -> Effect<Action> {
@@ -80,9 +138,13 @@ extension AppFeature {
       .cancel(id: CancelID.conversationLoad),
       .run { send in
         do {
-          await send(.conversationCreated(try await history.createConversation(id, startedAt), requestID: requestID))
+          await send(
+            .conversationCreated(
+              try await history.createConversation(id, startedAt), requestID: requestID))
         } catch {
-          await send(.conversationOpeningFailed(requestID, .history(operation: .conversationCreate, error: error)))
+          await send(
+            .conversationOpeningFailed(
+              requestID, .history(operation: .conversationCreate, error: error)))
         }
       })
   }
@@ -107,8 +169,10 @@ extension AppFeature {
   }
 
   func recordFailure(_ failure: FailurePresentation) {
-    diagnostics.record(DiagnosticEvent(level: .error, category: .history,
-      code: failure.code, summary: failure.title, details: failure.diagnostic))
+    diagnostics.record(
+      DiagnosticEvent(
+        level: .error, category: .history,
+        code: failure.code, summary: failure.title, details: failure.diagnostic))
   }
 }
 
@@ -133,6 +197,7 @@ extension AppFeature.State {
 
   public var canCreateConversation: Bool { !historyStoreUnavailable }
   public var canRetryHistory: Bool {
+    if slowHistoryRequestID != nil { return true }
     if failures.contains(where: { $0.failure.recovery == .retryHistory }) { return true }
     if case .failed = historySummaryPhase { return true }
     return false
@@ -143,7 +208,8 @@ extension AppFeature.State {
       switch $0.owner {
       case .global, .historySummaries: true
       case .conversationOpening(let requestID): conversationOpening?.requestID == requestID
-      case .conversation(let id): chat?.conversationID == id && isConversationLive(id)
+      case .conversation(let id), .conversationOperation(let id, _):
+        chat?.conversationID == id && isConversationLive(id)
       case .turnPersistence(let questionID): pendingTurnPersistence?.questionID == questionID
       case .retry(let id, let journalID, let generation):
         chat?.conversationID == id && isConversationLive(id)
@@ -158,14 +224,22 @@ extension AppFeature.State {
   public var presentedFailure: FailurePresentation? {
     get { visibleFailures.last?.failure }
     set {
-      if let newValue { storeFailure(newValue, owner: .global) }
-      else if let owner = visibleFailures.last?.owner { failures.removeAll { $0.owner == owner } }
+      if let newValue {
+        storeFailure(newValue, owner: .global)
+      } else if let owner = visibleFailures.last?.owner {
+        failures.removeAll { $0.owner == owner }
+      }
     }
   }
 
   mutating func storeFailure(_ failure: FailurePresentation, owner: AppFeature.FailureOwner) {
     failures.removeAll { $0.owner == owner }
     failures.append(.init(owner: owner, failure: failure))
+  }
+
+  mutating func markHistoryStoreAvailable() {
+    historyStoreAvailability = .available
+    failures.removeAll { $0.failure.cause == .historyStoreUnavailable }
   }
 
   mutating func clearSummaryFailures() {
@@ -184,11 +258,13 @@ extension AppFeature.State {
   }
 
   var summaryProtectedConversationIDs: Set<UUID> {
-    var ids = Set(summaryWrites.values)
+    var ids = Set(summaryWrites.values.map(\.conversationID))
     ids.formUnion(conversationCreations.values)
     ids.formUnion(queue.map(\.conversationID))
-    for id in [activeTurn?.conversationID, pendingTurnPersistence?.conversationID,
-      pendingInterruptedTurn?.conversationID].compactMap({ $0 }) { ids.insert(id) }
+    for id in [
+      activeTurn?.conversationID, pendingTurnPersistence?.conversationID,
+      pendingInterruptedTurn?.conversationID,
+    ].compactMap({ $0 }) { ids.insert(id) }
     for journal in retryJournals.values where journal.operations.values.contains(where: \.isWrite) {
       ids.insert(journal.conversationID)
     }
@@ -204,7 +280,8 @@ extension AppFeature.State {
       var next = summary
       if let current {
         if current != historySummaryBaseline[summary.id] || protected.contains(summary.id)
-          || current.suggestionGeneration > summary.suggestionGeneration {
+          || current.suggestionGeneration > summary.suggestionGeneration
+        {
           next = current
         }
         next.suggestionGeneration = max(current.suggestionGeneration, summary.suggestionGeneration)

@@ -418,6 +418,7 @@ struct AnswerActionsRow: View {
         } : nil,
       share: shareAction(moreID: moreID)
     )
+    .cregPresentedSurfaceProbe()
     .environment(\.dynamicTypeSize, dynamicTypeSize)
     .presentationCompactAdaptation(.popover)
     #if canImport(UIKit)

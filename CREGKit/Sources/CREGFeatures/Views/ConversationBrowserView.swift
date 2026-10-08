@@ -12,6 +12,7 @@ struct ConversationBrowserView: View {
   @FocusState private var isSearchFocused: Bool
 
   var body: some View {
+    let queuedCounts = Dictionary(store.queue.map { ($0.conversationID, 1) }, uniquingKeysWith: +)
     VStack(alignment: .leading, spacing: 12) {
       // Keep the focused field outside scrolling recovery content. Collapsing
       // the brand heading leaves room for controls above a landscape keyboard.
@@ -22,65 +23,82 @@ struct ConversationBrowserView: View {
           .padding(.top, 8)
       }
       searchField
-      GeometryReader { geometry in
-        ScrollView {
-          content.frame(minHeight: geometry.size.height, alignment: .top)
+      ViewThatFits(in: .vertical) {
+        VStack(alignment: .leading, spacing: 12) {
+          historyControls
+          historyScroller(compact: false, queuedCounts: queuedCounts).frame(minHeight: 44)
+          settingsButton
         }
-        .scrollDismissesKeyboard(.never)
-        .accessibilityIdentifier("browser-history-scroll")
+        historyScroller(compact: true, queuedCounts: queuedCounts)
       }
+
     }
     .onChange(of: store.isBrowserRevealed) { _, revealed in
       if !revealed { isSearchFocused = false }
     }
   }
 
-  private var content: some View {
+  private var historyControls: some View {
     VStack(alignment: .leading, spacing: 12) {
       if store.canRetryHistory || store.historySummaryPhase.isLoading {
-        RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
-          retry: { store.send(.retryHistoryTapped) }, accessibilityID: "browser-history-retry", isRetry: store.historyLoadIsRetry)
-          .padding(.horizontal, 20)
+        RetryHistoryButton(
+          isLoading: store.historySummaryPhase.isLoading,
+          retry: { store.send(.retryHistoryTapped) }, accessibilityID: "browser-history-retry",
+          isRetry: store.historyLoadIsRetry, isSlow: store.slowHistoryRequestID != nil
+        )
+        .padding(.horizontal, 20)
       }
       Button {
         store.send(.newChatTapped)
       } label: {
         Label("New Chat", systemImage: "square.and.pencil")
-          .font(.body.weight(.medium))
-          .fixedSize(horizontal: false, vertical: true)
+          .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .cregTextButtonLabelTarget()
+          .padding(.horizontal, 12).padding(.vertical, 10).cregTextButtonLabelTarget()
       }
-      .buttonStyle(.plain)
-      .disabled(!store.canCreateConversation)
-      .padding(.horizontal, 8)
-
-      if isSearching {
-        searchResults.frame(minHeight: 200)
-      } else {
-        recents.frame(minHeight: 200)
-      }
-
-      Spacer(minLength: 0)
-
-      Button {
-        store.isSettingsPresented = true
-      } label: {
-        Label("Settings", systemImage: "gearshape")
-          .font(.body)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .cregTextButtonLabelTarget()
-      }
-      .buttonStyle(.plain)
-      .padding(.horizontal, 8)
-      .padding(.bottom, 8)
+      .buttonStyle(.plain).disabled(!store.canCreateConversation).padding(.horizontal, 8)
     }
-    .frame(maxHeight: .infinity, alignment: .top)
+  }
+  private var settingsButton: some View {
+    Button {
+      store.isSettingsPresented = true
+    } label: {
+      Label("Settings", systemImage: "gearshape")
+        .font(.body).fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12).padding(.vertical, 10).cregTextButtonLabelTarget()
+    }
+    .buttonStyle(.plain).padding(.horizontal, 8).padding(.bottom, 8)
+  }
+
+  private func historyScroller(compact: Bool, queuedCounts: [UUID: Int]) -> some View {
+    return ScrollView {
+      LazyVStack(alignment: .leading, spacing: 2) {
+        if compact {
+          historyControls
+          settingsButton
+        }
+        if isSearching {
+          searchResults
+        } else {
+          Text("Recents").font(.footnote.weight(.semibold)).textCase(.uppercase)
+            .foregroundStyle(.secondary).padding(.horizontal, 12)
+          ForEach(store.visibleConversations) { summary in
+            ConversationRow(
+              summary: summary,
+              isSelected: store.chat?.conversationID == summary.id,
+              isRunning: store.activeTurn?.conversationID == summary.id,
+              queuedCount: queuedCounts[summary.id, default: 0], now: now,
+              select: { store.send(.conversationSelected(summary.id)) },
+              delete: { store.send(.deleteConversationTapped(summary.id)) }
+            )
+            .equatable()
+          }
+        }
+      }.padding(.horizontal, 8)
+    }
+    .scrollDismissesKeyboard(.never)
+    .accessibilityIdentifier("browser-history-scroll")
   }
 
   private var isSearching: Bool {
@@ -114,74 +132,51 @@ struct ConversationBrowserView: View {
     .padding(.horizontal, 16)
   }
 
-  private var recents: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Text("Recents")
-        .font(.footnote.weight(.semibold))
-        .textCase(.uppercase)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 20)
-      ScrollView {
-        LazyVStack(spacing: 2) {
-          ForEach(store.visibleConversations) { summary in
-            ConversationRow(
-              summary: summary,
-              isSelected: store.chat?.conversationID == summary.id,
-              isRunning: store.activeTurn?.conversationID == summary.id,
-              queuedCount: store.queue
-                .count { $0.conversationID == summary.id },
-              now: now,
-              select: { store.send(.conversationSelected(summary.id)) },
-              delete: {
-                store.send(.deleteConversationTapped(summary.id))
-              })
-          }
-        }
-        .padding(.horizontal, 8)
-      }
-      .scrollDismissesKeyboard(.never)
-    }
-  }
-
   private var searchResults: some View {
-    ScrollView {
-      LazyVStack(alignment: .leading, spacing: 2) {
-        if store.visibleSearchHits.isEmpty {
-          Text("No matches")
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-        }
-        ForEach(store.visibleSearchHits) { hit in
-          Button {
-            store.send(.conversationSelected(hit.conversationID))
-          } label: {
-            VStack(alignment: .leading, spacing: 3) {
-              Text(hit.title.isEmpty ? "New Chat" : hit.title)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-              Text(hit.snippet)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-        }
+    Group {
+      if store.visibleSearchHits.isEmpty {
+        Text("No matches")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 20)
+          .padding(.top, 12)
       }
-      .padding(.horizontal, 8)
+      ForEach(store.visibleSearchHits) { hit in
+        Button {
+          store.send(.conversationSelected(hit.conversationID))
+        } label: {
+          VStack(alignment: .leading, spacing: 3) {
+            Text(hit.title.isEmpty ? "New Chat" : hit.title)
+              .font(.subheadline.weight(.medium))
+              .fixedSize(horizontal: false, vertical: true)
+            Text(hit.snippet)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+      }
     }
-    .scrollDismissesKeyboard(.never)
   }
 }
 
-struct ConversationRow: View {
+@MainActor
+struct ConversationRow: View, Equatable {
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.summary == rhs.summary && lhs.isSelected == rhs.isSelected && lhs.isRunning == rhs.isRunning
+      && lhs.queuedCount == rhs.queuedCount && lhs.now == rhs.now
+  }
+  private static let dateFormatter: RelativeDateTimeFormatter = {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    return formatter
+  }()
   let summary: ConversationSummary
   let isSelected: Bool
   let isRunning: Bool
@@ -192,6 +187,9 @@ struct ConversationRow: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
+    #if DEBUG
+      let _ = DrawerRowProbe.render(summary.id)
+    #endif
     Button(action: select) {
       CREGAccessibilityActionLayout(
         hStackAlignment: .top,
@@ -203,7 +201,7 @@ struct ConversationRow: View {
           HStack(spacing: 6) {
             Text(summary.displayTitle)
               .font(.subheadline.weight(.medium))
-              .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+              .fixedSize(horizontal: false, vertical: true)
             if isRunning {
               ProgressView()
                 .controlSize(.mini)
@@ -221,7 +219,7 @@ struct ConversationRow: View {
             Text(summary.latestMessagePreview)
               .font(.caption)
               .foregroundStyle(.secondary)
-              .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
       } actions: {
@@ -245,7 +243,8 @@ struct ConversationRow: View {
       .frame(minHeight: 44)
       .background(
         isSelected ? CREGBrand.blue.opacity(0.12) : .clear,
-        in: RoundedRectangle(cornerRadius: 12))
+        in: RoundedRectangle(cornerRadius: 12)
+      )
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -255,13 +254,14 @@ struct ConversationRow: View {
       }
     }
     .accessibilityElement(children: .combine)
+    #if DEBUG
+      .onAppear { DrawerRowProbe.appear(summary.id) }
+    #endif
   }
 
   private var relativeTime: String {
     let interval = now.timeIntervalSince(summary.lastActivityAt)
     if interval < 60 { return "Now" }
-    let formatter = RelativeDateTimeFormatter()
-    formatter.unitsStyle = .abbreviated
-    return formatter.localizedString(for: summary.lastActivityAt, relativeTo: now)
+    return Self.dateFormatter.localizedString(for: summary.lastActivityAt, relativeTo: now)
   }
 }

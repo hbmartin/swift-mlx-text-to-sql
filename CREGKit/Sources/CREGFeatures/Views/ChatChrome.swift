@@ -20,6 +20,7 @@ struct ChatChrome {
   var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
   var canRetryHistory = false
   var historyIsLoading = false
+  var historyIsSlow = false
   var retryHistory: () -> Void = {}
   var retryOpening: (() -> Void)?
   var canCreateConversation = true

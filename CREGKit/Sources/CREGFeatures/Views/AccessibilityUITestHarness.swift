@@ -35,6 +35,8 @@ import Synchronization
       case conversationNotices = "conversation-notices"
       case retainedExport = "retained-export"
       case browserRefresh = "browser-refresh"
+      case browserPerformance = "browser-performance"
+      case appleIntelligenceDisabled = "apple-intelligence-disabled"
     }
 
     enum Request: Equatable, Sendable {
@@ -233,8 +235,9 @@ import Synchronization
         SupportBundleFallbackView(
           url: URL(fileURLWithPath: "/tmp/creg-preview-support.zip"), done: { isPresented = false }
         )
-        .environment(\.dynamicTypeSize, dynamicTypeSize)
         .accessibilityIdentifier("ui-test-support-bundle-fallback")
+        .cregPresentedSurfaceProbe()
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
       }
     }
   }
@@ -288,6 +291,7 @@ import Synchronization
           sql: StarterQueryID.portfolioValueByFundV1.sql,
           question: StarterQueryID.portfolioValueByFundV1.question,
           preference: $resultExplorerPreference)
+          .cregPresentedSurfaceProbe()
 
       case .resultPreviewIdentity:
         ResultPreviewIdentityAccessibilityHarness()
@@ -334,7 +338,7 @@ import Synchronization
         SettingsView(
           store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
 
-      case .conversationNotices, .retainedExport, .browserRefresh:
+      case .conversationNotices, .retainedExport, .browserRefresh, .browserPerformance, .appleIntelligenceDisabled:
         NoticesAccessibilityHarness(scenario: scenario)
 
       case .transientBanners:
@@ -353,20 +357,21 @@ import Synchronization
       return state
     }
 
-    private var errorChat: some View {
-      var chrome = PreviewFixtures.chrome
-      chrome.presentedFailure = PreviewFixtures.presentationFailure
-      return ChatView(
-        store: PreviewFixtures.chatStore(PreviewFixtures.answeredChatState()),
-        chrome: chrome)
-    }
+
   }
 
   @MainActor
   struct NoticesAccessibilityHarness: View {
     @State private var store: StoreOf<AppFeature>
+    @State private var heldExport: HeldUITestExport
+    private let scenario: AccessibilityUITestConfiguration.Scenario
+    private let selectedID: UUID
+    private let otherID: UUID
     init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationNotices) {
-      var initial = PreviewFixtures.appState(revealed: scenario == .browserRefresh,
+      self.scenario = scenario
+      let held = HeldUITestExport()
+      _heldExport = State(initialValue: held)
+      var initial = PreviewFixtures.appState(revealed: scenario == .browserRefresh || scenario == .browserPerformance,
         chat: scenario == .recovery ? PreviewFixtures.recoveryChatState() : PreviewFixtures.answeredChatState())
       initial.historyStoreAvailability = .available
       initial.historySummaryPhase = .loaded
@@ -374,6 +379,16 @@ import Synchronization
       initial.didRequestPreparationJournalInspection = true
       initial.didHandlePreparationJournalInspection = true
       let id = initial.chat!.conversationID
+      selectedID = id
+      otherID = initial.conversations.first(where: { $0.id != id })!.id
+      if scenario == .browserPerformance {
+        DrawerRowProbe.enabled = true
+        DrawerRowProbe.realized = []; DrawerRowProbe.renders = [:]
+        initial.conversations = IdentifiedArray(uniqueElements: (0..<1000).map { index in
+          ConversationSummary(id: UUID(), title: "Saved conversation \(index)", startedAt: PreviewFixtures.now,
+            lastActivityAt: PreviewFixtures.now, latestMessagePreview: "Saved question")
+        })
+      }
       if scenario == .error || scenario == .conversationNotices {
         for index in 0..<(scenario == .error ? 1 : 6) {
           initial.storeFailure(PreviewFixtures.presentationFailure, owner: .historySummaries(UInt64(index)))
@@ -383,7 +398,7 @@ import Synchronization
         initial.chat?.interruptedTurns = PreviewFixtures.recoveryChatState().interruptedTurns
         initial.chat?.correctionContext = PreviewFixtures.recoveryChatState().correctionContext
       }
-      if scenario == .retainedExport || scenario == .conversationNotices {
+      if scenario == .conversationNotices {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("creg-conversation-preview-\(UUID()).jsonl")
         try? Data("{}\n".utf8).write(to: url)
         initial.conversationExports[id] = .init(conversationID: id, requestID: PreviewFixtures.id("9"), phase: .ready(url))
@@ -396,16 +411,40 @@ import Synchronization
       let summaries = Array(initial.conversations)
       var history = HistoryClient.noop()
       history.bootstrap = { try await Task.sleep(for: .milliseconds(300)); return summaries }
+      history.loadConversation = { id in ConversationSnapshot(summary: summaries.first(where: { $0.id == id })!) }
+      history.exportJSONL = { id in try await held.export(id) }
       let controlledHistory = history
       _store = State(initialValue: Store(initialState: initial) { AppFeature() } withDependencies: {
         $0.historyClient = controlledHistory
-        $0.fmStatus = FMStatusClient(availability: { .available })
+        $0.fmStatus = FMStatusClient(availability: { scenario == .appleIntelligenceDisabled ? .unavailable(reason: .appleIntelligenceNotEnabled) : .available })
         $0.haptics = .noop
         $0.diagnostics = .noop
         $0.continuousClock = ContinuousClock()
       })
     }
-    var body: some View { AppRootView(store: store, now: PreviewFixtures.now) }
+    var body: some View {
+      VStack(spacing: 0) {
+        if scenario == .retainedExport {
+          HStack {
+            Button("Finish") { Task { await heldExport.finish() } }
+              .accessibilityLabel("Complete held export")
+              .accessibilityIdentifier("held-export-complete").frame(minHeight: 44)
+            Button("Return") { store.send(.conversationSelected(selectedID)) }
+              .accessibilityLabel("Return to source chat")
+              .accessibilityIdentifier("held-export-return").frame(minHeight: 44)
+          }
+        }
+        if scenario == .browserPerformance { DrawerPerformanceProbe(store: store) }
+        AppRootView(store: store, now: PreviewFixtures.now)
+      }
+      .environment(\.cregUITestReduceMotion, scenario == .recovery ? true : nil)
+      .task {
+        if scenario == .retainedExport {
+          store.send(.chat(.delegate(.exportRequested(selectedID))))
+          store.send(.conversationSelected(otherID))
+        }
+      }
+    }
   }
 
   @MainActor

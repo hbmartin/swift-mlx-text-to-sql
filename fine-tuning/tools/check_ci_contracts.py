@@ -132,6 +132,16 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testRetainedExportDoesNotAutomaticallyPresentSharing",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testBrowserRefreshPreservesSearchAndKeyboardFocus",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testCanonicalScreensDoNotClipTextOrShrinkHitRegions",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testPresentedSheetsReceiveEffectiveAX5",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testAccessibleHeadersWrapAtLargeTextSizes",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
