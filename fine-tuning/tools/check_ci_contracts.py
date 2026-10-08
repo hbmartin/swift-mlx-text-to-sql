@@ -126,6 +126,12 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testRetryInspectionOffersDismissOnlyAtAX5PortraitAndLandscape",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testSupportWarningAtAX5PortraitAndLandscape",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testConversationNoticesScrollAndRetainDismissalState",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testRetainedExportDoesNotAutomaticallyPresentSharing",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testBrowserRefreshPreservesSearchAndKeyboardFocus",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )

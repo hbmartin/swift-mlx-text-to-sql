@@ -101,6 +101,7 @@ extension AppFeature {
     activeTurn.replacingJournalID = replacingJournalID
     activeTurn.suggestionGeneration = suggestionGeneration
     if let replacingJournalID {
+      state.clearRetryFailures(replacingJournalID)
       activeTurn.replacedInterruptedTurn = state.retryJournals[replacingJournalID]?.interruption
         ?? (state.chat?.conversationID == conversationID
           ? state.chat?.interruptedTurns.first { $0.journalID == replacingJournalID } : nil)

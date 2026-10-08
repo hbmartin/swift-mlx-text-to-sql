@@ -2,10 +2,11 @@ import CREGEngine
 import Foundation
 
 /// Opening failure is distinct from a read or write failure on an open store.
-public struct HistoryStoreUnavailableError: LocalizedError, Sendable {
+public struct HistoryStoreUnavailableError: CustomStringConvertible, LocalizedError, Sendable {
   public var diagnostic: String
   public init(diagnostic: String) { self.diagnostic = diagnostic }
   public var errorDescription: String? { diagnostic }
+  public var description: String { diagnostic }
 }
 
 extension HistoryClient {

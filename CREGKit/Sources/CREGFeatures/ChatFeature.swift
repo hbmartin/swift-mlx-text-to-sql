@@ -127,7 +127,6 @@ public struct ChatFeature: Sendable {
     public var isRenamePresented = false
     public var renameDraft = ""
     /// Set after a successful JSONL export, consumed by the share sheet.
-    public var exportURL: URL?
     public init(
       conversationID: UUID,
       title: String = "",
@@ -241,7 +240,6 @@ public struct ChatFeature: Sendable {
     case renameTapped
     case renameCommitted
     case exportTapped
-    case exportReady(URL)
     case operationFailed(FailurePresentation, origin: FailureOrigin? = nil)
     case delegate(Delegate)
 
@@ -259,7 +257,8 @@ public struct ChatFeature: Sendable {
       case openBrowser
       case newChatRequested
       case deleteRequested
-      case renamed(String)
+      case renameRequested(UUID, String)
+      case exportRequested(UUID)
     }
   }
 
@@ -550,41 +549,10 @@ public struct ChatFeature: Sendable {
         guard !title.isEmpty else { return .none }
         state.title = title
         state.isManuallyTitled = true
-        let conversationID = state.conversationID
-        return .merge(
-          .send(.delegate(.renamed(title))),
-          .run { send in
-            do {
-              try await history.renameConversation(conversationID, title)
-            } catch {
-              await send(
-                .operationFailed(.history(operation: .rename, error: error),
-                  origin: .conversationWrite(conversationID)))
-            }
-          })
+        return .send(.delegate(.renameRequested(state.conversationID, title)))
 
       case .exportTapped:
-        let conversationID = state.conversationID
-        diagnostics.info(
-          category: .history,
-          code: "history_export_started",
-          summary: "Conversation export started.")
-        return .run { send in
-          let url = try await history.exportJSONL(conversationID)
-          await send(.exportReady(url))
-        } catch: { error, send in
-          await send(
-            .operationFailed(.history(operation: .export, error: error),
-              origin: .conversation(conversationID)))
-        }
-
-      case .exportReady(let url):
-        state.exportURL = url
-        diagnostics.info(
-          category: .history,
-          code: "history_export_finished",
-          summary: "Conversation export finished.")
-        return .none
+        return .send(.delegate(.exportRequested(state.conversationID)))
 
       case .operationFailed:
         // Presented by AppFeature, which owns the failure surface.

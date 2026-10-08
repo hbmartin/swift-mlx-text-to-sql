@@ -33,15 +33,7 @@ extension AppFeature {
       }
     }
     if state.pendingTurnPersistence?.questionID == questionID { state.pendingTurnPersistence = nil }
-    state.failures.removeAll {
-      let isTimeout = ["turn_persistence_barrier_timed_out", "turn_inference_drain_timed_out"].contains($0.failure.code)
-      guard isTimeout else { return false }
-      switch $0.owner {
-      case .conversation(let id): return id == ownerID
-      case .global: return true // Compatibility with older timeout fixtures.
-      default: return false
-      }
-    }
+    state.failures.removeAll { $0.owner == .turnPersistence(questionID) }
     state.conversationDeletions[ownerID]?.deferredFailures.removeAll {
       ["turn_persistence_barrier_timed_out", "turn_inference_drain_timed_out"].contains($0.code)
     }

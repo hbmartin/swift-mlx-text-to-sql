@@ -67,40 +67,4 @@ extension HistoryClient {
     )
   }
 
-  /// Keeps startup recoverable while ensuring every attempted history
-  /// operation reaches the feature's diagnostics and presentation boundary.
-  package static func unavailable(diagnostic: String) -> HistoryClient {
-    let error = HistoryStoreUnavailableError(diagnostic: diagnostic)
-    return HistoryClient(
-      bootstrap: { throw error },
-      listConversations: { throw error },
-      createConversation: { _, _ in throw error },
-      createConversationWithDraft: { _, _, _ in throw error },
-      loadConversation: { _ in throw error },
-      renameConversation: { _, _ in throw error },
-      deleteConversation: { _ in throw error },
-      saveDraft: { _, _ in throw error },
-      setUnread: { _, _ in throw error },
-      search: { _ in throw error },
-      saveFeedback: { _, _ in throw error },
-      clearFeedback: { _, _ in throw error },
-      endTurnJournal: { _, _ in throw error },
-      markTurnInterrupted: { _, _, _ in throw error },
-      claimTurnRetry: { _, _, _, _ in throw error },
-      declineAutoRetry: { _, _ in throw error },
-      releaseAutoRetryClaim: { _, _, _, _ in throw error },
-      appendMessage: { _, _ in throw error },
-      updateMessage: { _, _ in throw error },
-      updateResultPresentation: { _, _ in throw error },
-      appendEvents: { _, _, _ in throw error },
-      persistScopeDiagnosis: { _, _, _, _ in throw error },
-      persistUserTurn: { _, _, _, _, _ in throw error },
-      persistTerminalTurn: { _, _, _, _, _ in throw error },
-      exportJSONL: { _ in throw error },
-      supportBundleSource: { throw error },
-      saveFollowUpBatch: { _, _ in throw error },
-      clearFollowUpBatch: { _ in throw error },
-      acceptQuestion: { _, _ in throw error }
-    )
-  }
 }

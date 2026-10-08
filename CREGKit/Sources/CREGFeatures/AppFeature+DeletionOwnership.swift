@@ -70,7 +70,8 @@ extension AppFeature.State {
     searchHits.filter { isConversationLive($0.conversationID) }
   }
   public func hasOutstandingWrites(in id: UUID) -> Bool {
-    pendingTurnPersistence?.conversationID == id || pendingInterruptedTurn?.conversationID == id
+    conversationCreations.values.contains(id) || summaryWrites.values.contains(id)
+      || pendingTurnPersistence?.conversationID == id || pendingInterruptedTurn?.conversationID == id
       || activeTurn?.conversationID == id
       || retryJournals.values.contains {
         $0.conversationID == id && $0.operations.values.contains(where: \.isWrite)

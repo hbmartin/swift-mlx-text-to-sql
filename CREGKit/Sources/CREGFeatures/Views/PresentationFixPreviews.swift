@@ -68,6 +68,35 @@ private struct ConversationRecoveryPreviewFrame: View {
     error: NSError(domain: "Preview.History", code: 1)), size: .accessibility5, historyFailed: true)
 }
 
+@MainActor
+private enum NoticesPreviewFixture {
+  static var chrome: ChatChrome {
+    var chrome = PreviewFixtures.chrome
+    chrome.ownedFailures = (0..<4).map { .init(owner: .historySummaries(UInt64($0)), failure: PreviewFixtures.presentationFailure) }
+    chrome.exportPhase = .ready(URL(fileURLWithPath: "/tmp/creg-conversation-preview.jsonl"))
+    return chrome
+  }
+}
+
+#Preview("Conversation notices — Compact — Standard") {
+  NoticesAccessibilityHarness()
+}
+#Preview("Conversation notices — Compact — AX5 landscape") {
+  NoticesAccessibilityHarness().environment(\.dynamicTypeSize, .accessibility5)
+    .frame(width: 852, height: 393)
+}
+#Preview("Conversation notices — Stacked content — AX5") {
+  ChatNoticesContent(store: PreviewFixtures.chatStore(PreviewFixtures.recoveryChatState()),
+    chrome: NoticesPreviewFixture.chrome).environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Conversation notices — Scrolling panel — AX5") {
+  ConversationNoticesPanel(store: PreviewFixtures.chatStore(PreviewFixtures.recoveryChatState()),
+    chrome: NoticesPreviewFixture.chrome, close: {}).environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Conversation notices — Retained export") {
+  NoticesAccessibilityHarness(scenario: .retainedExport)
+}
+
 private struct AnswerActionsPreviewFrame: View {
   let width: CGFloat
   let size: DynamicTypeSize

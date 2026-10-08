@@ -140,18 +140,9 @@ struct ChatView: View {
       }
     }
     .onChange(of: store.conversationID) { answerSharing.reset() }
-    .sheet(item: exportItem) { item in
-      ExportShareSheet(url: item.url)
-    }
     .resultViewerPresentation(
       store: store,
       textSize: chrome.resultTableTextSize)
-  }
-
-  private var exportItem: Binding<ExportedFile?> {
-    Binding(
-      get: { store.exportURL.map(ExportedFile.init(url:)) },
-      set: { if $0 == nil { store.exportURL = nil } })
   }
 
   // MARK: Header
@@ -269,47 +260,22 @@ struct ChatView: View {
       // insets the transcript's safe area but not its frame, so a floating
       // pill anchored to the scroll view lands beneath this stack.
       jumpToLatest(proxy: proxy)
-      if !chrome.ownedFailures.isEmpty {
-        OwnedFailureBanners(failures: chrome.ownedFailures, developerMode: chrome.developerMode,
-          dismiss: chrome.dismissOwnedFailure)
-      } else if let failure = chrome.presentedFailure {
-        FailureBanner(
-          failure: failure,
-          developerMode: chrome.developerMode,
-          dismiss: chrome.dismissFailure)
-      }
-      if chrome.canRetryHistory || chrome.historyIsLoading {
-        RetryHistoryButton(isLoading: chrome.historyIsLoading, retry: chrome.retryHistory)
-      }
-      if let retry = chrome.retryOpening {
-        Button(action: retry) { Text("Retry opening conversation").cregTextButtonLabelTarget() }
-          .accessibilityIdentifier("conversation-retry-opening")
-      }
-      readinessBanner
-      fmAvailabilityBanner
-      ForEach(Array(store.interruptedTurns.enumerated()), id: \.offset) { _, interrupted in
-        let retryID = interrupted.journalID ?? interrupted.executionID
-        InterruptedTurnBanner(
-          interrupted: interrupted,
-          retryQueued: retryID.map { store.queuedRetryJournalIDs.contains($0) }
-            ?? false,
-          retryInspecting: retryID.map { store.inspectingRetryJournalIDs.contains($0) } ?? false,
-          askAgain: {
-            if let id = interrupted.journalID { store.send(.askAgainTappedFor(id)) }
-            else { store.send(.askAgainTapped) }
-          },
-          cancelRetry: {
-            if let retryID { store.send(.cancelQueuedRetryTapped(retryID)) }
-          },
-          dismiss: {
-            if let id = interrupted.journalID { store.send(.interruptedDismissedFor(id)) }
-            else { store.send(.interruptedDismissed) }
-          })
-      }
-      if let context = store.correctionContext {
-        CorrectionContextBanner(
-          context: context,
-          dismiss: { store.send(.correctionDismissed) })
+      let summary = ChatNoticeSummary(store: store, chrome: chrome)
+      if summary.count > 0 {
+        Button(action: chrome.reviewNotices) {
+          HStack {
+            Image(systemName: "exclamationmark.bubble")
+            Text(summary.title).lineLimit(1)
+            Spacer(minLength: 4)
+            Text("\(summary.count)").monospacedDigit()
+            Image(systemName: "chevron.up")
+          }
+          .font(.callout)
+          .frame(maxWidth: .infinity, minHeight: 44)
+          .contentShape(Rectangle())
+        }
+        .accessibilityLabel("\(summary.accessibilityDescription), \(summary.count) conversation notices")
+        .accessibilityIdentifier("conversation-notices")
       }
       composer
     }
@@ -393,99 +359,6 @@ struct ChatView: View {
       }
     }
     .animation(.snappy(duration: 0.3), value: store.isProcessing)
-  }
-
-  @ViewBuilder
-  private var readinessBanner: some View {
-    switch chrome.modelReadiness {
-    case .ready:
-      if chrome.modelPreparationReport?.mode == .compatibility {
-        let warningLayout =
-          dynamicTypeSize.isAccessibilitySize
-          ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
-          : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
-        warningLayout {
-          Label(
-            "Compatibility mode — unevaluated results",
-            systemImage: "wrench.and.screwdriver.fill"
-          )
-          .font(.callout)
-          .foregroundStyle(.orange)
-          if !dynamicTypeSize.isAccessibilitySize {
-            Spacer()
-          }
-          Button {
-            chrome.retryPreparation()
-          } label: {
-            Text("Retry evaluated")
-              .cregTextButtonLabelTarget()
-          }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .cregGlassRounded(cornerRadius: 16)
-        .accessibilityIdentifier("compatibility-mode-warning")
-      }
-    case .preparing:
-      HStack(spacing: 8) {
-        ProgressView()
-        Text("Preparing the SQL model…")
-          .font(.callout)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .cregGlassRounded(cornerRadius: 16)
-    case .failed(let failure):
-      ModelPreparationFailureBanner(
-        failure: failure,
-        developerMode: chrome.developerMode,
-        retry: chrome.retryPreparation,
-        retryCompatibility:
-          chrome.developerMode && failure.allowsCompatibilityRetry
-          ? chrome.retryCompatibilityPreparation : nil)
-    }
-  }
-
-  /// Apple Intelligence is required for every new turn (ADR 0011). The
-  /// enable-AI case is the product's only designed no-FM surface; asset
-  /// download is a transient state, and anything else renders honestly as
-  /// unavailable.
-  @ViewBuilder
-  private var fmAvailabilityBanner: some View {
-    if case .unavailable(let reason) = chrome.fmAvailability {
-      switch reason {
-      case .appleIntelligenceNotEnabled:
-        Label(
-          "Turn on Apple Intelligence in Settings › Apple Intelligence & Siri.",
-          systemImage: "apple.intelligence")
-          .font(.callout)
-          .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .cregGlassRounded(cornerRadius: 16)
-        .accessibilityIdentifier("apple-intelligence-callout")
-      case .modelNotReady:
-        HStack(spacing: 8) {
-          ProgressView()
-          Text("Preparing Apple Intelligence…")
-            .font(.callout)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cregGlassRounded(cornerRadius: 16)
-      case .deviceNotEligible, .other:
-        Label(
-          "Apple Intelligence is unavailable, so CREG can't answer right now.",
-          systemImage: "exclamationmark.triangle")
-          .font(.callout)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 8)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .cregGlassRounded(cornerRadius: 16)
-      }
-    }
   }
 
   @ViewBuilder

@@ -3,6 +3,8 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
+  public enum HistoryStoreAvailability: Equatable, Sendable { case unopened, available, unavailable }
+  struct HistorySummaryTimeoutID: Hashable { var requestID: UInt64 }
   public enum HistorySummaryPhase: Equatable, Sendable {
     case idle, loading(UInt64), loaded, failed(UInt64)
     public var isLoading: Bool { if case .loading = self { true } else { false } }
@@ -21,6 +23,7 @@ extension AppFeature {
     case historySummaries(UInt64)
     case conversationOpening(UInt64)
     case conversation(UUID)
+    case turnPersistence(UUID)
     case retry(conversationID: UUID, journalID: UUID, generation: Int)
   }
 
@@ -32,19 +35,32 @@ extension AppFeature {
   func bootstrapHistory(state: inout State) -> Effect<Action> {
     guard !state.historySummaryPhase.isLoading else { return .none }
     let requestID = state.nextHistoryRequestID()
+    if state.chat != nil, state.historyStoreAvailability == .unopened {
+      state.historyStoreAvailability = .available
+    }
+    state.historyLoadIsRetry = state.historySummaryPhase != .idle
     state.historySummaryPhase = .loading(requestID)
     state.historySummaryBaseline = Dictionary(uniqueKeysWithValues: state.conversations.map { ($0.id, $0) })
-    return .run { send in
+    state.historySummaryProtectedIDs = state.summaryProtectedConversationIDs
+    let load = Effect<Action>.run { send in
       do {
-        await send(.bootstrapFinished(try await history.bootstrap(), requestID: requestID))
+        let summaries = try await history.bootstrap()
+        guard !Task.isCancelled else { return }
+        await send(.bootstrapFinished(summaries, requestID: requestID))
       } catch {
+        guard !Task.isCancelled else { return }
         await send(.historyBootstrapFailed(requestID,
           .history(operation: .summaryLoad, error: error), storeUnavailable: error is HistoryStoreUnavailableError))
       }
-    }
+    }.cancellable(id: CancelID.historySummaries, cancelInFlight: true)
+    return .merge(load, .run { send in
+      try await clock.sleep(for: .seconds(5))
+      await send(.historySummaryTimedOut(requestID))
+    }.cancellable(id: HistorySummaryTimeoutID(requestID: requestID)))
   }
 
   func beginConversationCreation(state: inout State) -> Effect<Action> {
+    state.closeConversationPresentation()
     guard !state.historyStoreUnavailable else { return .none }
     if let creation = state.conversationCreationInFlight {
       state.clearOpeningFailures()
@@ -57,6 +73,7 @@ extension AppFeature {
     state.clearOpeningFailures()
     state.conversationOpening = .init(requestID: requestID, kind: .create(id))
     state.conversationCreationInFlight = state.conversationOpening
+    state.conversationCreations[requestID] = id
     state.newChatRequestedDuringBootstrap = false
     let startedAt = now
     return .merge(
@@ -71,6 +88,8 @@ extension AppFeature {
   }
 
   func beginConversationLoad(state: inout State, id: UUID) -> Effect<Action> {
+    state.closeConversationPresentation()
+    if state.historyStoreAvailability == .unopened { state.historyStoreAvailability = .available }
     let requestID = state.nextHistoryRequestID()
     state.newChatRequestedDuringBootstrap = false
     state.clearOpeningFailures()
@@ -114,6 +133,7 @@ extension AppFeature.State {
 
   public var canCreateConversation: Bool { !historyStoreUnavailable }
   public var canRetryHistory: Bool {
+    if failures.contains(where: { $0.failure.recovery == .retryHistory }) { return true }
     if case .failed = historySummaryPhase { return true }
     return false
   }
@@ -123,7 +143,12 @@ extension AppFeature.State {
       switch $0.owner {
       case .global, .historySummaries: true
       case .conversationOpening(let requestID): conversationOpening?.requestID == requestID
-      case .conversation(let id), .retry(let id, _, _): chat?.conversationID == id
+      case .conversation(let id): chat?.conversationID == id && isConversationLive(id)
+      case .turnPersistence(let questionID): pendingTurnPersistence?.questionID == questionID
+      case .retry(let id, let journalID, let generation):
+        chat?.conversationID == id && isConversationLive(id)
+          && retryJournals[journalID]?.requestGeneration == generation
+          && !dismissedRetryJournalIDs.contains(journalID)
       }
     }
   }
@@ -151,14 +176,44 @@ extension AppFeature.State {
     failures.removeAll { if case .conversationOpening = $0.owner { true } else { false } }
   }
 
+  mutating func clearRetryFailures(_ journalID: UUID) {
+    failures.removeAll {
+      if case .retry(_, let id, _) = $0.owner { return id == journalID }
+      return false
+    }
+  }
+
+  var summaryProtectedConversationIDs: Set<UUID> {
+    var ids = Set(summaryWrites.values)
+    ids.formUnion(conversationCreations.values)
+    ids.formUnion(queue.map(\.conversationID))
+    for id in [activeTurn?.conversationID, pendingTurnPersistence?.conversationID,
+      pendingInterruptedTurn?.conversationID].compactMap({ $0 }) { ids.insert(id) }
+    for journal in retryJournals.values where journal.operations.values.contains(where: \.isWrite) {
+      ids.insert(journal.conversationID)
+    }
+    return ids
+  }
+
   mutating func mergeHistorySummaries(_ summaries: [ConversationSummary]) {
+    var merged = conversations
+    let protected = historySummaryProtectedIDs.union(summaryProtectedConversationIDs)
     for summary in summaries {
       if conversationDeletions[summary.id]?.phase == .committed { continue }
-      let current = conversations[id: summary.id]
-      if current != historySummaryBaseline[summary.id] { continue }
-      conversations[id: summary.id] = summary
+      let current = merged[id: summary.id]
+      var next = summary
+      if let current {
+        if current != historySummaryBaseline[summary.id] || protected.contains(summary.id)
+          || current.suggestionGeneration > summary.suggestionGeneration {
+          next = current
+        }
+        next.suggestionGeneration = max(current.suggestionGeneration, summary.suggestionGeneration)
+      }
+      merged[id: summary.id] = next
     }
-    conversations.sort { $0.lastActivityAt > $1.lastActivityAt }
+    merged.sort { $0.lastActivityAt > $1.lastActivityAt }
+    conversations = merged
     historySummaryBaseline = [:]
+    historySummaryProtectedIDs = []
   }
 }
