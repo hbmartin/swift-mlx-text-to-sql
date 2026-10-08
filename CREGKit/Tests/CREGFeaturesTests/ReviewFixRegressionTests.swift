@@ -117,11 +117,11 @@ struct ReviewFixRegressionTests {
         "conversation_delete_waiting_for_persistence", "conversation_delete_commit_started",
         "conversation_delete_committed",
       ])
-    #expect(events.allSatisfy { $0.context["conversation_id"] == a.uuidString })
+    #expect(events.allSatisfy { $0.context["operation_number"] != nil && $0.context["conversation_id"] == nil })
     #expect(
       events.first { $0.code == "conversation_delete_commit_started" }?.context["deferred"]
         == "true")
-    #expect(Set(events.compactMap { $0.context["deletion_token"] }).count == 1)
+    #expect(Set(events.compactMap { $0.context["operation_number"] }).count == 1)
   }
 
   @Test(arguments: [false, true])
@@ -159,7 +159,7 @@ struct ReviewFixRegressionTests {
           == "The conversation could not be deleted.\n\nChanges could not be saved.")
       #expect(
         store.state.presentedFailure?.diagnostic
-          == "[history_delete_failed] delete diagnostic\n\n[history_message_save_failed] write diagnostic"
+          == "delete diagnostic\n\n[history_message_save_failed] write diagnostic"
       )
       for failure in [deleteFailure, writeFailure] {
         let events = diagnostics.events.filter { $0.code == failure.code }
@@ -170,14 +170,14 @@ struct ReviewFixRegressionTests {
     } else {
       #expect(store.state.conversations[id: a] == nil)
       #expect(store.state.presentedFailure == nil)
-      #expect(store.state.conversationDeletions[a]?.deferredFailure == nil)
+      #expect(store.state.conversationDeletions[a]?.deferredFailures.isEmpty == true)
       let events = diagnostics.events.filter {
         $0.code == "conversation_write_failed_after_deletion"
       }
       #expect(events.count == 1)
       #expect(events.first?.details == writeFailure.diagnostic)
       #expect(events.first?.context["failure_code"] == writeFailure.code)
-      #expect(events.first?.context["conversation_id"] == a.uuidString)
+      #expect(events.first?.context["operation_number"] != nil)
       #expect(events.first?.level == .error)
     }
     let recorded = diagnostics.events
@@ -220,8 +220,8 @@ struct ReviewFixRegressionTests {
     #expect(store.state.searchHits == (resolution == "success" ? [] : [hit]))
     if resolution == "undo" {
       let undone = diagnostics.events.first { $0.code == "conversation_delete_undone" }
-      #expect(undone?.context["conversation_id"] == a.uuidString)
-      #expect(undone?.context["deletion_token"] == token.uuidString)
+      #expect(undone?.context["operation_number"] != nil)
+      #expect(undone?.context["deletion_token"] == nil)
     }
   }
 
@@ -273,7 +273,7 @@ struct ReviewFixRegressionTests {
     #expect(events.first?.details?.contains(journal.uuidString) == true)
   }
 
-  @Test func inspectionRemainsQueuedAndCancellationRejectsLateCompletion() async throws {
+  @Test func inspectionShowsCheckingAndDismissalRejectsLateCompletion() async throws {
     var (state, queued, interruption, _) = fixture()
     state.queue = [queued]
     let read = ReviewHeldOperation()
@@ -295,14 +295,18 @@ struct ReviewFixRegressionTests {
     await store.send(.dispatchNextIfIdle)
     await store.receive(\.queuedRetryClaimed)
     await read.wait()
-    #expect(store.state.chat?.queuedRetryJournalIDs.contains(journal) == true)
+    #expect(store.state.chat?.inspectingRetryJournalIDs.contains(journal) == true)
+    #expect(store.state.chat?.queuedRetryJournalIDs.contains(journal) == false)
     let inspectionID = try #require(
       store.state.retryJournals[journal]?.operations.first {
         if case .inspection = $0.value { return true }
         return false
       }?.key)
     await store.send(.chat(.delegate(.cancelQueuedRetry(journal))))
-    await store.receive(\.retryDeclineFinished)
+    #expect(store.state.pendingRetryDeclines.isEmpty)
+    #expect(store.state.chat?.inspectingRetryJournalIDs.contains(journal) == true)
+    await store.send(.chat(.interruptedDismissedFor(journal)))
+    await store.receive(\.interruptedDismissalFinished)
     #expect(store.state.chat?.queuedRetryJournalIDs.contains(journal) == false)
     await read.finish()
     await store.send(
@@ -312,7 +316,7 @@ struct ReviewFixRegressionTests {
     await store.finish()
     #expect(store.state.activeTurn == nil)
     #expect(store.state.presentedFailure == nil)
-    #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
+    #expect(store.state.chat?.interruptedTurns.isEmpty == true)
   }
 
   @Test(arguments: ["undo", "failure", "success"])
@@ -438,7 +442,7 @@ struct ReviewFixRegressionTests {
     }
     store.exhaustivity = .off
     await store.send(.deleteConversationTapped(a))
-    await store.receive(\.operationFailed)
+    await store.receive(\.conversationOpeningFailed)
     #expect(store.state.chat == nil)
     #expect(store.state.presentedFailure?.code == "history_load_failed")
     await store.send(.browserButtonTapped)
@@ -478,7 +482,8 @@ struct ReviewFixRegressionTests {
     await store.send(action)
     let event = diagnostics.events.first { $0.code == "chat_turn_interrupted" }
     #expect(event?.context["reason"] == reason)
-    #expect(event?.context["execution_id"] == executionID.uuidString)
+    #expect(event?.context["operation_number"] != nil)
+    #expect(event?.context["execution_id"] == nil)
     #expect(event?.summary.contains("scene interruption") == false)
     #expect(store.state.pendingInterruptedTurn?.questionID == executionID)
     await store.skipInFlightEffects(strict: false)

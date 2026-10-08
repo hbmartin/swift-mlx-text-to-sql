@@ -104,10 +104,12 @@ struct AppRootView: View {
           // Behind the fade so the drawer itself stays solid while its
           // contents ease in with the reveal.
           .background(CREGBrand.browserPanel.ignoresSafeArea())
+          .accessibilityElement(children: .contain)
           .accessibilityHidden(progress < 0.99)
 
         chatLayer(progress: progress)
           .offset(x: offset)
+          .accessibilityElement(children: .contain)
           .accessibilityHidden(progress > 0.01 && store.isBrowserRevealed)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -185,13 +187,29 @@ struct AppRootView: View {
             retryPreparation: { store.send(.retryPreparation) },
             retryCompatibilityPreparation: {
               store.send(.retryCompatibilityPreparation)
-            }))
+            },
+            ownedFailures: store.visibleFailures,
+            dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) },
+            canRetryHistory: store.canRetryHistory,
+            historyIsLoading: store.historySummaryPhase.isLoading,
+            retryHistory: { store.send(.retryHistoryTapped) },
+            retryOpening: store.conversationOpening?.phase == .failed
+              ? { store.send(.retryConversationOpeningTapped) } : nil,
+            canCreateConversation: store.canCreateConversation))
       } else {
         ConversationUnavailableView(
           failure: store.presentedFailure, developerMode: store.developerMode,
           dismissFailure: { store.send(.dismissFailure) },
           openBrowser: { store.send(.browserButtonTapped) },
-          newChat: { store.send(.newChatTapped) })
+          newChat: { store.send(.newChatTapped) },
+          isLoading: store.isOpeningConversation, canCreate: store.canCreateConversation,
+          retryHistory: store.canRetryHistory || store.historySummaryPhase.isLoading
+            ? { store.send(.retryHistoryTapped) } : nil,
+          retryOpening: store.conversationOpening?.phase == .failed
+            ? { store.send(.retryConversationOpeningTapped) } : nil,
+          historyIsLoading: store.historySummaryPhase.isLoading,
+          ownedFailures: store.visibleFailures,
+          dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) })
       }
     }
     .background {

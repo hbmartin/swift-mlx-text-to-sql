@@ -65,14 +65,14 @@ extension AppFeature {
     state.chat = chat
   }
 
-  func recordSuppressedRetryFailure(_ failure: FailurePresentation, journalID: UUID) {
+  func recordSuppressedRetryFailure(_ failure: FailurePresentation, operationNumber: UInt64) {
     diagnostics.record(
       DiagnosticEvent(
         level: .error, category: .history,
         code: "retry_write_failed_after_dismissal",
         summary: "An obsolete retry write failed after its interruption was dismissed.",
         details: failure.diagnostic,
-        context: ["journal_id": journalID.uuidString, "failure_code": failure.code]))
+        context: ["operation_number": String(operationNumber), "failure_code": failure.code]))
   }
 
   func updateRetryCount(
@@ -103,7 +103,19 @@ extension AppFeature {
       effects.append(commitOrDeferDeletion(state: &state, conversationID: previous.summary.id))
     }
     let token = uuid()
+    let operationNumber = state.nextDiagnosticOperationNumber()
     state.conversationDeletions[summary.id] = .init(token: token, summary: summary)
+    state.conversationDeletions[summary.id]?.diagnosticOperationNumber = operationNumber
+    let deletedOpening = state.conversationOpening?.kind == .load(summary.id)
+      || state.conversationOpening?.kind == .create(summary.id)
+    if deletedOpening {
+      state.conversationOpening = nil
+      state.clearOpeningFailures()
+      effects.append(.cancel(id: CancelID.conversationLoad))
+    }
+    if state.conversationCreationInFlight?.kind == .create(summary.id) {
+      state.conversationCreationInFlight = nil
+    }
     state.undoDeletionID = summary.id
     for (journalID, journal) in state.retryJournals where journal.conversationID == summary.id {
       for operation in journal.operations.values {
@@ -139,12 +151,12 @@ extension AppFeature {
       state.isScopeDiagnosisInFlight = false
       effects.append(.cancel(id: CancelID.scopeDiagnosis))
     }
-    if state.chat?.conversationID == summary.id {
+    if state.chat?.conversationID == summary.id || (state.chat == nil && deletedOpening) {
       state.chat = nil
       if let next = state.visibleConversations.first {
-        effects.append(loadConversationEffect(id: next.id))
+        effects.append(beginConversationLoad(state: &state, id: next.id))
       } else {
-        effects.append(createConversationEffect())
+        effects.append(beginConversationCreation(state: &state))
       }
     }
     syncSchedulerProjection(into: &state)
@@ -190,7 +202,9 @@ extension AppFeature {
     failure: FailurePresentation
   ) -> Effect<Action> {
     if state.isConversationPendingDeletion(conversationID) {
-      state.conversationDeletions[conversationID]?.deferredFailure = failure
+      if state.conversationDeletions[conversationID]?.deferredFailures.contains(failure) != true {
+        state.conversationDeletions[conversationID]?.deferredFailures.append(failure)
+      }
       diagnostics.info(
         category: .history,
         code: "conversation_write_failure_deferred_for_undo",
@@ -199,18 +213,18 @@ extension AppFeature {
       return .none
     }
     guard state.isConversationLive(conversationID) else {
-      recordDeletedConversationWriteFailure(conversationID, failure: failure)
+      recordDeletedConversationWriteFailure(failure: failure, operationNumber: state.conversationDeletions[conversationID]?.diagnosticOperationNumber)
       return .none
     }
-    return .send(.operationFailed(failure))
+    return .send(.operationFailed(failure, owner: .conversation(conversationID)))
   }
 
-  func recordDeletedConversationWriteFailure(_ conversationID: UUID, failure: FailurePresentation) {
+  func recordDeletedConversationWriteFailure(failure: FailurePresentation, operationNumber: UInt64?) {
     diagnostics.record(DiagnosticEvent(
       level: .error, category: .history, code: "conversation_write_failed_after_deletion",
       summary: "An obsolete conversation write failed after deletion.",
       details: failure.diagnostic,
-      context: ["conversation_id": conversationID.uuidString, "failure_code": failure.code]))
+      context: ["operation_number": operationNumber.map(String.init) ?? "untracked", "failure_code": failure.code]))
   }
 
   func recordDeletionEvent(
@@ -219,27 +233,17 @@ extension AppFeature {
   ) {
     diagnostics.info(category: .history, code: code, summary: summary,
       context: context.merging([
-        "conversation_id": deletion.summary.id.uuidString,
-        "deletion_token": deletion.token.uuidString,
+        "operation_number": String(deletion.diagnosticOperationNumber),
       ]) { _, identity in identity })
   }
 
   func presentFailure(
-    state: inout State, primary: FailurePresentation, secondary: FailurePresentation? = nil
+    state: inout State, primary: FailurePresentation, secondary: [FailurePresentation] = [],
+    owner: FailureOwner = .global
   ) {
-    state.presentedFailure = secondary.map { primary.combining($0) } ?? primary
+    state.storeFailure(secondary.reduce(primary) { $0.combining($1) }, owner: owner)
     state.isBuildingSupportBundle = false
-    for failure in [primary, secondary].compactMap({ $0 }) {
-      diagnostics.record(DiagnosticEvent(level: .error, category: .history,
-        code: failure.code, summary: failure.title, details: failure.diagnostic))
-    }
-  }
-
-  func clearConversationOpeningFailure(state: inout State) {
-    if [HistoryFailureOperation.load.code, HistoryFailureOperation.conversationCreate.code]
-      .contains(state.presentedFailure?.code ?? "") {
-      state.presentedFailure = nil
-    }
+    for failure in [primary] + secondary { recordFailure(failure) }
   }
 
   func rollBackOptimisticUserTurn(
@@ -302,28 +306,6 @@ extension AppFeature {
     }
   }
 
-  func createConversationEffect() -> Effect<Action> {
-    let id = uuid()
-    let startedAt = now
-    return .run { send in
-      let summary = try await history.createConversation(id, startedAt)
-      await send(.conversationCreated(summary))
-    } catch: { error, send in
-      await send(
-        .operationFailed(.history(operation: .conversationCreate, error: error)))
-    }
-  }
-
-  func loadConversationEffect(id: UUID) -> Effect<Action> {
-    .run { send in
-      let snapshot = try await history.loadConversation(id)
-      await send(.conversationLoaded(snapshot))
-    } catch: { error, send in
-      await send(
-        .operationFailed(.history(operation: .load, error: error)))
-    }
-  }
-
   /// Mirrors the global queue and active turn into the selected chat's
   /// parent-maintained projection fields.
   func setModelReadiness(
@@ -383,6 +365,7 @@ extension AppFeature {
     {
       queuedRetries.insert(releasing)
     }
+    var inspectingRetries: Set<UUID> = []
     for (journalID, journal) in state.retryJournals
     where journal.conversationID == chat.conversationID
       && !state.dismissedRetryJournalIDs.contains(journalID)
@@ -391,10 +374,11 @@ extension AppFeature {
         if case .inspection(_, let generation) = $0 { return generation == journal.requestGeneration }
         return false
       }) {
-        queuedRetries.insert(journalID)
+        inspectingRetries.insert(journalID)
       }
     }
-    chat.queuedRetryJournalIDs = queuedRetries
+    chat.inspectingRetryJournalIDs = inspectingRetries
+    chat.queuedRetryJournalIDs = queuedRetries.subtracting(inspectingRetries)
     if let active = state.activeTurn,
       active.conversationID == chat.conversationID
     {

@@ -34,16 +34,38 @@ struct ConversationUnavailableView: View {
   let dismissFailure: () -> Void
   let openBrowser: () -> Void
   let newChat: () -> Void
+  var isLoading = false
+  var canCreate = true
+  var retryHistory: (() -> Void)?
+  var retryOpening: (() -> Void)?
+  var historyIsLoading = false
+  var ownedFailures: [AppFeature.OwnedFailure] = []
+  var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
 
   var body: some View {
     ScrollView {
       VStack(spacing: 16) {
-        if let failure {
+        if !ownedFailures.isEmpty {
+          OwnedFailureBanners(failures: ownedFailures, developerMode: developerMode, dismiss: dismissOwnedFailure)
+        } else if let failure {
           FailureBanner(failure: failure, developerMode: developerMode, dismiss: dismissFailure)
             .accessibilityIdentifier("conversation-recovery-failure")
-        } else {
+        }
+        if isLoading {
           ProgressView("Opening conversation…")
             .accessibilityIdentifier("conversation-loading")
+        } else if ownedFailures.isEmpty && failure == nil {
+          Text(canCreate ? "Choose a conversation or start a new chat." : "History is unavailable. Tap Retry history to try again.")
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .accessibilityIdentifier("conversation-recovery-idle")
+        }
+        if let retryHistory {
+          RetryHistoryButton(isLoading: historyIsLoading, retry: retryHistory)
+        }
+        if let retryOpening {
+          Button(action: retryOpening) { Text("Retry opening conversation").cregTextButtonLabelTarget() }
+            .accessibilityIdentifier("conversation-retry-opening")
         }
         Button(action: openBrowser) {
           Label("Conversations", systemImage: "sidebar.left")
@@ -54,13 +76,42 @@ struct ConversationUnavailableView: View {
           Label("New chat", systemImage: "square.and.pencil")
             .cregTextButtonLabelTarget()
         }
+        .disabled(!canCreate)
         .accessibilityIdentifier("conversation-recovery-new-chat")
       }
       .buttonStyle(.bordered)
       .padding(24)
       .frame(maxWidth: .infinity)
     }
+    .accessibilityIdentifier("conversation-recovery-scroll")
     .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
+struct OwnedFailureBanners: View {
+  let failures: [AppFeature.OwnedFailure]
+  let developerMode: Bool
+  let dismiss: (AppFeature.FailureOwner) -> Void
+
+  var body: some View {
+    ForEach(failures, id: \.owner) { owned in
+      FailureBanner(failure: owned.failure, developerMode: developerMode, dismiss: { dismiss(owned.owner) })
+    }
+  }
+}
+
+struct RetryHistoryButton: View {
+  let isLoading: Bool
+  let retry: () -> Void
+  var accessibilityID = "history-retry"
+  var body: some View {
+    Button(action: retry) {
+      Text(isLoading ? "Retrying history…" : "Retry history")
+        .fixedSize(horizontal: false, vertical: true)
+        .cregTextButtonLabelTarget()
+    }
+    .disabled(isLoading)
+    .accessibilityIdentifier(accessibilityID)
   }
 }
 
@@ -71,12 +122,17 @@ struct FailureBanner: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .top, spacing: 8) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(.orange)
-        Text(failure.title)
-          .font(.headline)
-        Spacer()
+      CREGAccessibilityActionLayout(
+        hStackAlignment: .top, horizontalSpacing: 8, accessibilitySpacing: 8
+      ) {
+        HStack(alignment: .top, spacing: 8) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+          Text(failure.title)
+            .font(.headline)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      } actions: {
         Button(action: dismiss) {
           Image(systemName: "xmark")
             .cregIconButtonTarget()
@@ -88,6 +144,7 @@ struct FailureBanner: View {
 
       Text(failure.message)
         .font(.subheadline)
+        .fixedSize(horizontal: false, vertical: true)
 
       if let details = failure.technicalDetails(
         developerMode: developerMode)

@@ -30,7 +30,7 @@ public struct FailurePresentation: Error, Sendable, Equatable {
   func combining(_ secondary: FailurePresentation) -> FailurePresentation {
     FailurePresentation(
       code: code, title: title, message: message + "\n\n" + secondary.message,
-      diagnostic: "[\(code)] \(diagnostic)\n\n[\(secondary.code)] \(secondary.diagnostic)")
+      diagnostic: "\(diagnostic)\n\n[\(secondary.code)] \(secondary.diagnostic)")
   }
 }
 
@@ -210,13 +210,21 @@ extension FailurePresentation {
     operation: HistoryFailureOperation,
     error: any Error
   ) -> FailurePresentation {
+    if error is HistoryStoreUnavailableError {
+      return FailurePresentation(code: "history_store_unavailable", title: "History unavailable",
+        message: "CREG couldn’t open your conversation history. Tap Retry to try again.",
+        diagnostic: DiagnosticDetails.describe(error))
+    }
     let title: String
     let message: String
     switch operation {
+    case .summaryLoad:
+      title = "History unavailable"
+      message = "CREG couldn’t load your conversation history. Tap Retry history to try again."
     case .load:
       title = "History unavailable"
       message =
-        "CREG couldn’t load your saved conversation. You can continue, but this conversation may not be saved."
+        "CREG couldn’t load your saved conversation. Try opening it again or start a new chat."
     case .messageSave, .eventSave:
       title = "Conversation not saved"
       message =
@@ -253,6 +261,7 @@ extension FailurePresentation {
 
 enum HistoryFailureOperation: String, Sendable {
   case load
+  case summaryLoad
   case messageSave
   case eventSave
   case export
@@ -265,7 +274,7 @@ enum HistoryFailureOperation: String, Sendable {
 
   var code: String {
     switch self {
-    case .load: "history_load_failed"
+    case .load, .summaryLoad: "history_load_failed"
     case .messageSave: "history_message_save_failed"
     case .eventSave: "history_event_save_failed"
     case .export: "history_export_failed"

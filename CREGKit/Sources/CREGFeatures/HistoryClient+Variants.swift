@@ -70,7 +70,7 @@ extension HistoryClient {
   /// Keeps startup recoverable while ensuring every attempted history
   /// operation reaches the feature's diagnostics and presentation boundary.
   package static func unavailable(diagnostic: String) -> HistoryClient {
-    let error = HistoryUnavailableError(diagnostic: diagnostic)
+    let error = HistoryStoreUnavailableError(diagnostic: diagnostic)
     return HistoryClient(
       bootstrap: { throw error },
       listConversations: { throw error },
@@ -103,13 +103,4 @@ extension HistoryClient {
       acceptQuestion: { _, _ in throw error }
     )
   }
-}
-
-private struct HistoryUnavailableError:
-  CustomStringConvertible, LocalizedError, Sendable
-{
-  var diagnostic: String
-
-  var description: String { diagnostic }
-  var errorDescription: String? { diagnostic }
 }

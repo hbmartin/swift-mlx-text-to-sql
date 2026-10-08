@@ -462,9 +462,8 @@ struct RetrySettlementRegressionTests {
     await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.presentedFailure == nil)
-    #expect(store.state.pendingDeletion?.deferredFailure == failure)
+    #expect(store.state.pendingDeletion?.deferredFailures.first == failure)
     await store.send(.undoDeleteTapped)
-    await store.receive(.operationFailed(failure))
     await store.finish()
   }
 
@@ -544,7 +543,7 @@ struct RetrySettlementRegressionTests {
             conversationID: Self.conversationID, journalID: queued.retryJournalID!,
             interruption: state.chat!.interruptedTurn!))))
     await store.receive(\.interruptedDismissalFinished)
-    await store.receive(.operationFailed(primary))
+    await store.receive(.operationFailed(primary, owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.presentedFailure == primary)
     #expect(store.state.chat?.interruptedTurn != nil)
@@ -635,7 +634,7 @@ struct RetrySettlementRegressionTests {
         fails
           ? .history(operation: .messageSave, error: NSError(domain: "CREG.Release", code: 9))
           : nil, state: store.state))
-    await store.receive(.operationFailed(primary))
+    await store.receive(.operationFailed(primary, owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.chat?.interruptedTurn?.autoRetryCount == (fails ? 1 : 0))
     #expect(store.state.chat?.interruptedTurn?.canAutoRetry == false)
@@ -673,7 +672,7 @@ struct RetrySettlementRegressionTests {
     await store.send(claimCompletion(queued, 1, state: store.state))
     let cleanupFailure = FailurePresentation.history(operation: .messageSave, error: cleanupError)
     await store.receive(cleanupCompletion(journal, cleanupFailure, state: store.state))
-    await store.receive(.operationFailed(dismissalFailure))
+    await store.receive(.operationFailed(dismissalFailure, owner: .conversation(Self.conversationID)))
     await store.finish()
     #expect(store.state.chat?.interruptedTurn?.autoRetryCount == 1)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)

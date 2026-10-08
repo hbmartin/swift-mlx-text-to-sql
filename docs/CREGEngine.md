@@ -17,6 +17,13 @@ persistence, telemetry, and presentation; and CREGApplication composes the live
 dependencies and root view. This site publishes API documentation for all six
 library targets.
 
+Deletion and retry diagnostics use `operation_number` to correlate events
+within one root store's lifetime. Both allocate from the same counter when
+ownership begins and reuse the number until settlement. These numbers are
+process-local, nonpersistent, and unrelated to database identifiers; they can
+restart in a later session. Conversation, journal, and deletion UUIDs continue
+to be redacted in diagnostics and support bundles.
+
 The articles below document the architecture, experimental evidence, release
 verification, and decisions that define the engine's behavior.
 

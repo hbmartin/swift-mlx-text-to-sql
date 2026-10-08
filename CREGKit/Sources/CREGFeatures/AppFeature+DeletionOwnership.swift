@@ -12,7 +12,8 @@ extension AppFeature {
     public var token: UUID
     public var summary: ConversationSummary
     public var phase: DeletionPhase = .undoWindow
-    public var deferredFailure: FailurePresentation?
+    public var deferredFailures: [FailurePresentation] = []
+    public var diagnosticOperationNumber: UInt64 = 0
     public init(token: UUID, summary: ConversationSummary) {
       self.token = token
       self.summary = summary

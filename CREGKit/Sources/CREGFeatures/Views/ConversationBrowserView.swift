@@ -10,7 +10,22 @@ struct ConversationBrowserView: View {
   var now: Date = Date()
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+  private var needsRecoveryScroll: Bool {
+    dynamicTypeSize.isAccessibilitySize
+      && (store.canRetryHistory || store.historySummaryPhase.isLoading)
+  }
+
+  @ViewBuilder
   var body: some View {
+    if needsRecoveryScroll {
+      ScrollView { content }
+        .accessibilityIdentifier("browser-history-scroll")
+    } else {
+      content
+    }
+  }
+
+  private var content: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("CREG")
         .font(.largeTitle.bold())
@@ -31,12 +46,23 @@ struct ConversationBrowserView: View {
           .cregTextButtonLabelTarget()
       }
       .buttonStyle(.plain)
+      .disabled(!store.canCreateConversation)
       .padding(.horizontal, 8)
 
+      if store.canRetryHistory || store.historySummaryPhase.isLoading {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(store.historySummaryPhase.isLoading ? "Loading history…" : "History unavailable")
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
+            retry: { store.send(.retryHistoryTapped) }, accessibilityID: "browser-history-retry")
+        }.padding(.horizontal, 20)
+      }
+
       if isSearching {
-        searchResults
+        searchResults.frame(minHeight: needsRecoveryScroll ? 200 : nil)
       } else {
-        recents
+        recents.frame(minHeight: needsRecoveryScroll ? 200 : nil)
       }
 
       Spacer(minLength: 0)

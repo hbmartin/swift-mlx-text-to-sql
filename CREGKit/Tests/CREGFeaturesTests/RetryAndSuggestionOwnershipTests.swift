@@ -867,7 +867,7 @@ private actor HeldOperation {
     await store.receive(releaseCompletion(queued, releaseFailure, state: store.state))
     #expect(store.state.presentedFailure == nil)
     #expect(store.state.chat?.interruptedTurn?.status == .manualRetryRequired)
-    await store.receive(.operationFailed(dismissalFailure))
+    await store.receive(.operationFailed(dismissalFailure, owner: .conversation(Self.conversationA)))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.pendingInterruptedDismissals[user.id] == nil)
@@ -1009,7 +1009,7 @@ private actor HeldOperation {
       cancellationCompletion(
         queued, .history(operation: .messageSave, error: declineError), state: store.state))
     #expect(store.state.presentedFailure == nil)
-    await store.receive(.operationFailed(dismissalFailure))
+    await store.receive(.operationFailed(dismissalFailure, owner: .conversation(Self.conversationA)))
     await store.skipReceivedActions()
     #expect(store.state.retryReleaseJournalID == nil)
     #expect(store.state.pendingInterruptedDismissals[user.id] == nil)

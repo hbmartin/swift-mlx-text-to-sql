@@ -9,6 +9,11 @@ import Foundation
 /// Conversation Browser — belong to ``AppFeature``.
 @Reducer
 public struct ChatFeature: Sendable {
+  public enum FailureOrigin: Equatable, Sendable {
+    case conversation(UUID)
+    case conversationWrite(UUID)
+  }
+
   /// The in-flight turn this conversation is showing: a compact live status
   /// row with an expandable plain-English timeline.
   public struct ProcessingState: Equatable, Sendable {
@@ -113,6 +118,7 @@ public struct ChatFeature: Sendable {
     /// queued, being claimed, or being released, so the banner can show
     /// "Retry queued" with a cancel action instead of Ask Again.
     public var queuedRetryJournalIDs: Set<UUID> = []
+    public var inspectingRetryJournalIDs: Set<UUID> = []
     /// Only the latest successful answer may own prepared follow-up chips.
     public var followUpBatch: PreparedFollowUpBatch?
     /// Full-screen Result Viewer presentation (the message whose result is
@@ -236,7 +242,7 @@ public struct ChatFeature: Sendable {
     case renameCommitted
     case exportTapped
     case exportReady(URL)
-    case operationFailed(FailurePresentation)
+    case operationFailed(FailurePresentation, origin: FailureOrigin? = nil)
     case delegate(Delegate)
 
     /// Global work only ``AppFeature`` can perform.
@@ -552,7 +558,8 @@ public struct ChatFeature: Sendable {
               try await history.renameConversation(conversationID, title)
             } catch {
               await send(
-                .operationFailed(.history(operation: .rename, error: error)))
+                .operationFailed(.history(operation: .rename, error: error),
+                  origin: .conversationWrite(conversationID)))
             }
           })
 
@@ -567,7 +574,8 @@ public struct ChatFeature: Sendable {
           await send(.exportReady(url))
         } catch: { error, send in
           await send(
-            .operationFailed(.history(operation: .export, error: error)))
+            .operationFailed(.history(operation: .export, error: error),
+              origin: .conversation(conversationID)))
         }
 
       case .exportReady(let url):
@@ -611,7 +619,8 @@ public struct ChatFeature: Sendable {
         }
       } catch {
         await send(
-          .operationFailed(.history(operation: .messageSave, error: error)))
+          .operationFailed(.history(operation: .messageSave, error: error),
+            origin: .conversationWrite(conversationID)))
       }
     }
   }

@@ -16,6 +16,13 @@ struct ChatChrome {
   var dismissFailure: () -> Void
   var retryPreparation: () -> Void
   var retryCompatibilityPreparation: () -> Void
+  var ownedFailures: [AppFeature.OwnedFailure] = []
+  var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
+  var canRetryHistory = false
+  var historyIsLoading = false
+  var retryHistory: () -> Void = {}
+  var retryOpening: (() -> Void)?
+  var canCreateConversation = true
 }
 
 /// The minimum transcript state needed to distinguish a completed assistant

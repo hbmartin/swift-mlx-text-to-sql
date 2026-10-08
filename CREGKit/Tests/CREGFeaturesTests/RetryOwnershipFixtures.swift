@@ -10,7 +10,9 @@ extension AppFeature.State {
   ) {
     if conversations[id: summary.id] == nil { conversations.append(summary) }
     conversationDeletions[summary.id] = .init(token: UUID(99999), summary: summary)
-    conversationDeletions[summary.id]?.deferredFailure = deferredFailure
+    conversationDeletions[summary.id]?.deferredFailures = deferredFailure.map { [$0] } ?? []
+    let operationNumber = nextDiagnosticOperationNumber()
+    conversationDeletions[summary.id]?.diagnosticOperationNumber = operationNumber
     undoDeletionID = summary.id
   }
   mutating func installAwaitingDeletion(_ id: UUID) {

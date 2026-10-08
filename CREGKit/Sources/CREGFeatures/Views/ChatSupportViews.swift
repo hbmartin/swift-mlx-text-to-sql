@@ -267,6 +267,7 @@ struct InterruptedTurnBanner: View {
   /// The retry is queued, being claimed, or being released: the banner owns
   /// that presentation and offers cancellation instead of Ask Again.
   var retryQueued: Bool = false
+  var retryInspecting: Bool = false
   let askAgain: () -> Void
   var cancelRetry: () -> Void = {}
   let dismiss: () -> Void
@@ -280,7 +281,7 @@ struct InterruptedTurnBanner: View {
       spacerMinLength: 4
     ) {
       VStack(alignment: .leading, spacing: 3) {
-        Text(retryQueued ? "Retry queued" : "Interrupted before it finished")
+        Text(retryInspecting ? "Checking retry…" : (retryQueued ? "Retry queued" : "Interrupted before it finished"))
           .font(.footnote.weight(.semibold))
         Text(interrupted.question)
           .font(.footnote)
@@ -289,7 +290,9 @@ struct InterruptedTurnBanner: View {
       }
     } actions: {
       HStack(spacing: 4) {
-        if retryQueued {
+        if retryInspecting {
+          ProgressView().accessibilityLabel("Checking retry")
+        } else if retryQueued {
           Button(action: cancelRetry) {
             Text("Cancel")
               .cregTextButtonLabelTarget()

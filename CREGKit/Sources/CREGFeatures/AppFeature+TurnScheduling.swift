@@ -218,6 +218,10 @@ extension AppFeature {
   func cancelQueuedRetry(
     state: inout State, conversationID: UUID, journalID: UUID
   ) -> Effect<Action> {
+    if state.retryJournals[journalID]?.operations.values.contains(where: {
+      if case .inspection = $0 { return true }
+      return false
+    }) == true { return .none }
     state.invalidateRetryInspection(journalID)
     state.queue.removeAll {
       $0.conversationID == conversationID && $0.retryJournalID == journalID
@@ -422,8 +426,10 @@ extension AppFeature {
     reason: TurnInterruptionReason = .backgroundEntry
   ) -> Effect<Action> {
     guard let active = state.activeTurn else { return .none }
+    let operationNumber = state.retryJournals[active.questionID]?.diagnosticOperationNumber
+      ?? state.nextDiagnosticOperationNumber()
     diagnostics.info(category: .submission, code: "chat_turn_interrupted", summary: reason.summary,
-      context: ["execution_id": active.questionID.uuidString,
+      context: ["operation_number": String(operationNumber),
         "ambiguous": String(ambiguous), "reason": reason.rawValue])
     if let provisionalID = active.provisionalAssistantMessageID,
       case .preparedFollowUp(let prepared) = active.submission.source
@@ -566,6 +572,12 @@ extension AppFeature {
     state.seedRetry(
       resolvedJournalID, conversationID: chat.conversationID, interruption: interrupted)
     state.invalidateRetryInspection(resolvedJournalID)
+    state.failures.removeAll {
+      if case .retry(let conversationID, let journalID, _) = $0.owner {
+        return conversationID == chat.conversationID && journalID == resolvedJournalID
+      }
+      return false
+    }
     state.promoteRetry(resolvedJournalID)
     if state.clearFailedDismissal(resolvedJournalID) {
       state.retryJournals[resolvedJournalID]?.intent = .idle
