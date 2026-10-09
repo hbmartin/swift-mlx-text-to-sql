@@ -63,6 +63,8 @@ public struct AppFeature: Sendable {
     public var pipelineStarted = false
     public var backgroundGPUGranted = false
     public var interruptionAmbiguous = false
+    /// Carries diagnostic ownership until the interruption journal is seeded.
+    public var interruptionDiagnosticOperationNumber: UInt64?
     /// The Conversation's suggestion generation this turn was accepted
     /// under; its answer's suggestions are owned by exactly this value.
     public var suggestionGeneration = 0
@@ -255,6 +257,7 @@ public struct AppFeature: Sendable {
   public struct SupportBundleExport: Equatable, Sendable {
     public var url: URL
     public var manifest: SupportBundleManifest
+    public var requestID: UUID = UUID()
 
     public init(url: URL, manifest: SupportBundleManifest) {
       self.url = url
@@ -323,8 +326,10 @@ public struct AppFeature: Sendable {
     /// the system's job, so this is hydrated from it rather than stored.
     public var appIcon: AppIconVariant = .midnight
     public var supportsAlternateIcons = false
-    public var isBuildingSupportBundle = false
+    public var supportBuildRequestID: UUID?
+    public var isBuildingSupportBundle: Bool { supportBuildRequestID != nil }
     public var supportBundleExport: SupportBundleExport?
+    public var supportBundlePresentationID: UUID?
     /// Debug-only answerability capture (docs/eval.md "Answerability").
     public var isCapturingAnswerability = false
     /// Identity of the in-flight capture. A completion action must present
@@ -341,14 +346,16 @@ public struct AppFeature: Sendable {
     public var failures: [OwnedFailure] = []
     public var historySummaryPhase: HistorySummaryPhase = .idle
     public var historyStoreAvailability: HistoryStoreAvailability = .unopened
-    public var historyStoreUnavailable: Bool {
-      get { historyStoreAvailability == .unavailable }
-      set { historyStoreAvailability = newValue ? .unavailable : .available }
-    }
+    public var historyStoreUnavailable: Bool { historyStoreAvailability == .unavailable }
     public var historyLoadIsRetry = false
-    var summaryWrites: [UUID: UUID] = [:]
+    var summaryWrites: [UUID: SummaryWrite] = [:]
+    var unreadMutationOwners: [UUID: UUID] = [:]
+    var historyWatchdogGeneration: UInt64 = 0
+    public var slowHistoryRequestID: UInt64?
+    var didCleanOldConversationExports = false
+    var presentedExportFiles: [UUID: URL] = [:]
     var conversationCreations: [UInt64: UUID] = [:]
-    var recordedOpeningFailureIDs: Set<UInt64> = []
+    public var answerMorePresentation: AnswerMorePresentation?
     public var conversationOpening: ConversationOpening?
     public var conversationCreationInFlight: ConversationOpening?
     public var newChatRequestedDuringBootstrap = false
@@ -518,11 +525,13 @@ public struct AppFeature: Sendable {
     case modelPreparationFailed(ModelPreparationFailure, attemptID: UUID? = nil)
     case modelPreparationSuspended(UUID)
     case bootstrapFinished([ConversationSummary], requestID: UInt64)
-    case historySummaryTimedOut(UInt64)
+    case historySummaryTimedOut(UInt64, generation: UInt64 = 0)
     case summaryWriteSettled(UUID, FailurePresentation?)
     case noticesTapped
-    case sheetDismissed
+    case sheetDismissalRequested(Presentation.ID)
+    case sheetDismissed(Presentation.ID)
     case shareConversationExport(UUID)
+    case discardConversationExport(conversationID: UUID, requestID: UUID)
     case conversationExportFinished(UUID, requestID: UUID, Result<URL, FailurePresentation>)
     case historyBootstrapFailed(UInt64, FailurePresentation, storeUnavailable: Bool)
     case retryHistoryTapped
@@ -540,6 +549,9 @@ public struct AppFeature: Sendable {
     case browserDismissTapped
     case searchResults([ConversationSearchHit])
     case conversationSelected(UUID)
+    case conversationModalRequested(UUID)
+    case answerMorePresented(conversationID: UUID, presentationID: UUID)
+    case answerMoreDismissed(conversationID: UUID, presentationID: UUID)
     case newChatTapped
     case deleteConversationTapped(UUID)
     case undoDeleteTapped
@@ -597,8 +609,10 @@ public struct AppFeature: Sendable {
       context: FollowUpSuggestionContext,
       generation: Int = 0)
     case supportBundleExportTapped
-    case supportBundleReady(SupportBundleExport)
-    case supportBundleDismissed
+    case supportBundleReady(SupportBundleExport, requestID: UUID)
+    case supportBundleFailed(FailurePresentation, requestID: UUID)
+    case supportBundleDismissalRequested(UUID)
+    case supportBundleDismissed(UUID)
     case answerabilityCaptureTapped
     case answerabilityCaptureReady(id: UUID, url: URL?)
     case appIconLoaded(AppIconVariant, supportsAlternates: Bool)
@@ -682,6 +696,10 @@ public struct AppFeature: Sendable {
         refreshFMAvailability(state: &state)
         syncSchedulerProjection(into: &state)
         var effects: [Effect<Action>] = []
+        if !state.didCleanOldConversationExports {
+          state.didCleanOldConversationExports = true
+          effects.append(cleanOldConversationExports(protected: Set(state.presentedExportFiles.values).union(state.conversationExports.values.compactMap { if case .ready(let url) = $0.phase { url } else { nil } })))
+        }
         if !state.didRequestPreparationJournalInspection {
           state.didRequestPreparationJournalInspection = true
           setModelReadiness(.preparing, state: &state)
@@ -728,7 +746,7 @@ public struct AppFeature: Sendable {
         return .merge(
           preflight, requestedModel, resumedModel, autoRetry, benchmark,
           interruptedRecovery, pendingSuggestions, persistedPreparation,
-          queuedTurn)
+          queuedTurn, armHistoryWarning(state: &state))
 
       case .appBecameInactive:
         // A brief inactive scene (a notification, Control Center, the app
@@ -736,10 +754,10 @@ public struct AppFeature: Sendable {
         // active turn and any running low-priority work continue; only
         // entering the background interrupts and suspends them.
         state.isSceneActive = false
-        return .cancel(id: CancelID.fmAvailabilityWatch)
+        return .merge(.cancel(id: CancelID.fmAvailabilityWatch), cancelHistoryWarning(state: &state))
 
       case .appEnteredBackground:
-        return deactivateScene(state: &state)
+        return .merge(cancelHistoryWarning(state: &state), deactivateScene(state: &state))
 
       case .resourcePressure:
         let generation = uuid()
@@ -937,9 +955,9 @@ public struct AppFeature: Sendable {
         guard state.historySummaryPhase == .loading(requestID) else { return .none }
         state.mergeHistorySummaries(summaries)
         state.historySummaryPhase = .loaded
-        state.historyStoreUnavailable = false
+        state.markHistoryStoreAvailable()
+        state.slowHistoryRequestID = nil
         state.clearSummaryFailures()
-        state.failures.removeAll { $0.failure.cause == .historyStoreUnavailable }
         let cancelWatchdog = Effect<Action>.cancel(id: HistorySummaryTimeoutID(requestID: requestID))
         diagnostics.info(
           category: .history,
@@ -956,6 +974,7 @@ public struct AppFeature: Sendable {
         return .merge(cancelWatchdog, beginConversationLoad(state: &state, id: mostRecent.id))
 
       case .conversationCreated(let summary, let requestID):
+        state.markHistoryStoreAvailable()
         state.conversationCreations.removeValue(forKey: requestID)
         // Creation is a durable write: even an obsolete completion belongs in
         // Recents, but only its current opening request may select the chat.
@@ -981,6 +1000,7 @@ public struct AppFeature: Sendable {
         return startLaunchBenchmarkIfReady(state: &state)
 
       case .conversationLoaded(let snapshot, let requestID):
+        state.markHistoryStoreAvailable()
         guard state.conversationOpening?.requestID == requestID,
           state.conversationOpening?.kind == .load(snapshot.summary.id) else { return .none }
         guard state.isConversationLive(snapshot.summary.id) else {
@@ -1058,18 +1078,7 @@ public struct AppFeature: Sendable {
             })
         }
         if snapshot.summary.isUnread {
-          state.conversations[id: snapshot.summary.id]?.isUnread = false
-          let id = snapshot.summary.id
-          let operationID = uuid()
-          state.summaryWrites[operationID] = id
-          effects.append(.run { send in
-            do {
-              try await history.setUnread(id, false)
-              await send(.summaryWriteSettled(operationID, nil))
-            } catch {
-              await send(.summaryWriteSettled(operationID, .history(operation: .messageSave, error: error)))
-            }
-          })
+          effects.append(setConversationUnread(state: &state, id: snapshot.summary.id, unread: false))
         }
         if state.answerReadyBanner?.conversationID == snapshot.summary.id {
           state.answerReadyBanner = nil
@@ -1188,6 +1197,9 @@ public struct AppFeature: Sendable {
         if let first = pending.deferredFailures.first {
           presentFailure(state: &state, primary: first, secondary: Array(pending.deferredFailures.dropFirst()))
         }
+        for owned in pending.deferredOperationFailures {
+          presentFailure(state: &state, primary: owned.failure, owner: owned.owner)
+        }
         return .cancel(id: DeletionCountdownID(token: pending.token))
 
       case .deleteCountdownFinished(let token):
@@ -1208,6 +1220,9 @@ public struct AppFeature: Sendable {
           syncDismissalProjection(into: &state)
           syncSchedulerProjection(into: &state)
           presentFailure(state: &state, primary: failure, secondary: deferredFailures)
+          for owned in deletion.deferredOperationFailures {
+            presentFailure(state: &state, primary: owned.failure, owner: owned.owner)
+          }
           return .none
         }
         recordDeletionEvent(deletion, code: "conversation_delete_committed",
@@ -1215,7 +1230,11 @@ public struct AppFeature: Sendable {
         for failure in deferredFailures {
           recordDeletedConversationWriteFailure(failure: failure, operationNumber: deletion.diagnosticOperationNumber)
         }
+        for owned in deletion.deferredOperationFailures {
+          recordDeletedConversationWriteFailure(failure: owned.failure, operationNumber: deletion.diagnosticOperationNumber)
+        }
         state.conversationDeletions[id]?.deferredFailures = []
+        state.conversationDeletions[id]?.deferredOperationFailures = []
         state.conversationDeletions[id]?.phase = .committed
         state.conversations.remove(id: id)
         state.queue.removeAll { $0.conversationID == id }
@@ -1224,12 +1243,13 @@ public struct AppFeature: Sendable {
         state.searchHits.removeAll { $0.conversationID == id }
         state.failures.removeAll {
           switch $0.owner {
-          case .conversation(let ownerID), .retry(let ownerID, _, _): ownerID == id
+          case .conversation(let ownerID), .conversationOperation(let ownerID, _), .retry(let ownerID, _, _): ownerID == id
           default: false
           }
         }
+        state.unreadMutationOwners.removeValue(forKey: id)
         if let export = state.conversationExports.removeValue(forKey: id), case .ready(let url) = export.phase {
-          return removeExportFile(url)
+          return state.presentedExportFiles[export.requestID] == nil ? removeExportFile(url) : .none
         }
         return .none
 
@@ -1275,7 +1295,8 @@ public struct AppFeature: Sendable {
               ? (interrupted.interruptionAmbiguous ? .ambiguousInterruption : .knownInterruption)
               : .running),
           autoRetryCount: interrupted.autoRetryCount)
-        state.seedRetry(questionID, conversationID: interrupted.conversationID, interruption: entry)
+        state.seedRetry(questionID, conversationID: interrupted.conversationID, interruption: entry,
+          diagnosticOperationNumber: interrupted.interruptionDiagnosticOperationNumber)
         state.retryJournals[questionID]?.interruption = entry
         // The retry entry is built from the interrupted turn's own data so it
         // queues, ordered by the original question time, even when its
@@ -2107,36 +2128,60 @@ public struct AppFeature: Sendable {
         switch origin {
         case .conversationWrite(let id):
           return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure)
-        case .conversation(let id):
-          guard state.isConversationLive(id) else { recordFailure(failure); return .none }
-          presentFailure(state: &state, primary: failure, owner: .conversation(id))
-          return .none
         case nil: return .send(.operationFailed(failure))
         }
 
-      case .historySummaryTimedOut(let requestID):
-        guard state.historySummaryPhase == .loading(requestID) else { return .none }
-        state.historySummaryPhase = .failed(requestID)
-        state.historySummaryBaseline = [:]
-        state.historySummaryProtectedIDs = []
+      case .chat(.delegate(.feedbackWriteRequested(let id, let write))):
+        // These writes outlive the optional chat reducer. Deletion must not
+        // cancel their failure settlement before Undo recovery can own it.
+        return .run { send in
+          do {
+            switch write {
+            case .save(let feedback): try await history.saveFeedback(id, feedback)
+            case .clear(let messageID): try await history.clearFeedback(id, messageID)
+            }
+          } catch {
+            await send(.operationFailed(.history(operation: .feedbackSave, error: error),
+              owner: .conversationOperation(id, .feedback)))
+          }
+        }
+
+      case .historySummaryTimedOut(let requestID, let generation):
+        guard state.isSceneActive, state.historySummaryPhase == .loading(requestID),
+          state.historyWatchdogGeneration == generation, state.slowHistoryRequestID != requestID else { return .none }
+        state.slowHistoryRequestID = requestID
         presentFailure(state: &state, primary: FailurePresentation(
           code: "history_summary_timed_out", title: "History is taking longer than expected",
-          message: "Tap Retry history to try loading your conversations again.",
-          diagnostic: "History summaries exceeded the five-second watchdog.", recovery: .retryHistory),
+          message: "CREG is still loading your conversations. You can restart loading history.",
+          diagnostic: "History summaries exceeded the five-second warning interval.", recovery: .retryHistory),
           owner: .historySummaries(requestID))
-        return .cancel(id: CancelID.historySummaries)
+        return .none
 
       case .summaryWriteSettled(let operationID, let failure):
-        guard let id = state.summaryWrites.removeValue(forKey: operationID) else { return .none }
-        if let failure { return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure) }
-        return .none
+        guard let operation = state.summaryWrites.removeValue(forKey: operationID) else { return .none }
+        let id = operation.conversationID
+        switch operation.kind {
+        case .unread(let previous):
+          if state.unreadMutationOwners[id] == operationID {
+            state.unreadMutationOwners.removeValue(forKey: id)
+            if failure != nil { state.conversations[id: id]?.isUnread = previous }
+          }
+          if let failure {
+            diagnostics.record(DiagnosticEvent(level: .error, category: .history,
+              code: "history_unread_update_failed", summary: "The unread indicator could not be updated.", details: failure.diagnostic))
+          }
+          return .none
+        case .rename:
+          if let failure { return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure, owner: .conversationOperation(id, .rename)) }
+          return .none
+        }
 
       case .chat(.delegate(.renameRequested(let id, let title))):
         guard state.isConversationLive(id) else { return .none }
         state.conversations[id: id]?.title = title
         state.conversations[id: id]?.isManuallyTitled = true
         let operationID = uuid()
-        state.summaryWrites[operationID] = id
+        state.summaryWrites[operationID] = .init(conversationID: id, kind: .rename)
         return .run { send in
           do {
             try await history.renameConversation(id, title)
@@ -2151,60 +2196,93 @@ public struct AppFeature: Sendable {
       case .conversationExportFinished(let id, let requestID, let result):
         return finishConversationExport(state: &state, conversationID: id, requestID: requestID, result: result)
       case .shareConversationExport(let id):
-        guard state.chat?.conversationID == id, state.isConversationLive(id),
-          let export = state.conversationExports[id], case .ready = export.phase else { return .none }
-        state.presentation = .conversationExport(export)
+        return beginConversationExport(state: &state, conversationID: id, intent: .share)
+      case .discardConversationExport(let id, let requestID):
+        guard let export = state.conversationExports[id], export.requestID == requestID,
+          export.intent == .retained, case .ready(let url) = export.phase,
+          state.presentedExportFiles[requestID] == nil else { return .none }
+        state.conversationExports.removeValue(forKey: id)
+        return removeExportFile(url)
+      case .conversationModalRequested(let id):
+        guard state.chat?.conversationID == id,
+          state.conversationExports[id]?.phase == .exporting else { return .none }
+        state.conversationExports[id]?.intent = .retained
+        return .none
+      case .answerMorePresented(let id, let presentationID):
+        guard state.chat?.conversationID == id, state.isConversationLive(id) else { return .none }
+        state.answerMorePresentation = .init(conversationID: id, presentationID: presentationID)
+        if state.conversationExports[id]?.phase == .exporting {
+          state.conversationExports[id]?.intent = .retained
+        }
+        return .none
+      case .answerMoreDismissed(let id, let presentationID):
+        guard state.answerMorePresentation == .init(conversationID: id, presentationID: presentationID)
+        else { return .none }
+        state.answerMorePresentation = nil
         return .none
       case .noticesTapped:
         if let id = state.chat?.conversationID { state.presentation = .notices(id) }
         return .none
-      case .sheetDismissed:
-        let presentation = state.presentation
+      case .sheetDismissalRequested(let id):
+        guard state.presentation?.id == id else { return .none }
         state.presentation = nil
-        if case .conversationExport(let export) = presentation,
-          state.conversationExports[export.conversationID]?.requestID == export.requestID,
-          case .ready(let url) = export.phase {
-          state.conversationExports.removeValue(forKey: export.conversationID)
-          return removeExportFile(url)
+        if case .notices(let conversationID) = id, state.conversationExports[conversationID]?.intent == .share {
+          state.conversationExports[conversationID]?.intent = .retained
         }
         return .none
+      case .sheetDismissed(let dismissedID):
+        return dismissConversationPresentation(state: &state, id: dismissedID)
 
       case .chat:
         return .none
 
       case .supportBundleExportTapped:
-        guard !state.isBuildingSupportBundle else { return .none }
-        state.isBuildingSupportBundle = true
-        diagnostics.info(
-          category: .history,
-          code: "support_bundle_started",
-          summary: "A support bundle export started.")
+        guard state.supportBuildRequestID == nil, state.supportBundleExport == nil else { return .none }
+        let requestID = uuid()
+        state.supportBuildRequestID = requestID
+        diagnostics.info(category: .history, code: "support_bundle_started", summary: "A support bundle export started.")
         return .run { send in
-          let source = try await history.supportBundleSource()
-          let export = try await supportBundle.build(source)
-          await send(.supportBundleReady(export))
-        } catch: { error, send in
-          await send(
-            .operationFailed(
-              .history(operation: .supportBundle, error: error)))
+          do {
+            let source = try await history.supportBundleSource()
+            defer { SupportBundleBuilder.removeSnapshot(source.databaseSnapshotURL) }
+            let export = try await supportBundle.build(source)
+            await send(.supportBundleReady(export, requestID: requestID))
+          } catch {
+            await send(.supportBundleFailed(.history(operation: .supportBundle, error: error), requestID: requestID))
+          }
         }
 
-      case .supportBundleReady(let export):
-        state.isBuildingSupportBundle = false
-        state.supportBundleExport = export
-        diagnostics.info(
-          category: .history,
-          code: "support_bundle_finished",
-          summary: "A support bundle export finished.",
-          context: [
-            "conversation_count": String(export.manifest.conversationCount),
-            "entry_count": String(export.manifest.entries.count),
-          ])
+      case .supportBundleReady(let export, let requestID):
+        guard state.supportBuildRequestID == requestID else {
+          if state.supportBundleExport?.requestID == requestID, state.supportBundleExport?.url == export.url { return .none }
+          return removeSupportBundle(export.url)
+        }
+        state.supportBuildRequestID = nil
+        var ownedExport = export
+        ownedExport.requestID = requestID
+        state.supportBundleExport = ownedExport
+        state.supportBundlePresentationID = requestID
+        diagnostics.info(category: .history, code: "support_bundle_finished", summary: "A support bundle export finished.",
+          context: ["conversation_count": String(export.manifest.conversationCount),
+            "entry_count": String(export.manifest.entries.count)])
         return .none
 
-      case .supportBundleDismissed:
-        state.supportBundleExport = nil
+      case .supportBundleFailed(let failure, let requestID):
+        guard state.supportBuildRequestID == requestID else { recordFailure(failure); return .none }
+        state.supportBuildRequestID = nil
+        presentFailure(state: &state, primary: failure)
         return .none
+
+      case .supportBundleDismissalRequested(let requestID):
+        guard state.supportBundlePresentationID == requestID else { return .none }
+        state.supportBundlePresentationID = nil
+        return .none
+
+      case .supportBundleDismissed(let requestID):
+        guard let export = state.supportBundleExport, requestID == export.requestID else { return .none }
+        state.supportBundlePresentationID = nil
+        state.supportBundleExport = nil
+        return removeSupportBundle(export.url)
 
       case .answerabilityCaptureTapped:
         #if DEBUG
@@ -2316,14 +2394,16 @@ public struct AppFeature: Sendable {
         return .none
 
       case .retryHistoryTapped:
-        return bootstrapHistory(state: &state)
+        return bootstrapHistory(state: &state, restart: state.slowHistoryRequestID != nil)
 
       case .historyBootstrapFailed(let requestID, let failure, let unavailable):
         guard state.historySummaryPhase == .loading(requestID) else { return .none }
         state.historySummaryPhase = .failed(requestID)
         state.historySummaryBaseline = [:]
         state.historySummaryProtectedIDs = []
-        state.historyStoreUnavailable = unavailable
+        state.slowHistoryRequestID = nil
+        if unavailable { state.historyStoreAvailability = .unavailable }
+        else { state.markHistoryStoreAvailable() }
         let cancelWatchdog = Effect<Action>.cancel(id: HistorySummaryTimeoutID(requestID: requestID))
         state.clearSummaryFailures()
         presentFailure(state: &state, primary: failure, owner: .historySummaries(requestID))
@@ -2335,7 +2415,9 @@ public struct AppFeature: Sendable {
         return cancelWatchdog
 
       case .conversationOpeningFailed(let requestID, let failure):
-        guard state.recordedOpeningFailureIDs.insert(requestID).inserted else { return .none }
+        let ownsOpening = state.conversationOpening?.requestID == requestID
+          && state.conversationOpening?.phase == .loading
+        guard ownsOpening || state.conversationCreations[requestID] != nil else { return .none }
         state.conversationCreations.removeValue(forKey: requestID)
         if state.conversationCreationInFlight?.requestID == requestID { state.conversationCreationInFlight = nil }
         guard state.conversationOpening?.requestID == requestID else {
@@ -2356,9 +2438,13 @@ public struct AppFeature: Sendable {
         }
 
       case .operationFailed(let failure, let owner):
-        if case .conversation(let conversationID) = owner,
-          !state.isConversationLive(conversationID) {
-          return handleConversationWriteFailure(state: &state, conversationID: conversationID, failure: failure)
+        let operationConversationID: UUID?
+        switch owner {
+        case .conversation(let id), .conversationOperation(let id, _): operationConversationID = id
+        default: operationConversationID = nil
+        }
+        if let id = operationConversationID, !state.isConversationLive(id) {
+          return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure, owner: owner)
         }
         if case .retry(let conversationID, let journalID, let generation) = owner {
           guard state.isConversationLive(conversationID),

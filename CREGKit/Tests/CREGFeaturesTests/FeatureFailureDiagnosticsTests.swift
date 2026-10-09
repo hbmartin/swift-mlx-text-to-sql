@@ -34,11 +34,11 @@ import Testing
     let store = TestStore(initialState: initialState) {
       AppFeature()
     } withDependencies: { [history] in
-      $0.continuousClock = ContinuousClock()
-      $0.uuid = .incrementing
       $0.historyClient = history
       $0.diagnostics = recorder.client
       $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
@@ -103,8 +103,6 @@ import Testing
           continuation.finish()
         }
       }
-      $0.continuousClock = ContinuousClock()
-      $0.uuid = .incrementing
       $0.historyClient = history
       $0.diagnostics = recorder.client
       $0.uuid = .incrementing

@@ -471,6 +471,7 @@ extension AppFeature {
     state.activeTurn = nil
     var interrupted = active
     interrupted.interruptionAmbiguous = ambiguous
+    interrupted.interruptionDiagnosticOperationNumber = operationNumber
     state.pendingInterruptedTurn = interrupted
     syncSchedulerProjection(into: &state)
     return .concatenate(
@@ -573,12 +574,6 @@ extension AppFeature {
     state.seedRetry(
       resolvedJournalID, conversationID: chat.conversationID, interruption: interrupted)
     state.invalidateRetryInspection(resolvedJournalID)
-    state.failures.removeAll {
-      if case .retry(let conversationID, let journalID, _) = $0.owner {
-        return conversationID == chat.conversationID && journalID == resolvedJournalID
-      }
-      return false
-    }
     state.promoteRetry(resolvedJournalID)
     if state.clearFailedDismissal(resolvedJournalID) {
       state.retryJournals[resolvedJournalID]?.intent = .idle

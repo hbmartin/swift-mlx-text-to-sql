@@ -3227,7 +3227,7 @@ private func awaitArmedFMWatch(
     state.pendingTurnPersistence = AppFeature.PendingTurnPersistence(
       questionID: questionID,
       conversationID: Self.conversationA)
-    state.isBuildingSupportBundle = true
+    state.supportBuildRequestID = UUID()
     let existingFailure = FailurePresentation(
       code: "existing_failure",
       title: "Existing failure",
@@ -5062,51 +5062,42 @@ private func awaitArmedFMWatch(
   }
 
   @Test func feedbackIsReversibleAndSwitchable() async {
-    let saved = CallRecorder()
-    let cleared = CallRecorder()
-    var history = HistoryClient.noop()
-    history.saveFeedback = { _, feedback in
-      saved.record(feedback.verdict.rawValue)
-    }
-    history.clearFeedback = { _, messageID in
-      cleared.record(messageID.uuidString)
-    }
     let messageID = UUID(70)
     var state = Self.chatState()
     state.messages.append(Self.answerMessage(id: messageID))
     let store = TestStore(initialState: state) {
       ChatFeature()
-    } withDependencies: { [history] in
+    } withDependencies: {
       $0.uuid = .incrementing
-      $0.historyClient = history
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
     await store.send(.feedbackHelpfulTapped(messageID: messageID))
+    await store.receive(.delegate(.feedbackWriteRequested(conversationID: state.conversationID,
+      write: .save(store.state.feedback[messageID]!))))
     #expect(store.state.feedback[messageID]?.verdict == .helpful)
     #expect(store.state.correctionContext == nil)
 
     // Switching verdicts opens the correction context above the composer.
     await store.send(.feedbackNotRightTapped(messageID: messageID))
+    await store.receive(.delegate(.feedbackWriteRequested(conversationID: state.conversationID,
+      write: .save(store.state.feedback[messageID]!))))
     #expect(store.state.feedback[messageID]?.verdict == .notRight)
     #expect(store.state.correctionContext?.messageID == messageID)
 
     // Tapping the active verdict reverses it.
     await store.send(.feedbackNotRightTapped(messageID: messageID))
+    await store.receive(.delegate(.feedbackWriteRequested(conversationID: state.conversationID,
+      write: .clear(messageID))))
     #expect(store.state.feedback[messageID] == nil)
     #expect(store.state.correctionContext == nil)
 
     await store.finish()
-    #expect(saved.recorded == ["helpful", "not_right"])
-    #expect(cleared.recorded == [messageID.uuidString])
   }
 
   @Test func helpfulMarkCanBeRemovedByTappingHelpfulAgain() async {
-    let cleared = CallRecorder()
-    var history = HistoryClient.noop()
-    history.clearFeedback = { _, messageID in cleared.record(messageID.uuidString) }
     let messageID = UUID(7070)
     var state = Self.chatState()
     state.messages.append(Self.answerMessage(id: messageID))
@@ -5115,47 +5106,43 @@ private func awaitArmedFMWatch(
     let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = ContinuousClock()
-      $0.historyClient = history
     }
     store.exhaustivity = .off
     await store.send(.feedbackHelpfulTapped(messageID: messageID))
+    await store.receive(.delegate(.feedbackWriteRequested(conversationID: state.conversationID,
+      write: .clear(messageID))))
     await store.finish()
     #expect(store.state.feedback[messageID] == nil)
     #expect(store.state.correctionContext == nil)
-    #expect(cleared.recorded == [messageID.uuidString])
   }
 
   @Test func nextSubmissionRecordsTheCorrection() async {
-    let corrections = CallRecorder()
-    var history = HistoryClient.noop()
-    history.saveFeedback = { _, feedback in
-      corrections.record(feedback.correction ?? "none")
-    }
     let messageID = UUID(70)
     var state = Self.chatState()
     state.messages.append(Self.answerMessage(id: messageID))
     let store = TestStore(initialState: state) {
       ChatFeature()
-    } withDependencies: { [history] in
+    } withDependencies: {
       $0.uuid = .incrementing
-      $0.historyClient = history
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.continuousClock = ImmediateClock()
     }
     store.exhaustivity = .off
 
     await store.send(.feedbackNotRightTapped(messageID: messageID))
+    await store.receive(.delegate(.feedbackWriteRequested(conversationID: state.conversationID,
+      write: .save(store.state.feedback[messageID]!))))
     await store.send(
       .binding(.set(\.composerText, "No — only include held properties")))
     await store.send(.sendTapped)
+    await store.receive(.delegate(.feedbackWriteRequested(conversationID: state.conversationID,
+      write: .save(store.state.feedback[messageID]!))))
     await store.finish()
-    await store.skipReceivedActions()
 
     #expect(store.state.correctionContext == nil)
     #expect(
       store.state.feedback[messageID]?.correction
         == "No — only include held properties")
-    #expect(corrections.recorded.contains("No — only include held properties"))
   }
 
   @Test func askAgainDelegatesExistingTurnWithoutCreatingAnotherUserMessage() async {
@@ -5266,5 +5253,70 @@ private func awaitArmedFMWatch(
         ConversationTurn(question: "first question", answerSummary: "first summary"),
         ConversationTurn(question: "second question", answerSummary: "second summary"),
       ])
+  }
+}
+
+extension ChatFeatureConversationTests {
+  @Test func starterChipPreservesCorrectionContextAndTypedDraft() async {
+    let id = UUID(19001)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: id))
+    state.feedback[id] = AnswerFeedback(messageID: id, verdict: .notRight, updatedAt: Date())
+    state.correctionContext = .init(messageID: id, answerNarration: "Source answer")
+    state.composerText = "My typed correction"
+    let context = state.correctionContext
+    let store = TestStore(initialState: state) { ChatFeature() }
+    store.exhaustivity = .off
+    await store.send(.starterQuestionTapped(.portfolioValueByFundV1))
+    await store.receive(\.delegate)
+    store.exhaustivity = .on
+    await store.finish()
+    #expect(store.state.correctionContext == context)
+    #expect(store.state.composerText == "My typed correction")
+    #expect(store.state.feedback[id]?.correction == nil)
+  }
+}
+
+extension ChatFeatureConversationTests {
+  @Test(arguments: ["followUp", "tryAgain", "askAgain", "focusSettled"])
+  func correctionCaptureBelongsOnlyToTypedComposerSubmission(source: String) async {
+    let answerID = UUID(19002), failedID = UUID(19003)
+    var state = Self.chatState()
+    state.messages.append(Self.answerMessage(id: answerID))
+    state.feedback[answerID] = AnswerFeedback(messageID: answerID, verdict: .notRight, updatedAt: Date())
+    state.correctionContext = .init(messageID: answerID, answerNarration: "Source")
+    state.composerText = "Typed correction"
+    let context = state.correctionContext
+    let prepared = AppFeatureSchedulerTests.preparedFollowUp()
+    state.followUpBatch = .init(sourceAssistantMessageID: prepared.sourceAssistantMessageID, suggestions: [prepared], updatedAt: Date())
+    var telemetry = TurnTelemetry(originalQuestion: "Retry question")
+    telemetry.failureReason = .generationExhausted
+    state.messages.append(.init(id: failedID, role: .assistant,
+      body: .failedTurn(reason: .generationExhausted, scopeVerdict: nil), createdAt: Date(), devInfo: telemetry))
+    state.interruptedTurn = .init(question: "Interrupted question", interruptedAt: Date())
+    state.isSubmissionPending = source == "focusSettled"
+    let store = TestStore(initialState: state) { ChatFeature() } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+    let action: ChatFeature.Action
+    switch source {
+    case "followUp": action = .preparedFollowUpTapped(prepared.id)
+    case "tryAgain": action = .retryFailedTurnTapped(messageID: failedID)
+    case "askAgain": action = .askAgainTapped
+    default: action = .submissionFocusSettled
+    }
+    await store.send(action)
+    if source == "focusSettled" {
+      await store.receive(.delegate(.feedbackWriteRequested(conversationID: state.conversationID,
+        write: .save(store.state.feedback[answerID]!))))
+    } else {
+      await store.receive(\.delegate)
+      store.exhaustivity = .on
+    }
+    await store.finish()
+    #expect(store.state.composerText == "Typed correction")
+    #expect(store.state.correctionContext == (source == "focusSettled" ? nil : context))
+    #expect(store.state.feedback[answerID]?.correction == (source == "focusSettled" ? "Typed correction" : nil))
   }
 }

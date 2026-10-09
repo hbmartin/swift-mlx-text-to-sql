@@ -132,6 +132,26 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testRetainedExportDoesNotAutomaticallyPresentSharing",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testBrowserRefreshPreservesSearchAndKeyboardFocus",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testCanonicalScreensDoNotClipTextOrShrinkHitRegions",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testPresentedSheetsReceiveEffectiveAX5",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testAccessibleHeadersWrapAtLargeTextSizes",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testProductionSupportBindingDismissesAndReleasesArtifacts",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testMoreRetainsHeldExportUntilExplicitRegeneration",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testRetainedExportCanBeDiscardedWithoutClearingOtherNotices",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testLongDrawerPreviewsStayBoundedAndSettingsReachable",
+    "-only-testing:CREGUITests/AccessibilityUITests/"
+    "testCompactJumpToLatestWithKeyboardAndCorrection",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
@@ -701,8 +721,9 @@ def _accessibility_ui_job_contract_failures(
             job, step, job_name=ACCESSIBILITY_UI_JOB, step_name=step_name, prefix=prefix,
             expected_runner=ACCESSIBILITY_UI_RUNNER, expected_shell=ACCESSIBILITY_UI_SHELL,
             expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY, expected_job_timeout=75))
-        if step.get("timeout-minutes") != 30:
-            failures.append(f"{prefix} UI {label} timeout must be 30 minutes")
+        expected_timeout = 30 if step is ui_build else 60
+        if step.get("timeout-minutes") != expected_timeout:
+            failures.append(f"{prefix} UI {label} timeout must be {expected_timeout} minutes")
         run = step.get("run")
         if not isinstance(run, str):
             failures.append(f"{prefix} UI {label} step must contain a shell command")

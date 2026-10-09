@@ -11,6 +11,7 @@ import SwiftUI
 struct SettingsView: View {
   @Bindable var store: StoreOf<AppFeature>
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @State private var presentedSupportID: UUID?
 
   var body: some View {
     NavigationStack {
@@ -21,7 +22,7 @@ struct SettingsView: View {
               dismiss: { store.send(.dismissOwnedFailure($0)) })
             if store.visibleFailures.contains(where: { $0.failure.recovery == .retryHistory }) {
               RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
-                retry: { store.send(.retryHistoryTapped) }, isRetry: store.historyLoadIsRetry)
+                retry: { store.send(.retryHistoryTapped) }, isRetry: store.historyLoadIsRetry, isSlow: store.slowHistoryRequestID != nil)
             }
           }
         }
@@ -93,7 +94,7 @@ struct SettingsView: View {
                 systemImage: "envelope.badge")
             }
           }
-          .disabled(store.isBuildingSupportBundle)
+          .disabled(store.isBuildingSupportBundle || store.supportBundleExport != nil)
         } footer: {
           Text(
             "Includes all stored conversations: questions, results, generated SQL, drafts, answer feedback and corrections, event history, diagnostics, and a full history database snapshot. Review the ZIP before sending."
@@ -113,10 +114,25 @@ struct SettingsView: View {
       }
       .sheet(
         item: Binding(
-          get: { store.supportBundleExport },
-          set: { if $0 == nil { store.send(.supportBundleDismissed) } })
+          get: {
+            store.supportBundleExport.flatMap {
+              store.supportBundlePresentationID == $0.requestID ? $0 : nil
+            }
+          },
+          set: { value in
+            if value == nil, let id = presentedSupportID ?? store.supportBundlePresentationID {
+              store.send(.supportBundleDismissalRequested(id))
+            }
+          }),
+        onDismiss: {
+          if let id = presentedSupportID { store.send(.supportBundleDismissed(id)) }
+          presentedSupportID = nil
+        }
       ) { export in
         SupportBundleSendView(export: export)
+          .cregPresentedSurfaceProbe()
+          .environment(\.dynamicTypeSize, dynamicTypeSize)
+          .onAppear { presentedSupportID = export.requestID }
       }
     }
   }
@@ -227,7 +243,7 @@ enum PortfolioAsOfDateDisplay {
 }
 
 extension AppFeature.SupportBundleExport: Identifiable {
-  public var id: URL { url }
+  public var id: UUID { requestID }
 }
 
 /// Pre-addressed Mail composition for the Support Bundle, with a share-sheet
@@ -254,15 +270,27 @@ struct SupportBundleSendView: View {
   }
 
   private var fallback: some View {
-    SupportBundleFallbackView(url: export.url, done: { dismiss() })
+    var view = SupportBundleFallbackView(url: export.url, done: { dismiss() })
+    #if DEBUG && canImport(MessageUI)
+      if case .scenario(let configuration) = AccessibilityUITestConfiguration.currentRequest,
+        configuration.scenario == .supportBundleDismissal
+      {
+        view.simulatedMailCompletion = { sent in
+          MailComposerView.Coordinator(dismiss: { dismiss() })
+            .finish(result: sent ? .sent : .cancelled)
+        }
+      }
+    #endif
+    return view.accessibilityIdentifier("ui-test-support-bundle-fallback")
   }
 }
 
 struct SupportBundleFallbackView: View {
   let url: URL
   var done: () -> Void
-  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-  @State private var selectedDetent: PresentationDetent = .large
+  #if DEBUG
+    var simulatedMailCompletion: ((Bool) -> Void)? = nil
+  #endif
 
   var body: some View {
     ScrollView {
@@ -273,6 +301,8 @@ struct SupportBundleFallbackView: View {
         Text("Mail isn’t configured on this iPhone")
           .font(.headline)
           .fixedSize(horizontal: false, vertical: true)
+          .multilineTextAlignment(.center)
+          .frame(maxWidth: .infinity)
         Text(
           "Share the bundle another way and send it to \(SupportBundleSendView.supportAddress). \(SupportBundleSendView.sensitiveContentsWarning)"
         )
@@ -280,6 +310,7 @@ struct SupportBundleFallbackView: View {
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
         .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity)
         .accessibilityIdentifier("support-bundle-warning")
         ShareLink(item: url) {
           Label {
@@ -296,15 +327,19 @@ struct SupportBundleFallbackView: View {
           Text("Done").frame(maxWidth: .infinity, minHeight: 44)
         }
         .buttonStyle(.bordered)
+        #if DEBUG
+          if let simulatedMailCompletion {
+            Button("Mail Cancel") { simulatedMailCompletion(false) }
+              .accessibilityIdentifier("support-mail-cancel").cregTextButtonLabelTarget()
+            Button("Mail Send") { simulatedMailCompletion(true) }
+              .accessibilityIdentifier("support-mail-send").cregTextButtonLabelTarget()
+          }
+        #endif
       }
       .padding(24)
       .frame(maxWidth: .infinity)
     }
-    .presentationDetents([.medium, .large], selection: $selectedDetent)
-    .onAppear { selectedDetent = dynamicTypeSize.isAccessibilitySize ? .large : .medium }
-    .onChange(of: dynamicTypeSize) {
-      if dynamicTypeSize.isAccessibilitySize { selectedDetent = .large }
-    }
+    .presentationDetents([.large])
   }
 }
 
@@ -362,6 +397,10 @@ struct SupportBundleFallbackView: View {
         didFinishWith result: MFMailComposeResult,
         error: (any Error)?
       ) {
+        finish(result: result)
+      }
+
+      func finish(result: MFMailComposeResult) {
         dismiss()
       }
     }

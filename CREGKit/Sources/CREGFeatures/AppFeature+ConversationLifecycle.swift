@@ -154,7 +154,11 @@ extension AppFeature {
     if state.chat?.conversationID == summary.id || (state.chat == nil && deletedOpening) {
       state.chat = nil
       state.closeConversationPresentation()
-      if state.conversationOpening != nil || state.newChatRequestedDuringBootstrap {
+      if state.conversationOpening?.phase == .failed {
+        state.conversationOpening = nil
+        state.clearOpeningFailures()
+      }
+      if state.conversationOpening?.phase == .loading || state.newChatRequestedDuringBootstrap {
         // Preserve a newer explicit selection or accepted New chat intent.
       } else if let next = state.visibleConversations.first {
         effects.append(beginConversationLoad(state: &state, id: next.id))
@@ -202,10 +206,16 @@ extension AppFeature {
   func handleConversationWriteFailure(
     state: inout State,
     conversationID: UUID,
-    failure: FailurePresentation
+    failure: FailurePresentation,
+    owner: FailureOwner? = nil
   ) -> Effect<Action> {
     if state.isConversationPendingDeletion(conversationID) {
-      if state.conversationDeletions[conversationID]?.deferredFailures.contains(failure) != true {
+      if let owner, case .conversationOperation = owner {
+        let owned = OwnedFailure(owner: owner, failure: failure)
+        if state.conversationDeletions[conversationID]?.deferredOperationFailures.contains(owned) != true {
+          state.conversationDeletions[conversationID]?.deferredOperationFailures.append(owned)
+        }
+      } else if state.conversationDeletions[conversationID]?.deferredFailures.contains(failure) != true {
         state.conversationDeletions[conversationID]?.deferredFailures.append(failure)
       }
       diagnostics.info(
@@ -219,7 +229,7 @@ extension AppFeature {
       recordDeletedConversationWriteFailure(failure: failure, operationNumber: state.conversationDeletions[conversationID]?.diagnosticOperationNumber)
       return .none
     }
-    return .send(.operationFailed(failure, owner: .conversation(conversationID)))
+    return .send(.operationFailed(failure, owner: owner ?? .conversation(conversationID)))
   }
 
   func recordDeletedConversationWriteFailure(failure: FailurePresentation, operationNumber: UInt64?) {
@@ -245,7 +255,6 @@ extension AppFeature {
     owner: FailureOwner = .global
   ) {
     state.storeFailure(secondary.reduce(primary) { $0.combining($1) }, owner: owner)
-    state.isBuildingSupportBundle = false
     for failure in [primary] + secondary { recordFailure(failure) }
   }
 

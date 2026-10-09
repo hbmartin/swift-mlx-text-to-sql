@@ -10,8 +10,11 @@ import Foundation
 @Reducer
 public struct ChatFeature: Sendable {
   public enum FailureOrigin: Equatable, Sendable {
-    case conversation(UUID)
     case conversationWrite(UUID)
+  }
+  public enum FeedbackWrite: Equatable, Sendable {
+    case save(AnswerFeedback)
+    case clear(UUID)
   }
 
   /// The in-flight turn this conversation is showing: a compact live status
@@ -126,7 +129,6 @@ public struct ChatFeature: Sendable {
     public var resultViewerMessageID: UUID?
     public var isRenamePresented = false
     public var renameDraft = ""
-    /// Set after a successful JSONL export, consumed by the share sheet.
     public init(
       conversationID: UUID,
       title: String = "",
@@ -245,6 +247,7 @@ public struct ChatFeature: Sendable {
 
     /// Global work only ``AppFeature`` can perform.
     public enum Delegate: Sendable, Equatable {
+      case feedbackWriteRequested(conversationID: UUID, write: FeedbackWrite)
       case submitQuestion(QuestionSubmission)
       case retryInterruptedTurn
       case retryInterruptedTurnFor(UUID)
@@ -356,7 +359,7 @@ public struct ChatFeature: Sendable {
           category: .submission,
           code: "chat_submission_focus_settled",
           summary: "Focus resigned and the pending submission will commit.")
-        return commitSubmission(state: &state)
+        return commitSubmission(state: &state, capturesCorrection: true)
 
       case .sendTapped:
         state.isSubmissionPending = false
@@ -364,7 +367,7 @@ public struct ChatFeature: Sendable {
           category: .submission,
           code: "chat_send_tapped",
           summary: "The send action was invoked.")
-        return commitSubmission(state: &state)
+        return commitSubmission(state: &state, capturesCorrection: true)
 
       case .starterQuestionTapped(let starter):
         // Starter chips carry no typed keyboard candidates, so they bypass

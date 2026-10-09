@@ -20,6 +20,7 @@ struct ChatChrome {
   var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
   var canRetryHistory = false
   var historyIsLoading = false
+  var historyIsSlow = false
   var retryHistory: () -> Void = {}
   var retryOpening: (() -> Void)?
   var canCreateConversation = true
@@ -27,6 +28,7 @@ struct ChatChrome {
   var reviewNotices: () -> Void = {}
   var exportPhase: AppFeature.ConversationExport.Phase?
   var shareExport: () -> Void = {}
+  var discardExport: (() -> Void)?
 }
 
 /// The minimum transcript state needed to distinguish a completed assistant

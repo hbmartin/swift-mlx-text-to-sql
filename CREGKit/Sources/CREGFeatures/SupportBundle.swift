@@ -166,14 +166,14 @@ public enum SupportBundleBuilder {
     scratchDirectory: URL
   ) throws -> AppFeature.SupportBundleExport {
     let fileManager = FileManager.default
-    let stageDirectory = scratchDirectory.appendingPathComponent(
-      "creg-support-bundle", isDirectory: true)
-    let zipURL = scratchDirectory.appendingPathComponent("creg-support-bundle.zip")
+    let buildDirectory = scratchDirectory.appendingPathComponent("creg-support-bundle-\(UUID())", isDirectory: true)
+    let stageDirectory = buildDirectory.appendingPathComponent("staging", isDirectory: true)
+    let zipURL = buildDirectory.appendingPathComponent("creg-support-bundle.zip")
     var completed = false
     defer {
       try? fileManager.removeItem(at: stageDirectory)
-      try? fileManager.removeItem(at: source.databaseSnapshotURL)
-      if !completed { try? fileManager.removeItem(at: zipURL) }
+      removeSnapshot(source.databaseSnapshotURL)
+      if !completed { try? fileManager.removeItem(at: buildDirectory) }
     }
     try? fileManager.removeItem(at: stageDirectory)
     try fileManager.createDirectory(
@@ -238,6 +238,13 @@ public enum SupportBundleBuilder {
     }
     completed = true
     return AppFeature.SupportBundleExport(url: zipURL, manifest: manifest)
+  }
+
+  static func removeSnapshot(_ url: URL) {
+    guard url.pathExtension == "sqlite",
+      let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+      values.isRegularFile == true, values.isSymbolicLink == false else { return }
+    try? FileManager.default.removeItem(at: url)
   }
 
   static func bundledModelIdentity() -> (key: String, revision: String) {

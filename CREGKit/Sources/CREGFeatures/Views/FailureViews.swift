@@ -40,6 +40,7 @@ struct ConversationUnavailableView: View {
   var retryOpening: (() -> Void)?
   var historyIsLoading = false
   var historyLoadIsRetry = false
+  var historyIsSlow = false
   var ownedFailures: [AppFeature.OwnedFailure] = []
   var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
 
@@ -62,7 +63,7 @@ struct ConversationUnavailableView: View {
             .accessibilityIdentifier("conversation-recovery-idle")
         }
         if let retryHistory {
-          RetryHistoryButton(isLoading: historyIsLoading, retry: retryHistory, isRetry: historyLoadIsRetry)
+          RetryHistoryButton(isLoading: historyIsLoading, retry: retryHistory, isRetry: historyLoadIsRetry, isSlow: historyIsSlow)
         }
         if let retryOpening {
           Button(action: retryOpening) { Text("Retry opening conversation").cregTextButtonLabelTarget() }
@@ -106,16 +107,17 @@ struct RetryHistoryButton: View {
   let retry: () -> Void
   var accessibilityID = "history-retry"
   var isRetry = true
+  var isSlow = false
   var body: some View {
-    if isLoading && !isRetry {
+    if isLoading && !isRetry && !isSlow {
       ProgressView("Loading history…").accessibilityIdentifier("history-loading")
     } else {
       Button(action: retry) {
-        Text(isLoading ? "Retrying history…" : "Retry history")
+        Text(isSlow ? "Restart loading history" : (isLoading ? "Retrying history…" : "Retry history"))
           .fixedSize(horizontal: false, vertical: true)
           .cregTextButtonLabelTarget()
       }
-      .disabled(isLoading)
+      .disabled(isLoading && !isSlow)
       .accessibilityIdentifier(accessibilityID)
     }
   }
@@ -125,6 +127,8 @@ struct FailureBanner: View {
   let failure: FailurePresentation
   let developerMode: Bool
   let dismiss: () -> Void
+  var isError = true
+  private var tint: Color { isError ? .orange : .secondary }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -132,8 +136,8 @@ struct FailureBanner: View {
         hStackAlignment: .top, horizontalSpacing: 8, accessibilitySpacing: 8
       ) {
         HStack(alignment: .top, spacing: 8) {
-          Image(systemName: "exclamationmark.triangle.fill")
-            .foregroundStyle(.orange)
+          Image(systemName: isError ? "exclamationmark.triangle.fill" : "info.circle")
+            .foregroundStyle(tint)
           Text(failure.title)
             .font(.headline)
             .fixedSize(horizontal: false, vertical: true)
@@ -144,8 +148,8 @@ struct FailureBanner: View {
             .cregIconButtonTarget()
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Dismiss error")
-        .cregLargeContentViewer("Dismiss error", systemImage: "xmark")
+        .accessibilityLabel(isError ? "Dismiss error" : "Dismiss notice")
+        .cregLargeContentViewer(isError ? "Dismiss error" : "Dismiss notice", systemImage: "xmark")
       }
 
       Text(failure.message)
@@ -160,10 +164,10 @@ struct FailureBanner: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(12)
-    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
     .overlay {
       RoundedRectangle(cornerRadius: 12)
-        .stroke(.orange.opacity(0.35))
+        .stroke(tint.opacity(0.35))
     }
   }
 }

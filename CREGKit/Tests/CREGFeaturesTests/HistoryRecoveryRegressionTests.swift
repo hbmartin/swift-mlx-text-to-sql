@@ -468,10 +468,13 @@ struct HistoryRecoveryRegressionTests {
     if write {
       await store.receive(\.summaryWriteSettled)
       await store.receive(\.operationFailed)
-    } else { await store.receive(\.conversationExportFinished) }
+    } else {
+      await store.receive(\.conversationExportFinished)
+      await store.receive(\.operationFailed)
+    }
     await store.finish()
     #expect(store.state.presentedFailure == failure)
-    let owned = store.state.failures.first { $0.owner == .conversation(a) }
+    let owned = store.state.failures.first { $0.owner == .conversationOperation(a, write ? .rename : .export) }
     #expect(owned?.failure.code == (write ? "history_rename_failed" : "history_export_failed"))
   }
 
@@ -668,7 +671,7 @@ struct HistoryRecoveryRegressionTests {
     await store.receive(\.conversationLoaded)
     await held.finish()
     await store.receive(\.conversationOpeningFailed)
-    await store.send(.conversationOpeningFailed(creationRequest, failure))
+    await store.send(.conversationOpeningFailed(creationRequest, .history(operation: .conversationCreate, error: DiagnosticsTestError.failed("create"))))
     await store.finish()
     #expect(store.state.chat?.conversationID == b)
     #expect(store.state.visibleFailures.isEmpty)
@@ -713,7 +716,9 @@ struct HistoryRecoveryRegressionTests {
       if calls.recorded.count == 1 { await read.hold() }
       return []
     }
-    let store = store(state(), history: history, clock: clock)
+    var initial = state()
+    initial.isSceneActive = true
+    let store = store(initial, history: history, clock: clock)
     await store.send(.onAppear)
     await read.wait()
     let old = store.state.historyRequestSequence
@@ -817,24 +822,30 @@ struct HistoryRecoveryRegressionTests {
     await store.send(.conversationSelected(a))
     await store.receive(\.conversationLoaded)
     #expect(store.state.visibleFailures.isEmpty)
+    let owners: [AppFeature.FailureOwner] = [.conversation(a), .conversationOperation(a, .rename), .conversationOperation(a, .export)]
+    for owner in owners {
+      await store.send(.operationFailed(failure, owner: owner))
+      #expect(store.state.failures.contains { $0.owner == owner })
+    }
     await store.send(.deleteConversationTapped(a))
     let deletion = store.state.pendingDeletion!
     await store.send(.deleteCountdownFinished(deletion.token))
     await store.receive(\.conversationDeletionFinished)
     await store.finish()
-    #expect(!store.state.failures.contains { $0.owner == .conversation(a) })
+    #expect(!store.state.failures.contains { owners.contains($0.owner) })
   }
 
   @Test(arguments: 0..<10)
   func exportCompletingInAnotherChatIsRetainedUntilExplicitShare(iteration: Int) async throws {
     let held = RecoveryHeldRead()
     let calls = CallRecorder()
-    let initial = state(populated: true)
+    var initial = state(populated: true)
+    initial.isSceneActive = true
     let snapshot = ConversationSnapshot(summary: initial.conversations[id: b]!)
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("creg-conversation-test-\(UUID()).jsonl")
     try Data("export".utf8).write(to: url)
     var history = HistoryClient.noop()
-    history.exportJSONL = { _ in calls.record("export"); await held.hold(); return url }
+    history.exportJSONL = { _ in calls.record("export"); if calls.recorded.count == 1 { await held.hold() }; try Data("export".utf8).write(to: url); return url }
     let snapshotA = ConversationSnapshot(summary: initial.conversations[id: a]!)
     history.loadConversation = { id in id == b ? snapshot : snapshotA }
     let store = store(initial, history: history)
@@ -855,8 +866,12 @@ struct HistoryRecoveryRegressionTests {
     #expect(store.state.presentation == nil)
     await store.send(.noticesTapped)
     await store.send(.shareConversationExport(a))
+    #expect(store.state.conversationExports[a]?.phase == .exporting)
+    await held.finish()
+    await store.receive(\.conversationExportFinished)
+    #expect(calls.recorded == ["export", "export"])
     #expect(store.state.presentation == .conversationExport(store.state.conversationExports[a]!))
-    await store.send(.sheetDismissed)
+    await store.send(.sheetDismissed(.export(store.state.conversationExports[a]!.requestID)))
     await store.finish()
     #expect(store.state.conversationExports[a] == nil)
     #expect(!FileManager.default.fileExists(atPath: url.path))
@@ -902,26 +917,62 @@ struct HistoryRecoveryRegressionTests {
     #expect(store.state.failures.map(\.failure) == [failure])
   }
 
-  @Test(arguments: ["none", "settings", "notices"])
+  @Test(arguments: ["none", "settings", "notices", "result", "rename"])
   func selectedExportAutomaticallyPresentsOnlyWhenNoRootSheetIsOpen(sheet: String) async throws {
     var initial = state(populated: true)
+    initial.isSceneActive = true
     let request = UUID(17505)
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("creg-conversation-test-\(UUID()).jsonl")
     try Data("export".utf8).write(to: url)
     initial.conversationExports[a] = .init(conversationID: a, requestID: request, phase: .exporting)
     if sheet == "settings" { initial.presentation = .settings }
     if sheet == "notices" { initial.presentation = .notices(a) }
+    if sheet == "result" { initial.chat?.resultViewerMessageID = UUID(17506) }
+    if sheet == "rename" { initial.chat?.isRenamePresented = true }
     let previous = initial.presentation
     let store = store(initial, history: .noop())
     await store.send(.conversationExportFinished(a, requestID: request, .success(url)))
     let export = store.state.conversationExports[a]!
     #expect(export.phase == .ready(url))
     #expect(store.state.presentation == (sheet == "none" ? .conversationExport(export) : previous))
-    await store.send(.shareConversationExport(a))
-    await store.send(.sheetDismissed)
+    if sheet == "none" {
+      await store.send(.sheetDismissed(.export(request)))
+      await store.finish()
+      #expect(store.state.conversationExports[a] == nil)
+      #expect(!FileManager.default.fileExists(atPath: url.path))
+    } else {
+      if let presentation = store.state.presentation {
+        await store.send(.sheetDismissed(presentation.id))
+      } else if sheet == "result" {
+        await store.send(.chat(.resultViewerDismissed))
+      } else if sheet == "rename" {
+        await store.send(.chat(.binding(.set(\.isRenamePresented, false))))
+      }
+      await store.finish()
+      #expect(store.state.conversationExports[a]?.phase == .ready(url))
+      try? FileManager.default.removeItem(at: url)
+    }
+  }
+
+  @Test func answerSharingRetainsPendingExportAndIgnoresAnotherConversation() async throws {
+    var initial = state(populated: true)
+    initial.isSceneActive = true
+    let requestID = UUID(17507)
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("creg-conversation-test-\(UUID()).jsonl")
+    try Data("export".utf8).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    initial.conversationExports[a] = .init(
+      conversationID: a, requestID: requestID, phase: .exporting)
+    let store = store(initial, history: .noop())
+    await store.send(.conversationModalRequested(b))
+    #expect(store.state.conversationExports[a]?.intent == .export)
+    await store.send(.conversationModalRequested(a))
+    #expect(store.state.conversationExports[a]?.intent == .retained)
+    await store.send(.conversationExportFinished(a, requestID: requestID, .success(url)))
+    #expect(store.state.presentation == nil)
+    #expect(store.state.conversationExports[a]?.phase == .ready(url))
     await store.finish()
-    #expect(store.state.conversationExports[a] == nil)
-    #expect(!FileManager.default.fileExists(atPath: url.path))
   }
 
   @Test func deletionKeepsDeferredNewChatIntentAndWaitsForSummaryWrite() async {
@@ -945,4 +996,394 @@ struct HistoryRecoveryRegressionTests {
     #expect(store.state.conversationDeletions[a]?.phase == .committed)
   }
 
+}
+
+extension HistoryRecoveryRegressionTests {
+  @Test func slowReadContinuesAndFulfillsAcceptedNewChat() async {
+    let held = RecoveryHeldRead()
+    let clock = TestClock()
+    var initial = state()
+    initial.isSceneActive = true
+    var history = HistoryClient.noop()
+    history.bootstrap = { await held.hold(); return [] }
+    let recorder = DiagnosticEventRecorder()
+    let store = store(initial, history: history, clock: clock, recorder: recorder)
+    await store.send(.onAppear)
+    await held.wait()
+    let request = store.state.historyRequestSequence
+    await store.send(.newChatTapped)
+    await clock.advance(by: .seconds(5))
+    await store.receive(\.historySummaryTimedOut)
+    #expect(store.state.historySummaryPhase == .loading(request))
+    #expect(store.state.newChatRequestedDuringBootstrap)
+    await store.send(.historySummaryTimedOut(request, generation: store.state.historyWatchdogGeneration))
+    #expect(recorder.events.filter { $0.code == "history_summary_timed_out" }.count == 1)
+    await held.finish()
+    await store.receive(\.bootstrapFinished)
+    await store.receive(\.conversationCreated)
+    await store.finish()
+    #expect(store.state.chat != nil)
+    #expect(store.state.failures.isEmpty)
+    #expect(store.state.slowHistoryRequestID == nil)
+  }
+
+  @Test func inactiveWarningIsCancelledAndResumeOwnsFreshInterval() async {
+    let held = RecoveryHeldRead()
+    let clock = TestClock()
+    var initial = state()
+    initial.isSceneActive = true
+    var history = HistoryClient.noop()
+    history.bootstrap = { await held.hold(); return [] }
+    let store = store(initial, history: history, clock: clock)
+    await store.send(.onAppear)
+    await held.wait()
+    let request = store.state.historyRequestSequence
+    let oldGeneration = store.state.historyWatchdogGeneration
+    await clock.advance(by: .seconds(3))
+    await store.send(.appBecameInactive)
+    await clock.advance(by: .seconds(10))
+    await store.send(.historySummaryTimedOut(request, generation: oldGeneration))
+    #expect(store.state.slowHistoryRequestID == nil)
+    await store.send(.appBecameActive)
+    await store.send(.historySummaryTimedOut(request, generation: oldGeneration))
+    await clock.advance(by: .seconds(4))
+    #expect(store.state.slowHistoryRequestID == nil)
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.historySummaryTimedOut)
+    #expect(store.state.slowHistoryRequestID == request)
+    await held.finish()
+    await store.receive(\.bootstrapFinished)
+    await store.receive(\.conversationCreated)
+    await store.finish()
+  }
+
+  @Test func reopenedStoreClearsUnavailableEvenWhenSummariesFail() async {
+    var initial = state(populated: true)
+    initial.historyStoreAvailability = .unavailable
+    initial.storeFailure(.history(operation: .supportBundle,
+      error: HistoryStoreUnavailableError(diagnostic: "open failed")), owner: .global)
+    initial.storeFailure(failure, owner: .conversationOperation(a, .rename))
+    var history = HistoryClient.noop()
+    history.bootstrap = { throw DiagnosticsTestError.failed("summary read") }
+    let store = store(initial, history: history)
+    await store.send(.retryHistoryTapped)
+    await store.receive(\.historyBootstrapFailed)
+    await store.finish()
+    #expect(store.state.historyStoreAvailability == .available)
+    #expect(!store.state.failures.contains { $0.failure.cause == .historyStoreUnavailable })
+    #expect(store.state.failures.contains { $0.owner == .conversationOperation(a, .rename) })
+  }
+
+  @Test func deletingSelectedChatReplacesFailedOpening() async {
+    var initial = state(populated: true)
+    initial.conversationOpening = .init(requestID: 42, kind: .load(b), phase: .failed)
+    initial.storeFailure(failure, owner: .conversationOpening(42))
+    let snapshot = ConversationSnapshot(summary: initial.conversations[id: b]!)
+    var history = HistoryClient.noop()
+    history.loadConversation = { _ in snapshot }
+    let store = store(initial, history: history)
+    await store.send(.deleteConversationTapped(a))
+    #expect(store.state.conversationOpening?.phase == .loading)
+    await store.receive(\.conversationLoaded)
+    await store.send(.undoDeleteTapped)
+    await store.finish()
+    #expect(store.state.chat?.conversationID == b)
+    #expect(!store.state.failures.contains { if case .conversationOpening = $0.owner { true } else { false } })
+  }
+
+  @Test(arguments: [false, true])
+  func unreadFailureRollsBackOnlyLatestMutation(newer: Bool) async {
+    let operation = UUID(18001)
+    var initial = state(populated: true)
+    initial.conversations[id: a]?.isUnread = false
+    initial.summaryWrites[operation] = .init(conversationID: a, kind: .unread(previous: true))
+    initial.unreadMutationOwners[a] = newer ? UUID(18002) : operation
+    initial.storeFailure(failure, owner: .conversationOperation(a, .rename))
+    initial.storeFailure(failure, owner: .conversationOperation(a, .export))
+    let recorder = DiagnosticEventRecorder()
+    let store = store(initial, history: .noop(), recorder: recorder)
+    await store.send(.summaryWriteSettled(operation, .history(operation: .messageSave, error: DiagnosticsTestError.failed("unread"))))
+    await store.finish()
+    #expect(store.state.conversations[id: a]?.isUnread == !newer)
+    #expect(store.state.visibleFailures.count == 2)
+    #expect(recorder.events.map(\.code) == ["history_unread_update_failed"])
+  }
+
+  @Test func supportRequestSurvivesUnrelatedFailureAndIgnoresStaleSettlement() async {
+    let held = RecoveryHeldRead()
+    let calls = CallRecorder()
+    let initial = state(populated: true)
+    let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
+      $0.historyClient = .noop()
+      $0.supportBundle = .init { _ in calls.record("build"); await held.hold(); throw DiagnosticsTestError.failed("support") }
+      $0.uuid = .incrementing
+    }
+    store.exhaustivity = .off
+    await store.send(.supportBundleExportTapped)
+    await held.wait()
+    let request = store.state.supportBuildRequestID
+    await store.send(.operationFailed(failure))
+    await store.send(.supportBundleExportTapped)
+    #expect(store.state.supportBuildRequestID == request)
+    #expect(calls.recorded == ["build"])
+    await store.send(.supportBundleFailed(failure, requestID: UUID(18003)))
+    #expect(store.state.isBuildingSupportBundle)
+    await held.finish()
+    await store.receive(\.supportBundleFailed)
+    await store.finish()
+    #expect(!store.state.isBuildingSupportBundle)
+  }
+
+  @Test(arguments: ["inactive", "opening", "dismissed"])
+  func exportCompletionRetainsWhenPresentationIntentCannotBeHonored(reason: String) async throws {
+    var initial = state(populated: true)
+    initial.isSceneActive = reason != "inactive"
+    let request = UUID(18004)
+    initial.conversationExports[a] = .init(conversationID: a, requestID: request, phase: .exporting, intent: .share)
+    if reason == "opening" { initial.conversationOpening = .init(requestID: 1, kind: .load(b)) }
+    if reason == "dismissed" { initial.presentation = .notices(a) }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("creg-conversation-\(UUID()).jsonl")
+    try Data("{}\n".utf8).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let store = store(initial, history: .noop())
+    if reason == "dismissed" { await store.send(.sheetDismissed(.notices(a))) }
+    await store.send(.conversationExportFinished(a, requestID: request, .success(url)))
+    await store.finish()
+    #expect(store.state.presentation == nil)
+    #expect(store.state.conversationExports[a]?.intent == .retained)
+  }
+
+  @Test func obsoleteExportDismissalCannotConsumeNewResult() async throws {
+    var initial = state(populated: true)
+    let old = UUID(18005), new = UUID(18006)
+    let directory = FileManager.default.temporaryDirectory
+    let oldURL = directory.appendingPathComponent("creg-conversation-\(old).jsonl")
+    let newURL = directory.appendingPathComponent("creg-conversation-\(new).jsonl")
+    try Data().write(to: oldURL); try Data().write(to: newURL)
+    defer { try? FileManager.default.removeItem(at: newURL) }
+    let export = AppFeature.ConversationExport(conversationID: a, requestID: new, phase: .ready(newURL))
+    initial.conversationExports[a] = export
+    initial.presentation = .conversationExport(export)
+    initial.presentedExportFiles = [old: oldURL, new: newURL]
+    let store = store(initial, history: .noop())
+    await store.send(.sheetDismissed(.export(old)))
+    await store.finish()
+    #expect(store.state.presentation == .conversationExport(export))
+    #expect(store.state.conversationExports[a] == export)
+    #expect(!FileManager.default.fileExists(atPath: oldURL.path))
+    #expect(FileManager.default.fileExists(atPath: newURL.path))
+  }
+
+  @Test func agedExportCleanupExcludesProtectedRecentAndSymlinkFiles() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("creg-export-cleanup-\(UUID())")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let old = directory.appendingPathComponent("creg-conversation-old.jsonl")
+    let protected = directory.appendingPathComponent("creg-conversation-protected.jsonl")
+    let recent = directory.appendingPathComponent("creg-conversation-recent.jsonl")
+    let target = directory.appendingPathComponent("unrelated.jsonl")
+    let link = directory.appendingPathComponent("creg-conversation-link.jsonl")
+    for url in [old, protected, recent, target] { try Data().write(to: url) }
+    for url in [old, protected] { try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: url.path) }
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+    ConversationExportFiles.removeOlderThan(Date(timeIntervalSince1970: 100), protected: [protected], directory: directory)
+    #expect(!FileManager.default.fileExists(atPath: old.path))
+    for url in [protected, recent, target, link] { #expect(FileManager.default.fileExists(atPath: url.path)) }
+  }
+}
+
+extension HistoryRecoveryRegressionTests {
+  @Test(arguments: [false, true])
+  func newExportAndShareRegenerateRetainedSnapshot(share: Bool) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("creg-fresh-export-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let live = try HistoryClient.live(databaseURL: directory.appendingPathComponent("history.sqlite"))
+    var initial = state(populated: true)
+    initial.isSceneActive = true
+    for id in [a, b] { _ = try await live.createConversation(id, Date()) }
+    let message = ChatMessage(id: UUID(), role: .user, body: .text("first"), createdAt: Date())
+    try await live.appendMessage(a, message)
+    try await live.appendEvents(a, message.id, ["{\"turn\":1}"])
+    let held = RecoveryHeldRead()
+    let calls = CallRecorder()
+    var history = live
+    history.exportJSONL = { id in
+      let url = try await live.exportJSONL(id)
+      calls.record("read")
+      if calls.recorded.count == 1 { await held.hold() }
+      return url
+    }
+    let store = store(initial, history: history)
+    await store.send(.chat(.delegate(.exportRequested(a))))
+    await held.wait()
+    await store.send(.conversationSelected(b))
+    await store.receive(\.conversationLoaded)
+    for turn in [2, 3] {
+      let next = ChatMessage(id: UUID(), role: .user, body: .text("turn \(turn)"),
+        createdAt: message.createdAt.addingTimeInterval(Double(turn)))
+      try await live.appendMessage(a, next)
+      try await live.appendEvents(a, next.id, ["{\"turn\":\(turn)}"])
+    }
+    await held.finish()
+    await store.receive(\.conversationExportFinished)
+    let old = try #require(store.state.conversationExports[a])
+    guard case .ready(let oldURL) = old.phase else { Issue.record("Expected retained export"); return }
+    #expect(try String(contentsOf: oldURL, encoding: .utf8).split(separator: "\n").count == 1)
+    await store.send(.conversationSelected(a))
+    await store.receive(\.conversationLoaded)
+    #expect(store.state.chat?.messages.count == 3)
+    #expect(store.state.presentation == nil)
+    if share {
+      await store.send(.noticesTapped)
+      await store.send(.shareConversationExport(a))
+    } else { await store.send(.chat(.delegate(.exportRequested(a)))) }
+    await store.receive(\.conversationExportFinished)
+    let fresh = try #require(store.state.conversationExports[a])
+    guard case .ready(let url) = fresh.phase else { Issue.record("Expected regenerated export"); return }
+    #expect(try String(contentsOf: url, encoding: .utf8).split(separator: "\n").count == 3)
+    #expect(fresh.requestID != old.requestID)
+    #expect(store.state.presentation == .conversationExport(fresh))
+    await store.send(.sheetDismissed(.export(fresh.requestID)))
+    await store.finish()
+    #expect(!FileManager.default.fileExists(atPath: oldURL.path))
+    #expect(!FileManager.default.fileExists(atPath: url.path))
+  }
+
+  @Test(arguments: ["undo", "failed", "committed"])
+  func exportFailureDuringDeletionUsesUndoRecovery(outcome: String) async {
+    let held = RecoveryHeldRead()
+    let recorder = DiagnosticEventRecorder()
+    var history = HistoryClient.noop()
+    history.exportJSONL = { _ in await held.hold(); throw DiagnosticsTestError.failed("export") }
+    if outcome == "failed" { history.deleteConversation = { _ in throw DiagnosticsTestError.failed("delete") } }
+    let store = store(state(populated: true), history: history, recorder: recorder)
+    await store.send(.chat(.delegate(.exportRequested(a))))
+    await held.wait()
+    await store.send(.deleteConversationTapped(a))
+    await store.receive(\.conversationLoaded)
+    await held.finish()
+    await store.receive(\.conversationExportFinished)
+    #expect(store.state.presentedFailure == nil)
+    #expect(store.state.conversationDeletions[a]?.deferredOperationFailures.map(\.owner) == [.conversationOperation(a, .export)])
+    if outcome == "undo" { await store.send(.undoDeleteTapped) }
+    else {
+      await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
+      await store.receive(\.conversationDeletionFinished)
+    }
+    await store.finish()
+    if outcome == "committed" {
+      #expect(store.state.presentedFailure == nil)
+      #expect(recorder.events.contains { $0.code == "conversation_write_failed_after_deletion" })
+    } else {
+      #expect(store.state.failures.contains { $0.owner == .conversationOperation(a, .export) && $0.failure.code == "history_export_failed" })
+      #expect(!store.state.visibleFailures.contains { $0.owner == .conversationOperation(a, .export) },
+        "Undo recovery preserves the originating conversation's owner while B remains selected")
+    }
+  }
+}
+
+extension HistoryRecoveryRegressionTests {
+  @Test func explicitExportCanReactivatePresentationOfAnOngoingRetainedRequest() async throws {
+    let held = RecoveryHeldRead()
+    let calls = CallRecorder()
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("creg-conversation-\(UUID()).jsonl")
+    defer { try? FileManager.default.removeItem(at: url) }
+    var history = HistoryClient.noop()
+    history.exportJSONL = { _ in calls.record("export"); await held.hold(); return url }
+    var initial = state(populated: true)
+    initial.isSceneActive = true
+    let store = store(initial, history: history)
+    await store.send(.chat(.delegate(.exportRequested(a))))
+    await held.wait()
+    let request = try #require(store.state.conversationExports[a]?.requestID)
+    await store.send(.conversationSelected(b))
+    await store.receive(\.conversationLoaded)
+    await store.send(.conversationSelected(a))
+    await store.receive(\.conversationLoaded)
+    #expect(store.state.conversationExports[a]?.intent == .retained)
+    await store.send(.chat(.delegate(.exportRequested(a))))
+    #expect(store.state.conversationExports[a]?.intent == .export)
+    #expect(store.state.conversationExports[a]?.requestID == request)
+    #expect(calls.recorded.count == 1)
+    await held.finish()
+    await store.receive(\.conversationExportFinished)
+    #expect(store.state.presentation?.id == .export(request))
+    await store.send(.sheetDismissed(.export(request)))
+    await store.finish()
+  }
+
+  @Test func exportFailureArrivingAfterCommittedDeletionIsLogged() async {
+    let held = RecoveryHeldRead()
+    let clock = TestClock()
+    let recorder = DiagnosticEventRecorder()
+    var history = HistoryClient.noop()
+    history.exportJSONL = { _ in await held.hold(); throw DiagnosticsTestError.failed("export") }
+    let store = store(state(populated: true), history: history, clock: clock, recorder: recorder)
+    await store.send(.chat(.delegate(.exportRequested(a))))
+    await held.wait()
+    await store.send(.deleteConversationTapped(a))
+    await store.receive(\.conversationLoaded)
+    await clock.advance(by: .seconds(5))
+    await store.receive(\.deleteCountdownFinished)
+    await store.receive(\.conversationDeletionFinished)
+    #expect(store.state.conversationExports[a] == nil)
+    await held.finish()
+    await store.receive(\.conversationExportFinished)
+    #expect(store.state.failures.isEmpty)
+    #expect(recorder.events.filter { $0.code == "conversation_write_failed_after_deletion" }.count == 1)
+    await store.finish()
+  }
+
+  @Test func undoPreservesDistinctRenameAndExportOwnersAndUnrelatedFailure() async {
+    let operation = UUID(19001)
+    let request = UUID(19002)
+    var initial = state(populated: true)
+    initial.conversationDeletions[a] = .init(token: UUID(19003), summary: initial.conversations[id: a]!)
+    initial.undoDeletionID = a
+    initial.summaryWrites[operation] = .init(conversationID: a, kind: .rename)
+    initial.conversationExports[a] = .init(conversationID: a, requestID: request, phase: .exporting)
+    let unrelated = FailurePresentation(code: "unrelated", title: "Unrelated", message: "Preserve this", diagnostic: "Test")
+    initial.storeFailure(unrelated, owner: .global)
+    let store = store(initial, history: .noop())
+    await store.send(.summaryWriteSettled(operation, failure))
+    await store.send(.conversationExportFinished(a, requestID: request, .failure(failure)))
+    #expect(store.state.conversationDeletions[a]?.deferredOperationFailures.count == 2)
+    await store.send(.undoDeleteTapped)
+    #expect(store.state.failures.map(\.owner) == [.global, .conversationOperation(a, .rename), .conversationOperation(a, .export)])
+    #expect(store.state.failures.first?.failure == unrelated)
+    await store.finish()
+  }
+
+  @Test func supportCompletionAndDismissalOwnOnlyMatchingArtifacts() async throws {
+    func artifact() throws -> AppFeature.SupportBundleExport {
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent("creg-support-bundle-\(UUID())")
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let url = directory.appendingPathComponent("creg-support-bundle.zip")
+      try Data("ZIP fixture".utf8).write(to: url)
+      return .init(url: url, manifest: .init(createdAt: Date(), appVersion: "test", buildNumber: "1",
+        modelKey: "test", modelRevision: "test", conversationCount: 0, messageCount: 0, eventLineCount: 0, feedbackCount: 0))
+    }
+    let request = UUID(19004), staleRequest = UUID(19005)
+    let stale = try artifact(), current = try artifact()
+    defer {
+      try? FileManager.default.removeItem(at: stale.url.deletingLastPathComponent())
+      try? FileManager.default.removeItem(at: current.url.deletingLastPathComponent())
+    }
+    var initial = state(populated: true)
+    initial.supportBuildRequestID = request
+    let store = store(initial, history: .noop())
+    await store.send(.supportBundleReady(stale, requestID: staleRequest))
+    await store.finish()
+    #expect(store.state.supportBuildRequestID == request)
+    #expect(!FileManager.default.fileExists(atPath: stale.url.deletingLastPathComponent().path))
+    await store.send(.supportBundleReady(current, requestID: request))
+    await store.send(.supportBundleReady(current, requestID: request))
+    await store.send(.supportBundleDismissed(staleRequest))
+    #expect(store.state.supportBundleExport?.requestID == request)
+    #expect(FileManager.default.fileExists(atPath: current.url.path))
+    await store.send(.supportBundleDismissed(request))
+    await store.finish()
+    #expect(store.state.supportBundleExport == nil)
+    #expect(!FileManager.default.fileExists(atPath: current.url.deletingLastPathComponent().path))
+  }
 }

@@ -1407,16 +1407,19 @@ def test_xcode_app_is_iphone_only():
     assert '"idiom" : "ipad"' not in app_icons
 
 
-@pytest.mark.parametrize("step_name", ["Build focused accessibility UI contracts", "Test focused accessibility UI contracts"])
-@pytest.mark.parametrize("budget", [None, 29, 31])
-def test_accessibility_commands_each_require_the_reviewed_budget(step_name, budget):
+@pytest.mark.parametrize("step_name,reviewed_budget", [
+    ("Build focused accessibility UI contracts", 30),
+    ("Test focused accessibility UI contracts", 60),
+])
+@pytest.mark.parametrize("offset", [None, -1, 1])
+def test_accessibility_commands_each_require_the_reviewed_budget(step_name, reviewed_budget, offset):
     path, workflow = accessibility_workflow()
     step = next(item for item in workflow["jobs"]["accessibility"]["steps"] if item.get("name") == step_name)
-    if budget is None:
+    if offset is None:
         step.pop("timeout-minutes")
     else:
-        step["timeout-minutes"] = budget
-    assert any("timeout must be 30" in failure for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
+        step["timeout-minutes"] = reviewed_budget + offset
+    assert any(f"timeout must be {reviewed_budget}" in failure for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
 
 
 @pytest.mark.parametrize("budget,expected_message", [

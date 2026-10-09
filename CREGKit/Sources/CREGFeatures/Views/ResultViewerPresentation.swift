@@ -200,7 +200,8 @@ extension View {
   @ViewBuilder
   func resultViewerPresentation(
     store: StoreOf<ChatFeature>,
-    textSize: Binding<ResultTableTextSize>
+    textSize: Binding<ResultTableTextSize>,
+    dynamicTypeSize: DynamicTypeSize
   ) -> some View {
     let binding = Binding<ResultViewerItem?>(
       get: {
@@ -259,6 +260,8 @@ extension View {
           migratePreference: resultPresentationMigrationHandler(
             store: store,
             messageID: item.messageID))
+        .cregPresentedSurfaceProbe()
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
       }
     #else
       self.sheet(item: binding) { item in
@@ -279,6 +282,8 @@ extension View {
           migratePreference: resultPresentationMigrationHandler(
             store: store,
             messageID: item.messageID))
+        .cregPresentedSurfaceProbe()
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
       }
     #endif
   }

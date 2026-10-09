@@ -324,38 +324,30 @@ struct InterruptedTurnBanner: View {
 
 struct CorrectionContextBanner: View {
   let context: ChatFeature.CorrectionContext
+  var showSource: () -> Void = {}
   let dismiss: () -> Void
-  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  var isCompact = false
 
   var body: some View {
-    CREGAccessibilityActionLayout(
-      hStackAlignment: .firstTextBaseline,
-      horizontalSpacing: 10,
-      accessibilitySpacing: 6,
-      spacerMinLength: 4
-    ) {
-      Image(systemName: "arrow.uturn.backward.circle")
-        .foregroundStyle(.orange)
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Tell CREG what was wrong")
+    HStack(spacing: 8) {
+      Button(action: showSource) {
+        Label(isCompact ? "Source answer" : "Correcting answer", systemImage: "arrow.uturn.backward.circle")
           .font(.footnote.weight(.semibold))
-        Text(context.answerNarration)
-          .font(.footnote)
-          .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
+          .cregTextButtonLabelTarget()
       }
-    } actions: {
+      .accessibilityLabel("Review the answer being corrected")
+      .accessibilityIdentifier("correction-source-answer")
+      Spacer(minLength: 0)
       Button(action: dismiss) {
-        Image(systemName: "xmark")
-          .foregroundStyle(.secondary)
-          .cregIconButtonTarget()
+        Image(systemName: "xmark").foregroundStyle(.secondary).cregIconButtonTarget()
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Dismiss correction")
       .cregLargeContentViewer("Dismiss correction", systemImage: "xmark")
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 10)
+    .padding(.vertical, isCompact ? 0 : 10)
     .cregGlassRounded(cornerRadius: 16)
   }
 }

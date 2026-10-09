@@ -163,10 +163,14 @@ extension AppFeature.State {
   }
 
   mutating func seedRetry(
-    _ journalID: UUID, conversationID: UUID, interruption: InterruptedTurn? = nil
+    _ journalID: UUID, conversationID: UUID, interruption: InterruptedTurn? = nil,
+    diagnosticOperationNumber: UInt64? = nil
   ) {
     if retryJournals[journalID] == nil {
-      let number = nextDiagnosticOperationNumber()
+      let pendingNumber = pendingInterruptedTurn.flatMap {
+        $0.questionID == journalID ? $0.interruptionDiagnosticOperationNumber : nil
+      }
+      let number = diagnosticOperationNumber ?? pendingNumber ?? nextDiagnosticOperationNumber()
       retryJournals[journalID] = .init(conversationID: conversationID, interruption: interruption)
       retryJournals[journalID]?.diagnosticOperationNumber = number
     } else if let interruption {

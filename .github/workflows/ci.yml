@@ -93,7 +93,7 @@ jobs:
             CREG_ACCESSIBILITY_HARNESS_BUILD=YES
 
       - name: Test focused accessibility UI contracts
-        timeout-minutes: 30
+        timeout-minutes: 60
         shell: /usr/bin/env -i HOME=/Users/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
         working-directory: ${{ github.workspace }}
         run: |
@@ -128,6 +128,16 @@ jobs:
             -only-testing:CREGUITests/AccessibilityUITests/testConversationNoticesScrollAndRetainDismissalState \
             -only-testing:CREGUITests/AccessibilityUITests/testRetainedExportDoesNotAutomaticallyPresentSharing \
             -only-testing:CREGUITests/AccessibilityUITests/testBrowserRefreshPreservesSearchAndKeyboardFocus \
+            -only-testing:CREGUITests/AccessibilityUITests/testCanonicalScreensDoNotClipTextOrShrinkHitRegions \
+            -only-testing:CREGUITests/AccessibilityUITests/testPresentedSheetsReceiveEffectiveAX5 \
+            -only-testing:CREGUITests/AccessibilityUITests/testAccessibleHeadersWrapAtLargeTextSizes \
+            -only-testing:CREGUITests/AccessibilityUITests/testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows \
+            -only-testing:CREGUITests/AccessibilityUITests/testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion \
+            -only-testing:CREGUITests/AccessibilityUITests/testProductionSupportBindingDismissesAndReleasesArtifacts \
+            -only-testing:CREGUITests/AccessibilityUITests/testMoreRetainsHeldExportUntilExplicitRegeneration \
+            -only-testing:CREGUITests/AccessibilityUITests/testRetainedExportCanBeDiscardedWithoutClearingOtherNotices \
+            -only-testing:CREGUITests/AccessibilityUITests/testLongDrawerPreviewsStayBoundedAndSettingsReachable \
+            -only-testing:CREGUITests/AccessibilityUITests/testCompactJumpToLatestWithKeyboardAndCorrection \
             CODE_SIGNING_ALLOWED=NO \
             CREG_ACCESSIBILITY_HARNESS_BUILD=YES
 

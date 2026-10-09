@@ -62,7 +62,14 @@ struct AppRootView: View {
   var now: Date = Date()
   /// In-flight gesture translation, composed with the settled reveal state.
   @State private var dragTranslation: CGFloat = 0
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var gestureEligibility = DrawerGestureEligibility()
+  @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+  #if DEBUG
+    @Environment(\.cregUITestReduceMotion) private var testReduceMotion
+    private var reduceMotion: Bool { testReduceMotion ?? systemReduceMotion }
+  #else
+    private var reduceMotion: Bool { systemReduceMotion }
+  #endif
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   /// The scheme actually in force. With no override applied this is the
   /// device's own setting, which is what `.system` needs to hand a sheet.
@@ -93,8 +100,10 @@ struct AppRootView: View {
   var body: some View {
     GeometryReader { proxy in
       let revealWidth = Self.revealWidth(for: proxy.size.width)
+      let sheetID = store.presentation?.id
       let offset = currentOffset(revealWidth: revealWidth)
       let progress = revealWidth > 0 ? offset / revealWidth : 0
+      let chrome = chatChrome
 
       ZStack(alignment: .topLeading) {
         ConversationBrowserView(store: store, now: now)
@@ -107,7 +116,7 @@ struct AppRootView: View {
           .accessibilityElement(children: .contain)
           .accessibilityHidden(progress < 0.99)
 
-        chatLayer(progress: progress)
+        chatLayer(progress: progress, chrome: chrome)
           .offset(x: offset)
           .accessibilityElement(children: .contain)
           .accessibilityHidden(progress > 0.01 && store.isBrowserRevealed)
@@ -117,18 +126,31 @@ struct AppRootView: View {
       .simultaneousGesture(revealGesture(revealWidth: revealWidth))
       .overlay(alignment: .top) { answerReadyBanner }
       .overlay(alignment: .bottom) { undoDeletionToast }
-      .sheet(item: Binding(get: { store.presentation }, set: { if $0 == nil { store.send(.sheetDismissed) } })) { presentation in
-        switch presentation {
-        case .settings:
-          SettingsView(store: store)
-            .preferredColorScheme(store.appearance.colorScheme ?? systemColorScheme)
-        case .notices(let id):
-          if store.chat?.conversationID == id, let chatStore = store.scope(state: \.chat, action: \.chat) {
-            ConversationNoticesPanel(store: chatStore, chrome: chatChrome,
-              close: { store.send(.sheetDismissed) })
+      .sheet(item: Binding(get: { store.presentation }, set: { value in
+        if value == nil, let sheetID { store.send(.sheetDismissalRequested(sheetID)) }
+      })) { presentation in
+        Group {
+          switch presentation {
+          case .settings:
+            SettingsView(store: store)
+              .preferredColorScheme(store.appearance.colorScheme ?? systemColorScheme)
+          case .notices(let id):
+            if store.chat?.conversationID == id, let chatStore = store.scope(state: \.chat, action: \.chat) {
+              ConversationNoticesPanel(store: chatStore, chrome: chrome,
+                close: { store.send(.sheetDismissalRequested(presentation.id)) })
+            }
+          case .conversationExport(let export):
+            if case .ready(let url) = export.phase { ExportShareSheet(url: url) }
           }
-        case .conversationExport(let export):
-          if case .ready(let url) = export.phase { ExportShareSheet(url: url) }
+        }
+        .cregPresentedSurfaceProbe()
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+        .onDisappear {
+          // A nested native share surface can cover this content while the
+          // root presentation still owns its file.
+          if store.presentation?.id != presentation.id {
+            store.send(.sheetDismissed(presentation.id))
+          }
         }
       }
       .onAppear { store.send(.onAppear) }
@@ -161,34 +183,42 @@ struct AppRootView: View {
   }
 
   private var chatChrome: ChatChrome {
-    ChatChrome(
+    let failures = store.visibleFailures
+    let export = store.chat.flatMap { store.conversationExports[$0.conversationID] }
+    let discard: (() -> Void)? = export.flatMap { export in
+      guard case .ready = export.phase, export.intent == .retained,
+        store.presentedExportFiles[export.requestID] == nil else { return nil }
+      return { store.send(.discardConversationExport(conversationID: export.conversationID, requestID: export.requestID)) }
+    }
+    return ChatChrome(
       modelReadiness: store.modelReadiness,
       fmAvailability: store.fmAvailability,
       modelPreparationReport: store.modelPreparationReport,
       developerMode: store.developerMode,
       resultTableTextSize: $store.resultTableTextSize,
-      hasUnreadElsewhere: store.visibleConversations.contains { $0.isUnread },
+      hasUnreadElsewhere: store.hasUnreadLiveConversation,
       debugModelIdentity: store.debugModelIdentity,
-      presentedFailure: store.presentedFailure,
+      presentedFailure: failures.last?.failure,
       dismissFailure: { store.send(.dismissFailure) },
       retryPreparation: { store.send(.retryPreparation) },
       retryCompatibilityPreparation: {
         store.send(.retryCompatibilityPreparation)
       },
-      ownedFailures: store.visibleFailures,
+      ownedFailures: failures,
       dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) },
       canRetryHistory: store.canRetryHistory,
       historyIsLoading: store.historySummaryPhase.isLoading,
+      historyIsSlow: store.slowHistoryRequestID != nil,
       retryHistory: { store.send(.retryHistoryTapped) },
       retryOpening: store.conversationOpening?.phase == .failed
         ? { store.send(.retryConversationOpeningTapped) } : nil,
       canCreateConversation: store.canCreateConversation,
       historyLoadIsRetry: store.historyLoadIsRetry,
       reviewNotices: { store.send(.noticesTapped) },
-      exportPhase: store.chat.flatMap { store.conversationExports[$0.conversationID]?.phase },
+      exportPhase: export?.phase,
       shareExport: {
         if let id = store.chat?.conversationID { store.send(.shareConversationExport(id)) }
-      })
+      }, discardExport: discard)
   }
 
   private func currentOffset(revealWidth: CGFloat) -> CGFloat {
@@ -197,7 +227,7 @@ struct AppRootView: View {
   }
 
   @ViewBuilder
-  private func chatLayer(progress: CGFloat) -> some View {
+  private func chatLayer(progress: CGFloat, chrome: ChatChrome) -> some View {
     // The chat lays out inside the safe area — its header and composer depend
     // on the real insets — while its surface, dim, and shadow are painted
     // edge to edge behind it, so no backdrop shows through at the status bar
@@ -207,12 +237,16 @@ struct AppRootView: View {
       bottomLeadingRadius: 34 * progress)
     ZStack {
       if let chatStore = store.scope(state: \.chat, action: \.chat) {
+        let conversationID = chatStore.conversationID
         ChatView(
           store: chatStore,
-          chrome: chatChrome)
+          chrome: chrome,
+          retainPendingExport: { store.send(.conversationModalRequested(conversationID)) },
+          answerMorePresented: { store.send(.answerMorePresented(conversationID: conversationID, presentationID: $0)) },
+          answerMoreDismissed: { store.send(.answerMoreDismissed(conversationID: conversationID, presentationID: $0)) })
       } else {
         ConversationUnavailableView(
-          failure: store.presentedFailure, developerMode: store.developerMode,
+          failure: chrome.presentedFailure, developerMode: store.developerMode,
           dismissFailure: { store.send(.dismissFailure) },
           openBrowser: { store.send(.browserButtonTapped) },
           newChat: { store.send(.newChatTapped) },
@@ -223,7 +257,8 @@ struct AppRootView: View {
             ? { store.send(.retryConversationOpeningTapped) } : nil,
           historyIsLoading: store.historySummaryPhase.isLoading,
           historyLoadIsRetry: store.historyLoadIsRetry,
-          ownedFailures: store.visibleFailures,
+          historyIsSlow: store.slowHistoryRequestID != nil,
+          ownedFailures: chrome.ownedFailures,
           dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) })
       }
     }
@@ -253,37 +288,30 @@ struct AppRootView: View {
   private func revealGesture(revealWidth: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 12, coordinateSpace: .local)
       .onChanged { value in
-        guard abs(value.translation.width) > abs(value.translation.height) else { return }
-        if store.isBrowserRevealed {
-          dragTranslation = min(0, value.translation.width)
-        } else {
-          // Opening is reserved for the leading edge so transcript swipes
-          // stay free.
-          guard value.startLocation.x < 44 else { return }
-          dragTranslation = max(0, value.translation.width)
+        guard gestureEligibility.change(startX: value.startLocation.x,
+          dx: value.translation.width, dy: value.translation.height, revealed: store.isBrowserRevealed) else {
+          if gestureEligibility.cancelled { resetDrag() }
+          return
         }
+        dragTranslation = store.isBrowserRevealed ? min(0, value.translation.width) : max(0, value.translation.width)
       }
       .onEnded { value in
-        guard abs(value.translation.width) > abs(value.translation.height) else {
-          dragTranslation = 0
-          return
-        }
+        defer { gestureEligibility = DrawerGestureEligibility() }
+        guard gestureEligibility.canRelease(startX: value.startLocation.x,
+          dx: value.translation.width, dy: value.translation.height, revealed: store.isBrowserRevealed)
+        else { resetDrag(); return }
         let base: CGFloat = store.isBrowserRevealed ? revealWidth : 0
-        guard dragTranslation != 0 || !store.isBrowserRevealed else {
-          dragTranslation = 0
-          return
-        }
-        let projected = base + value.predictedEndTranslation.width
-        setRevealed(projected > revealWidth / 2)
+        setRevealed(base + value.predictedEndTranslation.width > revealWidth / 2)
       }
   }
 
+  private var drawerAnimation: Animation {
+    reduceMotion ? .easeInOut(duration: 0.18) : .spring(response: 0.4, dampingFraction: 0.86)
+  }
+  private func resetDrag() { withAnimation(drawerAnimation) { dragTranslation = 0 } }
+
   private func setRevealed(_ revealed: Bool) {
-    let animation: Animation =
-      reduceMotion
-      ? .easeInOut(duration: 0.18)
-      : .spring(response: 0.4, dampingFraction: 0.86)
-    withAnimation(animation) {
+    withAnimation(drawerAnimation) {
       dragTranslation = 0
       if revealed {
         store.send(.browserButtonTapped)

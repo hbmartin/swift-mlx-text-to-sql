@@ -453,7 +453,7 @@ private actor PreparationDrainGate {
     state.didRequestPreparationJournalInspection = true
     let store = TestStore(initialState: state) {
       AppFeature()
-    }
+    } withDependencies: { $0.date = .constant(Date(timeIntervalSince1970: 0)) }
     store.exhaustivity = .off
 
     await store.send(.onAppear)
@@ -561,6 +561,7 @@ private actor PreparationDrainGate {
       $0.queryPipeline = pipeline
       $0.modelPreparationJournal = journal
       $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
     }
     store.exhaustivity = .off
 

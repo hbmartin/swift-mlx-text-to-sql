@@ -37,7 +37,6 @@ extension AppFeature {
           if failure.cause == nil {
             failure.title = "Could not check this retry"
             failure.message = "Please tap Ask Again to try once more."
-            failure.recovery = .askAgain
           }
           result = .failed(failure)
         }
@@ -53,7 +52,7 @@ extension AppFeature {
               FailurePresentation(
                 code: "retry_inspection_timed_out", title: "Could not check this retry",
                 message: "Please tap Ask Again to try once more.",
-                diagnostic: "History inspection did not settle within five seconds.", recovery: .askAgain)),
+                diagnostic: "History inspection did not settle within five seconds.")),
             operationID: operationID))
       }
     ).cancellable(id: cancellationID)
