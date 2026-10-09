@@ -127,7 +127,7 @@ struct FailureBanner: View {
   let failure: FailurePresentation
   let developerMode: Bool
   let dismiss: () -> Void
-  var isError = true
+  private var isError: Bool { failure.isError }
   private var tint: Color { isError ? .orange : .secondary }
 
   var body: some View {
@@ -148,8 +148,9 @@ struct FailureBanner: View {
             .cregIconButtonTarget()
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isError ? "Dismiss error" : "Dismiss notice")
-        .cregLargeContentViewer(isError ? "Dismiss error" : "Dismiss notice", systemImage: "xmark")
+        .accessibilityLabel(failure.dismissalLabel)
+        .accessibilityIdentifier("failure-dismiss-\(failure.code)")
+        .cregLargeContentViewer(LocalizedStringKey(failure.dismissalLabel), systemImage: "xmark")
       }
 
       Text(failure.message)
@@ -160,6 +161,7 @@ struct FailureBanner: View {
         developerMode: developerMode)
       {
         TechnicalDetailsView(details: details)
+          .accessibilityIdentifier("failure-details-\(failure.code)")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

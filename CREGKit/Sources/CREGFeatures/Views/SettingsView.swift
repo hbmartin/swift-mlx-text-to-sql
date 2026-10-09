@@ -105,6 +105,7 @@ struct SettingsView: View {
           answerabilityDebugSection
         #endif
       }
+      .accessibilityIdentifier("settings-scroll")
       .navigationTitle("Settings")
       .inlineNavigationTitle()
       .toolbar {
@@ -121,11 +122,14 @@ struct SettingsView: View {
           },
           set: { value in
             if value == nil, let id = presentedSupportID ?? store.supportBundlePresentationID {
+              presentedSupportID = id
               store.send(.supportBundleDismissalRequested(id))
             }
           }),
         onDismiss: {
-          if let id = presentedSupportID { store.send(.supportBundleDismissed(id)) }
+          if let id = presentedSupportID ?? store.supportBundleDismissalID {
+            store.send(.supportBundleDismissed(id))
+          }
           presentedSupportID = nil
         }
       ) { export in

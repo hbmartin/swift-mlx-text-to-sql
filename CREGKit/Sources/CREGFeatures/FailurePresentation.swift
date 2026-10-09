@@ -13,6 +13,8 @@ public struct FailurePresentation: Error, Sendable, Equatable {
   public var diagnostic: String
   public var cause: Cause?
   public var recovery: Recovery?
+  public var isError: Bool { code != "history_summary_timed_out" }
+  public var dismissalLabel: String { isError ? "Dismiss error" : "Dismiss notice" }
 
   public init(
     code: String,
@@ -236,6 +238,9 @@ extension FailurePresentation {
       title = "History unavailable"
       message =
         "CREG couldn’t load your saved conversation. Try opening it again or start a new chat."
+    case .draftSave:
+      title = "Draft not saved"
+      message = "CREG couldn’t save your unsent draft. Keep a copy before leaving this conversation."
     case .messageSave, .eventSave:
       title = "Conversation not saved"
       message =
@@ -275,6 +280,7 @@ enum HistoryFailureOperation: String, Sendable {
   case load
   case summaryLoad
   case messageSave
+  case draftSave
   case eventSave
   case export
   case conversationCreate
@@ -288,6 +294,7 @@ enum HistoryFailureOperation: String, Sendable {
     switch self {
     case .load, .summaryLoad: "history_load_failed"
     case .messageSave: "history_message_save_failed"
+    case .draftSave: "history_draft_save_failed"
     case .eventSave: "history_event_save_failed"
     case .export: "history_export_failed"
     case .conversationCreate: "history_conversation_create_failed"

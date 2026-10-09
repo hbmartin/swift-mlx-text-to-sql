@@ -5197,25 +5197,14 @@ private func awaitArmedFMWatch(
     await store.finish()
   }
 
-  @Test func draftSavesAfterDebounce() async {
-    let drafts = CallRecorder()
-    var history = HistoryClient.noop()
-    history.saveDraft = { _, draft in drafts.record(draft) }
-    let clock = TestClock()
-    let store = TestStore(initialState: Self.chatState()) {
-      ChatFeature()
-    } withDependencies: { [history] in
-      $0.uuid = .incrementing
-      $0.historyClient = history
-      $0.continuousClock = clock
+  @Test func draftChangesDelegateTheirOriginToTheRoot() async {
+    let state = Self.chatState()
+    let store = TestStore(initialState: state) { ChatFeature() }
+    await store.send(.binding(.set(\.composerText, "unsent draft"))) {
+      $0.composerText = "unsent draft"
     }
-    store.exhaustivity = .off
-
-    await store.send(.binding(.set(\.composerText, "unsent draft")))
-    #expect(drafts.count == 0)
-    await clock.advance(by: .milliseconds(500))
+    await store.receive(\.delegate)
     await store.finish()
-    #expect(drafts.recorded == ["unsent draft"])
   }
 
   @Test func conversationTurnsPairsQuestionsWithAnswerSummaries() {

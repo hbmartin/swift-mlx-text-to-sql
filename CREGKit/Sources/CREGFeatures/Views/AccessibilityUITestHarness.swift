@@ -41,6 +41,9 @@ import Synchronization
       case exportMore = "export-more"
       case browserLongPreviews = "browser-long-previews"
       case compactJump = "compact-jump"
+      case historyProgress = "history-progress"
+      case historyProgressUnavailable = "history-progress-unavailable"
+      case drawerGestureCancellation = "drawer-gesture-cancellation"
     }
 
     enum Request: Equatable, Sendable {
@@ -51,6 +54,7 @@ import Synchronization
 
     static let scenarioEnvironmentKey = "CREG_UI_TEST_SCENARIO"
     static let dynamicTypeEnvironmentKey = "CREG_UI_TEST_DYNAMIC_TYPE"
+    static let developerModeEnvironmentKey = "CREG_UI_TEST_DEVELOPER_MODE"
     static let scenarioManifestEnvironmentKey =
       "CREG_UI_TEST_SCENARIO_MANIFEST"
     private static let environmentKeyPrefix = "CREG_UI_TEST_"
@@ -61,6 +65,7 @@ import Synchronization
 
     var scenario: Scenario
     var dynamicTypeSize: DynamicTypeSize?
+    var developerMode = false
 
     static var currentRequest: Request? {
       request(environment: ProcessInfo.processInfo.environment)
@@ -70,6 +75,7 @@ import Synchronization
       let knownKeys: Set<String> = [
         scenarioEnvironmentKey,
         dynamicTypeEnvironmentKey,
+        developerModeEnvironmentKey,
         scenarioManifestEnvironmentKey,
       ]
       let hasUnknownConfiguration = environment.contains { key, value in
@@ -83,11 +89,14 @@ import Synchronization
       guard rawManifest.isEmpty || rawManifest == "0" || rawManifest == "1"
       else { return .invalidConfiguration }
       let manifestRequested = rawManifest == "1"
+      let rawDeveloperMode = environment[developerModeEnvironmentKey] ?? ""
+      guard rawDeveloperMode.isEmpty || rawDeveloperMode == "0" || rawDeveloperMode == "1"
+      else { return .invalidConfiguration }
 
       let rawScenario = environment[scenarioEnvironmentKey] ?? ""
       let rawSize = environment[dynamicTypeEnvironmentKey] ?? ""
       guard !rawScenario.isEmpty else {
-        guard rawSize.isEmpty else {
+        guard rawSize.isEmpty, rawDeveloperMode != "1" else {
           return .invalidConfiguration
         }
         return manifestRequested ? .scenarioManifest : nil
@@ -107,7 +116,7 @@ import Synchronization
       return .scenario(
         Self(
           scenario: scenario,
-          dynamicTypeSize: dynamicTypeSize))
+          dynamicTypeSize: dynamicTypeSize, developerMode: rawDeveloperMode == "1"))
     }
 
     private static func isDisabledEnvironmentValue(_ value: String) -> Bool {
@@ -258,7 +267,7 @@ import Synchronization
         $0.haptics = .noop
         $0.fmStatus = .init(availability: { .available })
         $0.supportBundle = .init { _ in
-          let directory = FileManager.default.temporaryDirectory.appendingPathComponent("creg-support-bundle-harness-\(UUID())")
+          let directory = FileManager.default.temporaryDirectory.appendingPathComponent("creg-support-bundle-\(UUID())")
           try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
           ledger.directories.withLock { $0.append(directory) }
           let url = directory.appendingPathComponent("creg-support-bundle.zip")
@@ -297,6 +306,7 @@ import Synchronization
   @MainActor
   struct AccessibilityScenarioView: View {
     let scenario: AccessibilityUITestConfiguration.Scenario
+    var developerMode = false
     @State private var resultExplorerPreference = ResultPresentationPreference.automatic
 
     @ViewBuilder
@@ -375,10 +385,10 @@ import Synchronization
           chrome: PreviewFixtures.chrome)
 
       case .error:
-        NoticesAccessibilityHarness(scenario: .error)
+        NoticesAccessibilityHarness(scenario: .error, developerMode: developerMode)
 
       case .recovery:
-        NoticesAccessibilityHarness(scenario: .recovery)
+        NoticesAccessibilityHarness(scenario: .recovery, developerMode: developerMode)
 
       case .browser:
         AppRootView(
@@ -393,8 +403,9 @@ import Synchronization
           store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
 
       case .conversationNotices, .retainedExport, .browserRefresh, .browserPerformance, .appleIntelligenceDisabled,
-        .exportMore, .browserLongPreviews, .compactJump:
-        NoticesAccessibilityHarness(scenario: scenario)
+        .exportMore, .browserLongPreviews, .compactJump, .historyProgress, .historyProgressUnavailable,
+        .drawerGestureCancellation:
+        NoticesAccessibilityHarness(scenario: scenario, developerMode: developerMode)
 
       case .transientBanners:
         AppRootView(
@@ -422,7 +433,8 @@ import Synchronization
     private let scenario: AccessibilityUITestConfiguration.Scenario
     private let selectedID: UUID
     private let otherID: UUID
-    init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationNotices) {
+    init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationNotices,
+      developerMode: Bool = false) {
       self.scenario = scenario
       let held = HeldUITestExport()
       _heldExport = State(initialValue: held)
@@ -437,6 +449,8 @@ import Synchronization
       }
       var initial = PreviewFixtures.appState(revealed: scenario == .browserRefresh || scenario == .browserPerformance || scenario == .browserLongPreviews,
         chat: chat)
+      // Keep disclosure coverage independent of persisted app preferences.
+      initial.$developerMode = Shared(value: developerMode)
       initial.historyStoreAvailability = .available
       initial.historySummaryPhase = .loaded
       initial.launchBenchmarkQuestion = nil
@@ -461,8 +475,19 @@ import Synchronization
       }
       if scenario == .error || scenario == .conversationNotices {
         for index in 0..<(scenario == .error ? 1 : 6) {
-          initial.storeFailure(PreviewFixtures.presentationFailure, owner: .historySummaries(UInt64(index)))
+          var failure = PreviewFixtures.presentationFailure
+          failure.code = "notice_fixture_\(index)"
+          failure.diagnostic = "notice-details-\(index)"
+          initial.storeFailure(failure, owner: .historySummaries(UInt64(index)))
         }
+      }
+      if scenario == .historyProgress || scenario == .historyProgressUnavailable {
+        initial.historySummaryPhase = .loading(42)
+        initial.slowHistoryRequestID = 42
+        initial.storeFailure(.init(code: "history_summary_timed_out",
+          title: "History is taking longer than expected", message: "CREG is still loading your conversations.",
+          diagnostic: "Slow history fixture", recovery: .retryHistory), owner: .historySummaries(42))
+        if scenario == .historyProgressUnavailable { initial.chat = nil }
       }
       if scenario == .conversationNotices {
         initial.chat?.interruptedTurns = PreviewFixtures.recoveryChatState().interruptedTurns
@@ -494,6 +519,14 @@ import Synchronization
     }
     var body: some View {
       VStack(spacing: 0) {
+        if scenario == .drawerGestureCancellation {
+          Button("Interrupt drawer drag") {
+            Task { @MainActor in
+              try? await Task.sleep(for: .milliseconds(1500))
+              store.send(.binding(.set(\.isSettingsPresented, true)))
+            }
+          }.frame(minHeight: 44).accessibilityIdentifier("interrupt-drawer-drag")
+        }
         if scenario == .retainedExport {
           HStack {
             Button("Finish") { Task { await heldExport.finish() } }
@@ -711,7 +744,8 @@ import Synchronization
 
     var body: some View {
       ZStack(alignment: .topLeading) {
-        AccessibilityScenarioView(scenario: configuration.scenario)
+        AccessibilityScenarioView(scenario: configuration.scenario,
+          developerMode: configuration.developerMode)
         Color.clear
           .frame(width: 1, height: 1)
           .accessibilityElement()

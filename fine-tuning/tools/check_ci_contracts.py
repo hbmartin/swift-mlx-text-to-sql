@@ -152,6 +152,10 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "testLongDrawerPreviewsStayBoundedAndSettingsReachable",
     "-only-testing:CREGUITests/AccessibilityUITests/"
     "testCompactJumpToLatestWithKeyboardAndCorrection",
+    "-only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity",
+    "-only-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface",
+    "-only-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe",
+    "${{", "matrix.skip-arguments", "}}",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
@@ -163,6 +167,34 @@ ACCESSIBILITY_UI_BUILD_COMMAND = (
     "-skipPackagePluginValidation", "-skipMacroValidation",
     "CODE_SIGNING_ALLOWED=NO", "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
 )
+ACCESSIBILITY_UI_SELECTORS = tuple(sorted(
+    token.removeprefix("-only-testing:") for token in ACCESSIBILITY_UI_TEST_COMMAND
+    if token.startswith("-only-testing:")))
+ACCESSIBILITY_CANONICAL_SELECTOR = "CREGUITests/AccessibilityUITests/testCanonicalScreensDoNotClipTextOrShrinkHitRegions"
+ACCESSIBILITY_INTERACTION_SELECTORS = tuple(
+    value for value in ACCESSIBILITY_UI_SELECTORS if value != ACCESSIBILITY_CANONICAL_SELECTOR)
+ACCESSIBILITY_UI_SHARDS = {
+    "canonical": (ACCESSIBILITY_CANONICAL_SELECTOR,),
+    "interactions-a": ACCESSIBILITY_INTERACTION_SELECTORS[::2],
+    "interactions-b": ACCESSIBILITY_INTERACTION_SELECTORS[1::2],
+}
+ACCESSIBILITY_UI_STRATEGY = {
+    "fail-fast": False, "max-parallel": 3,
+    "matrix": {"include": [
+        {"shard": name, "skip-arguments": " ".join(
+            "-skip-testing:" + selector for selector in ACCESSIBILITY_UI_SELECTORS
+            if selector not in members)}
+        for name, members in ACCESSIBILITY_UI_SHARDS.items()
+    ]},
+}
+ACCESSIBILITY_AGGREGATE_JOB = {
+    "name": "Accessibility UI contracts", "needs": "accessibility",
+    "if": "${{ always() }}", "runs-on": "ubuntu-latest", "timeout-minutes": 5,
+    "steps": [{"name": "Require all accessibility shards",
+        "shell": "/bin/bash --noprofile --norc -e -o pipefail {0}",
+        "run": "test '${{ needs.accessibility.result }}' = 'success'"}],
+}
+
 TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"
 TESTFLIGHT_PUBLISHER_RUNNER = "ubuntu-latest"
 TESTFLIGHT_UV_PATH = "${{ steps.setup-uv.outputs.uv-path }}"
@@ -474,6 +506,7 @@ def reviewed_run_context_failures(
     expected_shell: str,
     expected_working_directory: str,
     expected_job_timeout: int | None = None,
+    expected_strategy: Mapping[str, object] | None = None,
 ) -> list[str]:
     """Reject job and step metadata that can skip or reinterpret a reviewed run."""
     failures: list[str] = []
@@ -495,8 +528,11 @@ def reviewed_run_context_failures(
             field == "timeout-minutes"
             and expected_job_timeout is not None
             and job[field] == expected_job_timeout
-        )
+        ) and not (field == "strategy" and expected_strategy is not None
+                   and job[field] == expected_strategy)
     ]
+    if expected_strategy is not None and "strategy" not in job:
+        failures.append(f"{prefix} {job_name} job must include the reviewed shard strategy")
     if expected_job_timeout is not None and "timeout-minutes" not in job:
         failures.append(f"{prefix} {job_name} job timeout-minutes must be {expected_job_timeout}")
     if job_fields:
@@ -694,6 +730,10 @@ def _accessibility_ui_job_contract_failures(
     if job is None or steps is None:
         return list(dict.fromkeys(failures))
 
+    if workflow.get("jobs", {}).get("accessibility-contracts") != ACCESSIBILITY_AGGREGATE_JOB:
+        failures.append(f"{prefix} aggregate check must require all shards and run after failures")
+    if job.get("name") != "Accessibility UI contracts (${{ matrix.shard }})":
+        failures.append(f"{prefix} shard check name is incorrect")
     ui_build, build_failures = named_step(steps, name="Build focused accessibility UI contracts", prefix=prefix)
     failures.extend(build_failures)
     ui_test, test_failures = named_step(steps, name="Test focused accessibility UI contracts", prefix=prefix)
@@ -720,7 +760,7 @@ def _accessibility_ui_job_contract_failures(
         failures.extend(reviewed_run_context_failures(
             job, step, job_name=ACCESSIBILITY_UI_JOB, step_name=step_name, prefix=prefix,
             expected_runner=ACCESSIBILITY_UI_RUNNER, expected_shell=ACCESSIBILITY_UI_SHELL,
-            expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY, expected_job_timeout=75))
+            expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY, expected_job_timeout=105, expected_strategy=ACCESSIBILITY_UI_STRATEGY))
         expected_timeout = 30 if step is ui_build else 60
         if step.get("timeout-minutes") != expected_timeout:
             failures.append(f"{prefix} UI {label} timeout must be {expected_timeout} minutes")
@@ -763,6 +803,8 @@ def _accessibility_ui_job_contract_failures(
         if normalized_condition not in {"always()", "${{always()}}"}:
             failures.append(f"{prefix} result upload must run even after test failure")
         inputs = upload.get("with")
+        if not isinstance(inputs, dict) or inputs.get("name") != "accessibility-ui-test-results-${{ matrix.shard }}":
+            failures.append(f"{prefix} each shard must upload a distinct result artifact")
         if not isinstance(inputs, dict) or inputs.get("path") != (
             "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult"
         ):

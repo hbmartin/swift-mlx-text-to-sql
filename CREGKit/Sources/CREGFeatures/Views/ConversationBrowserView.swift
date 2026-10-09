@@ -271,9 +271,15 @@ func conversationPreviewExcerpt(_ text: String, accessibility: Bool) -> String {
   let limit = accessibility ? 60 : 120
   let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
   guard collapsed.count > limit else { return collapsed }
-  var prefix = String(collapsed.prefix(limit - 1))
-  if let boundary = prefix.lastIndex(of: " ") {
+  let cutoff = collapsed.index(collapsed.startIndex, offsetBy: limit - 1)
+  var prefix = String(collapsed[..<cutoff])
+  // Keep a complete final word. Retreat from a partial word only when
+  // doing so leaves a useful excerpt rather than just its first short word.
+  if collapsed[cutoff] != " ", prefix.last != " ",
+    let boundary = prefix.lastIndex(of: " "),
+    prefix.distance(from: prefix.startIndex, to: boundary) >= limit / 2
+  {
     prefix = String(prefix[..<boundary])
   }
-  return prefix + "…"
+  return prefix.trimmingCharacters(in: .whitespaces) + "…"
 }

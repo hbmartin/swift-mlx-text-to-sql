@@ -51,6 +51,38 @@ import Testing
     #expect(ChatNoticeSummary(store: chat, chrome: chrome).title == "SQL model preparation paused")
   }
 
+  @Test func dismissedHistoryFailureDoesNotClaimLoadingAndNoticeIDsSurviveRemoval() {
+    let chat = PreviewFixtures.chatStore(PreviewFixtures.chatState())
+    var chrome = PreviewFixtures.chrome
+    chrome.modelReadiness = .ready
+    chrome.fmAvailability = .available
+    chrome.historyIsLoading = false
+    chrome.canRetryHistory = true
+    #expect(ChatNoticeSummary(store: chat, chrome: chrome).title == "History unavailable")
+    chrome.historyIsLoading = true
+    #expect(ChatNoticeSummary(store: chat, chrome: chrome).title == "Loading history")
+    let failure = FailurePresentation(code: "test", title: "Failure", message: "Retry", diagnostic: "test")
+    let first = AppFeature.OwnedFailure(owner: .historySummaries(1), failure: failure)
+    let second = AppFeature.OwnedFailure(owner: .historySummaries(2), failure: failure)
+    chrome.ownedFailures = [first, second]
+    let before = ChatNotice.items(store: chat, chrome: chrome).map(\.id)
+    chrome.ownedFailures = [second]
+    let after = ChatNotice.items(store: chat, chrome: chrome).map(\.id)
+    #expect(after.contains(before[1]))
+    #expect(!after.contains(before[0]))
+    let blocking = FailurePresentation(code: "turn_persistence_barrier_timed_out",
+      title: "Saving interrupted", message: "Wait", diagnostic: "test")
+    chrome.ownedFailures.insert(.init(owner: .global, failure: blocking), at: 0)
+    let inserted = ChatNotice.items(store: chat, chrome: chrome).map(\.id)
+    #expect(inserted.first == .failure(.global))
+    #expect(inserted[1] == before[1])
+    let progress = FailurePresentation(code: "history_summary_timed_out", title: "Slow", message: "Loading", diagnostic: "test")
+    #expect(!progress.isError)
+    #expect(progress.dismissalLabel == "Dismiss notice")
+    #expect(failure.isError)
+    #expect(failure.dismissalLabel == "Dismiss error")
+  }
+
   @Test func drawerEligibilityRejectsMiddleFlicksAndCancelsDirectionChanges() {
     var middle = DrawerGestureEligibility()
     let changed1 = middle.change(startX: 150, dx: 100, dy: 1, revealed: false)

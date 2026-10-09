@@ -106,7 +106,7 @@ extension AppFeature {
       let present =
         export.intent != .retained && state.isSceneActive
         && state.chat?.conversationID == conversationID && state.isConversationLive(conversationID)
-        && state.conversationOpening == nil && !state.newChatRequestedDuringBootstrap
+        && state.conversationOpening?.phase != .loading && !state.newChatRequestedDuringBootstrap
         && state.chat?.resultViewerMessageID == nil && state.chat?.isRenamePresented != true
         && state.answerMorePresentation == nil
         && permittedSheet
@@ -154,19 +154,7 @@ extension AppFeature {
   }
 
   func removeSupportBundle(_ url: URL) -> Effect<Action> {
-    .run { _ in
-      let manager = FileManager.default
-      let temp = manager.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL
-      let file = url.standardizedFileURL
-      let directory = file.deletingLastPathComponent()
-      guard directory.deletingLastPathComponent().resolvingSymlinksInPath() == temp,
-        directory.lastPathComponent.hasPrefix("creg-support-bundle-"),
-        file.lastPathComponent == "creg-support-bundle.zip",
-        (try? directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false,
-        (try? file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false
-      else { return }
-      try? manager.removeItem(at: directory)
-    }
+    .run { _ in SupportBundleFiles.remove(url) }
   }
 }
 
@@ -206,11 +194,18 @@ enum ConversationExportFiles {
 }
 
 extension AppFeature.State {
-  mutating func closeConversationPresentation() {
-    answerMorePresentation = nil
-    for id in conversationExports.keys where conversationExports[id]?.phase == .exporting {
+  mutating func retainPendingConversationExports(conversationID: UUID? = nil) {
+    for id in conversationExports.keys
+      where (conversationID == nil || conversationID == id)
+        && conversationExports[id]?.phase == .exporting
+    {
       conversationExports[id]?.intent = .retained
     }
+  }
+
+  mutating func closeConversationPresentation() {
+    answerMorePresentation = nil
+    retainPendingConversationExports()
     if case .settings = presentation { return }
     presentation = nil
   }

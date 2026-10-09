@@ -308,7 +308,12 @@ public struct AppFeature: Sendable {
     public var presentation: Presentation?
     public var isSettingsPresented: Bool {
       get { presentation == .settings }
-      set { if newValue { presentation = .settings } else if presentation == .settings { presentation = nil } }
+      set {
+        if newValue {
+          retainPendingConversationExports()
+          presentation = .settings
+        } else if presentation == .settings { presentation = nil }
+      }
     }
     public var conversationExports: [UUID: ConversationExport] = [:]
     @Shared(.appStorage(DeveloperModePreference.storageKey))
@@ -330,6 +335,7 @@ public struct AppFeature: Sendable {
     public var isBuildingSupportBundle: Bool { supportBuildRequestID != nil }
     public var supportBundleExport: SupportBundleExport?
     public var supportBundlePresentationID: UUID?
+    public var supportBundleDismissalID: UUID?
     /// Debug-only answerability capture (docs/eval.md "Answerability").
     public var isCapturingAnswerability = false
     /// Identity of the in-flight capture. A completion action must present
@@ -353,6 +359,7 @@ public struct AppFeature: Sendable {
     var historyWatchdogGeneration: UInt64 = 0
     public var slowHistoryRequestID: UInt64?
     var didCleanOldConversationExports = false
+    var draftSaveRevisions: [UUID: UInt64] = [:]
     var presentedExportFiles: [UUID: URL] = [:]
     var conversationCreations: [UInt64: UUID] = [:]
     public var answerMorePresentation: AnswerMorePresentation?
@@ -586,6 +593,7 @@ public struct AppFeature: Sendable {
       failure: FailurePresentation?)
     case conversationWriteFailed(
       conversationID: UUID, failure: FailurePresentation)
+    case draftSaveDue(conversationID: UUID, draft: String, revision: UInt64)
     case turnPersistenceWriteSettled(UUID)
     case turnPersistenceFinished(UUID)
     case turnPersistenceTimedOut(UUID)
@@ -641,6 +649,11 @@ public struct AppFeature: Sendable {
     var questionID: UUID
   }
 
+  /// Debounce timers are conversation-scoped; accepted writes are uncancellable.
+  struct DraftSaveID: Hashable {
+    let conversationID: UUID
+  }
+
   struct TurnPersistenceDrainTimeoutID: Hashable {
     var questionID: UUID
   }
@@ -660,6 +673,7 @@ public struct AppFeature: Sendable {
   @Dependency(\.modelPreparationJournal) var preparationJournal
   @Dependency(\.modelPreparationEnvironment) var preparationEnvironment
   let messageUpdateQueue = MessageUpdateQueue()
+  @Dependency(\.supportBundleFiles) var supportBundleFiles
 
   public init() {}
 
@@ -699,6 +713,8 @@ public struct AppFeature: Sendable {
         if !state.didCleanOldConversationExports {
           state.didCleanOldConversationExports = true
           effects.append(cleanOldConversationExports(protected: Set(state.presentedExportFiles.values).union(state.conversationExports.values.compactMap { if case .ready(let url) = $0.phase { url } else { nil } })))
+          let protected = Set(state.supportBundleExport.map { [$0.url] } ?? [])
+          effects.append(.run { _ in await supportBundleFiles.cleanAbandoned(protected) })
         }
         if !state.didRequestPreparationJournalInspection {
           state.didRequestPreparationJournalInspection = true
@@ -1945,12 +1961,17 @@ public struct AppFeature: Sendable {
             }
           }
         }
-        let acceptDraft: Effect<Action> =
-          if submission.clearsComposerOnAcceptance == true {
-            .concatenate(
-              .cancel(id: ChatFeature.DraftSaveID(conversationID: conversationID)),
-              .run { _ in try? await history.saveDraft(conversationID, "") })
-          } else { .none }
+        let acceptDraft: Effect<Action>
+        if submission.clearsComposerOnAcceptance == true {
+          // A cleared draft gets a newer revision than every accepted edit.
+          // Only the debounce timer is cancelled; writes already queued
+          // settle before this clear or are rejected as superseded.
+          let revision = draftSaveRevisionCounter.next()
+          state.draftSaveRevisions[conversationID] = revision
+          acceptDraft = .concatenate(
+            .cancel(id: DraftSaveID(conversationID: conversationID)),
+            saveDraft(conversationID: conversationID, draft: "", revision: revision))
+        } else { acceptDraft = .none }
         if submission.clearsComposerOnAcceptance == true {
           state.chat?.composerText = ""
         }
@@ -2131,6 +2152,34 @@ public struct AppFeature: Sendable {
         case nil: return .send(.operationFailed(failure))
         }
 
+      case .chat(.delegate(.draftChanged(let id, let draft, let revision))):
+        guard revision > (state.draftSaveRevisions[id] ?? 0) else { return .none }
+        state.draftSaveRevisions[id] = revision
+        return .run { send in
+          try await clock.sleep(for: .milliseconds(500))
+          await send(.draftSaveDue(conversationID: id, draft: draft, revision: revision))
+        }.cancellable(id: DraftSaveID(conversationID: id), cancelInFlight: true)
+
+      case .draftSaveDue(let id, let draft, let revision):
+        guard state.draftSaveRevisions[id] == revision else { return .none }
+        return saveDraft(conversationID: id, draft: draft, revision: revision)
+
+      case .chat(.delegate(.resultPresentationWriteRequested(let id, let message, let revision))):
+        return .run { send in
+          do {
+            try await messageUpdateQueue.save(conversationID: id, messageID: message.id, revision: revision) {
+              try await history.updateResultPresentation(id, message)
+            }
+          } catch {
+            await send(.operationFailed(.history(operation: .messageSave, error: error),
+              owner: .conversationOperation(id, .resultPresentation)))
+          }
+        }
+
+      case .chat(.renameTapped), .chat(.resultViewerPresented):
+        state.retainPendingConversationExports()
+        return .none
+
       case .chat(.delegate(.feedbackWriteRequested(let id, let write))):
         // These writes outlive the optional chat reducer. Deletion must not
         // cancel their failure settlement before Undo recovery can own it.
@@ -2178,6 +2227,7 @@ public struct AppFeature: Sendable {
 
       case .chat(.delegate(.renameRequested(let id, let title))):
         guard state.isConversationLive(id) else { return .none }
+        let title = HistoryStore.normalizedRenameTitle(from: title)
         state.conversations[id: id]?.title = title
         state.conversations[id: id]?.isManuallyTitled = true
         let operationID = uuid()
@@ -2204,16 +2254,13 @@ public struct AppFeature: Sendable {
         state.conversationExports.removeValue(forKey: id)
         return removeExportFile(url)
       case .conversationModalRequested(let id):
-        guard state.chat?.conversationID == id,
-          state.conversationExports[id]?.phase == .exporting else { return .none }
-        state.conversationExports[id]?.intent = .retained
+        guard state.chat?.conversationID == id else { return .none }
+        state.retainPendingConversationExports(conversationID: id)
         return .none
       case .answerMorePresented(let id, let presentationID):
         guard state.chat?.conversationID == id, state.isConversationLive(id) else { return .none }
         state.answerMorePresentation = .init(conversationID: id, presentationID: presentationID)
-        if state.conversationExports[id]?.phase == .exporting {
-          state.conversationExports[id]?.intent = .retained
-        }
+        state.retainPendingConversationExports(conversationID: id)
         return .none
       case .answerMoreDismissed(let id, let presentationID):
         guard state.answerMorePresentation == .init(conversationID: id, presentationID: presentationID)
@@ -2221,6 +2268,7 @@ public struct AppFeature: Sendable {
         state.answerMorePresentation = nil
         return .none
       case .noticesTapped:
+        state.retainPendingConversationExports()
         if let id = state.chat?.conversationID { state.presentation = .notices(id) }
         return .none
       case .sheetDismissalRequested(let id):
@@ -2243,6 +2291,7 @@ public struct AppFeature: Sendable {
         diagnostics.info(category: .history, code: "support_bundle_started", summary: "A support bundle export started.")
         return .run { send in
           do {
+            await supportBundleFiles.cleanAbandoned([])
             let source = try await history.supportBundleSource()
             defer { SupportBundleBuilder.removeSnapshot(source.databaseSnapshotURL) }
             let export = try await supportBundle.build(source)
@@ -2262,6 +2311,7 @@ public struct AppFeature: Sendable {
         ownedExport.requestID = requestID
         state.supportBundleExport = ownedExport
         state.supportBundlePresentationID = requestID
+        state.supportBundleDismissalID = nil
         diagnostics.info(category: .history, code: "support_bundle_finished", summary: "A support bundle export finished.",
           context: ["conversation_count": String(export.manifest.conversationCount),
             "entry_count": String(export.manifest.entries.count)])
@@ -2275,6 +2325,7 @@ public struct AppFeature: Sendable {
 
       case .supportBundleDismissalRequested(let requestID):
         guard state.supportBundlePresentationID == requestID else { return .none }
+        state.supportBundleDismissalID = requestID
         state.supportBundlePresentationID = nil
         return .none
 
@@ -2282,6 +2333,7 @@ public struct AppFeature: Sendable {
         guard let export = state.supportBundleExport, requestID == export.requestID else { return .none }
         state.supportBundlePresentationID = nil
         state.supportBundleExport = nil
+        state.supportBundleDismissalID = nil
         return removeSupportBundle(export.url)
 
       case .answerabilityCaptureTapped:
@@ -2480,7 +2532,7 @@ public struct AppFeature: Sendable {
       return .send(.dispatchNextIfIdle)
     }
     .ifLet(\.chat, action: \.chat) {
-      ChatFeature(messageUpdateQueue: messageUpdateQueue)
+      ChatFeature()
     }
   }
 }

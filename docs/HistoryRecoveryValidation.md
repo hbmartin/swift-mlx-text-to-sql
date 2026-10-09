@@ -1,5 +1,46 @@
 # History recovery and notice presentation validation
 
+## October 9 fixes for comments #1–14
+
+Implemented on `codex/history-recovery-review-fixes` from `b2a7b1911b4de672169a02e188c228b50bcf7577`. Comment #15's destination refactor remains deferred. Schema and dependency pins remain unchanged.
+
+Draft and result-preference effects now belong to the root. Draft edits carry revisions allocated before delegation; the root owns the 500 ms timer and rejects delayed older delegates after submission clearing. Draft and message revisions use distinct queue targets. Accepted writes outlive chat removal, and actual errors retain separate operation owners through Undo and failed deletion or become diagnostics after committed deletion. Writes rejected before starting after committed deletion are discarded. Held-write tests cover all these outcomes; additional navigation tests verify values reloaded from a real SQLite history database.
+
+Opening any competing modal during an export retains the request until explicit Share. This applies to Settings, Notices, result viewing, Rename, Delete confirmation, answer More and answer sharing, including opening and closing before export completion. Explicit Share regenerates and may replace its originating Notices sheet; opening another surface retains it again. Active conversation loading blocks automatic presentation, while failed opening preserves recovery controls and permits exports. Request identities, coalescing, file leases and stale-completion checks remain intact.
+
+Support dismissal captures its identity before presentation state is cleared, with a root fallback when content never appeared. Cleanup runs once per launch and completes before the first support build: it removes abandoned UUID-named directories and legacy staging/ZIP paths, rejects symlinks, restricts removal to direct owned temporary paths and protects active artifacts. Existing 24-hour conversation-export aging is preserved. Fixture-directory, relaunch, protected-file, foreign-path and symlink tests pass.
+
+Drawer translation and directional eligibility are gesture state. A simulator regression presents Settings during a recognized slow edge drag, dismisses Settings and verifies that the first following swipe opens the browser. Notices use semantic identities, show “History unavailable” after a dismissed failure, and classify slow-history warnings neutrally on chat, Settings and unavailable screens. Manual renames normalize before optimistic display and storage, including idempotent trimming at the 80-grapheme cap. Excerpts retain complete boundary words, count the ellipsis within 120/60 graphemes and only retreat inside a word when at least half the budget remains useful.
+
+Accessibility scrolling identifies a control's owning scroller from the hierarchy. Fixed controls use the unobscured window and never cause transcript gestures. Gesture lanes respect window, keyboard and full-width chrome bounds while routing around partial overlays; unusable geometry and lack of progress produce retained screenshots and diagnostics. Compact near-height controls settle their tap centers, avoiding alternating overshoots; clipping/hit-region audit findings remain failures.
+
+CI runs the entire canonical matrix in its own shard and distributes every other reviewed selector between two alphabetically alternating interaction shards. There are **35 selectors**, with no omitted or duplicated shard membership, and **34 canonical scenarios / 136 audited layouts**. Each shard has a 30-minute build step, 60-minute test step and 105-minute job limit. Matrix fail-fast is disabled; artifact names include the shard. The aggregate **Accessibility UI contracts** required check runs even after failures and requires every shard to succeed. Exact-command and mutation contracts check membership, budgets, skip arguments, artifacts and aggregate behavior.
+
+The Darwin allocator subprocess regression passes six repeated subprocesses, each exercising eight fresh threads while the logger is active, owner-only byte/count accounting, previous-logger chaining and logger restoration. The documented scoped-optimization benchmark passed twice without crashes. Dependencies kept Debug settings, and both temporary `-O` flags were restored afterward.
+
+| Run | Reviewed reads | Shared reads | Allocations (reviewed / shared) | Requested bytes (reviewed / shared) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 3.82029 ms | 0.00322 ms | 78 / 5 | 597,872 / 3,880 |
+| 2 | 3.77865 ms | 0.00280 ms | 78 / 5 | 597,872 / 3,880 |
+
+These are seven-sample medians with one warmup on Apple M2 Pro / macOS 27, under concurrent local validation load, using the existing 1,000-row fixture and requested-byte semantics. They measure projection reads rather than rendering latency.
+
+A focused run passed **68 tests in six suites**, including real-database navigation persistence; a subsequent 15-test run verified notice insertion/removal identities and the root regressions. The final full Swift package run completed **829 tests across 65 suites**, including 594 feature tests, the explicit support-dismissal-before-appearance regression and validation of the isolated Developer Mode fixture option, with only the four enabled baseline chart assertions below. Both opt-in performance tests were skipped in the ordinary full run. Python CI contracts and the repeated allocator regression passed **211 tests**.
+
+The final three-shard simulator suite passed **all 35 reviewed CI selectors**, with zero failures or skipped selected tests. The canonical shard audited every one of the **136 layouts** (34 scenarios at Large, AX1, AX3 and AX5). The four originally failing selectors and all three new regression selectors passed in their complete interaction shards. All audit findings remain failures; no chart assertion or accessibility audit is suppressed.
+
+| Shard | Selected tests / coverage | XcodeBuildMCP duration | Result bundle |
+| --- | --- | ---: | --- |
+| canonical | 1 selector / 136 audited layouts | 1,570.3 s | `test_sim_2026-10-09T17-03-26-614Z_pid63747_e4f7073f.xcresult` |
+| interactions-a | 17 selectors | 1,497.2 s | `test_sim_2026-10-09T16-46-14-156Z_pid26338_8a102178.xcresult` |
+| interactions-b | 17 selectors | 1,474.6 s | `test_sim_2026-10-09T16-46-14-157Z_pid26337_4f7e578a.xcresult` |
+
+These final runs used the exact CI selector union and each shard's exclusion arguments through XcodeBuildMCP, on separate iPhone 18 Pro / iOS 27 simulators and build directories. Durations include build and test overhead. The tool retained result bundles and logs in its workspace artifact directories. Both temporary simulators were removed afterward; the original simulator remains available. A final package-pin check and `git diff --check` passed, and the current branch, package manifest and dependency resolutions remain unchanged.
+
+The four baseline chart assertions remain enabled and unchanged: `tentativePreferenceRestorationIsAttemptedOnlyOnce`, `newerPreferenceWinsDuringRetryRestorationCallback`, and two assertions in `retainedStalePreferenceWithSameReplacementIsReconciled`. They also failed independently in [base-branch CI](https://github.com/hbmartin/swift-mlx-text-to-sql/actions/runs/37801842772). This patch updates persistence tests in the same file but does not change those four assertions or their chart handlers.
+
+The earlier validation notes below describe historical runs and their then-current CI budgets and coverage.
+
 Validated on October 8, 2026, on the existing `codex/history-recovery-review-fixes` branch against starting commit `d1088d3ee1f0f737f88ee267b07e754e59b5b018`. Builds and simulator tests use XcodeBuildMCP, Xcode 27, and the iPhone 18 Pro / iOS 27 simulator (`31B09574-9781-45A7-816D-6A1916E1BA16`). No database migration or dependency change is included.
 
 ## PR #158 follow-up against `630d471`

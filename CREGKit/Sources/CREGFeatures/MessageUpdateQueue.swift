@@ -7,9 +7,14 @@ actor MessageUpdateQueue {
     case discardedDuringDeletion
   }
 
+  private enum Target: Hashable {
+    case message(UUID)
+    case draft
+  }
+
   private struct Key: Hashable {
     var conversationID: UUID
-    var messageID: UUID
+    var target: Target
   }
 
   private enum OnceSaveState {
@@ -19,9 +24,8 @@ actor MessageUpdateQueue {
     case resolved(Result<SaveOutcome, any Error>)
   }
 
-  /// Every history mutation in one conversation shares a FIFO. Message-level
-  /// revisions still suppress stale preference effects, but distinct message
-  /// IDs can no longer overtake each other in the durable transcript.
+  /// Message and draft writes in one conversation share a FIFO. Revisions
+  /// suppress stale effects within each target while targets stay ordered.
   private var activeConversationIDs: Set<UUID> = []
   private var waiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
   private var latestRevisions: [Key: UInt64] = [:]
@@ -40,7 +44,24 @@ actor MessageUpdateQueue {
     revision: UInt64? = nil,
     operation: @escaping @Sendable () async throws -> Void
   ) async throws -> SaveOutcome {
-    let key = Key(conversationID: conversationID, messageID: messageID)
+    try await save(conversationID: conversationID, target: .message(messageID),
+      revision: revision, operation: operation)
+  }
+
+  @discardableResult
+  func saveDraft(
+    conversationID: UUID, revision: UInt64,
+    operation: @escaping @Sendable () async throws -> Void
+  ) async throws -> SaveOutcome {
+    try await save(conversationID: conversationID, target: .draft,
+      revision: revision, operation: operation)
+  }
+
+  private func save(
+    conversationID: UUID, target: Target, revision: UInt64?,
+    operation: @escaping @Sendable () async throws -> Void
+  ) async throws -> SaveOutcome {
+    let key = Key(conversationID: conversationID, target: target)
     guard await waitForDeletionResolutionIfNeeded(conversationID) else {
       return .discardedDuringDeletion
     }
@@ -55,7 +76,13 @@ actor MessageUpdateQueue {
         finish(conversationID)
         return .discardedDuringDeletion
       }
-      guard deletingConversationIDs.contains(conversationID) else { break }
+      if !deletingConversationIDs.contains(conversationID) {
+        if let revision, revision < (latestRevisions[key] ?? 0) {
+          finish(conversationID)
+          return .superseded
+        }
+        break
+      }
       finish(conversationID)
       guard await waitForDeletionResolutionIfNeeded(conversationID) else {
         return .discardedDuringDeletion
@@ -71,9 +98,9 @@ actor MessageUpdateQueue {
       return .saved
     } catch {
       finish(conversationID)
-      guard await waitForDeletionResolutionIfNeeded(conversationID) else {
-        return .discardedDuringDeletion
-      }
+      // An attempted write's error still belongs to its root owner, even
+      // after deletion. Only writes that never start are discarded.
+      _ = await waitForDeletionResolutionIfNeeded(conversationID)
       throw error
     }
   }
@@ -88,7 +115,7 @@ actor MessageUpdateQueue {
     messageID: UUID,
     operation: @escaping @Sendable () async throws -> Void
   ) async throws -> SaveOutcome {
-    let key = Key(conversationID: conversationID, messageID: messageID)
+    let key = Key(conversationID: conversationID, target: .message(messageID))
     if let state = onceSaves[key] {
       let result: Result<SaveOutcome, any Error>
       switch state {
@@ -119,7 +146,7 @@ actor MessageUpdateQueue {
   }
 
   func forgetOnceSave(conversationID: UUID, messageID: UUID) {
-    let key = Key(conversationID: conversationID, messageID: messageID)
+    let key = Key(conversationID: conversationID, target: .message(messageID))
     guard case .resolved = onceSaves[key] else { return }
     onceSaves[key] = nil
   }
@@ -165,7 +192,7 @@ actor MessageUpdateQueue {
   }
 
   func onceSaveWaiterCount(conversationID: UUID, messageID: UUID) -> Int {
-    let key = Key(conversationID: conversationID, messageID: messageID)
+    let key = Key(conversationID: conversationID, target: .message(messageID))
     guard case .active(let continuations) = onceSaves[key] else { return 0 }
     return continuations.count
   }
@@ -255,6 +282,7 @@ actor MessageUpdateQueue {
 /// scheduled out of order. The process-wide counter also stays monotonic when
 /// a conversation is unloaded and later reconstructed from history.
 let resultPresentationSaveRevisionCounter = MessageUpdateRevisionCounter()
+let draftSaveRevisionCounter = MessageUpdateRevisionCounter()
 
 final class MessageUpdateRevisionCounter: @unchecked Sendable {
   private let lock = NSLock()
