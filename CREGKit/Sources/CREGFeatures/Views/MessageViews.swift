@@ -11,6 +11,7 @@ struct MessageCell: View {
   let developerMode: Bool
   let store: StoreOf<ChatFeature>
   var shareRequested: (UUID, String) -> Void = { _, _ in }
+  var morePresented: (UUID) -> Void = { _ in }
   var moreDismissed: (UUID) -> Void = { _ in }
 
   var body: some View {
@@ -142,7 +143,8 @@ struct MessageCell: View {
           runtimeMode: message.devInfo?.runtimeMode ?? .evaluated,
           feedback: feedback,
           readAloud: readAloud,
-          store: store, shareRequested: shareRequested, moreDismissed: moreDismissed)
+          store: store, shareRequested: shareRequested,
+          morePresented: morePresented, moreDismissed: moreDismissed)
         if developerMode {
           DevInfoSectionsView(sql: sql, devInfo: message.devInfo)
         }
@@ -266,6 +268,7 @@ struct AnswerActionsRow: View {
   let readAloud: ChatFeature.ReadAloudState?
   let store: StoreOf<ChatFeature>
   var shareRequested: (UUID, String) -> Void = { _, _ in }
+  var morePresented: (UUID) -> Void = { _ in }
   var moreDismissed: (UUID) -> Void = { _ in }
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   @State private var isMorePresented = false
@@ -295,6 +298,11 @@ struct AnswerActionsRow: View {
     }
     .popover(isPresented: $isMorePresented, attachmentAnchor: .rect(.rect(moreButtonFrame))) {
       moreActions
+    }
+    .onDisappear {
+      // Removing the source row also retires this popover's root ownership.
+      isMorePresented = false
+      moreDismissed(morePresentationID)
     }
   }
 
@@ -381,6 +389,7 @@ struct AnswerActionsRow: View {
   private func moreMenu(stacked: Bool) -> some View {
     Button {
       morePresentationID = UUID()
+      morePresented(morePresentationID)
       isMorePresented = true
     } label: {
       if stacked || dynamicTypeSize.isAccessibilitySize {
@@ -421,6 +430,9 @@ struct AnswerActionsRow: View {
     .cregPresentedSurfaceProbe()
     .environment(\.dynamicTypeSize, dynamicTypeSize)
     .presentationCompactAdaptation(.popover)
+    #if !canImport(UIKit)
+      .onDisappear { if !isMorePresented { moreDismissed(moreID) } }
+    #endif
     #if canImport(UIKit)
       .background {
         AnswerMoreDismissalObserver {

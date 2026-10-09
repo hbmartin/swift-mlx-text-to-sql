@@ -10,6 +10,8 @@ struct ChatView: View {
   let chrome: ChatChrome
   var answerSharePresented: (() -> Void)? = nil
   var retainPendingExport: () -> Void = {}
+  var answerMorePresented: (UUID) -> Void = { _ in }
+  var answerMoreDismissed: (UUID) -> Void = { _ in }
   @State private var answerSharing = AnswerShareCoordinator()
   @FocusState private var composerIsFocused: Bool
   /// Sentinel at the end of the transcript, outside the `LazyVStack` so it is
@@ -85,7 +87,11 @@ struct ChatView: View {
                 answerSharing.request(
                   conversationID: store.conversationID, moreID: moreID, markdown: markdown)
               },
-              moreDismissed: { answerSharing.moreDidDismiss($0) }
+              morePresented: answerMorePresented,
+              moreDismissed: {
+                answerMoreDismissed($0)
+                answerSharing.moreDidDismiss($0)
+              }
             )
             .id(message.id)
           }
@@ -109,6 +115,7 @@ struct ChatView: View {
           .id(Self.bottomAnchor)
       }
     }
+    .accessibilityIdentifier("conversation-transcript-scroll")
     .scrollDismissesKeyboard(.interactively)
     .onScrollGeometryChange(for: Bool.self) { geometry in
       // `visibleRect` already accounts for the header and composer content
@@ -323,6 +330,7 @@ struct ChatView: View {
         ViewThatFits(in: .horizontal) {
           HStack(spacing: 8) {
             if composerIsFocused { browserButton }
+            jumpToLatest(proxy: proxy, compact: true)
             correctionContext(proxy: proxy, compact: true)
             if summary.count > 0 { noticeButton(summary, compact: true) }
             if composerIsFocused {
@@ -334,6 +342,7 @@ struct ChatView: View {
             correctionContext(proxy: proxy, compact: true)
             HStack(spacing: 8) {
               if composerIsFocused { browserButton }
+              jumpToLatest(proxy: proxy, compact: true)
               Spacer(minLength: 0)
               if summary.count > 0 { noticeButton(summary, compact: true) }
               if composerIsFocused {
@@ -462,7 +471,7 @@ struct ChatView: View {
   }
 
   @ViewBuilder
-  private func jumpToLatest(proxy: ScrollViewProxy) -> some View {
+  private func jumpToLatest(proxy: ScrollViewProxy, compact: Bool = false) -> some View {
     if !isNearBottom, !store.messages.isEmpty {
       // Interactive glass needs a `GlassEffectContainer` around it — every
       // other glass control here has one, and outside a container the effect
@@ -475,14 +484,14 @@ struct ChatView: View {
           scrollToLatest(proxy: proxy)
         } label: {
           HStack(spacing: 5) {
-            if unseenMessageCount > 0 {
+            if !compact, unseenMessageCount > 0 {
               Text("\(unseenMessageCount)")
             }
             Image(systemName: "chevron.down")
           }
           .font(.body.weight(.semibold))
           .padding(.horizontal, 12)
-          .frame(minHeight: 44)
+          .frame(minWidth: 44, minHeight: 44)
           .contentShape(.capsule)
           .cregGlassCapsule(interactive: true)
         }

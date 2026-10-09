@@ -28,7 +28,11 @@ final class AccessibilityUITests: XCTestCase {
         let app = launch(scenario: scenario, dynamicType: size)
         if scenario == "support-bundle-fallback" {
           _ = scrollToControl("Share support bundle", in: app)
-          if size == "ax5" { assertEffectiveDynamicType("accessibility5", in: app) }
+        }
+        if app.descendants(matching: .any)["ui-test-effective-dynamic-type"].exists {
+          assertEffectiveDynamicType(
+            ["large": "large", "ax1": "accessibility1", "ax3": "accessibility3", "ax5": "accessibility5"][size]!,
+            in: app)
         }
         do {
           try app.performAccessibilityAudit(for: [.hitRegion, .textClipped]) { issue in
@@ -331,6 +335,144 @@ final class AccessibilityUITests: XCTestCase {
       assertEffectiveDynamicType("accessibility5", in: support)
       try auditRecovery(in: support)
       support.terminate()
+    }
+  }
+
+  func testProductionSupportBindingDismissesAndReleasesArtifacts() throws {
+    for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+      XCUIDevice.shared.orientation = orientation
+      let app = launch(scenario: "support-bundle-dismissal", dynamicType: "ax5")
+      let completions = orientation == .portrait
+        ? ["Done", "Mail Cancel", "Mail Send", "swipe"] : ["Done", "Mail Cancel", "Mail Send"]
+      for (index, completion) in completions.enumerated() {
+        scrollToControl("Email complete support bundle", in: app).tap()
+        let warning = app.staticTexts["support-bundle-warning"]
+        XCTAssertTrue(warning.waitForExistence(timeout: 5), app.debugDescription)
+        assertEffectiveDynamicType("accessibility5", in: app)
+        if index == 0 {
+          try auditRecovery(in: app)
+          scrollToControl("Share support bundle", in: app).tap()
+          let caption = app.descendants(matching: .any)["LP.CaptionBar.TopCaption"].firstMatch
+          XCTAssertTrue(caption.waitForExistence(timeout: 5))
+          XCTAssertTrue(caption.label.hasPrefix("creg-support-bundle"))
+          closeActivitySheet(in: app)
+          XCTAssertTrue(warning.waitForExistence(timeout: 5))
+        }
+        if completion == "swipe" {
+          let origin = app.coordinate(withNormalizedOffset: .zero)
+          let sheet = app.scrollViews["ui-test-support-bundle-fallback"].frame
+          origin.withOffset(CGVector(dx: sheet.midX, dy: sheet.minY + 10))
+            .press(forDuration: 0.1, thenDragTo:
+              origin.withOffset(CGVector(dx: app.frame.midX, dy: app.frame.maxY - 35)),
+              withVelocity: .slow, thenHoldForDuration: 0)
+        } else {
+          scrollToControl(completion, in: app,
+            identifier: completion == "Mail Cancel" ? "support-mail-cancel" :
+              completion == "Mail Send" ? "support-mail-send" : nil).tap()
+        }
+        XCTAssertTrue(warning.waitForNonExistence(timeout: 5), app.debugDescription)
+        let artifacts = app.staticTexts["support-artifact-count"]
+        let released = XCTNSPredicateExpectation(
+          predicate: NSPredicate(format: "label == %@", "\(index + 1):0"), object: artifacts)
+        XCTAssertEqual(XCTWaiter.wait(for: [released], timeout: 5), .completed,
+          "The matching completion must release its directory")
+      }
+      app.terminate()
+    }
+  }
+
+  func testMoreRetainsHeldExportUntilExplicitRegeneration() throws {
+    for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+      XCUIDevice.shared.orientation = orientation
+      let app = launch(scenario: "export-more", dynamicType: "ax5")
+      let latest = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Jump to latest'")).firstMatch
+      if latest.exists { latest.tap() }
+      tapMoreClearOfChatHeader(in: app)
+      assertEffectiveDynamicType("accessibility5", in: app)
+      let ready = XCTNSPredicateExpectation(
+        predicate: NSPredicate(format: "label == 'ready'"), object: app.descendants(matching: .any)["more-export-state"])
+      XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+      XCTAssertTrue(app.buttons["Helpful"].exists, "Completion must leave More visible")
+      XCTAssertFalse(app.staticTexts["Conversation events exported"].exists)
+      XCTAssertEqual(app.descendants(matching: .any)["more-export-leases"].label, "0")
+      scrollToControl("Helpful", in: app).tap()
+      XCTAssertTrue(app.buttons["Helpful"].waitForNonExistence(timeout: 5))
+      app.buttons["conversation-notices"].tap()
+      scrollToControl("Share JSONL export", in: app).tap()
+      XCTAssertTrue(app.staticTexts["Conversation events exported"].waitForExistence(timeout: 5))
+      assertEffectiveDynamicType("accessibility5", in: app)
+      scrollToControl("Share JSONL", in: app).tap()
+      let caption = app.descendants(matching: .any)["LP.CaptionBar.TopCaption"].firstMatch
+      XCTAssertTrue(caption.waitForExistence(timeout: 5))
+      XCTAssertTrue(caption.label.hasPrefix("creg-conversation"))
+      closeActivitySheet(in: app)
+      scrollToControl("Done", in: app, identifier: "conversation-export-done").tap()
+      XCTAssertTrue(app.buttons["conversation-notices"].waitForNonExistence(timeout: 5))
+      app.terminate()
+    }
+  }
+
+  func testRetainedExportCanBeDiscardedWithoutClearingOtherNotices() throws {
+    let app = launch(scenario: "conversation-notices", dynamicType: "ax5")
+    let summary = app.buttons["conversation-notices"]
+    let before = summary.label
+    let beforeCount = try XCTUnwrap(Int(before.split(separator: ",").last!.split(separator: " ").first!))
+    summary.tap()
+    assertEffectiveDynamicType("accessibility5", in: app)
+    let discard = scrollToControl("Discard export", in: app)
+    assertAccessibleControl(discard, label: "Discard export")
+    discard.tap()
+    XCTAssertTrue(discard.waitForNonExistence(timeout: 5))
+    XCTAssertFalse(app.staticTexts["Export ready"].exists)
+    XCTAssertTrue(app.buttons["Dismiss error"].firstMatch.exists)
+    app.buttons["conversation-notices-done"].tap()
+    XCTAssertNotEqual(summary.label, before)
+    let afterCount = try XCTUnwrap(Int(summary.label.split(separator: ",").last!.split(separator: " ").first!))
+    XCTAssertEqual(afterCount, beforeCount - 1)
+    XCTAssertTrue(summary.exists)
+    app.terminate()
+  }
+
+  func testLongDrawerPreviewsStayBoundedAndSettingsReachable() throws {
+    for size in ["large", "ax3", "ax5"] {
+      for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+        XCUIDevice.shared.orientation = orientation
+        let app = launch(scenario: "browser-long-previews", dynamicType: size)
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS 'DRAWER_FULL_PREVIEW_TAIL'")).firstMatch.exists)
+        let preview = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'A long answer paragraph'")).firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertLessThanOrEqual(preview.label.count, size == "large" ? 120 : 60)
+        try auditRecovery(in: app)
+        let settings = scrollToControl("Settings", in: app)
+        assertAccessibleControl(settings, label: "Settings")
+        settings.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        app.terminate()
+      }
+    }
+  }
+
+  func testCompactJumpToLatestWithKeyboardAndCorrection() throws {
+    for size in ["large", "ax3", "ax5"] {
+      for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+        XCUIDevice.shared.orientation = orientation
+        let app = launch(scenario: "compact-jump", dynamicType: size)
+        let composer = app.descendants(matching: .any).matching(identifier: "conversation-composer").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["correction-source-answer"].tap()
+        let jump = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Jump to latest'")).firstMatch
+        XCTAssertTrue(jump.waitForExistence(timeout: 5), app.debugDescription)
+        assertAccessibleControl(jump, label: "Jump to latest")
+        XCTAssertTrue(jump.isHittable)
+        XCTAssertTrue(app.buttons["correction-source-answer"].isHittable)
+        try auditRecovery(in: app)
+        jump.tap()
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5), "Jump must reach the bottom sentinel")
+        XCTAssertTrue(app.buttons["correction-source-answer"].exists)
+        app.terminate()
+      }
     }
   }
 
@@ -892,9 +1034,14 @@ final class AccessibilityUITests: XCTestCase {
       scroll = noticesScroll
     } else if recoveryScroll.exists {
       scroll = recoveryScroll
+    } else if moreScroll.exists {
+      scroll = moreScroll
+    } else if app.scrollViews["conversation-transcript-scroll"].exists {
+      scroll = app.scrollViews["conversation-transcript-scroll"]
     } else {
-      scroll = moreScroll.exists ? moreScroll
-        : (app.scrollViews.allElementsBoundByIndex.first { $0.isHittable } ?? app.scrollViews.firstMatch)
+      scroll = (app.scrollViews.allElementsBoundByIndex.first { $0.isHittable }
+          ?? app.collectionViews.allElementsBoundByIndex.first { $0.isHittable }
+          ?? app.scrollViews.firstMatch)
     }
     for _ in 0..<40 {
       let before = scrollProgress(scroll)
@@ -953,21 +1100,32 @@ final class AccessibilityUITests: XCTestCase {
       viewport = viewport.intersection(scrollingFrame)
     }
     let delta: CGFloat
-    if ["conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll"].contains(scroll.identifier) {
+    if (!hasOwnScrollingChrome(scroll) && frame.height > viewport.height)
+      || ["conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll"].contains(scroll.identifier) {
       delta = frame.midY < viewport.minY ? max(24, viewport.minY - frame.midY + 12)
         : (frame.midY > viewport.maxY ? min(-24, viewport.maxY - frame.midY - 12) : 0)
     } else {
       delta = frame.minY < viewport.minY ? max(24, viewport.minY - frame.minY)
         : (frame.maxY > viewport.maxY ? min(-24, viewport.maxY - frame.maxY) : 0)
     }
-    guard delta != 0, frame.height <= viewport.height else { return true }
+    guard delta != 0,
+      !hasOwnScrollingChrome(scroll) || frame.height <= viewport.height else { return true }
     let visibleScroll = visibleScrollFrame(scroll, in: app)
     guard !visibleScroll.isEmpty else { return true }
-    let start = app.coordinate(withNormalizedOffset: .zero)
-      .withOffset(CGVector(dx: visibleScroll.midX, dy: visibleScroll.midY))
-    start.press(forDuration: 0.1,
-      thenDragTo: start.withOffset(CGVector(dx: 0, dy: delta)),
-      withVelocity: .slow, thenHoldForDuration: 0.2)
+    let origin = app.coordinate(withNormalizedOffset: .zero)
+    if hasOwnScrollingChrome(scroll) {
+      let start = origin.withOffset(CGVector(dx: visibleScroll.midX - app.frame.minX, dy: visibleScroll.midY - app.frame.minY))
+      start.press(forDuration: 0.1,
+        thenDragTo: origin.withOffset(CGVector(dx: visibleScroll.midX - app.frame.minX, dy: visibleScroll.midY - app.frame.minY + delta)),
+        withVelocity: .slow, thenHoldForDuration: 0.2)
+    } else {
+      let stroke = max(-visibleScroll.height + 4, min(delta, visibleScroll.height - 4))
+      let startY = stroke > 0 ? visibleScroll.minY + 2 : visibleScroll.maxY - 2
+      let start = origin.withOffset(CGVector(dx: visibleScroll.midX - app.frame.minX, dy: startY - app.frame.minY))
+      start.press(forDuration: 0.1,
+        thenDragTo: origin.withOffset(CGVector(dx: visibleScroll.midX - app.frame.minX, dy: startY - app.frame.minY + stroke)),
+        withVelocity: .slow, thenHoldForDuration: 0.2)
+    }
     return false
   }
 
@@ -1014,11 +1172,18 @@ final class AccessibilityUITests: XCTestCase {
     let header = app.buttons.matching(
       NSPredicate(format: "label CONTAINS 'conversation actions'")).firstMatch
     guard !hasOwnScrollingChrome(scroll), header.exists else { return visible }
-    let composer = app.textFields.firstMatch
-    let latest = app.buttons["Jump to latest"]
+    let composer = app.descendants(matching: .any).matching(identifier: "conversation-composer")
+      .allElementsBoundByIndex.first { $0.isHittable }
+    let latest = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Jump to latest'"))
+      .allElementsBoundByIndex.first { $0.isHittable }
     let top = max(visible.minY, header.frame.maxY + 8)
-    var bottom = composer.exists ? min(visible.maxY, composer.frame.minY - 16) : visible.maxY
-    if latest.exists { bottom = min(bottom, latest.frame.minY - 8) }
+    var bottom = composer.map { min(visible.maxY, $0.frame.minY - 16) } ?? visible.maxY
+    if let latest { bottom = min(bottom, latest.frame.minY - 8) }
+    let notices = app.buttons["conversation-notices"]
+    if notices.exists, notices.isHittable { bottom = min(bottom, notices.frame.minY - 8) }
+    if bottom <= top {
+      print("Invalid transcript viewport: header=\(header.frame), composer=\(String(describing: composer?.frame)), latest=\(String(describing: latest?.frame)), visible=\(visible)")
+    }
     return CGRect(x: visible.minX, y: top, width: visible.width, height: max(0, bottom - top))
   }
 
@@ -1045,8 +1210,8 @@ final class AccessibilityUITests: XCTestCase {
       // the translucent header receives the tap at its center.
       if !header.exists || more.frame.midY > header.frame.maxY + 8 { break }
       let top = header.frame.maxY
-      let bottom = app.textFields.firstMatch.exists
-        ? app.textFields.firstMatch.frame.minY : app.frame.maxY - 120
+      let composer = app.descendants(matching: .any).matching(identifier: "conversation-composer").firstMatch
+      let bottom = composer.exists ? composer.frame.minY : app.frame.maxY - 120
       let start = app.coordinate(withNormalizedOffset: .zero)
         .withOffset(CGVector(dx: app.frame.midX, dy: (top + bottom) / 2))
       start.press(

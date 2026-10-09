@@ -19,6 +19,7 @@ import Synchronization
       case historyStoreUnavailable = "history-store-unavailable"
       case retryInspection = "retry-inspection"
       case supportBundleFallback = "support-bundle-fallback"
+      case supportBundleDismissal = "support-bundle-dismissal"
       case processingQueue = "processing-queue"
       case error
       case recovery
@@ -37,6 +38,9 @@ import Synchronization
       case browserRefresh = "browser-refresh"
       case browserPerformance = "browser-performance"
       case appleIntelligenceDisabled = "apple-intelligence-disabled"
+      case exportMore = "export-more"
+      case browserLongPreviews = "browser-long-previews"
+      case compactJump = "compact-jump"
     }
 
     enum Request: Equatable, Sendable {
@@ -227,17 +231,65 @@ import Synchronization
     private struct PreviewHistoryError: Error {}
   }
 
-  private struct SupportBundleFallbackAccessibilityHarness: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var isPresented = true
+  private final class SupportArtifactLedger: Sendable {
+    let directories = Mutex<[URL]>([])
+  }
+
+  private struct SupportBundleAccessibilityHarness: View {
+    @State private var store: StoreOf<AppFeature>
+    @State private var artifactCount = 0
+    @State private var retainedCount = 0
+    private let ledger: SupportArtifactLedger
+    let autoBuild: Bool
+
+    init(autoBuild: Bool) {
+      self.autoBuild = autoBuild
+      let ledger = SupportArtifactLedger()
+      self.ledger = ledger
+      var state = PreviewFixtures.appState(revealed: false, chat: PreviewFixtures.answeredChatState())
+      state.historySummaryPhase = .loaded
+      state.historyStoreAvailability = .available
+      state.launchBenchmarkQuestion = nil
+      state.didRequestPreparationJournalInspection = true
+      state.didHandlePreparationJournalInspection = true
+      _store = State(initialValue: Store(initialState: state) { AppFeature() } withDependencies: {
+        $0.historyClient = .noop()
+        $0.diagnostics = .noop
+        $0.haptics = .noop
+        $0.fmStatus = .init(availability: { .available })
+        $0.supportBundle = .init { _ in
+          let directory = FileManager.default.temporaryDirectory.appendingPathComponent("creg-support-bundle-harness-\(UUID())")
+          try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+          ledger.directories.withLock { $0.append(directory) }
+          let url = directory.appendingPathComponent("creg-support-bundle.zip")
+          try Data("Support ZIP fixture".utf8).write(to: url)
+          return .init(url: url, manifest: .init(createdAt: PreviewFixtures.now,
+            appVersion: "test", buildNumber: "1", modelKey: "test", modelRevision: "test",
+            conversationCount: 2, messageCount: 4, eventLineCount: 4, feedbackCount: 0))
+        }
+      })
+    }
     var body: some View {
-      Color.clear.sheet(isPresented: $isPresented) {
-        SupportBundleFallbackView(
-          url: URL(fileURLWithPath: "/tmp/creg-preview-support.zip"), done: { isPresented = false }
-        )
-        .accessibilityIdentifier("ui-test-support-bundle-fallback")
-        .cregPresentedSurfaceProbe()
-        .environment(\.dynamicTypeSize, dynamicTypeSize)
+      VStack(spacing: 0) {
+        if !autoBuild {
+          Text("\(artifactCount):\(retainedCount)").font(.caption)
+            .accessibilityIdentifier("support-artifact-count")
+        }
+        // Exercise Settings' production binding, not a substitute sheet.
+        SettingsView(store: store)
+      }
+      .task {
+        // Wait until Settings is mounted before requesting its nested sheet.
+        if autoBuild {
+          try? await Task.sleep(for: .milliseconds(300))
+          store.send(.supportBundleExportTapped)
+        }
+        while !Task.isCancelled {
+          let directories = ledger.directories.withLock { $0 }
+          artifactCount = directories.count
+          retainedCount = directories.filter { FileManager.default.fileExists(atPath: $0.path) }.count
+          try? await Task.sleep(for: .milliseconds(100))
+        }
       }
     }
   }
@@ -280,7 +332,9 @@ import Synchronization
         ConversationLoadFailureAccessibilityHarness(scenario: scenario)
 
       case .supportBundleFallback:
-        SupportBundleFallbackAccessibilityHarness()
+        SupportBundleAccessibilityHarness(autoBuild: true)
+      case .supportBundleDismissal:
+        SupportBundleAccessibilityHarness(autoBuild: false)
 
       case .resultExplorer:
         // This scenario has no transcript store, matching the preview harness.
@@ -338,7 +392,8 @@ import Synchronization
         SettingsView(
           store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
 
-      case .conversationNotices, .retainedExport, .browserRefresh, .browserPerformance, .appleIntelligenceDisabled:
+      case .conversationNotices, .retainedExport, .browserRefresh, .browserPerformance, .appleIntelligenceDisabled,
+        .exportMore, .browserLongPreviews, .compactJump:
         NoticesAccessibilityHarness(scenario: scenario)
 
       case .transientBanners:
@@ -371,8 +426,17 @@ import Synchronization
       self.scenario = scenario
       let held = HeldUITestExport()
       _heldExport = State(initialValue: held)
-      var initial = PreviewFixtures.appState(revealed: scenario == .browserRefresh || scenario == .browserPerformance,
-        chat: scenario == .recovery ? PreviewFixtures.recoveryChatState() : PreviewFixtures.answeredChatState())
+      var chat = scenario == .recovery || scenario == .compactJump
+        ? PreviewFixtures.recoveryChatState() : PreviewFixtures.answeredChatState()
+      if scenario == .exportMore { chat.title = "Export" }
+      if scenario == .compactJump {
+        for index in 0..<24 {
+          chat.messages.append(.init(id: UUID(), role: .user,
+            body: .text("Later transcript question \(index + 1)."), createdAt: PreviewFixtures.now))
+        }
+      }
+      var initial = PreviewFixtures.appState(revealed: scenario == .browserRefresh || scenario == .browserPerformance || scenario == .browserLongPreviews,
+        chat: chat)
       initial.historyStoreAvailability = .available
       initial.historySummaryPhase = .loaded
       initial.launchBenchmarkQuestion = nil
@@ -389,6 +453,12 @@ import Synchronization
             lastActivityAt: PreviewFixtures.now, latestMessagePreview: "Saved question")
         })
       }
+      if scenario == .browserLongPreviews {
+        for id in initial.conversations.ids {
+          initial.conversations[id: id]?.latestMessagePreview =
+            String(repeating: "A long answer paragraph with portfolio details. \n\n", count: 30) + "DRAWER_FULL_PREVIEW_TAIL"
+        }
+      }
       if scenario == .error || scenario == .conversationNotices {
         for index in 0..<(scenario == .error ? 1 : 6) {
           initial.storeFailure(PreviewFixtures.presentationFailure, owner: .historySummaries(UInt64(index)))
@@ -401,7 +471,7 @@ import Synchronization
       if scenario == .conversationNotices {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("creg-conversation-preview-\(UUID()).jsonl")
         try? Data("{}\n".utf8).write(to: url)
-        initial.conversationExports[id] = .init(conversationID: id, requestID: PreviewFixtures.id("9"), phase: .ready(url))
+        initial.conversationExports[id] = .init(conversationID: id, requestID: PreviewFixtures.id("9"), phase: .ready(url), intent: .retained)
       }
       if scenario == .browserRefresh {
         initial.historySummaryPhase = .failed(1)
@@ -435,13 +505,29 @@ import Synchronization
           }
         }
         if scenario == .browserPerformance { DrawerPerformanceProbe(store: store) }
+        if scenario == .exportMore {
+          HStack(spacing: 0) {
+            Color.clear.accessibilityElement()
+              .accessibilityLabel(store.conversationExports[selectedID]?.phase == .exporting ? "exporting" : "ready")
+              .accessibilityIdentifier("more-export-state")
+            Color.clear.accessibilityElement()
+              .accessibilityLabel("\(store.presentedExportFiles.count)")
+              .accessibilityIdentifier("more-export-leases")
+          }.frame(width: 2, height: 1)
+        }
         AppRootView(store: store, now: PreviewFixtures.now)
       }
-      .environment(\.cregUITestReduceMotion, scenario == .recovery ? true : nil)
+      .environment(\.cregUITestReduceMotion, scenario == .recovery || scenario == .compactJump ? true : nil)
       .task {
-        if scenario == .retainedExport {
+        if scenario == .retainedExport || scenario == .exportMore {
           store.send(.chat(.delegate(.exportRequested(selectedID))))
-          store.send(.conversationSelected(otherID))
+          if scenario == .retainedExport { store.send(.conversationSelected(otherID)) }
+        }
+      }
+      .task(id: store.answerMorePresentation?.presentationID) {
+        if scenario == .exportMore, store.answerMorePresentation != nil {
+          try? await Task.sleep(for: .milliseconds(500))
+          if !Task.isCancelled { await heldExport.finish() }
         }
       }
     }

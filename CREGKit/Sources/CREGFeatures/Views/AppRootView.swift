@@ -103,6 +103,7 @@ struct AppRootView: View {
       let sheetID = store.presentation?.id
       let offset = currentOffset(revealWidth: revealWidth)
       let progress = revealWidth > 0 ? offset / revealWidth : 0
+      let chrome = chatChrome
 
       ZStack(alignment: .topLeading) {
         ConversationBrowserView(store: store, now: now)
@@ -115,7 +116,7 @@ struct AppRootView: View {
           .accessibilityElement(children: .contain)
           .accessibilityHidden(progress < 0.99)
 
-        chatLayer(progress: progress)
+        chatLayer(progress: progress, chrome: chrome)
           .offset(x: offset)
           .accessibilityElement(children: .contain)
           .accessibilityHidden(progress > 0.01 && store.isBrowserRevealed)
@@ -135,7 +136,7 @@ struct AppRootView: View {
               .preferredColorScheme(store.appearance.colorScheme ?? systemColorScheme)
           case .notices(let id):
             if store.chat?.conversationID == id, let chatStore = store.scope(state: \.chat, action: \.chat) {
-              ConversationNoticesPanel(store: chatStore, chrome: chatChrome,
+              ConversationNoticesPanel(store: chatStore, chrome: chrome,
                 close: { store.send(.sheetDismissalRequested(presentation.id)) })
             }
           case .conversationExport(let export):
@@ -182,21 +183,28 @@ struct AppRootView: View {
   }
 
   private var chatChrome: ChatChrome {
-    ChatChrome(
+    let failures = store.visibleFailures
+    let export = store.chat.flatMap { store.conversationExports[$0.conversationID] }
+    let discard: (() -> Void)? = export.flatMap { export in
+      guard case .ready = export.phase, export.intent == .retained,
+        store.presentedExportFiles[export.requestID] == nil else { return nil }
+      return { store.send(.discardConversationExport(conversationID: export.conversationID, requestID: export.requestID)) }
+    }
+    return ChatChrome(
       modelReadiness: store.modelReadiness,
       fmAvailability: store.fmAvailability,
       modelPreparationReport: store.modelPreparationReport,
       developerMode: store.developerMode,
       resultTableTextSize: $store.resultTableTextSize,
-      hasUnreadElsewhere: store.visibleConversations.contains { $0.isUnread },
+      hasUnreadElsewhere: store.hasUnreadLiveConversation,
       debugModelIdentity: store.debugModelIdentity,
-      presentedFailure: store.presentedFailure,
+      presentedFailure: failures.last?.failure,
       dismissFailure: { store.send(.dismissFailure) },
       retryPreparation: { store.send(.retryPreparation) },
       retryCompatibilityPreparation: {
         store.send(.retryCompatibilityPreparation)
       },
-      ownedFailures: store.visibleFailures,
+      ownedFailures: failures,
       dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) },
       canRetryHistory: store.canRetryHistory,
       historyIsLoading: store.historySummaryPhase.isLoading,
@@ -207,10 +215,10 @@ struct AppRootView: View {
       canCreateConversation: store.canCreateConversation,
       historyLoadIsRetry: store.historyLoadIsRetry,
       reviewNotices: { store.send(.noticesTapped) },
-      exportPhase: store.chat.flatMap { store.conversationExports[$0.conversationID]?.phase },
+      exportPhase: export?.phase,
       shareExport: {
         if let id = store.chat?.conversationID { store.send(.shareConversationExport(id)) }
-      })
+      }, discardExport: discard)
   }
 
   private func currentOffset(revealWidth: CGFloat) -> CGFloat {
@@ -219,7 +227,7 @@ struct AppRootView: View {
   }
 
   @ViewBuilder
-  private func chatLayer(progress: CGFloat) -> some View {
+  private func chatLayer(progress: CGFloat, chrome: ChatChrome) -> some View {
     // The chat lays out inside the safe area — its header and composer depend
     // on the real insets — while its surface, dim, and shadow are painted
     // edge to edge behind it, so no backdrop shows through at the status bar
@@ -229,13 +237,16 @@ struct AppRootView: View {
       bottomLeadingRadius: 34 * progress)
     ZStack {
       if let chatStore = store.scope(state: \.chat, action: \.chat) {
+        let conversationID = chatStore.conversationID
         ChatView(
           store: chatStore,
-          chrome: chatChrome,
-          retainPendingExport: { store.send(.conversationModalRequested(chatStore.conversationID)) })
+          chrome: chrome,
+          retainPendingExport: { store.send(.conversationModalRequested(conversationID)) },
+          answerMorePresented: { store.send(.answerMorePresented(conversationID: conversationID, presentationID: $0)) },
+          answerMoreDismissed: { store.send(.answerMoreDismissed(conversationID: conversationID, presentationID: $0)) })
       } else {
         ConversationUnavailableView(
-          failure: store.presentedFailure, developerMode: store.developerMode,
+          failure: chrome.presentedFailure, developerMode: store.developerMode,
           dismissFailure: { store.send(.dismissFailure) },
           openBrowser: { store.send(.browserButtonTapped) },
           newChat: { store.send(.newChatTapped) },
@@ -247,7 +258,7 @@ struct AppRootView: View {
           historyIsLoading: store.historySummaryPhase.isLoading,
           historyLoadIsRetry: store.historyLoadIsRetry,
           historyIsSlow: store.slowHistoryRequestID != nil,
-          ownedFailures: store.visibleFailures,
+          ownedFailures: chrome.ownedFailures,
           dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) })
       }
     }

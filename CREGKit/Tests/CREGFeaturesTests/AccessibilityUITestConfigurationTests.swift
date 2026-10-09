@@ -16,6 +16,7 @@ import Testing
         "history-store-unavailable",
         "retry-inspection",
         "support-bundle-fallback",
+        "support-bundle-dismissal",
         "processing-queue",
         "error",
         "recovery",
@@ -34,6 +35,9 @@ import Testing
         "browser-refresh",
         "browser-performance",
         "apple-intelligence-disabled",
+        "export-more",
+        "browser-long-previews",
+        "compact-jump",
       ]
 
       #expect(

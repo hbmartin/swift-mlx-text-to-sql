@@ -47,16 +47,8 @@ extension ChatFeature {
       state.feedback[context.messageID] = existing
       state.correctionContext = nil
       let feedback = existing
-      effects.append(
-        .run { send in
-          do {
-            try await history.saveFeedback(conversationID, feedback)
-          } catch {
-            await send(
-              .operationFailed(
-                .history(operation: .feedbackSave, error: error)))
-          }
-        })
+      effects.append(.send(.delegate(.feedbackWriteRequested(
+        conversationID: conversationID, write: .save(feedback)))))
     }
     return .merge(effects)
   }
@@ -78,14 +70,8 @@ extension ChatFeature {
         category: .history,
         code: "answer_feedback_cleared",
         summary: "An answer feedback judgment was reversed.")
-      return .run { send in
-        do {
-          try await history.clearFeedback(conversationID, messageID)
-        } catch {
-          await send(
-            .operationFailed(.history(operation: .feedbackSave, error: error)))
-        }
-      }
+      return .send(.delegate(.feedbackWriteRequested(
+        conversationID: conversationID, write: .clear(messageID))))
     }
 
     let runtimeMode =
@@ -116,14 +102,8 @@ extension ChatFeature {
         "runtime_mode": runtimeMode.rawValue,
         "evaluated": String(runtimeMode.isEvaluated),
       ])
-    return .run { send in
-      do {
-        try await history.saveFeedback(conversationID, feedback)
-      } catch {
-        await send(
-          .operationFailed(.history(operation: .feedbackSave, error: error)))
-      }
-    }
+    return .send(.delegate(.feedbackWriteRequested(
+      conversationID: conversationID, write: .save(feedback))))
   }
 
   /// Prior answered exchanges, oldest first, for the FM follow-up rewrite.

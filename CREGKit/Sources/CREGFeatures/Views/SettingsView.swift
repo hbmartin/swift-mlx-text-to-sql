@@ -94,7 +94,7 @@ struct SettingsView: View {
                 systemImage: "envelope.badge")
             }
           }
-          .disabled(store.isBuildingSupportBundle)
+          .disabled(store.isBuildingSupportBundle || store.supportBundleExport != nil)
         } footer: {
           Text(
             "Includes all stored conversations: questions, results, generated SQL, drafts, answer feedback and corrections, event history, diagnostics, and a full history database snapshot. Review the ZIP before sending."
@@ -114,8 +114,16 @@ struct SettingsView: View {
       }
       .sheet(
         item: Binding(
-          get: { store.supportBundleExport },
-          set: { _ in }),
+          get: {
+            store.supportBundleExport.flatMap {
+              store.supportBundlePresentationID == $0.requestID ? $0 : nil
+            }
+          },
+          set: { value in
+            if value == nil, let id = presentedSupportID ?? store.supportBundlePresentationID {
+              store.send(.supportBundleDismissalRequested(id))
+            }
+          }),
         onDismiss: {
           if let id = presentedSupportID { store.send(.supportBundleDismissed(id)) }
           presentedSupportID = nil
@@ -262,13 +270,27 @@ struct SupportBundleSendView: View {
   }
 
   private var fallback: some View {
-    SupportBundleFallbackView(url: export.url, done: { dismiss() })
+    var view = SupportBundleFallbackView(url: export.url, done: { dismiss() })
+    #if DEBUG && canImport(MessageUI)
+      if case .scenario(let configuration) = AccessibilityUITestConfiguration.currentRequest,
+        configuration.scenario == .supportBundleDismissal
+      {
+        view.simulatedMailCompletion = { sent in
+          MailComposerView.Coordinator(dismiss: { dismiss() })
+            .finish(result: sent ? .sent : .cancelled)
+        }
+      }
+    #endif
+    return view.accessibilityIdentifier("ui-test-support-bundle-fallback")
   }
 }
 
 struct SupportBundleFallbackView: View {
   let url: URL
   var done: () -> Void
+  #if DEBUG
+    var simulatedMailCompletion: ((Bool) -> Void)? = nil
+  #endif
 
   var body: some View {
     ScrollView {
@@ -305,6 +327,14 @@ struct SupportBundleFallbackView: View {
           Text("Done").frame(maxWidth: .infinity, minHeight: 44)
         }
         .buttonStyle(.bordered)
+        #if DEBUG
+          if let simulatedMailCompletion {
+            Button("Mail Cancel") { simulatedMailCompletion(false) }
+              .accessibilityIdentifier("support-mail-cancel").cregTextButtonLabelTarget()
+            Button("Mail Send") { simulatedMailCompletion(true) }
+              .accessibilityIdentifier("support-mail-send").cregTextButtonLabelTarget()
+          }
+        #endif
       }
       .padding(24)
       .frame(maxWidth: .infinity)
@@ -367,6 +397,10 @@ struct SupportBundleFallbackView: View {
         didFinishWith result: MFMailComposeResult,
         error: (any Error)?
       ) {
+        finish(result: result)
+      }
+
+      func finish(result: MFMailComposeResult) {
         dismiss()
       }
     }

@@ -34,9 +34,6 @@ extension AppFeature {
     }
     if state.pendingTurnPersistence?.questionID == questionID { state.pendingTurnPersistence = nil }
     state.failures.removeAll { $0.owner == .turnPersistence(questionID) }
-    state.conversationDeletions[ownerID]?.deferredFailures.removeAll {
-      ["turn_persistence_barrier_timed_out", "turn_inference_drain_timed_out"].contains($0.code)
-    }
     var effects: [Effect<Action>] = [
       .cancel(id: TurnPersistenceTimeoutID(questionID: questionID)),
       .cancel(id: TurnPersistenceDrainTimeoutID(questionID: questionID)),

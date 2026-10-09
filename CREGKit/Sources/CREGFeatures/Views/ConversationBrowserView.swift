@@ -149,7 +149,7 @@ struct ConversationBrowserView: View {
             Text(hit.title.isEmpty ? "New Chat" : hit.title)
               .font(.subheadline.weight(.medium))
               .fixedSize(horizontal: false, vertical: true)
-            Text(hit.snippet)
+            Text(conversationPreviewExcerpt(hit.snippet, accessibility: dynamicTypeSize.isAccessibilitySize))
               .font(.caption)
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
@@ -216,7 +216,7 @@ struct ConversationRow: View, Equatable {
             }
           }
           if !summary.latestMessagePreview.isEmpty {
-            Text(summary.latestMessagePreview)
+            Text(conversationPreviewExcerpt(summary.latestMessagePreview, accessibility: dynamicTypeSize.isAccessibilitySize))
               .font(.caption)
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
@@ -264,4 +264,16 @@ struct ConversationRow: View, Equatable {
     if interval < 60 { return "Now" }
     return Self.dateFormatter.localizedString(for: summary.lastActivityAt, relativeTo: now)
   }
+}
+
+/// A deliberately short drawer excerpt, independent of the stored answer.
+func conversationPreviewExcerpt(_ text: String, accessibility: Bool) -> String {
+  let limit = accessibility ? 60 : 120
+  let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+  guard collapsed.count > limit else { return collapsed }
+  var prefix = String(collapsed.prefix(limit - 1))
+  if let boundary = prefix.lastIndex(of: " ") {
+    prefix = String(prefix[..<boundary])
+  }
+  return prefix + "…"
 }

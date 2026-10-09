@@ -10,8 +10,11 @@ import Foundation
 @Reducer
 public struct ChatFeature: Sendable {
   public enum FailureOrigin: Equatable, Sendable {
-    case conversation(UUID)
     case conversationWrite(UUID)
+  }
+  public enum FeedbackWrite: Equatable, Sendable {
+    case save(AnswerFeedback)
+    case clear(UUID)
   }
 
   /// The in-flight turn this conversation is showing: a compact live status
@@ -244,6 +247,7 @@ public struct ChatFeature: Sendable {
 
     /// Global work only ``AppFeature`` can perform.
     public enum Delegate: Sendable, Equatable {
+      case feedbackWriteRequested(conversationID: UUID, write: FeedbackWrite)
       case submitQuestion(QuestionSubmission)
       case retryInterruptedTurn
       case retryInterruptedTurnFor(UUID)

@@ -57,6 +57,9 @@ extension AppFeature.State {
   public var visibleConversations: IdentifiedArrayOf<ConversationSummary> {
     IdentifiedArray(uniqueElements: conversations.filter { isConversationLive($0.id) })
   }
+  public var hasUnreadLiveConversation: Bool {
+    conversations.contains { $0.isUnread && isConversationLive($0.id) }
+  }
   public func isConversationLive(_ id: UUID) -> Bool {
     conversations[id: id] != nil && conversationDeletions[id] == nil
   }

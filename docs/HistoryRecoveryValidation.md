@@ -2,7 +2,47 @@
 
 Validated on October 8, 2026, on the existing `codex/history-recovery-review-fixes` branch against starting commit `d1088d3ee1f0f737f88ee267b07e754e59b5b018`. Builds and simulator tests use XcodeBuildMCP, Xcode 27, and the iPhone 18 Pro / iOS 27 simulator (`31B09574-9781-45A7-816D-6A1916E1BA16`). No database migration or dependency change is included.
 
-## Reducer and diagnostic coverage
+## PR #158 follow-up against `630d471`
+
+The follow-up preserves the schema, dependencies, durable settlement, export coalescing and database-read snapshots. Feedback persistence now runs in the root reducer: held-write tests showed that an optional chat reducer cancels its effects when deletion removes the chat, dropping the late failure before Undo can recover it. A separate feedback operation owner retains the originating conversation and preserves rename/export errors through navigation and deletion recovery.
+
+The final focused follow-up run passed **132 tests in seven suites** (52 seconds of test execution). New deterministic tests hold feedback save, clear and typed correction through navigation, Undo, failed deletion, and failures before or after committed deletion. They also cover support request/completion separation, duplicate and stale callbacks, rebuilding, More ownership, leased-file protection and Discard identity, Unicode excerpt limits, 1,000 repeated opening failures, and a diagnostic number carried from interruption into retry settlement. The canonical scenario manifest explicitly includes all four new scenarios. The final full Features pass completed **580 tests in 38 suites**, with only the same four assertions in three recorded baseline chart tests listed below. The two opt-in benchmarks are skipped in the ordinary full run and the chrome benchmark is run separately. Chart migration handlers/tests and dependency pins are unchanged. Python CI contract checks and all **197 contract tests** pass.
+
+The actual production `SettingsView` sheet binding passed **seven build/dismissal cycles in 141 seconds** on iPhone 18 Pro / iOS 27 at effective AX5: Done and simulated Mail cancel/send in portrait and landscape, plus interactive swipe dismissal in portrait. Every matching completion released its retained directory; native sharing was opened and cancelled first in each orientation. This replaces the standalone support fallback fixture with the real Settings binding. The harness writes inert ZIP fixture bytes in unique directories. Mail simulation invokes the same coordinator completion method used by the native delegate, without creating or sending email. It does not claim device Mail delivery or landscape swipe coverage; compact-height UIKit presents a full-screen surface.
+
+Compact Jump to latest passed at **Large, AX3 and AX5 in both orientations with the keyboard and correction context**, including 44-point controls, source navigation, bottom scrolling and the production Reduce Motion branch (103 seconds). Long multi-paragraph drawer previews passed those same six layouts with bounded labels, Settings reachability and clipping/hit-region audits (83 seconds). Discard removes its notice and reduces the notice count while keeping unrelated errors. The optimized drawer again realizes **20 of 1,000 rows** initially, with **21 row-body evaluations before and after an unrelated error** (12 seconds).
+
+The held-export/More interaction passed at **effective AX5 in portrait and landscape** (79 seconds). Fixture-controlled completion leaves More visible, with no export sheet and zero file leases. Closing More does not present the retained result; an explicit Share regenerates a second snapshot, opens native JSONL sharing, verifies its caption, cancels native sharing and dismisses the still-owned export panel. Matching export dismissal cleans its file.
+
+The complete canonical clipping/hit-region matrix passed **all 124 layouts**: 31 scenarios at Large, AX1, AX3 and AX5 in portrait (1,117 seconds). The test treats every reported clipping or hit-region issue as a failure; there are no audit exemptions. Presented surfaces with a probe asserted their effective size before auditing. This full pass supersedes the earlier unrepeated 108-layout limit recorded below. Separate interaction selectors cover constrained landscape and keyboard layouts. The More arbitration fixture uses a short title and nonvisual status probes; long-title cases remain in the canonical matrix.
+
+The final six-selector simulator group passed in 1,406 seconds, including the complete matrix and More interaction above. Notices, Settings and support sheets reported **effective AX5 in both orientations before passing their audits** (83 seconds). The actual held-export/navigation/completion sequence again prevented automatic sharing on return, then regenerated through explicit Share and passed native JSONL share/cancel/file-release checks in both orientations (69 seconds). Both answer-sharing return and cancellation selectors also passed (16 and 18 seconds). These checks verify the SwiftUI environment inside presented surfaces; they do not measure internal UIKit font sizes.
+
+After sharing the same chrome projection with the no-chat recovery view, the final recovery retry selector passed at AX5 in both orientations (37 seconds). Discard's notice-count and preserved-error checks passed again on that build (48 seconds). The final delivery build contains no temporary optimization flags.
+
+### Chrome state-read cost and allocations
+
+An opt-in benchmark reproduces the `630d471` state reads for separate chat/notices chrome construction, then compares the shared projection. Its fixture has 1,000 live summaries, unread state on the final row, and ten failures. Both `CREGFeatures` and the benchmark test target use temporary scoped `-O` flags, preserving DEBUG probes; those flags are restored afterward. Dependencies retain normal Debug settings. This measures the changed state-read work, not end-to-end SwiftUI rendering or a complete Release dependency build.
+
+One warmup precedes seven samples of 100 evaluations each; these are per-evaluation medians on Apple M2 Pro / macOS 27. Timing runs without allocator logging. Separate allocation samples count successful allocations and requested bytes on the synchronous benchmark thread via libmalloc's [host logger ABI](https://github.com/apple-oss-distributions/libmalloc/blob/main/private/stack_logging.h). The host-only probe is never linked into the app. Fixture setup and printing are outside the measured interval. Other local validation was running, so these are comparative local measurements rather than CI timing guarantees.
+
+| Projection | Time | Allocations | Requested bytes |
+| --- | ---: | ---: | ---: |
+| `630d471` separate reads | 3.73054 ms | 78 | 597,872 |
+| Shared reads | 0.00291 ms | 5 | 3,880 |
+
+```sh
+clang -dynamiclib -O2 tools/chrome_allocation_probe.c -o /tmp/creg-chrome-allocation-probe.dylib
+CREG_CHROME_BENCHMARK=1 CREG_ALLOCATION_PROBE_PATH=/tmp/creg-chrome-allocation-probe.dylib \
+  xcodebuildmcp swift-package test --package-path CREGKit --parallel false \
+  --filter ChromeProjectionPerformanceTests
+```
+
+For comparable optimized measurements, temporarily add `-O` only to `CREGFeatures` and `CREGFeaturesTests` in the package manifest, then restore the manifest. The benchmark rejects missing instrumentation and zero allocation counts. Both the host benchmark and simulator drawer passed with the scoped optimization flags. The five new UI test selectors are added to CI and its exact-command checker together. The expanded 32-selector UI step, including the 124-layout canonical matrix, receives a 60-minute test budget; the build step remains 30 minutes and the overall job remains bounded at 75 minutes. Python budget mutation tests enforce each reviewed value.
+
+## Initial PR #158 validation against `d1088d3`
+
+### Reducer and diagnostic coverage
 
 The expanded focused run passed **119 tests in seven suites**; the final recovery/history/correction/notice rerun passed **112 tests in five suites**. Coverage includes warning-only slow reads, eventual completion with accepted New chat intent, explicit restart and stale-result rejection, background/resume timer generations, deletion during a failed opening, successful store reopening followed by summary-read failure, conditional unread rollback, separate rename/export failures (including Undo recovery), held support builds, stale support completions, and isolated support artifacts. Pending answer sharing retains an export; result viewing and rename presentation also prevent automatic export presentation.
 

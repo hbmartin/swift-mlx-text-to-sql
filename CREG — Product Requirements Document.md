@@ -188,7 +188,7 @@ CREG is a multi-conversation, iPhone-only experience. It should feel calm, preci
 - The top-left chat button and a left-edge swipe reveal the **Conversation Browser behind the chat**. The foreground chat tracks the gesture one-to-one as it shifts right, rounds its leading corners, and dims slightly. The gesture is velocity-aware, interruptible, and reversible.
 - Tapping the exposed chat, swiping it back, or selecting a Conversation closes the browser. Reduce Motion and Reduce Transparency receive clear, functionally equivalent treatments.
 - The browser contains exactly: **CREG** header, Search, New Chat, Recents, and Settings. There are no projects, folders, pinned items, or plus button.
-- Recents show the title, a one-line latest-message preview, relative activity time, and a blue unread dot when a background answer completes. Search covers titles, user questions, and assistant narrations, but not result values, SQL, or developer details.
+- Recents show the title, a brief latest-message excerpt, relative activity time, and a blue unread dot when a background answer completes. Excerpts collapse whitespace and contain at most 120 graphemes, or 60 at accessibility text sizes, with an ellipsis when shortened; they wrap without rendering the full answer. Search snippets use the same presentation limit. Search covers titles, user questions, and assistant narrations, but not result values, SQL, or developer details.
 - A Conversation title is generated from its first user question and may be renamed. Each Conversation persists its own unsent draft.
 - Deleting a Conversation is immediate in the interface with a five-second Undo window. An active query is stopped; its queued work is held only for the Undo window and is permanently purged with the Conversation afterward.
 - Background completion never changes the visible Conversation. It produces a brief in-app **Answer ready** banner, a light haptic, and the Recents unread dot.
@@ -196,9 +196,10 @@ CREG is a multi-conversation, iPhone-only experience. It should feel calm, preci
 ### Chat header, transcript, and scrolling
 
 - The header has the browser button at leading, the current Conversation title centered (**New Chat** before the first question), and New Chat plus More at trailing. More contains Rename, export for the current Conversation, and Delete.
+- A ready export retained after navigation appears in Conversation notices with Share and Discard export. Share regenerates the latest persisted events; Discard removes the retained result and temporary file without changing other notices. Ongoing requests coalesce and preserve the snapshot taken by their database read. Exports never automatically cover another modal, including the answer-actions More popover.
 - User questions use trailing CREG turquoise/blue bubbles with white text. Assistant narration is full-width and open, without a bubble. Structured results, warnings, and errors use cards.
 - While processing, the transcript shows the latest compact status; tapping it opens the live plain-English timeline. After completion it collapses to **How I answered** with elapsed time. The trace never shows SQL outside Developer Mode.
-- If the user is reading older messages, new content does not force-scroll. A glass **Jump to latest** control shows the number of unseen messages. Auto-follow occurs only when the user is already near the bottom.
+- If the user is reading older messages, new content does not force-scroll. A glass **Jump to latest** control shows the number of unseen messages. Compact footers keep a 44-point Jump icon beside the composer, including with the keyboard and correction context; its accessible label retains the unseen count. Auto-follow occurs only when the user is already near the bottom.
 - Queued Questions remain visible in their Conversation with position/status and a cancel action. Clarification, empty, interrupted, warning, and error states appear as understandable assistant content; **Interrupted** includes Ask Again.
 
 ### Empty state and starter queries
@@ -248,6 +249,7 @@ A settings toggle (not hidden) surfaces per-message internals for accuracy work.
 
 - The **same structured event stream** that drives the thinking trace is written to disk (JSONL) for the eval harness — one event stream, two consumers. Build it as structured events from the start, not display strings.
 - Settings contains Developer Mode, model and build information, privacy/about, and **Email Complete Support Bundle**.
+- Support artifacts remain owned until the matching sharing presentation finishes. Done, Mail completion, and interactive dismissal close the presentation before releasing its temporary directory; another build cannot start while the prior artifact is still owned.
 - The Support Bundle is a ZIP containing all Conversations, drafts, messages, returned result rows, Answer Feedback, per-turn and Follow-up preparation JSONL, the current Prepared Follow-up batch and its provenance, sanitized diagnostics, applicable queued/running-state records, and build/model provenance. Conversation search excludes suggestion text and prepared result values. The bundle excludes multi-gigabyte model weights and the bundled portfolio database; manifests, hashes, and receipts identify those excluded artifacts instead.
 - Before creation, warn clearly that the bundle contains questions, results, SQL, drafts, and diagnostics. Nothing is transmitted automatically: the user explicitly sends it to `harold.martin@gmail.com` through the system mail composer. If Mail is unavailable, fall back to the system share sheet.
 

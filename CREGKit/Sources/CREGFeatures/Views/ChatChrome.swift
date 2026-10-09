@@ -28,6 +28,7 @@ struct ChatChrome {
   var reviewNotices: () -> Void = {}
   var exportPhase: AppFeature.ConversationExport.Phase?
   var shareExport: () -> Void = {}
+  var discardExport: (() -> Void)?
 }
 
 /// The minimum transcript state needed to distinguish a completed assistant

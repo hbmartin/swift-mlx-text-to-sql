@@ -471,6 +471,7 @@ extension AppFeature {
     state.activeTurn = nil
     var interrupted = active
     interrupted.interruptionAmbiguous = ambiguous
+    interrupted.interruptionDiagnosticOperationNumber = operationNumber
     state.pendingInterruptedTurn = interrupted
     syncSchedulerProjection(into: &state)
     return .concatenate(

@@ -2,6 +2,11 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
+  public struct AnswerMorePresentation: Equatable, Sendable {
+    public var conversationID: UUID
+    public var presentationID: UUID
+  }
+
   public struct ConversationExport: Equatable, Sendable, Identifiable {
     public enum Phase: Equatable, Sendable {
       case exporting
@@ -103,6 +108,7 @@ extension AppFeature {
         && state.chat?.conversationID == conversationID && state.isConversationLive(conversationID)
         && state.conversationOpening == nil && !state.newChatRequestedDuringBootstrap
         && state.chat?.resultViewerMessageID == nil && state.chat?.isRenamePresented != true
+        && state.answerMorePresentation == nil
         && permittedSheet
       export.intent = .retained
       state.conversationExports[conversationID] = export
@@ -201,6 +207,7 @@ enum ConversationExportFiles {
 
 extension AppFeature.State {
   mutating func closeConversationPresentation() {
+    answerMorePresentation = nil
     for id in conversationExports.keys where conversationExports[id]?.phase == .exporting {
       conversationExports[id]?.intent = .retained
     }

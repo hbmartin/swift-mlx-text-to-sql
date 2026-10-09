@@ -221,6 +221,12 @@ struct ChatNoticesContent: View {
             Label("Share JSONL export", systemImage: "square.and.arrow.up")
               .cregTextButtonLabelTarget()
           }.accessibilityIdentifier("conversation-export-share")
+          if let discard = chrome.discardExport {
+            Button(action: discard) {
+              Label("Discard export", systemImage: "xmark.circle")
+                .cregTextButtonLabelTarget()
+            }.accessibilityIdentifier("conversation-export-discard")
+          }
         }.frame(maxWidth: .infinity, alignment: .leading)
       }
     }
