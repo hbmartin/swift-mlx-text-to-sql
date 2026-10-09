@@ -27,7 +27,7 @@ import Testing
         owner: .historySummaries(1),
         failure: .init(
           code: "history_summary_timed_out", title: "History is taking longer than expected",
-          message: "Still loading", diagnostic: "test", recovery: .retryHistory))
+          message: "Still loading", diagnostic: "test", recovery: .retryHistory, severity: .informational))
     ]
     chrome.historyIsLoading = true
     chrome.canRetryHistory = true
@@ -74,13 +74,45 @@ import Testing
       title: "Saving interrupted", message: "Wait", diagnostic: "test")
     chrome.ownedFailures.insert(.init(owner: .global, failure: blocking), at: 0)
     let inserted = ChatNotice.items(store: chat, chrome: chrome).map(\.id)
-    #expect(inserted.first == .failure(.global))
+    #expect(inserted.first == .failure(.init(owner: .global, occurrence: 0)))
     #expect(inserted[1] == before[1])
-    let progress = FailurePresentation(code: "history_summary_timed_out", title: "Slow", message: "Loading", diagnostic: "test")
+    let progress = FailurePresentation(code: "history_summary_timed_out", title: "Slow", message: "Loading", diagnostic: "test", severity: .informational)
     #expect(!progress.isError)
     #expect(progress.dismissalLabel == "Dismiss notice")
     #expect(failure.isError)
     #expect(failure.dismissalLabel == "Dismiss error")
+  }
+
+  @Test func ownedFailureOccurrencesDistinguishOwnersReplacementAndDuplicates() {
+    var state = AppFeature.State()
+    let failure = FailurePresentation(code: "history_message_save_failed", title: "Save failed", message: "Retry", diagnostic: "one")
+    let firstOwner = AppFeature.FailureOwner.global
+    let secondOwner = AppFeature.FailureOwner.historySummaries(3)
+    state.storeFailure(failure, owner: firstOwner)
+    state.storeFailure(failure, owner: secondOwner)
+    let first = state.failures[0].id, second = state.failures[1].id
+    #expect(first != second)
+    #expect(first.accessibilityToken != second.accessibilityToken)
+    state.storeFailure(failure, owner: firstOwner)
+    #expect(state.failures[0].id == first)
+    var replacement = failure
+    replacement.diagnostic = "two"
+    state.storeFailure(replacement, owner: firstOwner)
+    #expect(state.failures.last?.id != first)
+    #expect(state.failures.first?.id == second)
+    let replaced = state.failures.last!.id
+    state.storeFailure(replacement, owner: firstOwner, newOccurrence: true)
+    #expect(state.failures.last?.id != replaced)
+  }
+
+  @Test func severityIsExplicitAndCombinesToTheHigherSeverity() {
+    let neutral = FailurePresentation(code: "any_code", title: "Waiting", message: "Wait", diagnostic: "test", severity: .informational)
+    let error = FailurePresentation(code: "history_summary_timed_out", title: "Failed", message: "Retry", diagnostic: "test")
+    #expect(!neutral.isError)
+    #expect(error.isError)
+    #expect(neutral.combining(neutral).severity == .informational)
+    #expect(neutral.combining(error).severity == .error)
+    #expect(error.combining(neutral).severity == .error)
   }
 
   @Test func drawerEligibilityRejectsMiddleFlicksAndCancelsDirectionChanges() {

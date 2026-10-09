@@ -285,6 +285,38 @@ struct PR158RegressionFixTests {
   }
 
   @Test(arguments: ["draft", "preference"])
+  func rapidReturnWhileSavingShowsLatestEdit(write: String) async throws {
+    let initial = initialState(), source = a
+    let answer = initial.chat!.messages.last!
+    let gate = RegressionWriteGate(.init(summary: initial.conversations[id: a]!,
+      draft: "old", messages: Array(initial.chat!.messages)))
+    let other = initial.conversations[id: b]!
+    var history = HistoryClient.noop()
+    history.loadConversation = { id in id == source ? await gate.load() : .init(summary: other) }
+    history.saveDraft = { _, draft in await gate.hold(); await gate.saveDraft(draft) }
+    history.updateResultPresentation = { _, message in await gate.hold(); await gate.savePreference(message) }
+    let clock = TestClock()
+    let store = store(initial, history: history, clock: clock)
+    if write == "draft" {
+      await store.send(.chat(.binding(.set(\.composerText, "latest"))))
+      await clock.advance(by: .milliseconds(500))
+      await store.receive(\.draftSaveDue)
+    } else {
+      await store.send(.chat(.resultPresentationChanged(messageID: answer.id, preference: .table)))
+    }
+    try await gate.wait()
+    await store.send(.conversationSelected(b)); await store.receive(\.conversationLoaded)
+    await store.send(.conversationSelected(a)); await store.receive(\.conversationLoaded)
+    let target: AppFeature.ConversationWriteTarget = write == "draft" ? .draft : .resultPresentation(answer.id)
+    #expect(store.state.conversationEdits[a]?[target]?.phase == .saving)
+    if write == "draft" { #expect(store.state.chat?.composerText == "latest") }
+    else { #expect(store.state.chat?.messages[id: answer.id]?.resultPresentation == .table) }
+    await gate.finish(); await store.receive(\.conversationWriteSettled); await store.finish()
+    if write == "draft" { #expect(await gate.load().draft == "latest") }
+    else { #expect(await gate.load().messages.last?.resultPresentation == .table) }
+  }
+
+  @Test(arguments: ["draft", "preference"])
   func lateSnapshotCannotUndoSuccessfulWrite(write: String) async throws {
     let initial = initialState(), source = a
     let answer = initial.chat!.messages.last!
@@ -398,6 +430,7 @@ struct PR158RegressionFixTests {
     await store.send(.conversationSelected(a))
     await store.receive(\.conversationLoaded)
     #expect(store.state.retryableConversationWriteOwners.contains(owner))
+    let originalOccurrence = store.state.failures.first { $0.owner == owner }!.id
     await store.send(.dismissOwnedFailure(owner))
     if write == "draft" { #expect(store.state.chat?.composerText == "latest") }
     else { #expect(store.state.chat?.messages[id: answer.id]?.resultPresentation == .table) }
@@ -408,7 +441,11 @@ struct PR158RegressionFixTests {
     await gate.finish()
     await store.receive(\.conversationWriteSettled)
     #expect(await gate.attemptCount() == 2)
-    #expect(store.state.failures.contains { $0.owner == owner })
+    let retryFailure = store.state.failures.first { $0.owner == owner }!
+    #expect(retryFailure.id != originalOccurrence)
+    await store.send(.conversationWriteSettled(conversationID: a, target: target,
+      revision: store.state.conversationEdits[a]![target]!.revision, settlement: .failed(retryFailure.failure)))
+    #expect(store.state.failures.first { $0.owner == owner }?.id == retryFailure.id)
     await gate.setFailure(false)
     await gate.reset()
     await store.send(.retryConversationWrites(owner))
@@ -478,6 +515,43 @@ struct PR158RegressionFixTests {
     state.markHistoryStoreAvailable()
     #expect(state.failures.contains { $0.owner == owner })
     #expect(state.retryableConversationWriteOwners.contains(owner))
+  }
+
+  @Test(arguments: ["undo", "failed", "committed"])
+  func deletionKeepsOrPrunesThePendingDraftTimer(outcome: String) async {
+    let initial = initialState(), source = a
+    let other = initial.conversations[id: b]!
+    let gate = RegressionWriteGate(.init(summary: initial.conversations[id: a]!, draft: "old"))
+    let drafts = CallRecorder()
+    var history = HistoryClient.noop()
+    history.loadConversation = { id in id == source ? await gate.load() : .init(summary: other) }
+    history.saveDraft = { _, draft in drafts.record(draft); await gate.saveDraft(draft) }
+    history.deleteConversation = { _ in
+      if outcome == "failed" { throw DiagnosticsTestError.failed("delete") }
+    }
+    let clock = TestClock()
+    let store = store(initial, history: history, clock: clock)
+    await store.send(.chat(.binding(.set(\.composerText, "latest"))))
+    await store.send(.deleteConversationTapped(a))
+    await store.receive(\.conversationLoaded)
+    if outcome == "undo" { await store.send(.undoDeleteTapped) }
+    else {
+      await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
+      await store.receive(\.conversationDeletionFinished)
+    }
+    await clock.advance(by: .milliseconds(500))
+    if outcome == "committed" {
+      #expect(store.state.conversationEdits[a] == nil)
+      await store.finish()
+      #expect(drafts.recorded.isEmpty)
+    } else {
+      await store.receive(\.draftSaveDue)
+      await store.receive(\.conversationWriteSettled)
+      await store.send(.conversationSelected(a)); await store.receive(\.conversationLoaded)
+      await store.finish()
+      #expect(store.state.chat?.composerText == "latest")
+      #expect(await gate.load().draft == "latest")
+    }
   }
 
   @Test func draftRevisionsAreDistinctFromMessageRevisionsAndRejectLateEdits() async throws {

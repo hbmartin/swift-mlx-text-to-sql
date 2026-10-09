@@ -101,9 +101,9 @@ struct OwnedFailureBanners: View {
   var retrySaving: (AppFeature.FailureOwner) -> Void = { _ in }
 
   var body: some View {
-    ForEach(failures, id: \.owner) { owned in
+    ForEach(failures) { owned in
       FailureBanner(failure: owned.failure, developerMode: developerMode, dismiss: { dismiss(owned.owner) },
-        retrySaving: retryableWriteOwners.contains(owned.owner) ? { retrySaving(owned.owner) } : nil)
+        retrySaving: retryableWriteOwners.contains(owned.owner) ? { retrySaving(owned.owner) } : nil, identity: owned.id)
     }
   }
 }
@@ -134,6 +134,10 @@ struct FailureBanner: View {
   let developerMode: Bool
   let dismiss: () -> Void
   var retrySaving: (() -> Void)?
+  var identity: AppFeature.OwnedFailure.ID?
+  private var identifier: String {
+    identity.map { "\(failure.code)-\($0.accessibilityToken)" } ?? failure.code
+  }
   private var isError: Bool { failure.isError }
   private var tint: Color { isError ? .orange : .secondary }
 
@@ -156,7 +160,7 @@ struct FailureBanner: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(failure.dismissalLabel)
-        .accessibilityIdentifier("failure-dismiss-\(failure.code)")
+        .accessibilityIdentifier("failure-dismiss-\(identifier)")
         .cregLargeContentViewer(LocalizedStringKey(failure.dismissalLabel), systemImage: "xmark")
       }
 
@@ -165,16 +169,15 @@ struct FailureBanner: View {
         .fixedSize(horizontal: false, vertical: true)
 
       if let retrySaving {
-        Button("Retry saving", action: retrySaving)
-          .cregTextButtonLabelTarget()
-          .accessibilityIdentifier("failure-retry-saving-\(failure.code)")
+        Button(action: retrySaving) { Text("Retry saving").cregTextButtonLabelTarget() }
+          .accessibilityIdentifier("failure-retry-saving-\(identifier)")
       }
 
       if let details = failure.technicalDetails(
         developerMode: developerMode)
       {
         TechnicalDetailsView(details: details)
-          .accessibilityIdentifier("failure-details-\(failure.code)")
+          .accessibilityIdentifier("failure-details-\(identifier)")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

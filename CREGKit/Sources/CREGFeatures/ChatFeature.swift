@@ -9,9 +9,6 @@ import Foundation
 /// Conversation Browser — belong to ``AppFeature``.
 @Reducer
 public struct ChatFeature: Sendable {
-  public enum FailureOrigin: Equatable, Sendable {
-    case conversationWrite(UUID)
-  }
   public enum FeedbackWrite: Equatable, Sendable {
     case save(AnswerFeedback)
     case clear(UUID)
@@ -241,7 +238,6 @@ public struct ChatFeature: Sendable {
     case renameTapped
     case renameCommitted
     case exportTapped
-    case operationFailed(FailurePresentation, origin: FailureOrigin? = nil)
     case delegate(Delegate)
 
     /// Global work only ``AppFeature`` can perform.
@@ -515,10 +511,6 @@ public struct ChatFeature: Sendable {
 
       case .exportTapped:
         return .send(.delegate(.exportRequested(state.conversationID)))
-
-      case .operationFailed:
-        // Presented by AppFeature, which owns the failure surface.
-        return .none
 
       case .delegate:
         return .none

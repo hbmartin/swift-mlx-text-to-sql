@@ -357,6 +357,7 @@ public struct AppFeature: Sendable {
     var summaryWrites: [UUID: SummaryWrite] = [:]
     var unreadMutationOwners: [UUID: UUID] = [:]
     var historyWatchdogGeneration: UInt64 = 0
+    var failureOccurrenceSequence: UInt64 = 0
     public var slowHistoryRequestID: UInt64?
     var didCleanOldConversationExports = false
     var conversationWriteSequence: UInt64 = 0
@@ -2149,13 +2150,6 @@ public struct AppFeature: Sendable {
         state.activeTurn?.resultPresentationPreference = migration.updated
         return .none
 
-      case .chat(.operationFailed(let failure, let origin)):
-        switch origin {
-        case .conversationWrite(let id):
-          return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure)
-        case nil: return .send(.operationFailed(failure))
-        }
-
       case .chat(.binding(\.composerText)):
         guard let chat = state.chat, state.isConversationLive(chat.conversationID) else { return .none }
         return acceptDraft(state: &state, conversationID: chat.conversationID,
@@ -2201,7 +2195,7 @@ public struct AppFeature: Sendable {
         presentFailure(state: &state, primary: FailurePresentation(
           code: "history_summary_timed_out", title: "History is taking longer than expected",
           message: "CREG is still loading your conversations. You can restart loading history.",
-          diagnostic: "History summaries exceeded the five-second warning interval.", recovery: .retryHistory),
+          diagnostic: "History summaries exceeded the five-second warning interval.", recovery: .retryHistory, severity: .informational),
           owner: .historySummaries(requestID))
         return .none
 
@@ -2226,7 +2220,6 @@ public struct AppFeature: Sendable {
 
       case .chat(.delegate(.renameRequested(let id, let title))):
         guard state.isConversationLive(id) else { return .none }
-        let title = HistoryStore.normalizedRenameTitle(from: title)
         state.conversations[id: id]?.title = title
         state.conversations[id: id]?.isManuallyTitled = true
         let operationID = uuid()

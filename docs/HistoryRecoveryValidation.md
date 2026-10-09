@@ -1,12 +1,40 @@
-## Conversation edit ledger follow-up (October 9, 2026)
-
-The root now retains the latest draft and per-message presentation preference for this app session, including acknowledged writes. Loads overlay these fields onto the snapshot. Failed writes offer Retry saving in notices and Settings; dismissal keeps the edit. No schema, dependency, or recovery-journal change is included.
-
-The persistence commit passed **19 tests in PR158RegressionFixTests** through XcodeBuildMCP (17.0 seconds including build/test overhead). Deterministic clocks and held saves cover return before debounce, navigation during a save, stale loads after success, newer edits overtaking older callbacks, submission clearing, retry failure/success and repeated pending taps, migration compare-and-set guards, multiple preference targets, Undo, failed deletion, and committed deletion. Held operations have bounded start checks and release backstops. Broader package and simulator evidence is recorded below as it completes.
-
 # History recovery and notice presentation validation
 
-## October 9 fixes for comments #1–14
+## Conversation edit ledger and drawer follow-up (October 9, 2026)
+
+Implemented from `48008632aab14af7b558e20e5dbabec0955bed22` on `codex/history-recovery-review-fixes`. This follow-up addresses comments **1–7, 10, 11, and 14**. Shared CI builds and the broader modal-retention, support-sheet identity, and temporary-file refactors from **8, 9, 12, and 13** remain deferred. No schema, dependency, or recovery-journal change is included.
+
+The root now retains the latest draft and per-message presentation preference for this app session, including acknowledged writes. Loads overlay these fields onto the snapshot. Failed writes offer Retry saving in notices and Settings; dismissal keeps the edit.
+
+Deterministic clocks and held saves cover return before debounce, navigation during a save, stale loads after success, newer edits overtaking older callbacks, submission clearing, retry failure/success and repeated pending taps, migration compare-and-set guards, multiple preference targets, notice dismissal, Undo, failed deletion, and committed deletion. Held operations have bounded start checks and release backstops. Committed deletion also prunes retained edits and cancels pending draft timers.
+
+The drawer keeps finger tracking unanimated and uses an animated gesture-state reset. A separate release snapshot and live scene/modal guards remove reliance on gesture-reset ordering. Failure rows use owner plus occurrence identity: duplicate delivery preserves expansion, replacement collapses, and surviving rows retain expansion. Slow-history failures carry informational severity. Rename keeps normalization before optimistic display and at storage; redundant retention/normalization and the unused child failure route are removed.
+
+The final focused XcodeBuildMCP package run passed **45 tests in four suites** (`ConversationNoticeTests`, `PR158RegressionFixTests`, `AccessibilityUITestConfigurationTests`, and `FeatureFailureDiagnosticsTests`; 42.3 seconds including build/test overhead). The final serial full package run completed **840 tests across 65 suites**, including 605 feature tests, with only the **four recorded baseline assertions in three chart tests**. Both opt-in performance tests were skipped. The failures are `tentativePreferenceRestorationIsAttemptedOnlyOnce`, `newerPreferenceWinsDuringRetryRestorationCallback`, and the two assertions in `retainedStalePreferenceWithSameReplacementIsReconciled`; they match the existing baseline recorded below and in [base-branch CI](https://github.com/hbmartin/swift-mlx-text-to-sql/actions/runs/37801842772). This follow-up updates preference-persistence fixtures without changing those assertions or the chart migration handlers.
+
+Four affected simulator selectors passed together on iPhone 18 Pro / iOS 27 through XcodeBuildMCP in **175.7 seconds**:
+
+- `testDrawerCancellationAllowsTheFirstFollowingSwipe`
+- `testNoticeTechnicalDetailsKeepFailureIdentity`
+- `testHistoryProgressWarningsAreNeutralOnEverySurface`
+- `testConversationWriteRecoveryOffersRetryInNoticesAndSettings`
+
+The retry selector exercises both draft and preference notices plus the production Settings sheet at effective AX5, including 44-point controls. The drawer selector covers short opening/closing releases, directional cancellation, Settings interruption, the first subsequent edge swipe, and both motion policies. After tightening the final live release guard, that selector passed again in **85.3 seconds**. The complete canonical matrix was not rerun for this follow-up.
+
+| Final run | Retained XcodeBuildMCP artifact |
+| --- | --- |
+| Focused package | `swift_package_test_2026-10-09T21-11-14-123Z_pid39288_b573a82e.log` |
+| Full package | `swift_package_test_2026-10-09T21-14-40-481Z_pid71217_38e1e41a.log` |
+| Four simulator selectors | `test_sim_2026-10-09T21-17-30-590Z_pid89611_995b32a6.xcresult` |
+| Final drawer guard retest | `test_sim_2026-10-09T21-21-03-312Z_pid99140_ad89998f.xcresult` |
+
+These artifacts are retained beneath `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/`, in `logs/` and `result-bundles/`. The existing simulator (`31B09574-9781-45A7-816D-6A1916E1BA16`) was preserved.
+
+[Drawer rollback presentation samples](artifacts/drawer-rollback-motion.csv) retain **381 samples across four gestures** from a passing simulator run. The DEBUG capture modifier drives the actual chat offset with its animatable presentation value. Spring opening/closing rollbacks contain 19/11 intermediate frames; Reduce Motion opening/closing contain 10/10, reaching their endpoints in approximately 174/167 ms. This verifies interpolation rather than observing only endpoint state. XcodeBuildMCP video export was unavailable because its recording helper could not find the expected SimulatorKit framework; no video is claimed.
+
+The earlier validation sections below describe historical code and runs before this follow-up.
+
+## Earlier October 9 validation (before the edit ledger)
 
 Implemented on `codex/history-recovery-review-fixes` from `b2a7b1911b4de672169a02e188c228b50bcf7577`. Comment #15's destination refactor remains deferred. Schema and dependency pins remain unchanged.
 

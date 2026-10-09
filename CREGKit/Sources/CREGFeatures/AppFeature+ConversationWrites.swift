@@ -99,9 +99,10 @@ extension AppFeature {
         await send(.conversationWriteSettled(conversationID: conversationID, target: target,
           revision: edit.revision, settlement: .init(outcome)))
       } catch {
+        let failure: FailurePresentation = target == .draft
+          ? .history(operation: .draftSave, error: error) : .resultPreferenceSave(error: error)
         await send(.conversationWriteSettled(conversationID: conversationID, target: target,
-          revision: edit.revision, settlement: .failed(.history(
-            operation: target == .draft ? .draftSave : .messageSave, error: error))))
+          revision: edit.revision, settlement: .failed(failure)))
       }
     }
   }
@@ -144,7 +145,7 @@ extension AppFeature {
         recordDeletedConversationWriteFailure(failure: failure, operationNumber: nil)
         return .none
       }
-      presentFailure(state: &state, primary: failure, owner: owner)
+      presentFailure(state: &state, primary: failure, owner: owner, newOccurrence: true)
       return .none
     case .superseded, .discardedDuringDeletion:
       // Superseded revisions have already been replaced in the ledger;

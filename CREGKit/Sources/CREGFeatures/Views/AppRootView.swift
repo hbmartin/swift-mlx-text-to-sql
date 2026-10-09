@@ -60,8 +60,6 @@ struct AppRootView: View {
   @Dependency(\.chartAnalysis) private var chartAnalysis
   /// Fixed by previews; live rendering uses the current date.
   var now: Date = Date()
-  /// In-flight gesture translation, composed with the settled reveal state.
-  @GestureState private var drawerDrag = DrawerDragState()
   @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
   #if DEBUG
     @Environment(\.cregUITestReduceMotion) private var testReduceMotion
@@ -100,30 +98,38 @@ struct AppRootView: View {
     GeometryReader { proxy in
       let revealWidth = Self.revealWidth(for: proxy.size.width)
       let sheetID = store.presentation?.id
-      let offset = currentOffset(revealWidth: revealWidth)
-      let progress = revealWidth > 0 ? offset / revealWidth : 0
       let chrome = chatChrome
 
-      ZStack(alignment: .topLeading) {
-        ConversationBrowserView(store: store, now: now)
-          .frame(width: revealWidth)
-          .frame(maxHeight: .infinity)
-          .opacity(0.35 + 0.65 * progress)
-          // Behind the fade so the drawer itself stays solid while its
-          // contents ease in with the reveal.
-          .background(CREGBrand.browserPanel.ignoresSafeArea(.container))
-          .accessibilityElement(children: .contain)
-          .accessibilityHidden(progress < 0.99)
+      DrawerInteractionView(revealWidth: revealWidth, isRevealed: store.isBrowserRevealed,
+        isEnabled: store.presentation == nil && store.isSceneActive,
+        animation: drawerAnimation,
+        releaseState: {
+          guard store.presentation == nil, store.isSceneActive else { return nil }
+          return store.isBrowserRevealed
+        }, setRevealed: setRevealed) { offset, progress in
+        ZStack(alignment: .topLeading) {
+          ConversationBrowserView(store: store, now: now)
+            .frame(width: revealWidth)
+            .frame(maxHeight: .infinity)
+            .opacity(0.35 + 0.65 * progress)
+            // Behind the fade so the drawer itself stays solid while its
+            // contents ease in with the reveal.
+            .background(CREGBrand.browserPanel.ignoresSafeArea(.container))
+            .accessibilityElement(children: .contain)
+            .accessibilityHidden(progress < 0.99)
 
-        chatLayer(progress: progress, chrome: chrome)
-          .offset(x: offset)
-          .accessibilityElement(children: .contain)
-          .accessibilityHidden(progress > 0.01 && store.isBrowserRevealed)
+          chatLayer(progress: progress, chrome: chrome)
+            #if DEBUG
+              .modifier(DrawerMotionCapture(offset: offset, revealWidth: revealWidth, isRevealed: store.isBrowserRevealed))
+            #else
+              .offset(x: offset)
+            #endif
+            .accessibilityElement(children: .contain)
+            .accessibilityHidden(progress > 0.01 && store.isBrowserRevealed)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CREGBrand.browserPanel.ignoresSafeArea(.container))
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(CREGBrand.browserPanel.ignoresSafeArea(.container))
-      .simultaneousGesture(revealGesture(revealWidth: revealWidth),
-        isEnabled: store.presentation == nil && store.isSceneActive)
       .overlay(alignment: .top) { answerReadyBanner }
       .overlay(alignment: .bottom) { undoDeletionToast }
       .sheet(item: Binding(get: { store.presentation }, set: { value in
@@ -223,11 +229,6 @@ struct AppRootView: View {
       }, discardExport: discard)
   }
 
-  private func currentOffset(revealWidth: CGFloat) -> CGFloat {
-    let base: CGFloat = store.isBrowserRevealed ? revealWidth : 0
-    return min(max(base + drawerDrag.translation, 0), revealWidth)
-  }
-
   @ViewBuilder
   private func chatLayer(progress: CGFloat, chrome: ChatChrome) -> some View {
     // The chat lays out inside the safe area — its header and composer depend
@@ -285,30 +286,6 @@ struct AppRootView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityHidden(!store.isBrowserRevealed)
     }
-  }
-
-  /// Tracks the gesture one-to-one and projects release velocity to decide
-  /// whether the browser settles open or closed.
-  private func revealGesture(revealWidth: CGFloat) -> some Gesture {
-    DragGesture(minimumDistance: 12, coordinateSpace: .local)
-      // Handle successful release inside the gesture-state wrapper, before
-      // it resets eligibility. Cancellation still resets without onEnded.
-      .onEnded { value in
-        guard store.presentation == nil, store.isSceneActive,
-          drawerDrag.eligibility.canRelease(startX: value.startLocation.x,
-          dx: value.translation.width, dy: value.translation.height, revealed: store.isBrowserRevealed)
-        else { return }
-        let base: CGFloat = store.isBrowserRevealed ? revealWidth : 0
-        setRevealed(base + value.predictedEndTranslation.width > revealWidth / 2)
-      }
-      .updating($drawerDrag) { value, drag, _ in
-        guard drag.eligibility.change(startX: value.startLocation.x,
-          dx: value.translation.width, dy: value.translation.height, revealed: store.isBrowserRevealed) else {
-          drag.translation = 0
-          return
-        }
-        drag.translation = store.isBrowserRevealed ? min(0, value.translation.width) : max(0, value.translation.width)
-      }
   }
 
   private var drawerAnimation: Animation {
@@ -383,3 +360,105 @@ struct AppRootView: View {
     }
   }
 }
+
+/// Transient visual state rolls back with the current motion policy. Release
+/// eligibility is mirrored separately, so release never relies on SwiftUI's
+/// ordering of onEnded and automatic GestureState reset.
+private struct DrawerInteractionView<Content: View>: View {
+  let revealWidth: CGFloat
+  let isRevealed: Bool
+  let isEnabled: Bool
+  let animation: Animation
+  let releaseState: () -> Bool?
+  let setRevealed: (Bool) -> Void
+  let content: (CGFloat, CGFloat) -> Content
+  @GestureState private var drag: DrawerDragState
+  @State private var releaseEligibility = DrawerGestureEligibility()
+
+  init(revealWidth: CGFloat, isRevealed: Bool, isEnabled: Bool, animation: Animation,
+    releaseState: @escaping () -> Bool?, setRevealed: @escaping (Bool) -> Void,
+    @ViewBuilder content: @escaping (CGFloat, CGFloat) -> Content
+  ) {
+    self.revealWidth = revealWidth
+    self.isRevealed = isRevealed
+    self.isEnabled = isEnabled
+    self.animation = animation
+    self.releaseState = releaseState
+    self.setRevealed = setRevealed
+    self.content = content
+    _drag = GestureState(wrappedValue: DrawerDragState(), resetTransaction: Transaction(animation: animation))
+  }
+
+  var body: some View {
+    let base: CGFloat = isRevealed ? revealWidth : 0
+    let offset = min(max(base + drag.translation, 0), revealWidth)
+    content(offset, revealWidth > 0 ? offset / revealWidth : 0)
+      .simultaneousGesture(gesture, isEnabled: isEnabled)
+  }
+
+  private var gesture: some Gesture {
+    DragGesture(minimumDistance: 12, coordinateSpace: .local)
+      .updating($drag) { value, transient, transaction in
+        let accepted = transient.eligibility.change(startX: value.startLocation.x,
+          dx: value.translation.width, dy: value.translation.height, revealed: isRevealed)
+        // Every update overwrites the snapshot, including the first update of
+        // the next gesture, which starts with fresh transient eligibility.
+        releaseEligibility = transient.eligibility
+        transaction.animation = accepted ? nil : animation
+        transient.translation = accepted
+          ? (isRevealed ? min(0, value.translation.width) : max(0, value.translation.width)) : 0
+      }
+      .onEnded { value in
+        guard let revealed = releaseState(), releaseEligibility.canRelease(startX: value.startLocation.x,
+          dx: value.translation.width, dy: value.translation.height, revealed: revealed)
+        else { return }
+        let base: CGFloat = revealed ? revealWidth : 0
+        setRevealed(base + value.predictedEndTranslation.width > revealWidth / 2)
+      }
+  }
+}
+
+#if DEBUG
+  /// Captures actual interpolated presentation values, not the target offset.
+  /// Enabled only by the inert gesture fixture; absent from release builds.
+  @MainActor enum DrawerMotionCaptureState {
+    static var enabled = false
+    static var previous: (offset: CGFloat, revealed: Bool)?
+    static var openingRollbackFrames = 0
+    static var closingRollbackFrames = 0
+    static var samples: [String] = []
+    static var startedAt = ProcessInfo.processInfo.systemUptime
+    static func reset() {
+      previous = nil; openingRollbackFrames = 0; closingRollbackFrames = 0
+      samples = []; startedAt = ProcessInfo.processInfo.systemUptime
+    }
+    static func sample(_ offset: CGFloat, revealed: Bool, width: CGFloat) {
+      if previous == nil || abs(offset - previous!.offset) > 0.01, samples.count < 160 {
+        samples.append("\(Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1000)):\(Int(offset * 100))")
+      }
+      defer { previous = (offset, revealed) }
+      guard let previous, previous.revealed == revealed, offset > 0, offset < width else { return }
+      if !revealed && offset < previous.offset - 0.01 { openingRollbackFrames += 1 }
+      if revealed && offset > previous.offset + 0.01 { closingRollbackFrames += 1 }
+    }
+  }
+  nonisolated private struct DrawerMotionCapture: AnimatableModifier {
+    var offset: CGFloat
+    let revealWidth: CGFloat
+    let isRevealed: Bool
+    var animatableData: CGFloat {
+      get { offset }
+      set { offset = newValue }
+    }
+    @MainActor func body(content: Content) -> some View {
+      if DrawerMotionCaptureState.enabled {
+        let _ = DrawerMotionCaptureState.sample(offset, revealed: isRevealed, width: revealWidth)
+        content.offset(x: offset).overlay(alignment: .topTrailing) {
+          Color.clear.frame(width: 1, height: 1).accessibilityElement()
+            .accessibilityLabel("\(DrawerMotionCaptureState.openingRollbackFrames),\(DrawerMotionCaptureState.closingRollbackFrames)|\(DrawerMotionCaptureState.samples.joined(separator: ","))")
+            .accessibilityIdentifier("drawer-rollback-frames")
+        }
+      } else { content.offset(x: offset) }
+    }
+  }
+#endif

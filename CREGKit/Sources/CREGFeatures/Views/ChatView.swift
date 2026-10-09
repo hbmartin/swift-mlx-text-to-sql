@@ -248,7 +248,6 @@ struct ChatView: View {
     Menu {
       Text(store.displayTitle)
       Button {
-        retainPendingExport()
         store.send(.renameTapped)
       } label: {
         Label("Rename", systemImage: "pencil")
