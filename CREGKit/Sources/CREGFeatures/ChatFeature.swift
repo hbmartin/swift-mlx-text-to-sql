@@ -247,8 +247,6 @@ public struct ChatFeature: Sendable {
     /// Global work only ``AppFeature`` can perform.
     public enum Delegate: Sendable, Equatable {
       case feedbackWriteRequested(conversationID: UUID, write: FeedbackWrite)
-      case draftChanged(conversationID: UUID, draft: String, revision: UInt64)
-      case resultPresentationWriteRequested(conversationID: UUID, message: ChatMessage, revision: UInt64)
       case submitQuestion(QuestionSubmission)
       case retryInterruptedTurn
       case retryInterruptedTurnFor(UUID)
@@ -280,11 +278,6 @@ public struct ChatFeature: Sendable {
     BindingReducer()
     Reduce { state, action in
       switch action {
-      case .binding(\.composerText):
-        return .send(.delegate(.draftChanged(
-          conversationID: state.conversationID, draft: state.composerText,
-          revision: draftSaveRevisionCounter.next())))
-
       case .binding:
         return .none
 
@@ -502,21 +495,10 @@ public struct ChatFeature: Sendable {
         state.resultViewerMessageID = nil
         return .none
 
-      case .resultPresentationChanged(let messageID, let preference):
-        return persistResultPresentation(
-          state: &state,
-          messageID: messageID,
-          preference: preference)
-
-      case .resultPresentationMigrated(let migration):
-        guard
-          state.messages[id: migration.messageID]?.resultPresentation
-            == migration.previous
-        else { return .none }
-        return persistResultPresentation(
-          state: &state,
-          messageID: migration.messageID,
-          preference: migration.updated)
+      case .resultPresentationChanged, .resultPresentationMigrated:
+        guard let message = Self.resultPresentationWrite(state: state, action: action) else { return .none }
+        state.messages[id: message.id] = message
+        return .none
 
       case .renameTapped:
         state.renameDraft = state.title
@@ -544,18 +526,24 @@ public struct ChatFeature: Sendable {
     }
   }
 
-  private func persistResultPresentation(
-    state: inout State,
-    messageID: UUID,
-    preference: ResultPresentationPreference
-  ) -> Effect<Action> {
-    guard var message = state.messages[id: messageID] else { return .none }
+  /// Shared with the parent, which captures the accepted write before this
+  /// reducer applies it. Explicit identical changes remain retryable.
+  static func resultPresentationWrite(state: State, action: Action) -> ChatMessage? {
+    let messageID: UUID
+    let preference: ResultPresentationPreference
+    switch action {
+    case .resultPresentationChanged(let id, let updated):
+      messageID = id
+      preference = updated
+    case .resultPresentationMigrated(let migration):
+      guard state.messages[id: migration.messageID]?.resultPresentation == migration.previous
+      else { return nil }
+      messageID = migration.messageID
+      preference = migration.updated
+    default: return nil
+    }
+    guard var message = state.messages[id: messageID] else { return nil }
     message.resultPresentation = preference
-    state.messages[id: messageID] = message
-    let conversationID = state.conversationID
-    let revision = resultPresentationSaveRevisionCounter.next()
-    return .send(.delegate(.resultPresentationWriteRequested(
-      conversationID: conversationID, message: message, revision: revision)))
+    return message
   }
-
 }

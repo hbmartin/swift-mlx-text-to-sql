@@ -18,6 +18,8 @@ struct ChatChrome {
   var retryCompatibilityPreparation: () -> Void
   var ownedFailures: [AppFeature.OwnedFailure] = []
   var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
+  var retryableWriteOwners: Set<AppFeature.FailureOwner> = []
+  var retrySaving: (AppFeature.FailureOwner) -> Void = { _ in }
   var canRetryHistory = false
   var historyIsLoading = false
   var historyIsSlow = false

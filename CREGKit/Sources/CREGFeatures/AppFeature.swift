@@ -359,7 +359,8 @@ public struct AppFeature: Sendable {
     var historyWatchdogGeneration: UInt64 = 0
     public var slowHistoryRequestID: UInt64?
     var didCleanOldConversationExports = false
-    var draftSaveRevisions: [UUID: UInt64] = [:]
+    var conversationWriteSequence: UInt64 = 0
+    var conversationEdits: [UUID: [ConversationWriteTarget: ConversationEdit]] = [:]
     var presentedExportFiles: [UUID: URL] = [:]
     var conversationCreations: [UInt64: UUID] = [:]
     public var answerMorePresentation: AnswerMorePresentation?
@@ -593,7 +594,10 @@ public struct AppFeature: Sendable {
       failure: FailurePresentation?)
     case conversationWriteFailed(
       conversationID: UUID, failure: FailurePresentation)
-    case draftSaveDue(conversationID: UUID, draft: String, revision: UInt64)
+    case draftSaveDue(conversationID: UUID, revision: UInt64)
+    case conversationWriteSettled(conversationID: UUID, target: ConversationWriteTarget,
+      revision: UInt64, settlement: ConversationWriteSettlement)
+    case retryConversationWrites(FailureOwner)
     case turnPersistenceWriteSettled(UUID)
     case turnPersistenceFinished(UUID)
     case turnPersistenceTimedOut(UUID)
@@ -679,6 +683,9 @@ public struct AppFeature: Sendable {
 
   public var body: some Reducer<State, Action> {
     BindingReducer()
+    Reduce { state, action in
+      captureResultPresentationWrite(state: &state, action: action)
+    }
     Reduce { state, action in
       switch action {
       case .binding(\.browserSearchText):
@@ -1050,6 +1057,7 @@ public struct AppFeature: Sendable {
           snapshot: snapshot,
           preservingActiveTurn: conversationOwnsActiveTurn,
           preservingPreparedAnswerID: activePreparedAnswerID)
+        state.overlayConversationEdits()
         syncDismissalProjection(into: &state)
         if let batch = state.chat?.followUpBatch,
           !ownsSuggestions(
@@ -1264,10 +1272,12 @@ public struct AppFeature: Sendable {
           }
         }
         state.unreadMutationOwners.removeValue(forKey: id)
+        state.conversationEdits.removeValue(forKey: id)
+        let cancelDraft = Effect<Action>.cancel(id: DraftSaveID(conversationID: id))
         if let export = state.conversationExports.removeValue(forKey: id), case .ready(let url) = export.phase {
-          return state.presentedExportFiles[export.requestID] == nil ? removeExportFile(url) : .none
+          return .merge(cancelDraft, state.presentedExportFiles[export.requestID] == nil ? removeExportFile(url) : .none)
         }
-        return .none
+        return cancelDraft
 
       case .answerReadyBannerTapped:
         guard let banner = state.answerReadyBanner,
@@ -1963,14 +1973,8 @@ public struct AppFeature: Sendable {
         }
         let acceptDraft: Effect<Action>
         if submission.clearsComposerOnAcceptance == true {
-          // A cleared draft gets a newer revision than every accepted edit.
-          // Only the debounce timer is cancelled; writes already queued
-          // settle before this clear or are rejected as superseded.
-          let revision = draftSaveRevisionCounter.next()
-          state.draftSaveRevisions[conversationID] = revision
-          acceptDraft = .concatenate(
-            .cancel(id: DraftSaveID(conversationID: conversationID)),
-            saveDraft(conversationID: conversationID, draft: "", revision: revision))
+          acceptDraft = self.acceptDraft(state: &state, conversationID: conversationID,
+            draft: "", debounce: false)
         } else { acceptDraft = .none }
         if submission.clearsComposerOnAcceptance == true {
           state.chat?.composerText = ""
@@ -2152,29 +2156,24 @@ public struct AppFeature: Sendable {
         case nil: return .send(.operationFailed(failure))
         }
 
-      case .chat(.delegate(.draftChanged(let id, let draft, let revision))):
-        guard revision > (state.draftSaveRevisions[id] ?? 0) else { return .none }
-        state.draftSaveRevisions[id] = revision
-        return .run { send in
-          try await clock.sleep(for: .milliseconds(500))
-          await send(.draftSaveDue(conversationID: id, draft: draft, revision: revision))
-        }.cancellable(id: DraftSaveID(conversationID: id), cancelInFlight: true)
+      case .chat(.binding(\.composerText)):
+        guard let chat = state.chat, state.isConversationLive(chat.conversationID) else { return .none }
+        return acceptDraft(state: &state, conversationID: chat.conversationID,
+          draft: chat.composerText, debounce: true)
 
-      case .draftSaveDue(let id, let draft, let revision):
-        guard state.draftSaveRevisions[id] == revision else { return .none }
-        return saveDraft(conversationID: id, draft: draft, revision: revision)
+      case .draftSaveDue(let id, let revision):
+        guard var edit = state.conversationEdits[id]?[.draft],
+          edit.revision == revision, edit.phase == .debouncing else { return .none }
+        edit.phase = .saving
+        state.conversationEdits[id]?[.draft] = edit
+        return saveConversationEdit(conversationID: id, target: .draft, edit: edit)
 
-      case .chat(.delegate(.resultPresentationWriteRequested(let id, let message, let revision))):
-        return .run { send in
-          do {
-            try await messageUpdateQueue.save(conversationID: id, messageID: message.id, revision: revision) {
-              try await history.updateResultPresentation(id, message)
-            }
-          } catch {
-            await send(.operationFailed(.history(operation: .messageSave, error: error),
-              owner: .conversationOperation(id, .resultPresentation)))
-          }
-        }
+      case .conversationWriteSettled(let id, let target, let revision, let settlement):
+        return settleConversationEdit(state: &state, conversationID: id, target: target,
+          revision: revision, settlement: settlement)
+
+      case .retryConversationWrites(let owner):
+        return retryConversationWrites(state: &state, owner: owner)
 
       case .chat(.renameTapped), .chat(.resultViewerPresented):
         state.retainPendingConversationExports()

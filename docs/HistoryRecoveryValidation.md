@@ -1,3 +1,9 @@
+## Conversation edit ledger follow-up (October 9, 2026)
+
+The root now retains the latest draft and per-message presentation preference for this app session, including acknowledged writes. Loads overlay these fields onto the snapshot. Failed writes offer Retry saving in notices and Settings; dismissal keeps the edit. No schema, dependency, or recovery-journal change is included.
+
+The persistence commit passed **19 tests in PR158RegressionFixTests** through XcodeBuildMCP (17.0 seconds including build/test overhead). Deterministic clocks and held saves cover return before debounce, navigation during a save, stale loads after success, newer edits overtaking older callbacks, submission clearing, retry failure/success and repeated pending taps, migration compare-and-set guards, multiple preference targets, Undo, failed deletion, and committed deletion. Held operations have bounded start checks and release backstops. Broader package and simulator evidence is recorded below as it completes.
+
 # History recovery and notice presentation validation
 
 ## October 9 fixes for comments #1–14

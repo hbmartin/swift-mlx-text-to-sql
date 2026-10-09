@@ -240,7 +240,7 @@ extension FailurePresentation {
         "CREG couldn’t load your saved conversation. Try opening it again or start a new chat."
     case .draftSave:
       title = "Draft not saved"
-      message = "CREG couldn’t save your unsent draft. Keep a copy before leaving this conversation."
+      message = "CREG couldn’t save your latest draft. It is kept while CREG remains open. Retry saving or copy it before closing the app."
     case .messageSave, .eventSave:
       title = "Conversation not saved"
       message =

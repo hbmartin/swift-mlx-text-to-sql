@@ -206,6 +206,8 @@ struct AppRootView: View {
       },
       ownedFailures: failures,
       dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) },
+      retryableWriteOwners: store.retryableConversationWriteOwners,
+      retrySaving: { store.send(.retryConversationWrites($0)) },
       canRetryHistory: store.canRetryHistory,
       historyIsLoading: store.historySummaryPhase.isLoading,
       historyIsSlow: store.slowHistoryRequestID != nil,
@@ -259,7 +261,9 @@ struct AppRootView: View {
           historyLoadIsRetry: store.historyLoadIsRetry,
           historyIsSlow: store.slowHistoryRequestID != nil,
           ownedFailures: chrome.ownedFailures,
-          dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) })
+          dismissOwnedFailure: { store.send(.dismissOwnedFailure($0)) },
+          retryableWriteOwners: store.retryableConversationWriteOwners,
+          retrySaving: { store.send(.retryConversationWrites($0)) })
       }
     }
     .background {

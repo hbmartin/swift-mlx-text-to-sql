@@ -177,7 +177,8 @@ struct ChatNoticesContent: View {
         case .failure(let owned):
           FailureBanner(
             failure: owned.failure, developerMode: chrome.developerMode,
-            dismiss: { chrome.dismissOwnedFailure(owned.owner) })
+            dismiss: { chrome.dismissOwnedFailure(owned.owner) },
+            retrySaving: chrome.retryableWriteOwners.contains(owned.owner) ? { chrome.retrySaving(owned.owner) } : nil)
           if owned.failure.recovery == .retryHistory { historyControl }
           if case .conversationOpening = owned.owner { openingControl }
         case .genericFailure(let failure):

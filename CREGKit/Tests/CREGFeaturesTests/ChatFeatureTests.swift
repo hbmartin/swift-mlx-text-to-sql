@@ -5197,13 +5197,12 @@ private func awaitArmedFMWatch(
     await store.finish()
   }
 
-  @Test func draftChangesDelegateTheirOriginToTheRoot() async {
+  @Test func draftBindingMutatesLocallyWithoutAnExtraAction() async {
     let state = Self.chatState()
     let store = TestStore(initialState: state) { ChatFeature() }
     await store.send(.binding(.set(\.composerText, "unsent draft"))) {
       $0.composerText = "unsent draft"
     }
-    await store.receive(\.delegate)
     await store.finish()
   }
 

@@ -241,7 +241,9 @@ extension AppFeature.State {
 
   mutating func markHistoryStoreAvailable() {
     historyStoreAvailability = .available
-    failures.removeAll { $0.failure.cause == .historyStoreUnavailable }
+    let protected = Set(failures.filter { hasOutstandingConversationWrites(owner: $0.owner) }.map(\.owner))
+    failures.removeAll { $0.failure.cause == .historyStoreUnavailable
+      && !protected.contains($0.owner) }
   }
 
   mutating func clearSummaryFailures() {

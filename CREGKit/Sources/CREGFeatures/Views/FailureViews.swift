@@ -43,12 +43,15 @@ struct ConversationUnavailableView: View {
   var historyIsSlow = false
   var ownedFailures: [AppFeature.OwnedFailure] = []
   var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
+  var retryableWriteOwners: Set<AppFeature.FailureOwner> = []
+  var retrySaving: (AppFeature.FailureOwner) -> Void = { _ in }
 
   var body: some View {
     ScrollView {
       VStack(spacing: 16) {
         if !ownedFailures.isEmpty {
-          OwnedFailureBanners(failures: ownedFailures, developerMode: developerMode, dismiss: dismissOwnedFailure)
+          OwnedFailureBanners(failures: ownedFailures, developerMode: developerMode, dismiss: dismissOwnedFailure,
+            retryableWriteOwners: retryableWriteOwners, retrySaving: retrySaving)
         } else if let failure {
           FailureBanner(failure: failure, developerMode: developerMode, dismiss: dismissFailure)
             .accessibilityIdentifier("conversation-recovery-failure")
@@ -94,10 +97,13 @@ struct OwnedFailureBanners: View {
   let failures: [AppFeature.OwnedFailure]
   let developerMode: Bool
   let dismiss: (AppFeature.FailureOwner) -> Void
+  var retryableWriteOwners: Set<AppFeature.FailureOwner> = []
+  var retrySaving: (AppFeature.FailureOwner) -> Void = { _ in }
 
   var body: some View {
     ForEach(failures, id: \.owner) { owned in
-      FailureBanner(failure: owned.failure, developerMode: developerMode, dismiss: { dismiss(owned.owner) })
+      FailureBanner(failure: owned.failure, developerMode: developerMode, dismiss: { dismiss(owned.owner) },
+        retrySaving: retryableWriteOwners.contains(owned.owner) ? { retrySaving(owned.owner) } : nil)
     }
   }
 }
@@ -127,6 +133,7 @@ struct FailureBanner: View {
   let failure: FailurePresentation
   let developerMode: Bool
   let dismiss: () -> Void
+  var retrySaving: (() -> Void)?
   private var isError: Bool { failure.isError }
   private var tint: Color { isError ? .orange : .secondary }
 
@@ -156,6 +163,12 @@ struct FailureBanner: View {
       Text(failure.message)
         .font(.subheadline)
         .fixedSize(horizontal: false, vertical: true)
+
+      if let retrySaving {
+        Button("Retry saving", action: retrySaving)
+          .cregTextButtonLabelTarget()
+          .accessibilityIdentifier("failure-retry-saving-\(failure.code)")
+      }
 
       if let details = failure.technicalDetails(
         developerMode: developerMode)
