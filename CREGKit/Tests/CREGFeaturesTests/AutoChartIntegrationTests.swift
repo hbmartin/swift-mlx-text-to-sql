@@ -2043,17 +2043,20 @@ private func waitForReadyChart(
     }
     var state = ChatFeature.State(conversationID: UUID())
     state.messages.append(message)
-    let store = TestStore(initialState: state) {
-      ChatFeature()
+    var root = AppFeature.State()
+    root.chat = state
+    let store = TestStore(initialState: root) {
+      AppFeature()
     } withDependencies: {
       $0.historyClient = history
     }
 
+    store.exhaustivity = .off
     await store.send(
-      .resultPresentationChanged(
-        messageID: message.id, preference: preference)
+      .chat(.resultPresentationChanged(
+        messageID: message.id, preference: preference))
     ) {
-      $0.messages[id: message.id]?.resultPresentation = preference
+      $0.chat?.messages[id: message.id]?.resultPresentation = preference
     }
     await store.finish()
 
@@ -2100,8 +2103,10 @@ private func waitForReadyChart(
     }
     var state = ChatFeature.State(conversationID: conversationID)
     state.messages.append(message)
-    let store = TestStore(initialState: state) {
-      ChatFeature()
+    var root = AppFeature.State()
+    root.chat = state
+    let store = TestStore(initialState: root) {
+      AppFeature()
     } withDependencies: {
       $0.historyClient = delayedHistory
     }
@@ -2109,18 +2114,21 @@ private func waitForReadyChart(
     let finalPreference = ResultPresentationPreference(
       mode: .table, specificationID: chartTestRecommendationID("policy|bar|fund|value"))
 
+    store.exhaustivity = .off
     await store.send(
-      .resultPresentationChanged(
-        messageID: message.id, preference: firstPreference)
+      .chat(.resultPresentationChanged(
+        messageID: message.id, preference: firstPreference))
     ) {
-      $0.messages[id: message.id]?.resultPresentation = firstPreference
+      $0.chat?.messages[id: message.id]?.resultPresentation = firstPreference
     }
+    await store.receive(\.chat.delegate)
     await gate.waitUntilFirstSaveStarts()
+    store.exhaustivity = .off
     await store.send(
-      .resultPresentationChanged(
-        messageID: message.id, preference: finalPreference)
+      .chat(.resultPresentationChanged(
+        messageID: message.id, preference: finalPreference))
     ) {
-      $0.messages[id: message.id]?.resultPresentation = finalPreference
+      $0.chat?.messages[id: message.id]?.resultPresentation = finalPreference
     }
     await gate.releaseFirstSave()
     await store.finish()
@@ -2295,8 +2303,12 @@ private func waitForReadyChart(
     await deletion.value
     await queue.confirmConversationDeletion(conversationID)
 
-    #expect(try await first.value == .discardedDuringDeletion)
-    #expect(try await second.value == .discardedDuringDeletion)
+    await #expect(throws: PreferenceSaveTestError.failed) {
+      _ = try await first.value
+    }
+    await #expect(throws: PreferenceSaveTestError.failed) {
+      _ = try await second.value
+    }
   }
 
   @Test func confirmedConversationDeletionPrunesRevisionTombstones() async throws {
@@ -2348,7 +2360,7 @@ private func waitForReadyChart(
     #expect(outcome == .discardedDuringDeletion)
   }
 
-  @Test func failedInFlightSaveReportsDiscardWhenDeletionBegins() async throws {
+  @Test func failedInFlightSavePreservesErrorAfterCommittedDeletion() async throws {
     let queue = MessageUpdateQueue()
     let conversationID = UUID()
     let gate = FirstPreferenceSaveGate()
@@ -2373,7 +2385,9 @@ private func waitForReadyChart(
     await deletion.value
     await queue.confirmConversationDeletion(conversationID)
 
-    #expect(try await save.value == .discardedDuringDeletion)
+    await #expect(throws: PreferenceSaveTestError.failed) {
+      _ = try await save.value
+    }
   }
 
   @Test func failedDeleteRestoresTheOriginalInFlightSaveError() async throws {

@@ -206,7 +206,6 @@ public struct ChatFeature: Sendable {
 
   public enum Action: BindableAction, Sendable, Equatable {
     case binding(BindingAction<State>)
-    case draftSaveDebounced
     case submissionRequested
     case submissionFocusSettled
     case submissionRefocused
@@ -248,6 +247,8 @@ public struct ChatFeature: Sendable {
     /// Global work only ``AppFeature`` can perform.
     public enum Delegate: Sendable, Equatable {
       case feedbackWriteRequested(conversationID: UUID, write: FeedbackWrite)
+      case draftChanged(conversationID: UUID, draft: String, revision: UInt64)
+      case resultPresentationWriteRequested(conversationID: UUID, message: ChatMessage, revision: UInt64)
       case submitQuestion(QuestionSubmission)
       case retryInterruptedTurn
       case retryInterruptedTurnFor(UUID)
@@ -269,46 +270,22 @@ public struct ChatFeature: Sendable {
     case readAloud
   }
 
-  /// Conversation-scoped so switching conversations cannot cancel another
-  /// conversation's pending draft write.
-  struct DraftSaveID: Hashable {
-    let conversationID: UUID
-  }
-
-  private let messageUpdateQueue: MessageUpdateQueue
-
-  @Dependency(\.historyClient) var history
   @Dependency(\.readAloud) var readAloud
   @Dependency(\.date.now) var now
-  @Dependency(\.continuousClock) var clock
   @Dependency(\.diagnostics) var diagnostics
 
-  public init() {
-    self.messageUpdateQueue = MessageUpdateQueue()
-  }
-
-  init(messageUpdateQueue: MessageUpdateQueue) {
-    self.messageUpdateQueue = messageUpdateQueue
-  }
+  public init() {}
 
   public var body: some Reducer<State, Action> {
     BindingReducer()
     Reduce { state, action in
       switch action {
       case .binding(\.composerText):
-        let conversationID = state.conversationID
-        let draft = state.composerText
-        return .run { _ in
-          try await clock.sleep(for: .milliseconds(500))
-          try await history.saveDraft(conversationID, draft)
-        }
-        .cancellable(
-          id: DraftSaveID(conversationID: conversationID), cancelInFlight: true)
+        return .send(.delegate(.draftChanged(
+          conversationID: state.conversationID, draft: state.composerText,
+          revision: draftSaveRevisionCounter.next())))
 
       case .binding:
-        return .none
-
-      case .draftSaveDebounced:
         return .none
 
       case .submissionRequested:
@@ -547,7 +524,7 @@ public struct ChatFeature: Sendable {
         return .none
 
       case .renameCommitted:
-        let title = state.renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = HistoryStore.normalizedRenameTitle(from: state.renameDraft)
         state.isRenamePresented = false
         guard !title.isEmpty else { return .none }
         state.title = title
@@ -576,24 +553,9 @@ public struct ChatFeature: Sendable {
     message.resultPresentation = preference
     state.messages[id: messageID] = message
     let conversationID = state.conversationID
-    let updatedMessage = message
     let revision = resultPresentationSaveRevisionCounter.next()
-    return .run { send in
-      do {
-        try await messageUpdateQueue.save(
-          conversationID: conversationID,
-          messageID: updatedMessage.id,
-          revision: revision
-        ) {
-          try await history.updateResultPresentation(
-            conversationID, updatedMessage)
-        }
-      } catch {
-        await send(
-          .operationFailed(.history(operation: .messageSave, error: error),
-            origin: .conversationWrite(conversationID)))
-      }
-    }
+    return .send(.delegate(.resultPresentationWriteRequested(
+      conversationID: conversationID, message: message, revision: revision)))
   }
 
 }

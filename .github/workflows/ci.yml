@@ -55,9 +55,90 @@ jobs:
         run: swift test
 
   accessibility:
-    name: Accessibility UI contracts
+    name: Accessibility UI contracts (${{ matrix.shard }})
     runs-on: xcode-27
-    timeout-minutes: 75
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - shard: canonical
+            skip-arguments: >-
+              -skip-testing:CREGUITests/AccessibilityUITests/testAccessibleHeadersWrapAtLargeTextSizes
+              -skip-testing:CREGUITests/AccessibilityUITests/testAnswerActionAccessibilitySemantics
+              -skip-testing:CREGUITests/AccessibilityUITests/testAnswerActionsAreAtLeast44Points
+              -skip-testing:CREGUITests/AccessibilityUITests/testBrowserRefreshPreservesSearchAndKeyboardFocus
+              -skip-testing:CREGUITests/AccessibilityUITests/testCancellingSharingReturnsToAnswerWithMoreClosed
+              -skip-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation
+              -skip-testing:CREGUITests/AccessibilityUITests/testChartRecoveryControlsOwnFullLeadingTouchTargets
+              -skip-testing:CREGUITests/AccessibilityUITests/testCompactJumpToLatestWithKeyboardAndCorrection
+              -skip-testing:CREGUITests/AccessibilityUITests/testConversationLoadFailureOffersRecovery
+              -skip-testing:CREGUITests/AccessibilityUITests/testConversationNoticesScrollAndRetainDismissalState
+              -skip-testing:CREGUITests/AccessibilityUITests/testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion
+              -skip-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe
+              -skip-testing:CREGUITests/AccessibilityUITests/testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows
+              -skip-testing:CREGUITests/AccessibilityUITests/testHighestRiskScreensAtAX5Landscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface
+              -skip-testing:CREGUITests/AccessibilityUITests/testHistoryStoreRetryAtAX5PortraitAndLandscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testKnownIconControlsAreAtLeast44Points
+              -skip-testing:CREGUITests/AccessibilityUITests/testLongDrawerPreviewsStayBoundedAndSettingsReachable
+              -skip-testing:CREGUITests/AccessibilityUITests/testMalformedConfigurationRendersInvalidConfigurationScreen
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreActionsRemainAccessibleInConstrainedHeight
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreClosesWhenAnswerActionLayoutChanges
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreRetainsHeldExportUntilExplicitRegeneration
+              -skip-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity
+              -skip-testing:CREGUITests/AccessibilityUITests/testPresentedSheetsReceiveEffectiveAX5
+              -skip-testing:CREGUITests/AccessibilityUITests/testPreviewShowsNewTableWhenChartInputIdentityChanges
+              -skip-testing:CREGUITests/AccessibilityUITests/testProductionSupportBindingDismissesAndReleasesArtifacts
+              -skip-testing:CREGUITests/AccessibilityUITests/testRetainedExportCanBeDiscardedWithoutClearingOtherNotices
+              -skip-testing:CREGUITests/AccessibilityUITests/testRetainedExportDoesNotAutomaticallyPresentSharing
+              -skip-testing:CREGUITests/AccessibilityUITests/testRetryInspectionOffersDismissOnlyAtAX5PortraitAndLandscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testSharingReturnsToAnswerWithMoreClosed
+              -skip-testing:CREGUITests/AccessibilityUITests/testSharingSurvivesConcurrentCompletionInLongTranscript
+              -skip-testing:CREGUITests/AccessibilityUITests/testSimpleChartValuesAreAccessible
+              -skip-testing:CREGUITests/AccessibilityUITests/testSupportWarningAtAX5PortraitAndLandscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget
+          - shard: interactions-a
+            skip-arguments: >-
+              -skip-testing:CREGUITests/AccessibilityUITests/testAnswerActionAccessibilitySemantics
+              -skip-testing:CREGUITests/AccessibilityUITests/testBrowserRefreshPreservesSearchAndKeyboardFocus
+              -skip-testing:CREGUITests/AccessibilityUITests/testCanonicalScreensDoNotClipTextOrShrinkHitRegions
+              -skip-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation
+              -skip-testing:CREGUITests/AccessibilityUITests/testCompactJumpToLatestWithKeyboardAndCorrection
+              -skip-testing:CREGUITests/AccessibilityUITests/testConversationNoticesScrollAndRetainDismissalState
+              -skip-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe
+              -skip-testing:CREGUITests/AccessibilityUITests/testHighestRiskScreensAtAX5Landscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testHistoryStoreRetryAtAX5PortraitAndLandscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testLongDrawerPreviewsStayBoundedAndSettingsReachable
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreActionsRemainAccessibleInConstrainedHeight
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreRetainsHeldExportUntilExplicitRegeneration
+              -skip-testing:CREGUITests/AccessibilityUITests/testPresentedSheetsReceiveEffectiveAX5
+              -skip-testing:CREGUITests/AccessibilityUITests/testProductionSupportBindingDismissesAndReleasesArtifacts
+              -skip-testing:CREGUITests/AccessibilityUITests/testRetainedExportDoesNotAutomaticallyPresentSharing
+              -skip-testing:CREGUITests/AccessibilityUITests/testSharingReturnsToAnswerWithMoreClosed
+              -skip-testing:CREGUITests/AccessibilityUITests/testSimpleChartValuesAreAccessible
+              -skip-testing:CREGUITests/AccessibilityUITests/testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget
+          - shard: interactions-b
+            skip-arguments: >-
+              -skip-testing:CREGUITests/AccessibilityUITests/testAccessibleHeadersWrapAtLargeTextSizes
+              -skip-testing:CREGUITests/AccessibilityUITests/testAnswerActionsAreAtLeast44Points
+              -skip-testing:CREGUITests/AccessibilityUITests/testCancellingSharingReturnsToAnswerWithMoreClosed
+              -skip-testing:CREGUITests/AccessibilityUITests/testCanonicalScreensDoNotClipTextOrShrinkHitRegions
+              -skip-testing:CREGUITests/AccessibilityUITests/testChartRecoveryControlsOwnFullLeadingTouchTargets
+              -skip-testing:CREGUITests/AccessibilityUITests/testConversationLoadFailureOffersRecovery
+              -skip-testing:CREGUITests/AccessibilityUITests/testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion
+              -skip-testing:CREGUITests/AccessibilityUITests/testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows
+              -skip-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface
+              -skip-testing:CREGUITests/AccessibilityUITests/testKnownIconControlsAreAtLeast44Points
+              -skip-testing:CREGUITests/AccessibilityUITests/testMalformedConfigurationRendersInvalidConfigurationScreen
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreClosesWhenAnswerActionLayoutChanges
+              -skip-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity
+              -skip-testing:CREGUITests/AccessibilityUITests/testPreviewShowsNewTableWhenChartInputIdentityChanges
+              -skip-testing:CREGUITests/AccessibilityUITests/testRetainedExportCanBeDiscardedWithoutClearingOtherNotices
+              -skip-testing:CREGUITests/AccessibilityUITests/testRetryInspectionOffersDismissOnlyAtAX5PortraitAndLandscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testSharingSurvivesConcurrentCompletionInLongTranscript
+              -skip-testing:CREGUITests/AccessibilityUITests/testSupportWarningAtAX5PortraitAndLandscape
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -138,6 +219,10 @@ jobs:
             -only-testing:CREGUITests/AccessibilityUITests/testRetainedExportCanBeDiscardedWithoutClearingOtherNotices \
             -only-testing:CREGUITests/AccessibilityUITests/testLongDrawerPreviewsStayBoundedAndSettingsReachable \
             -only-testing:CREGUITests/AccessibilityUITests/testCompactJumpToLatestWithKeyboardAndCorrection \
+            -only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity \
+            -only-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface \
+            -only-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe \
+          ${{ matrix.skip-arguments }} \
             CODE_SIGNING_ALLOWED=NO \
             CREG_ACCESSIBILITY_HARNESS_BUILD=YES
 
@@ -145,10 +230,21 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: accessibility-ui-test-results
+          name: accessibility-ui-test-results-${{ matrix.shard }}
           path: ${{ runner.temp }}/creg-accessibility-ui-tests.xcresult
           if-no-files-found: warn
           retention-days: 14
+
+  accessibility-contracts:
+    name: Accessibility UI contracts
+    needs: accessibility
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all accessibility shards
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        run: test '${{ needs.accessibility.result }}' = 'success'
 
   python:
     name: Python tests and corpus determinism

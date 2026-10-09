@@ -131,6 +131,12 @@ extension HistoryStore {
     return String(collapsed.prefix(titleLimit))
   }
 
+  /// Manual renames normalize before optimistic display and again at the
+  /// storage boundary. Trimming after the cap makes those passes idempotent.
+  static func normalizedRenameTitle(from text: String) -> String {
+    autoTitle(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   /// Only titles, user questions, and assistant narrations are searchable.
   static func searchEntry(
     for message: ChatMessage

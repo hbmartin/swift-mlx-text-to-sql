@@ -61,8 +61,7 @@ struct AppRootView: View {
   /// Fixed by previews; live rendering uses the current date.
   var now: Date = Date()
   /// In-flight gesture translation, composed with the settled reveal state.
-  @State private var dragTranslation: CGFloat = 0
-  @State private var gestureEligibility = DrawerGestureEligibility()
+  @GestureState private var drawerDrag = DrawerDragState()
   @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
   #if DEBUG
     @Environment(\.cregUITestReduceMotion) private var testReduceMotion
@@ -123,7 +122,8 @@ struct AppRootView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(CREGBrand.browserPanel.ignoresSafeArea(.container))
-      .simultaneousGesture(revealGesture(revealWidth: revealWidth))
+      .simultaneousGesture(revealGesture(revealWidth: revealWidth),
+        isEnabled: store.presentation == nil && store.isSceneActive)
       .overlay(alignment: .top) { answerReadyBanner }
       .overlay(alignment: .bottom) { undoDeletionToast }
       .sheet(item: Binding(get: { store.presentation }, set: { value in
@@ -223,7 +223,7 @@ struct AppRootView: View {
 
   private func currentOffset(revealWidth: CGFloat) -> CGFloat {
     let base: CGFloat = store.isBrowserRevealed ? revealWidth : 0
-    return min(max(base + dragTranslation, 0), revealWidth)
+    return min(max(base + drawerDrag.translation, 0), revealWidth)
   }
 
   @ViewBuilder
@@ -287,32 +287,32 @@ struct AppRootView: View {
   /// whether the browser settles open or closed.
   private func revealGesture(revealWidth: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 12, coordinateSpace: .local)
-      .onChanged { value in
-        guard gestureEligibility.change(startX: value.startLocation.x,
-          dx: value.translation.width, dy: value.translation.height, revealed: store.isBrowserRevealed) else {
-          if gestureEligibility.cancelled { resetDrag() }
-          return
-        }
-        dragTranslation = store.isBrowserRevealed ? min(0, value.translation.width) : max(0, value.translation.width)
-      }
+      // Handle successful release inside the gesture-state wrapper, before
+      // it resets eligibility. Cancellation still resets without onEnded.
       .onEnded { value in
-        defer { gestureEligibility = DrawerGestureEligibility() }
-        guard gestureEligibility.canRelease(startX: value.startLocation.x,
+        guard store.presentation == nil, store.isSceneActive,
+          drawerDrag.eligibility.canRelease(startX: value.startLocation.x,
           dx: value.translation.width, dy: value.translation.height, revealed: store.isBrowserRevealed)
-        else { resetDrag(); return }
+        else { return }
         let base: CGFloat = store.isBrowserRevealed ? revealWidth : 0
         setRevealed(base + value.predictedEndTranslation.width > revealWidth / 2)
+      }
+      .updating($drawerDrag) { value, drag, _ in
+        guard drag.eligibility.change(startX: value.startLocation.x,
+          dx: value.translation.width, dy: value.translation.height, revealed: store.isBrowserRevealed) else {
+          drag.translation = 0
+          return
+        }
+        drag.translation = store.isBrowserRevealed ? min(0, value.translation.width) : max(0, value.translation.width)
       }
   }
 
   private var drawerAnimation: Animation {
     reduceMotion ? .easeInOut(duration: 0.18) : .spring(response: 0.4, dampingFraction: 0.86)
   }
-  private func resetDrag() { withAnimation(drawerAnimation) { dragTranslation = 0 } }
 
   private func setRevealed(_ revealed: Bool) {
-    withAnimation(drawerAnimation) {
-      dragTranslation = 0
+    _ = withAnimation(drawerAnimation) {
       if revealed {
         store.send(.browserButtonTapped)
       } else {

@@ -4,6 +4,12 @@ import SwiftUI
 
 @MainActor
 struct ChatNotice {
+  enum ID: Hashable {
+    case failure(AppFeature.FailureOwner)
+    case genericFailure(String)
+    case history, opening, sql, intelligence, export
+    case interrupted(UUID?, UUID?, Date, String)
+  }
   enum Kind {
     case failure(AppFeature.OwnedFailure)
     case genericFailure(FailurePresentation)
@@ -16,6 +22,19 @@ struct ChatNotice {
   var title: String
   var description: String
   var isError = false
+  var id: ID {
+    switch kind {
+    case .failure(let owned): .failure(owned.owner)
+    case .genericFailure(let failure): .genericFailure(failure.code)
+    case .history: .history
+    case .opening: .opening
+    case .sql: .sql
+    case .intelligence: .intelligence
+    case .export: .export
+    case .interrupted(let value):
+      .interrupted(value.journalID, value.executionID, value.interruptedAt, value.question)
+    }
+  }
 
   static func items(store: StoreOf<ChatFeature>, chrome: ChatChrome) -> [Self] {
     var items: [Self] = []
@@ -23,10 +42,10 @@ struct ChatNotice {
       let blocking =
         value.code == "turn_persistence_barrier_timed_out"
         || value.code == "turn_inference_drain_timed_out"
-      let progress = value.code == "history_summary_timed_out"
+      let progress = !value.isError
       return .init(
         kind: kind, priority: blocking ? 0 : (progress ? 5 : 2),
-        title: value.title, description: value.title + ". " + value.message, isError: !progress)
+        title: value.title, description: value.title + ". " + value.message, isError: value.isError)
     }
     if chrome.ownedFailures.isEmpty {
       if let value = chrome.presentedFailure {
@@ -43,8 +62,9 @@ struct ChatNotice {
     if (chrome.historyIsLoading || chrome.canRetryHistory) && !hasHistory {
       items.append(
         .init(
-          kind: .history, priority: 5, title: "Loading history",
-          description: "Loading conversation history."))
+          kind: .history, priority: 5,
+          title: chrome.historyIsLoading ? "Loading history" : "History unavailable",
+          description: chrome.historyIsLoading ? "Loading conversation history." : "Retry loading conversation history."))
     }
     if chrome.retryOpening != nil
       && !chrome.ownedFailures.contains(where: {
@@ -152,19 +172,17 @@ struct ChatNoticesContent: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   var body: some View {
     VStack(spacing: 12) {
-      ForEach(Array(ChatNotice.items(store: store, chrome: chrome).enumerated()), id: \.offset) {
-        _, notice in
+      ForEach(ChatNotice.items(store: store, chrome: chrome), id: \.id) { notice in
         switch notice.kind {
         case .failure(let owned):
           FailureBanner(
             failure: owned.failure, developerMode: chrome.developerMode,
-            dismiss: { chrome.dismissOwnedFailure(owned.owner) }, isError: notice.isError)
+            dismiss: { chrome.dismissOwnedFailure(owned.owner) })
           if owned.failure.recovery == .retryHistory { historyControl }
           if case .conversationOpening = owned.owner { openingControl }
         case .genericFailure(let failure):
           FailureBanner(
-            failure: failure, developerMode: chrome.developerMode, dismiss: chrome.dismissFailure,
-            isError: notice.isError)
+            failure: failure, developerMode: chrome.developerMode, dismiss: chrome.dismissFailure)
           if failure.recovery == .retryHistory { historyControl }
         case .history: historyControl
         case .opening: openingControl

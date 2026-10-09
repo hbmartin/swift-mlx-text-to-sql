@@ -476,6 +476,60 @@ final class AccessibilityUITests: XCTestCase {
     }
   }
 
+  func testHistoryProgressWarningsAreNeutralOnEverySurface() {
+    let app = launch(scenario: "history-progress", dynamicType: "ax5")
+    app.buttons["conversation-notices"].tap()
+    XCTAssertTrue(app.buttons["Dismiss notice"].waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Dismiss error"].exists)
+    app.buttons["conversation-notices-done"].tap()
+    app.buttons["sidebar.leading"].tap()
+    scrollToControl("Settings", in: app).tap()
+    XCTAssertTrue(app.buttons["Dismiss notice"].waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Dismiss error"].exists)
+    app.terminate()
+    let unavailable = launch(scenario: "history-progress-unavailable", dynamicType: "ax5")
+    XCTAssertTrue(unavailable.buttons["Dismiss notice"].waitForExistence(timeout: 5))
+    XCTAssertFalse(unavailable.buttons["Dismiss error"].exists)
+    unavailable.terminate()
+  }
+
+  func testDrawerCancellationAllowsTheFirstFollowingSwipe() {
+    let app = launch(scenario: "drawer-gesture-cancellation", dynamicType: "large")
+    let origin = app.coordinate(withNormalizedOffset: .zero)
+    let start = origin.withOffset(CGVector(dx: 20, dy: app.frame.midY))
+    let end = origin.withOffset(CGVector(dx: app.frame.width - 30, dy: app.frame.midY))
+    app.buttons["interrupt-drawer-drag"].tap()
+    // Present Settings while a recognized drag is still moving. SwiftUI
+    // cancels the underlying gesture rather than delivering a release.
+    start.press(forDuration: 0.05, thenDragTo: end,
+      withVelocity: XCUIGestureVelocity(rawValue: 50), thenHoldForDuration: 0)
+    XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+    app.buttons["Done"].tap()
+    XCTAssertLessThan(app.buttons["sidebar.leading"].frame.minX, 100)
+    start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+    XCTAssertTrue(app.buttons["Close conversation browser"].waitForExistence(timeout: 5),
+      "The first edge swipe after cancellation must open the drawer")
+    app.terminate()
+  }
+
+  func testNoticeTechnicalDetailsKeepFailureIdentity() {
+    let app = launch(scenario: "conversation-notices", dynamicType: "large", developerMode: true)
+    app.buttons["conversation-notices"].tap()
+    XCTAssertTrue(app.buttons["conversation-notices-done"].waitForExistence(timeout: 5), app.debugDescription)
+    let details = app.descendants(matching: .any)["failure-details-notice_fixture_1"].firstMatch
+    XCTAssertTrue(details.waitForExistence(timeout: 5), app.debugDescription)
+    details.tap()
+    let expanded = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'notice-details-1'")).firstMatch
+    XCTAssertTrue(expanded.waitForExistence(timeout: 5))
+    app.buttons["failure-dismiss-notice_fixture_0"].tap()
+    XCTAssertTrue(expanded.isHittable, "The expanded section must remain with failure 1 after failure 0 is removed")
+    app.buttons["failure-dismiss-notice_fixture_1"].tap()
+    XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'notice-details-2'")).firstMatch.isHittable,
+      "Expansion must not move to the next failure")
+    app.buttons["conversation-notices-done"].tap()
+    app.terminate()
+  }
+
   func testAccessibleHeadersWrapAtLargeTextSizes() throws {
     for size in ["ax1", "ax3", "ax5"] {
       for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
@@ -918,9 +972,11 @@ final class AccessibilityUITests: XCTestCase {
   @discardableResult
   private func launch(
     scenario: String,
-    dynamicType: String? = nil
+    dynamicType: String? = nil,
+    developerMode: Bool = false
   ) -> XCUIApplication {
     let app = XCUIApplication()
+    app.launchEnvironment["CREG_UI_TEST_DEVELOPER_MODE"] = developerMode ? "1" : "0"
     app.launchEnvironment["CREG_UI_TEST_SCENARIO"] = scenario
     app.launchEnvironment["CREG_UI_TEST_SCENARIO_MANIFEST"] = "0"
     if let dynamicType {
@@ -1025,8 +1081,16 @@ final class AccessibilityUITests: XCTestCase {
     let noticesScroll = app.scrollViews["conversation-notices-scroll"]
     let exportScroll = app.scrollViews["conversation-export-scroll"]
     let browserHistoryScroll = app.scrollViews["browser-history-scroll"]
+    let settingsScroll = app.descendants(matching: .any)["settings-scroll"].firstMatch
+    let scrollers = app.scrollViews.allElementsBoundByIndex + app.collectionViews.allElementsBoundByIndex
+    let owningScroller = control.exists
+      ? scrollers.last { controlBelongsToScroll(control, scroll: $0) } : nil
     let scroll: XCUIElement
-    if identifier == "browser-history-retry", browserHistoryScroll.exists {
+    if let owningScroller {
+      scroll = owningScroller
+    } else if settingsScroll.exists {
+      scroll = settingsScroll
+    } else if identifier == "browser-history-retry", browserHistoryScroll.exists {
       scroll = browserHistoryScroll
     } else if exportScroll.exists {
       scroll = exportScroll
@@ -1045,11 +1109,19 @@ final class AccessibilityUITests: XCTestCase {
     }
     for _ in 0..<40 {
       let before = scrollProgress(scroll)
+      if control.exists && !controlBelongsToScroll(control, scroll: scroll) {
+        guard control.isHittable else {
+          failScrollGeometry("Fixed control is not hittable: \(control.debugDescription)", app: app)
+          return control
+        }
+        _ = settleVisibleControl(control, scroll: scroll, app: app)
+        return control
+      }
       if control.exists && control.isHittable {
         let frameBeforeGesture = control.frame
         if settleVisibleControl(control, scroll: scroll, app: app) { return control }
         if control.frame == frameBeforeGesture {
-          XCTFail("Control \(label) did not move after a settling gesture and remains unreachable: \(control.debugDescription)")
+          failScrollGeometry("Control \(label) did not move after a settling gesture and remains unreachable: \(control.debugDescription)", app: app)
           return control
         }
         continue
@@ -1059,11 +1131,19 @@ final class AccessibilityUITests: XCTestCase {
     }
     for _ in 0..<40 {
       let before = scrollProgress(scroll)
+      if control.exists && !controlBelongsToScroll(control, scroll: scroll) {
+        guard control.isHittable else {
+          failScrollGeometry("Fixed control is not hittable: \(control.debugDescription)", app: app)
+          return control
+        }
+        _ = settleVisibleControl(control, scroll: scroll, app: app)
+        return control
+      }
       if control.exists && control.isHittable {
         let frameBeforeGesture = control.frame
         if settleVisibleControl(control, scroll: scroll, app: app) { return control }
         if control.frame == frameBeforeGesture {
-          XCTFail("Control \(label) did not move after a settling gesture and remains unreachable: \(control.debugDescription)")
+          failScrollGeometry("Control \(label) did not move after a settling gesture and remains unreachable: \(control.debugDescription)", app: app)
           return control
         }
         continue
@@ -1086,37 +1166,53 @@ final class AccessibilityUITests: XCTestCase {
   private func settleVisibleControl(
     _ control: XCUIElement, scroll: XCUIElement, app: XCUIApplication
   ) -> Bool {
-    if scroll.identifier == "ui-test-support-bundle-fallback" { return true }
     // XCTest calls partially clipped buttons hittable, but their synthesized
     // center tap can land in the system's top or bottom gesture region.
     let keyboardTop = unobscuredBottom(in: app)
+    let window = app.windows.firstMatch.frame.intersection(app.frame)
+    let unobscuredWindow = CGRect(x: window.minX, y: window.minY,
+      width: window.width, height: max(0, min(window.maxY, keyboardTop) - window.minY))
     var viewport = CGRect(x: app.frame.minX, y: app.frame.minY + 64,
       width: app.frame.width, height: max(0, min(app.frame.maxY - 24, keyboardTop) - app.frame.minY - 64))
     let frame = control.frame
+    // A footer/header control can be hittable without belonging to the
+    // transcript. Scrolling that transcript cannot settle a fixed control.
+    guard controlBelongsToScroll(control, scroll: scroll) else {
+      let reachable = unobscuredWindow.contains(CGPoint(x: frame.midX, y: frame.midY))
+      if !reachable { failScrollGeometry("Fixed control is obscured: \(control.debugDescription)", app: app) }
+      return reachable
+    }
     let scrollingFrame = visibleScrollFrame(scroll, in: app)
     // Fixed recovery/header/footer controls can sit outside their panel's
     // scroller. Only transcript controls must stay clear of chat chrome.
-    if !hasOwnScrollingChrome(scroll) || scrollingFrame.intersects(frame) {
-      viewport = viewport.intersection(scrollingFrame)
-    }
+    viewport = CGRect(x: viewport.minX, y: max(viewport.minY, scrollingFrame.minY),
+      width: viewport.width, height: max(0, min(viewport.maxY, scrollingFrame.maxY) - max(viewport.minY, scrollingFrame.minY)))
     let delta: CGFloat
-    if (!hasOwnScrollingChrome(scroll) && frame.height > viewport.height)
-      || ["conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll"].contains(scroll.identifier) {
+    // A control nearly fills a compact lane. Requiring its entire frame
+    // plus a minimum drag would alternate past each edge indefinitely.
+    // Settle its tap center while the accessibility audit checks clipping.
+    if (!hasOwnScrollingChrome(scroll) && frame.height + 48 > viewport.height)
+      || ["conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll",
+        "ui-test-support-bundle-fallback"].contains(scroll.identifier) {
       delta = frame.midY < viewport.minY ? max(24, viewport.minY - frame.midY + 12)
         : (frame.midY > viewport.maxY ? min(-24, viewport.maxY - frame.midY - 12) : 0)
     } else {
       delta = frame.minY < viewport.minY ? max(24, viewport.minY - frame.minY)
         : (frame.maxY > viewport.maxY ? min(-24, viewport.maxY - frame.maxY) : 0)
     }
-    guard delta != 0,
-      !hasOwnScrollingChrome(scroll) || frame.height <= viewport.height else { return true }
+    guard delta != 0 else { return true }
     let visibleScroll = visibleScrollFrame(scroll, in: app)
-    guard !visibleScroll.isEmpty else { return true }
+    guard visibleScroll.height >= 44 else {
+      failScrollGeometry("No usable settling lane: \(visibleScroll), control=\(frame)", app: app)
+      return false
+    }
     let origin = app.coordinate(withNormalizedOffset: .zero)
     if hasOwnScrollingChrome(scroll) {
+      let stroke = max(-visibleScroll.height / 2 + 2,
+        min(delta, visibleScroll.height / 2 - 2))
       let start = origin.withOffset(CGVector(dx: visibleScroll.midX - app.frame.minX, dy: visibleScroll.midY - app.frame.minY))
       start.press(forDuration: 0.1,
-        thenDragTo: origin.withOffset(CGVector(dx: visibleScroll.midX - app.frame.minX, dy: visibleScroll.midY - app.frame.minY + delta)),
+        thenDragTo: origin.withOffset(CGVector(dx: visibleScroll.midX - app.frame.minX, dy: visibleScroll.midY - app.frame.minY + stroke)),
         withVelocity: .slow, thenHoldForDuration: 0.2)
     } else {
       let stroke = max(-visibleScroll.height + 4, min(delta, visibleScroll.height - 4))
@@ -1133,13 +1229,15 @@ final class AccessibilityUITests: XCTestCase {
     _ scroll: XCUIElement, in app: XCUIApplication, up: Bool
   ) {
     let frame = scroll.frame
-    if ["answer-more-scroll", "conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll", "conversation-export-scroll",
+    if ["settings-scroll", "answer-more-scroll", "conversation-recovery-scroll", "browser-history-scroll", "conversation-notices-scroll", "conversation-export-scroll",
       "ui-test-support-bundle-fallback"].contains(scroll.identifier) {
       // SwiftUI can report a zero-sized ancestor for a visible popover.
       // XCTest's automatic swipe then rejects its visible scroll view.
       let visible = visibleScrollFrame(scroll, in: app)
-      XCTAssertFalse(visible.isEmpty, "More scrolling content is offscreen: \(scroll.debugDescription)")
-      guard !visible.isEmpty else { return }
+      guard visible.height >= 44 else {
+        failScrollGeometry("No usable panel swipe lane: \(visible)", app: app)
+        return
+      }
       let origin = app.coordinate(withNormalizedOffset: .zero)
       let start = origin.withOffset(CGVector(
         dx: visible.midX - app.frame.minX,
@@ -1152,7 +1250,10 @@ final class AccessibilityUITests: XCTestCase {
     }
     let visible = visibleScrollFrame(scroll, in: app)
     XCTAssertFalse(visible.isEmpty, "Transcript scrolling content is offscreen: \(scroll.debugDescription)")
-    guard !visible.isEmpty else { return }
+    guard visible.height >= 44 else {
+      failScrollGeometry("No usable transcript swipe lane: \(visible)", app: app)
+      return
+    }
     // Transcript scroll views extend under both safe-area insets in either
     // orientation. Keep the entire stroke inside visible content.
     let start = scroll.coordinate(withNormalizedOffset: .zero)
@@ -1176,19 +1277,44 @@ final class AccessibilityUITests: XCTestCase {
       .allElementsBoundByIndex.first { $0.isHittable }
     let latest = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Jump to latest'"))
       .allElementsBoundByIndex.first { $0.isHittable }
-    let top = max(visible.minY, header.frame.maxY + 8)
-    var bottom = composer.map { min(visible.maxY, $0.frame.minY - 16) } ?? visible.maxY
-    if let latest { bottom = min(bottom, latest.frame.minY - 8) }
+    let top = max(visible.minY, header.isHittable ? header.frame.maxY + 8 : visible.minY)
+    let bottom = composer.map { min(visible.maxY, $0.frame.minY - 8) } ?? visible.maxY
     let notices = app.buttons["conversation-notices"]
-    if notices.exists, notices.isHittable { bottom = min(bottom, notices.frame.minY - 8) }
-    if bottom <= top {
-      print("Invalid transcript viewport: header=\(header.frame), composer=\(String(describing: composer?.frame)), latest=\(String(describing: latest?.frame)), visible=\(visible)")
+    let overlays = [latest, notices.exists && notices.isHittable ? notices : nil].compactMap { $0 }
+    // Floating pills obscure their own width, not the entire transcript.
+    // Choose the longest vertical lane around their actual rectangles.
+    let lanes = [0.7, 0.25, 0.9, 0.1].map { fraction -> CGRect in
+      let x = visible.minX + visible.width * fraction
+      var laneBottom = bottom
+      for overlay in overlays {
+        let obstruction = overlay.frame.insetBy(dx: -4, dy: -4)
+        if x >= obstruction.minX && x <= obstruction.maxX,
+          obstruction.maxY > top, obstruction.minY < laneBottom {
+          laneBottom = min(laneBottom, obstruction.minY)
+        }
+      }
+      return CGRect(x: x - 2, y: top, width: 4, height: max(0, laneBottom - top))
     }
-    return CGRect(x: visible.minX, y: top, width: visible.width, height: max(0, bottom - top))
+    return lanes.max(by: { $0.height < $1.height }) ?? .zero
+  }
+
+  private func controlBelongsToScroll(_ control: XCUIElement, scroll: XCUIElement) -> Bool {
+    let predicate = control.identifier.isEmpty
+      ? NSPredicate(format: "label == %@", control.label)
+      : NSPredicate(format: "identifier == %@", control.identifier)
+    return scroll.descendants(matching: control.elementType).matching(predicate)
+      .allElementsBoundByIndex.contains { $0.frame == control.frame }
+  }
+
+  private func failScrollGeometry(_ message: String, app: XCUIApplication) {
+    let attachment = XCTAttachment(screenshot: app.screenshot())
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    XCTFail(message + "\n" + app.debugDescription)
   }
 
   private func hasOwnScrollingChrome(_ scroll: XCUIElement) -> Bool {
-    ["answer-more-scroll", "conversation-recovery-scroll", "browser-history-scroll",
+    ["settings-scroll", "answer-more-scroll", "conversation-recovery-scroll", "browser-history-scroll",
       "conversation-notices-scroll", "conversation-export-scroll",
       "ui-test-support-bundle-fallback"].contains(scroll.identifier)
   }

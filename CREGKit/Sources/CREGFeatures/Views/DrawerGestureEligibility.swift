@@ -23,3 +23,8 @@ struct DrawerGestureEligibility: Equatable {
       && (revealed || startX < 44) && abs(dx) > abs(dy)
   }
 }
+
+struct DrawerDragState: Equatable {
+  var eligibility = DrawerGestureEligibility()
+  var translation: CGFloat = 0
+}

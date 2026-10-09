@@ -5,6 +5,18 @@ import Testing
 
 #if DEBUG
   @Suite struct AccessibilityUITestConfigurationTests {
+    @Test func developerModeIsExplicitAndRejectsMalformedValues() {
+      let scenario = AccessibilityUITestConfiguration.scenarioEnvironmentKey
+      let mode = AccessibilityUITestConfiguration.developerModeEnvironmentKey
+      #expect(AccessibilityUITestConfiguration.request(environment: [
+        scenario: "conversation-notices", mode: "1"
+      ]) == .scenario(.init(scenario: .conversationNotices, dynamicTypeSize: nil, developerMode: true)))
+      #expect(AccessibilityUITestConfiguration.request(environment: [
+        scenario: "conversation-notices", mode: "YES"
+      ]) == .invalidConfiguration)
+      #expect(AccessibilityUITestConfiguration.request(environment: [mode: "1"]) == .invalidConfiguration)
+    }
+
     @Test func canonicalScenarioManifestRemainsExplicitlyReviewed() {
       let expectedScenarios = [
         "empty-chat",
@@ -38,6 +50,9 @@ import Testing
         "export-more",
         "browser-long-previews",
         "compact-jump",
+        "history-progress",
+        "history-progress-unavailable",
+        "drawer-gesture-cancellation",
       ]
 
       #expect(

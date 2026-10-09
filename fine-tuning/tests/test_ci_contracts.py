@@ -1423,9 +1423,9 @@ def test_accessibility_commands_each_require_the_reviewed_budget(step_name, revi
 
 
 @pytest.mark.parametrize("budget,expected_message", [
-    (None, "accessibility job timeout-minutes must be 75"),
-    (74, "accessibility job must not override reviewed run context: timeout-minutes"),
-    (76, "accessibility job must not override reviewed run context: timeout-minutes"),
+    (None, "accessibility job timeout-minutes must be 105"),
+    (104, "accessibility job must not override reviewed run context: timeout-minutes"),
+    (106, "accessibility job must not override reviewed run context: timeout-minutes"),
 ])
 def test_accessibility_job_requires_the_reviewed_budget(budget, expected_message):
     path, workflow = accessibility_workflow()
@@ -1435,6 +1435,58 @@ def test_accessibility_job_requires_the_reviewed_budget(budget, expected_message
     else:
         job["timeout-minutes"] = budget
     assert any(failure.endswith(expected_message) for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
+
+
+def test_accessibility_shards_cover_every_selector_exactly_once():
+    shards = check_ci_contracts.ACCESSIBILITY_UI_SHARDS
+    members = [selector for group in shards.values() for selector in group]
+    assert sorted(members) == list(check_ci_contracts.ACCESSIBILITY_UI_SELECTORS)
+    assert len(members) == len(set(members))
+    assert shards["canonical"] == (check_ci_contracts.ACCESSIBILITY_CANONICAL_SELECTOR,)
+    assert shards["interactions-a"] == check_ci_contracts.ACCESSIBILITY_INTERACTION_SELECTORS[::2]
+    assert shards["interactions-b"] == check_ci_contracts.ACCESSIBILITY_INTERACTION_SELECTORS[1::2]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "fail-fast", "duplicate", "membership", "order", "skip-command"])
+def test_accessibility_shard_strategy_cannot_silently_drop_coverage(mutation):
+    path, workflow = accessibility_workflow()
+    job = workflow["jobs"]["accessibility"]
+    strategy = job["strategy"]
+    rows = strategy["matrix"]["include"]
+    if mutation == "missing":
+        job.pop("strategy")
+    elif mutation == "fail-fast":
+        strategy["fail-fast"] = True
+    elif mutation == "duplicate":
+        rows[1] = rows[0].copy()
+    elif mutation == "membership":
+        rows[0]["skip-arguments"] = rows[0]["skip-arguments"].split(" ", 1)[1]
+    elif mutation == "order":
+        rows.reverse()
+    else:
+        step = next(item for item in job["steps"] if item.get("name") == "Test focused accessibility UI contracts")
+        step["run"] = step["run"].replace("${{ matrix.skip-arguments }}", "")
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "name", "needs", "always", "accept-failure", "artifact"])
+def test_accessibility_aggregate_and_artifacts_are_required(mutation):
+    path, workflow = accessibility_workflow()
+    aggregate = workflow["jobs"]["accessibility-contracts"]
+    if mutation == "missing":
+        workflow["jobs"].pop("accessibility-contracts")
+    elif mutation == "name":
+        aggregate["name"] = "Different required check"
+    elif mutation == "needs":
+        aggregate["needs"] = "build"
+    elif mutation == "always":
+        aggregate.pop("if")
+    elif mutation == "accept-failure":
+        aggregate["steps"][0]["run"] += " || true"
+    else:
+        upload = next(item for item in workflow["jobs"]["accessibility"]["steps"] if "upload-artifact@" in item.get("uses", ""))
+        upload["with"]["name"] = "results"
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
 
 @pytest.mark.parametrize("mutation", ["action", "path", "shell", "operator", "missing"])

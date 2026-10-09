@@ -192,7 +192,7 @@ extension HistoryStore {
   }
 
   func rename(id: UUID, title: String) async throws {
-    let trimmed = Self.autoTitle(from: title)
+    let trimmed = Self.normalizedRenameTitle(from: title)
     try await queue.write { db in
       try db.execute(
         sql: """

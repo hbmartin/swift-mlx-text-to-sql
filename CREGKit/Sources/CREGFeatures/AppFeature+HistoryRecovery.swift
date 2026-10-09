@@ -16,7 +16,9 @@ extension AppFeature {
     var conversationID: UUID
     var kind: Kind
   }
-  public enum ConversationOperation: Equatable, Hashable, Sendable { case rename, export, feedback }
+  public enum ConversationOperation: Equatable, Hashable, Sendable {
+    case rename, export, feedback, draft, resultPresentation
+  }
   public enum HistorySummaryPhase: Equatable, Sendable {
     case idle
     case loading(UInt64)
