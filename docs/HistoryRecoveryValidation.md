@@ -32,6 +32,15 @@ These artifacts are retained beneath `/Users/haroldmartin/Library/Developer/Xcod
 
 [Drawer rollback presentation samples](artifacts/drawer-rollback-motion.csv) retain **381 samples across four gestures** from a passing simulator run. The DEBUG capture modifier drives the actual chat offset with its animatable presentation value. Spring opening/closing rollbacks contain 19/11 intermediate frames; Reduce Motion opening/closing contain 10/10, reaching their endpoints in approximately 174/167 ms. This verifies interpolation rather than observing only endpoint state. XcodeBuildMCP video export was unavailable because its recording helper could not find the expected SimulatorKit framework; no video is claimed.
 
+Each accessibility CI shard now creates its own ephemeral iPhone 18 Pro / iOS 27 simulator. Its name includes run, attempt, and shard; both build and test target the returned UDID. Cleanup always attempts shutdown and deletion after testing. The three-shard matrix, required aggregate check, budgets, and distinct result artifacts remain in place. Adding the retry selector brings the reviewed union to **36 selectors**, covered exactly once across canonical (1), interactions-a (18), and interactions-b (17).
+
+The local CI checker passes, and **223 Python contract tests pass** (3.03 seconds). Mutation checks enforce creation, isolated naming, runtime/device, exported UDID, build/test destinations, unconditional cleanup, cleanup ordering, and complete selector coverage. CI provisioning itself has not been run on GitHub for these commits.
+
+```sh
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_ci_contracts.py
+uv run --project fine-tuning --no-sync pytest fine-tuning/tests/test_ci_contracts.py -q
+```
+
 The earlier validation sections below describe historical code and runs before this follow-up.
 
 ## Earlier October 9 validation (before the edit ledger)

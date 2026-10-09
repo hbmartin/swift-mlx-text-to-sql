@@ -75,6 +75,7 @@ jobs:
               -skip-testing:CREGUITests/AccessibilityUITests/testCompactJumpToLatestWithKeyboardAndCorrection
               -skip-testing:CREGUITests/AccessibilityUITests/testConversationLoadFailureOffersRecovery
               -skip-testing:CREGUITests/AccessibilityUITests/testConversationNoticesScrollAndRetainDismissalState
+              -skip-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings
               -skip-testing:CREGUITests/AccessibilityUITests/testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion
               -skip-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe
               -skip-testing:CREGUITests/AccessibilityUITests/testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows
@@ -107,26 +108,6 @@ jobs:
               -skip-testing:CREGUITests/AccessibilityUITests/testChartPreparationHasDistinctIdentityInProductionPresentation
               -skip-testing:CREGUITests/AccessibilityUITests/testCompactJumpToLatestWithKeyboardAndCorrection
               -skip-testing:CREGUITests/AccessibilityUITests/testConversationNoticesScrollAndRetainDismissalState
-              -skip-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe
-              -skip-testing:CREGUITests/AccessibilityUITests/testHighestRiskScreensAtAX5Landscape
-              -skip-testing:CREGUITests/AccessibilityUITests/testHistoryStoreRetryAtAX5PortraitAndLandscape
-              -skip-testing:CREGUITests/AccessibilityUITests/testLongDrawerPreviewsStayBoundedAndSettingsReachable
-              -skip-testing:CREGUITests/AccessibilityUITests/testMoreActionsRemainAccessibleInConstrainedHeight
-              -skip-testing:CREGUITests/AccessibilityUITests/testMoreRetainsHeldExportUntilExplicitRegeneration
-              -skip-testing:CREGUITests/AccessibilityUITests/testPresentedSheetsReceiveEffectiveAX5
-              -skip-testing:CREGUITests/AccessibilityUITests/testProductionSupportBindingDismissesAndReleasesArtifacts
-              -skip-testing:CREGUITests/AccessibilityUITests/testRetainedExportDoesNotAutomaticallyPresentSharing
-              -skip-testing:CREGUITests/AccessibilityUITests/testSharingReturnsToAnswerWithMoreClosed
-              -skip-testing:CREGUITests/AccessibilityUITests/testSimpleChartValuesAreAccessible
-              -skip-testing:CREGUITests/AccessibilityUITests/testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget
-          - shard: interactions-b
-            skip-arguments: >-
-              -skip-testing:CREGUITests/AccessibilityUITests/testAccessibleHeadersWrapAtLargeTextSizes
-              -skip-testing:CREGUITests/AccessibilityUITests/testAnswerActionsAreAtLeast44Points
-              -skip-testing:CREGUITests/AccessibilityUITests/testCancellingSharingReturnsToAnswerWithMoreClosed
-              -skip-testing:CREGUITests/AccessibilityUITests/testCanonicalScreensDoNotClipTextOrShrinkHitRegions
-              -skip-testing:CREGUITests/AccessibilityUITests/testChartRecoveryControlsOwnFullLeadingTouchTargets
-              -skip-testing:CREGUITests/AccessibilityUITests/testConversationLoadFailureOffersRecovery
               -skip-testing:CREGUITests/AccessibilityUITests/testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion
               -skip-testing:CREGUITests/AccessibilityUITests/testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows
               -skip-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface
@@ -139,6 +120,27 @@ jobs:
               -skip-testing:CREGUITests/AccessibilityUITests/testRetryInspectionOffersDismissOnlyAtAX5PortraitAndLandscape
               -skip-testing:CREGUITests/AccessibilityUITests/testSharingSurvivesConcurrentCompletionInLongTranscript
               -skip-testing:CREGUITests/AccessibilityUITests/testSupportWarningAtAX5PortraitAndLandscape
+          - shard: interactions-b
+            skip-arguments: >-
+              -skip-testing:CREGUITests/AccessibilityUITests/testAccessibleHeadersWrapAtLargeTextSizes
+              -skip-testing:CREGUITests/AccessibilityUITests/testAnswerActionsAreAtLeast44Points
+              -skip-testing:CREGUITests/AccessibilityUITests/testCancellingSharingReturnsToAnswerWithMoreClosed
+              -skip-testing:CREGUITests/AccessibilityUITests/testCanonicalScreensDoNotClipTextOrShrinkHitRegions
+              -skip-testing:CREGUITests/AccessibilityUITests/testChartRecoveryControlsOwnFullLeadingTouchTargets
+              -skip-testing:CREGUITests/AccessibilityUITests/testConversationLoadFailureOffersRecovery
+              -skip-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings
+              -skip-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe
+              -skip-testing:CREGUITests/AccessibilityUITests/testHighestRiskScreensAtAX5Landscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testHistoryStoreRetryAtAX5PortraitAndLandscape
+              -skip-testing:CREGUITests/AccessibilityUITests/testLongDrawerPreviewsStayBoundedAndSettingsReachable
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreActionsRemainAccessibleInConstrainedHeight
+              -skip-testing:CREGUITests/AccessibilityUITests/testMoreRetainsHeldExportUntilExplicitRegeneration
+              -skip-testing:CREGUITests/AccessibilityUITests/testPresentedSheetsReceiveEffectiveAX5
+              -skip-testing:CREGUITests/AccessibilityUITests/testProductionSupportBindingDismissesAndReleasesArtifacts
+              -skip-testing:CREGUITests/AccessibilityUITests/testRetainedExportDoesNotAutomaticallyPresentSharing
+              -skip-testing:CREGUITests/AccessibilityUITests/testSharingReturnsToAnswerWithMoreClosed
+              -skip-testing:CREGUITests/AccessibilityUITests/testSimpleChartValuesAreAccessible
+              -skip-testing:CREGUITests/AccessibilityUITests/testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -157,6 +159,17 @@ jobs:
             ${{ runner.temp }}/creg-source-packages
           key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', 'CREG.xcodeproj/project.pbxproj', 'CREG/**', 'CREGUITests/**') }}
 
+      - name: Create isolated accessibility simulator
+        id: accessibility_simulator
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        env:
+          BASH_ENV: ''
+          ENV: ''
+        run: |
+          simulator_name='CREG-accessibility-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}'
+          udid="$(/usr/bin/xcrun simctl create "$simulator_name" com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro com.apple.CoreSimulator.SimRuntime.iOS-27-0)"
+          printf 'udid=%s\n' "$udid" >> "$GITHUB_OUTPUT"
+
       - name: Build focused accessibility UI contracts
         timeout-minutes: 30
         shell: /usr/bin/env -i HOME=/Users/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
@@ -165,7 +178,7 @@ jobs:
           /usr/bin/xcodebuild build-for-testing \
             -project CREG.xcodeproj \
             -scheme CREG \
-            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
+            -destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}' \
             -clonedSourcePackagesDirPath "${{ runner.temp }}/creg-source-packages" \
             -derivedDataPath "${{ runner.temp }}/creg-derived-data" \
             -skipPackagePluginValidation \
@@ -181,7 +194,7 @@ jobs:
           /usr/bin/xcodebuild test-without-building \
             -project CREG.xcodeproj \
             -scheme CREG \
-            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
+            -destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}' \
             -clonedSourcePackagesDirPath "${{ runner.temp }}/creg-source-packages" \
             -derivedDataPath "${{ runner.temp }}/creg-derived-data" \
             -resultBundlePath "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult" \
@@ -222,9 +235,20 @@ jobs:
             -only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity \
             -only-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface \
             -only-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe \
+            -only-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings \
           ${{ matrix.skip-arguments }} \
             CODE_SIGNING_ALLOWED=NO \
             CREG_ACCESSIBILITY_HARNESS_BUILD=YES
+
+      - name: Delete isolated accessibility simulator
+        if: ${{ always() }}
+        shell: /usr/bin/env -i HOME=/Users/runner PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          udid='${{ steps.accessibility_simulator.outputs.udid }}'
+          if [ -n "$udid" ]; then
+            /usr/bin/xcrun simctl shutdown "$udid" || true
+            /usr/bin/xcrun simctl delete "$udid"
+          fi
 
       - name: Upload accessibility UI test results
         if: ${{ always() }}
