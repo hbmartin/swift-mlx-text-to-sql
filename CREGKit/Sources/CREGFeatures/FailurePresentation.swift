@@ -223,28 +223,64 @@ extension FailurePresentation {
       diagnostic: DiagnosticDetails.describe(error))
   }
 
-  private static let draftSaveMessage = "CREG couldn’t save your latest draft. It is kept while CREG remains open. Retry saving or copy it before closing the app."
-
   static func resultPreferenceSave(error: any Error) -> Self {
-    var failure = history(operation: .messageSave, error: error)
-    failure.title = "Display choice not saved"
-    failure.message = "CREG couldn’t save your result display choice. It is kept while CREG remains open. Retry saving before closing the app."
-    return failure
+    history(operation: .resultPreferenceSave, error: error)
   }
 
   static func history(
     operation: HistoryFailureOperation,
     error: any Error
   ) -> FailurePresentation {
-    if error is HistoryStoreUnavailableError {
-      return FailurePresentation(code: operation.code, title: operation == .draftSave ? "Draft not saved" : "History unavailable",
-        message: operation == .draftSave ? draftSaveMessage : "CREG couldn’t open your conversation history. Tap Retry history to try again.",
-        diagnostic: DiagnosticDetails.describe(error),
-        cause: .historyStoreUnavailable, recovery: .retryHistory)
+    let unavailable = error is HistoryStoreUnavailableError
+    var copy = operation.copy
+    if unavailable, operation != .draftSave, operation != .resultPreferenceSave {
+      copy = ("History unavailable", "CREG couldn’t open your conversation history. Tap Retry history to try again.")
     }
+    return FailurePresentation(
+      code: operation.code,
+      title: copy.title,
+      message: copy.message,
+      diagnostic: DiagnosticDetails.describe(error),
+      cause: unavailable ? .historyStoreUnavailable : nil,
+      recovery: unavailable || operation == .summaryLoad ? .retryHistory : nil)
+  }
+}
+
+enum HistoryFailureOperation: String, Sendable {
+  case load
+  case summaryLoad
+  case messageSave
+  case resultPreferenceSave
+  case draftSave
+  case eventSave
+  case export
+  case conversationCreate
+  case rename
+  case delete
+  case search
+  case feedbackSave
+  case supportBundle
+
+  var code: String {
+    switch self {
+    case .load, .summaryLoad: "history_load_failed"
+    case .messageSave: "history_message_save_failed"
+    case .resultPreferenceSave: "history_result_preference_save_failed"
+    case .draftSave: "history_draft_save_failed"
+    case .eventSave: "history_event_save_failed"
+    case .export: "history_export_failed"
+    case .conversationCreate: "history_conversation_create_failed"
+    case .rename: "history_rename_failed"
+    case .delete: "history_delete_failed"
+    case .search: "history_search_failed"
+    case .feedbackSave: "history_feedback_save_failed"
+    case .supportBundle: "support_bundle_failed"
+    }
+  }
+  var copy: (title: String, message: String) {
     let title: String
     let message: String
-    switch operation {
+    switch self {
     case .summaryLoad:
       title = "History unavailable"
       message = "CREG couldn’t load your conversation history. Tap Retry history to try again."
@@ -254,7 +290,10 @@ extension FailurePresentation {
         "CREG couldn’t load your saved conversation. Try opening it again or start a new chat."
     case .draftSave:
       title = "Draft not saved"
-      message = draftSaveMessage
+      message = "CREG couldn’t save your latest draft. It is kept while CREG remains open. Retry saving or copy it before closing the app."
+    case .resultPreferenceSave:
+      title = "Display choice not saved"
+      message = "CREG couldn’t save your result display choice. It is kept while CREG remains open. Retry saving before closing the app."
     case .messageSave, .eventSave:
       title = "Conversation not saved"
       message =
@@ -281,43 +320,7 @@ extension FailurePresentation {
       title = "Support bundle failed"
       message = "CREG couldn’t assemble the support bundle. Please try again."
     }
-    return FailurePresentation(
-      code: operation.code,
-      title: title,
-      message: message,
-      diagnostic: DiagnosticDetails.describe(error),
-      recovery: operation == .summaryLoad ? .retryHistory : nil)
-  }
-}
-
-enum HistoryFailureOperation: String, Sendable {
-  case load
-  case summaryLoad
-  case messageSave
-  case draftSave
-  case eventSave
-  case export
-  case conversationCreate
-  case rename
-  case delete
-  case search
-  case feedbackSave
-  case supportBundle
-
-  var code: String {
-    switch self {
-    case .load, .summaryLoad: "history_load_failed"
-    case .messageSave: "history_message_save_failed"
-    case .draftSave: "history_draft_save_failed"
-    case .eventSave: "history_event_save_failed"
-    case .export: "history_export_failed"
-    case .conversationCreate: "history_conversation_create_failed"
-    case .rename: "history_rename_failed"
-    case .delete: "history_delete_failed"
-    case .search: "history_search_failed"
-    case .feedbackSave: "history_feedback_save_failed"
-    case .supportBundle: "support_bundle_failed"
-    }
+    return (title, message)
   }
 }
 

@@ -14,6 +14,7 @@ extension AppFeature {
     public var phase: DeletionPhase = .undoWindow
     public var deferredFailures: [FailurePresentation] = []
     public var deferredOperationFailures: [OwnedFailure] = []
+    var deferredNewOccurrenceOwners: Set<FailureOwner> = []
     public var diagnosticOperationNumber: UInt64 = 0
     public init(token: UUID, summary: ConversationSummary) {
       self.token = token

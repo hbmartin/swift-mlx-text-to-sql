@@ -435,6 +435,7 @@ import Synchronization
     @State private var heldExport: HeldUITestExport
     private let scenario: AccessibilityUITestConfiguration.Scenario
     @State private var drawerReduceMotion = false
+    @State private var drawerMotionProbe: DrawerMotionProbe?
     private let selectedID: UUID
     private let otherID: UUID
     init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationNotices,
@@ -463,7 +464,7 @@ import Synchronization
       let id = initial.chat!.conversationID
       selectedID = id
       otherID = initial.conversations.first(where: { $0.id != id })!.id
-      if scenario == .drawerGestureCancellation { DrawerMotionCaptureState.enabled = true }
+      _drawerMotionProbe = State(initialValue: scenario == .drawerGestureCancellation ? DrawerMotionProbe() : nil)
       if scenario == .browserPerformance {
         DrawerRowProbe.enabled = true
         DrawerRowProbe.realized = []; DrawerRowProbe.renders = [:]
@@ -526,7 +527,7 @@ import Synchronization
       VStack(spacing: 0) {
         if scenario == .drawerGestureCancellation {
           HStack {
-            Button("Reset motion capture") { DrawerMotionCaptureState.reset() }
+            Button("Reset motion capture") { drawerMotionProbe?.reset() }
               .accessibilityIdentifier("reset-drawer-motion").frame(minHeight: 44)
             Button("Reduce Motion") { drawerReduceMotion.toggle() }
               .accessibilityIdentifier("toggle-drawer-motion").frame(minHeight: 44)
@@ -561,6 +562,7 @@ import Synchronization
         }
         AppRootView(store: store, now: PreviewFixtures.now)
       }
+      .environment(\.cregDrawerMotionProbe, drawerMotionProbe)
       .environment(\.cregUITestReduceMotion, scenario == .recovery || scenario == .compactJump ? true : scenario == .drawerGestureCancellation ? drawerReduceMotion : nil)
       .task {
         if scenario == .retainedExport || scenario == .exportMore {

@@ -508,6 +508,8 @@ final class AccessibilityUITests: XCTestCase {
       let opening = app.descendants(matching: .any)["drawer-rollback-frames"].firstMatch.label
       XCTAssertGreaterThan(Int(opening.split(separator: "|")[0].split(separator: ",")[0]) ?? 0, 1,
         "Short opening rollback must interpolate, Reduce Motion: \(reduceMotion)")
+      XCTAssertEqual(Int(opening.split(separator: "|")[0].split(separator: ",")[1]), 0,
+        "Each fixture starts with cleared closing rollback capture")
       print("Drawer opening rollback Reduce Motion \(reduceMotion): \(opening)")
       let attachment = XCTAttachment(screenshot: app.screenshot())
       attachment.name = "Drawer rollback Reduce Motion \(reduceMotion)"
@@ -526,6 +528,8 @@ final class AccessibilityUITests: XCTestCase {
       let closing = app.descendants(matching: .any)["drawer-rollback-frames"].firstMatch.label
       XCTAssertGreaterThan(Int(closing.split(separator: "|")[0].split(separator: ",")[1]) ?? 0, 1,
         "Short closing rollback must interpolate, Reduce Motion: \(reduceMotion)")
+      XCTAssertEqual(Int(closing.split(separator: "|")[0].split(separator: ",")[0]), 0,
+        "Reset clears opening capture before closing interpolation, Reduce Motion: \(reduceMotion)")
       print("Drawer closing rollback Reduce Motion \(reduceMotion): \(closing)")
       end.press(forDuration: 0.05, thenDragTo: start, withVelocity: .fast, thenHoldForDuration: 0)
       app.buttons["interrupt-drawer-drag"].tap()
@@ -587,7 +591,7 @@ final class AccessibilityUITests: XCTestCase {
         app.buttons["Settings"].tap()
         assertEffectiveDynamicType("accessibility5", in: app)
       }
-      for code in ["history_draft_save_failed", "history_message_save_failed"] {
+      for code in ["history_draft_save_failed", "history_result_preference_save_failed"] {
         let retry = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-retry-saving-" + code + "-")).firstMatch
         _ = scrollToControl("Retry saving", in: app)
         XCTAssertTrue(retry.waitForExistence(timeout: 5))

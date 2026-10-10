@@ -1,5 +1,42 @@
 # History recovery and notice presentation validation
 
+
+## Local Apple testing policy and conversation recovery (October 10, 2026)
+
+Apple tests now run locally through XcodeBuildMCP. CI retains Swift dependency pin agreement and checked-in package resolution, Python tests and corpus/schema checks, publisher contracts, security guards, and DocC generation. The accessibility shards, aggregate job, simulator provisioning/cleanup, Swift test step, and dependency job's Metal download are removed. CI contracts reject Apple test execution in any workflow and restoration of the removed accessibility jobs. Documentation builds retain their Metal toolchain requirement.
+
+The root `AGENTS.md` requires affected package suites and UI selectors; full Apple suites and the canonical accessibility matrix require an explicit user request. Compatible simulators are reused, and commands, results, and artifact paths must be reported. No schema, dependency pin, or persistence format changes are included. The previously reported ghost-message retry and stale drag eligibility sequences remain deferred; gesture eligibility and release behavior are unchanged.
+
+Missing preference-message fallbacks throw a typed invariant error and settle through the normal failure path without storage access. Root rename delegates normalize titles before optimistic display and persistence, ignoring empty normalized titles. Accepted rename/export failures and each feedback failure create a new notice occurrence. Duplicate settlements keep identity and ordering. Pending deletion carries per-owner occurrence intent, replacing and moving fresh deferred failures; Undo and failed deletion restore it, while committed deletion records diagnostics. Draft/preference settlements follow the same rule.
+
+Preference saves use `history_result_preference_save_failed`, distinct from message saves. Per-operation copy is centralized before diagnostics, cause, and recovery are attached. Draft/preference copy is retained for unavailable history; other operations retain generic unavailable-history copy. Drawer interpolation capture is a fixture-owned, non-observable MainActor reference injected through a DEBUG environment value defaulting to nil. Sampling, reset behavior, accessibility format, and the 160-sample bound are preserved.
+
+The final focused package run passed **118 tests in five suites** (`PR158RegressionFixTests`, `ConversationNoticeTests`, `HistoryRecoveryRegressionTests`, `DiagnosticsAndFailurePresentationTests`, and `FeatureFailureDiagnosticsTests`; 69.3 seconds including build overhead). This includes a no-storage invariant failure, direct delegate normalization with whitespace/newlines/long Unicode/empty titles, owner-specific retry success, A → B → fresh identical A ordering and displayed-notice dismissal, duplicate settlements, and deterministic held draft/preference/rename/export/feedback failures across Undo, failed deletion, and committed deletion. Probe tests verify nil environment defaults, independent instances, reset behavior, and the sample bound.
+
+The CI checker, package-pin checker, and whitespace check pass; **129 Python CI-contract tests pass** (3.38 seconds). No existing baseline failures occurred in these focused checks. The four historical chart assertions described below were outside the selected suites and were not rerun. No full Apple suite was run.
+
+Commands were run from the repository root:
+
+```sh
+xcodebuildmcp swift-package test --package-path "$PWD/CREGKit" --filter 'PR158RegressionFixTests|ConversationNoticeTests|HistoryRecoveryRegressionTests|DiagnosticsAndFailurePresentationTests|FeatureFailureDiagnosticsTests' --parallel false
+xcodebuildmcp simulator test --project-path "$PWD/CREG.xcodeproj" --scheme CREG --configuration Debug --simulator-id 31B09574-9781-45A7-816D-6A1916E1BA16 --extra-args '-only-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe' '-only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity' '-only-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface' '-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings' '-skipPackagePluginValidation' '-skipMacroValidation' 'CODE_SIGNING_ALLOWED=NO' 'CREG_ACCESSIBILITY_HARNESS_BUILD=YES'
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_ci_contracts.py
+uv run --project fine-tuning --no-sync python -m pytest fine-tuning/tests/test_ci_contracts.py -q
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_swift_package_pins.py
+git diff --check
+```
+
+The first four-selector UI run passed notice identity and neutral history warnings. It exposed two test-expectation issues: recovery still searched for the old message-save code, and an added immediate-reset assertion expected a redraw from a non-observable probe. The recovery selector now uses the new preference code; reset is checked on the next interpolated sample, while the unit test checks reset directly. Both affected selectors were rerun with the same command and build settings, retaining only their two `-only-testing` arguments. The two-selector retest passed **2 tests, 0 failures** in **134.4 seconds**, so all four requested selectors passed across the initial run and retest. The existing iPhone 18 Pro / iOS 27 simulator was preserved. Drawer capture recorded **11/12 spring** and **10/10 Reduce Motion** opening/closing rollback frames; the opposite counter stayed zero after each reset.
+
+| Run | Retained artifact |
+| --- | --- |
+| Final focused package | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-10T17-38-42-443Z_pid60413_11d32032.log` |
+| Initial four-selector UI run | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/result-bundles/test_sim_2026-10-10T17-37-42-420Z_pid54378_5397aadd.xcresult` |
+| Drawer and write-recovery retest | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/result-bundles/test_sim_2026-10-10T17-40-35-732Z_pid73100_765c22d9.xcresult` |
+| CI checker, Python tests, package pins, whitespace | `/tmp/creg-recovery-2026-10-10/ci-contract-check.log`, `/tmp/creg-recovery-2026-10-10/ci-contract-tests.log`, `/tmp/creg-recovery-2026-10-10/package-pin-check.log`, `/tmp/creg-recovery-2026-10-10/whitespace-check.log` |
+
+Historical runs below remain historical evidence; their full-suite execution and CI policy do not authorize new full-suite runs.
+
 ## Conversation edit ledger and drawer follow-up (October 9, 2026)
 
 Implemented from `48008632aab14af7b558e20e5dbabec0955bed22` on `codex/history-recovery-review-fixes`. This follow-up addresses comments **1–7, 10, 11, and 14**. Shared CI builds and the broader modal-retention, support-sheet identity, and temporary-file refactors from **8, 9, 12, and 13** remain deferred. No schema, dependency, or recovery-journal change is included.

@@ -69,4 +69,55 @@
       }
     }
   }
+  private struct DrawerMotionProbeKey: EnvironmentKey {
+    static let defaultValue: DrawerMotionProbe? = nil
+  }
+  extension EnvironmentValues {
+    var cregDrawerMotionProbe: DrawerMotionProbe? {
+      get { self[DrawerMotionProbeKey.self] }
+      set { self[DrawerMotionProbeKey.self] = newValue }
+    }
+  }
+  /// Captures actual interpolated presentation values, not the target offset.
+  /// Owned by each gesture fixture; absent from ordinary DEBUG and release views.
+  @MainActor final class DrawerMotionProbe {
+    var previous: (offset: CGFloat, revealed: Bool)?
+    var openingRollbackFrames = 0
+    var closingRollbackFrames = 0
+    var samples: [String] = []
+    var startedAt = ProcessInfo.processInfo.systemUptime
+    func reset() {
+      previous = nil; openingRollbackFrames = 0; closingRollbackFrames = 0
+      samples = []; startedAt = ProcessInfo.processInfo.systemUptime
+    }
+    func sample(_ offset: CGFloat, revealed: Bool, width: CGFloat) {
+      if previous == nil || abs(offset - previous!.offset) > 0.01, samples.count < 160 {
+        samples.append("\(Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1000)):\(Int(offset * 100))")
+      }
+      defer { previous = (offset, revealed) }
+      guard let previous, previous.revealed == revealed, offset > 0, offset < width else { return }
+      if !revealed && offset < previous.offset - 0.01 { openingRollbackFrames += 1 }
+      if revealed && offset > previous.offset + 0.01 { closingRollbackFrames += 1 }
+    }
+  }
+  nonisolated struct DrawerMotionCapture: AnimatableModifier {
+    @Environment(\.cregDrawerMotionProbe) private var probe
+    var offset: CGFloat
+    let revealWidth: CGFloat
+    let isRevealed: Bool
+    var animatableData: CGFloat {
+      get { offset }
+      set { offset = newValue }
+    }
+    @MainActor func body(content: Content) -> some View {
+      if let probe {
+        let _ = probe.sample(offset, revealed: isRevealed, width: revealWidth)
+        content.offset(x: offset).overlay(alignment: .topTrailing) {
+          Color.clear.frame(width: 1, height: 1).accessibilityElement()
+            .accessibilityLabel("\(probe.openingRollbackFrames),\(probe.closingRollbackFrames)|\(probe.samples.joined(separator: ","))")
+            .accessibilityIdentifier("drawer-rollback-frames")
+        }
+      } else { content.offset(x: offset) }
+    }
+  }
 #endif
