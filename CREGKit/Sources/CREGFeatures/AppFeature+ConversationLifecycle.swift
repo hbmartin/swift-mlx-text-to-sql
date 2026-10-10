@@ -207,10 +207,14 @@ extension AppFeature {
     state: inout State,
     conversationID: UUID,
     failure: FailurePresentation,
-    owner: FailureOwner? = nil
+    owner: FailureOwner? = nil, newOccurrence: Bool = false
   ) -> Effect<Action> {
     if state.isConversationPendingDeletion(conversationID) {
       if let owner, case .conversationOperation = owner {
+        if newOccurrence {
+          state.conversationDeletions[conversationID]?.deferredOperationFailures.removeAll { $0.owner == owner }
+          state.conversationDeletions[conversationID]?.deferredNewOccurrenceOwners.insert(owner)
+        }
         let owned = OwnedFailure(owner: owner, failure: failure)
         if state.conversationDeletions[conversationID]?.deferredOperationFailures.contains(owned) != true {
           state.conversationDeletions[conversationID]?.deferredOperationFailures.append(owned)
@@ -229,7 +233,8 @@ extension AppFeature {
       recordDeletedConversationWriteFailure(failure: failure, operationNumber: state.conversationDeletions[conversationID]?.diagnosticOperationNumber)
       return .none
     }
-    return .send(.operationFailed(failure, owner: owner ?? .conversation(conversationID)))
+    return .send(.operationFailed(failure, owner: owner ?? .conversation(conversationID),
+      newOccurrence: newOccurrence))
   }
 
   func recordDeletedConversationWriteFailure(failure: FailurePresentation, operationNumber: UInt64?) {

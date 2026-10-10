@@ -2,6 +2,11 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
+  enum ConversationWriteInvariantError: Error, CustomStringConvertible {
+    case missingResultPresentationMessage
+    var description: String { "Result presentation write has no fallback message." }
+  }
+
   public enum ConversationWriteTarget: Hashable, Sendable {
     case draft
     case resultPresentation(UUID)
@@ -88,7 +93,9 @@ extension AppFeature {
               try await history.saveDraft(conversationID, draft)
             }
         case .resultPresentation(let preference):
-          guard var message = edit.fallbackMessage else { return }
+          guard var message = edit.fallbackMessage else {
+            throw ConversationWriteInvariantError.missingResultPresentationMessage
+          }
           message.resultPresentation = preference
           let savedMessage = message
           outcome = try await messageUpdateQueue.save(conversationID: conversationID,
@@ -132,6 +139,7 @@ extension AppFeature {
       if !state.hasOutstandingConversationWrites(owner: owner) {
         state.failures.removeAll { $0.owner == owner }
         state.conversationDeletions[conversationID]?.deferredOperationFailures.removeAll { $0.owner == owner }
+        state.conversationDeletions[conversationID]?.deferredNewOccurrenceOwners.remove(owner)
       }
       return .none
     case .failed(let failure):
@@ -139,7 +147,7 @@ extension AppFeature {
       state.conversationEdits[conversationID]?[target] = edit
       if state.isConversationPendingDeletion(conversationID) {
         return handleConversationWriteFailure(state: &state, conversationID: conversationID,
-          failure: failure, owner: owner)
+          failure: failure, owner: owner, newOccurrence: true)
       }
       guard state.isConversationLive(conversationID) else {
         recordDeletedConversationWriteFailure(failure: failure, operationNumber: nil)

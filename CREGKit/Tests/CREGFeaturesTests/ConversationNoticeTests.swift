@@ -134,3 +134,26 @@ import Testing
     #expect(!interrupted.canRelease(startX: 10, dx: 200, dy: 1, revealed: true))
   }
 }
+
+extension ConversationNoticeTests {
+  @Test func drawerMotionProbesAreFixtureOwnedBoundedAndResettable() {
+    #expect(EnvironmentValues().cregDrawerMotionProbe == nil)
+    let first = DrawerMotionProbe(), second = DrawerMotionProbe()
+    first.sample(100, revealed: false, width: 300)
+    first.sample(90, revealed: false, width: 300)
+    #expect(first.openingRollbackFrames == 1)
+    #expect(second.samples.isEmpty)
+    for offset in 0..<200 { first.sample(CGFloat(offset), revealed: true, width: 300) }
+    #expect(first.samples.count == 160)
+    #expect(first.closingRollbackFrames > 0)
+    first.reset()
+    #expect(first.previous == nil)
+    #expect(first.samples.isEmpty)
+    #expect(first.openingRollbackFrames == 0)
+    #expect(first.closingRollbackFrames == 0)
+    first.sample(80, revealed: false, width: 300)
+    #expect(first.samples.count == 1)
+    #expect(first.openingRollbackFrames == 0)
+    #expect(second.samples.isEmpty)
+  }
+}

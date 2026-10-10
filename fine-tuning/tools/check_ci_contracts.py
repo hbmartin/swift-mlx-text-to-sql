@@ -16,12 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PINNED_ACTION = re.compile(r"^\s*uses:\s*[^\s]+@([0-9a-f]{40})(?:\s+#.*)?$")
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-ACCESSIBILITY_CACHE_ACTION = (
-    "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
-)
-ACCESSIBILITY_UPLOAD_ACTION = (
-    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-)
 SETUP_UV_ACTION = "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78"
 SETUP_UV_ENV: Mapping[str, str] = MappingProxyType(
     {
@@ -32,169 +26,16 @@ SETUP_UV_ENV: Mapping[str, str] = MappingProxyType(
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
     }
 )
-ACCESSIBILITY_WORKFLOW_NAME = "CI"
-ACCESSIBILITY_UI_JOB = "accessibility"
-ACCESSIBILITY_UI_RUNNER = "xcode-27"
+CI_WORKFLOW_NAME = "CI"
 METAL_TOOLCHAIN_STEP: Mapping[str, str] = MappingProxyType(
     {"name": "Install Metal Toolchain", "run": "xcodebuild -downloadComponent MetalToolchain"}
 )
-ACCESSIBILITY_CACHE_PATHS = (
-    "CREGKit/.build\n"
-    "${{ runner.temp }}/creg-derived-data\n"
-    "${{ runner.temp }}/creg-source-packages\n"
-)
-ACCESSIBILITY_CACHE_KEY = (
-    "swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-"
-    "${{ hashFiles('CREGKit/Package.resolved', "
-    "'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', "
-    "'CREGKit/Package.swift', 'CREGKit/Sources/**', 'CREGKit/Tests/**', "
-    "'CREG.xcodeproj/project.pbxproj', 'CREG/**', 'CREGUITests/**') }}"
-)
 REVIEWED_RUN_WORKING_DIRECTORY = "${{ github.workspace }}"
-ACCESSIBILITY_UI_SHELL = (
-    "/usr/bin/env -i HOME=/Users/runner "
-    "PATH=/usr/bin:/bin:/usr/sbin:/sbin "
-    "/bin/bash --noprofile --norc -e -o pipefail {0}"
-)
 UBUNTU_REVIEWED_RUN_SHELL = (
     "/usr/bin/env -i HOME=/home/runner "
     "PATH=/usr/bin:/bin:/usr/sbin:/sbin "
     "/bin/bash --noprofile --norc -e -o pipefail {0}"
 )
-ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS = (
-    (
-        "-clonedSourcePackagesDirPath",
-        "${{ runner.temp }}/creg-source-packages",
-    ),
-    ("-derivedDataPath", "${{ runner.temp }}/creg-derived-data"),
-    (
-        "-resultBundlePath",
-        "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult",
-    ),
-)
-ACCESSIBILITY_UI_TEST_COMMAND = (
-    "/usr/bin/xcodebuild",
-    "test-without-building",
-    "-project",
-    "CREG.xcodeproj",
-    "-scheme",
-    "CREG",
-    "-destination",
-    "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
-    *(
-        token
-        for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
-        for token in argument
-    ),
-    "-skipPackagePluginValidation",
-    "-skipMacroValidation",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testHighestRiskScreensAtAX5Landscape",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testMalformedConfigurationRendersInvalidConfigurationScreen",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testChartPreparationHasDistinctIdentityInProductionPresentation",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testChartRecoveryControlsOwnFullLeadingTouchTargets",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testTerminalChartRecoveryOwnsOneFullLeadingTouchTarget",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testPreviewShowsNewTableWhenChartInputIdentityChanges",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testAnswerActionsAreAtLeast44Points",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testKnownIconControlsAreAtLeast44Points",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testAnswerActionAccessibilitySemantics",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testSharingReturnsToAnswerWithMoreClosed",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testCancellingSharingReturnsToAnswerWithMoreClosed",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testMoreClosesWhenAnswerActionLayoutChanges",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testMoreActionsRemainAccessibleInConstrainedHeight",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testSimpleChartValuesAreAccessible",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testSharingSurvivesConcurrentCompletionInLongTranscript",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testConversationLoadFailureOffersRecovery",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testHistoryStoreRetryAtAX5PortraitAndLandscape",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testRetryInspectionOffersDismissOnlyAtAX5PortraitAndLandscape",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testSupportWarningAtAX5PortraitAndLandscape",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testConversationNoticesScrollAndRetainDismissalState",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testRetainedExportDoesNotAutomaticallyPresentSharing",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testBrowserRefreshPreservesSearchAndKeyboardFocus",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testCanonicalScreensDoNotClipTextOrShrinkHitRegions",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testPresentedSheetsReceiveEffectiveAX5",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testAccessibleHeadersWrapAtLargeTextSizes",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testCorrectionControlsRemainReachableWithKeyboardAndReduceMotion",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testProductionSupportBindingDismissesAndReleasesArtifacts",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testMoreRetainsHeldExportUntilExplicitRegeneration",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testRetainedExportCanBeDiscardedWithoutClearingOtherNotices",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testLongDrawerPreviewsStayBoundedAndSettingsReachable",
-    "-only-testing:CREGUITests/AccessibilityUITests/"
-    "testCompactJumpToLatestWithKeyboardAndCorrection",
-    "-only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity",
-    "-only-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface",
-    "-only-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe",
-    "-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings",
-    "${{", "matrix.skip-arguments", "}}",
-    "CODE_SIGNING_ALLOWED=NO",
-    "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
-)
-ACCESSIBILITY_UI_BUILD_COMMAND = (
-    "/usr/bin/xcodebuild", "build-for-testing",
-    "-project", "CREG.xcodeproj", "-scheme", "CREG",
-    "-destination", "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
-    *(token for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS[:2] for token in argument),
-    "-skipPackagePluginValidation", "-skipMacroValidation",
-    "CODE_SIGNING_ALLOWED=NO", "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
-)
-ACCESSIBILITY_UI_SELECTORS = tuple(sorted(
-    token.removeprefix("-only-testing:") for token in ACCESSIBILITY_UI_TEST_COMMAND
-    if token.startswith("-only-testing:")))
-ACCESSIBILITY_CANONICAL_SELECTOR = "CREGUITests/AccessibilityUITests/testCanonicalScreensDoNotClipTextOrShrinkHitRegions"
-ACCESSIBILITY_INTERACTION_SELECTORS = tuple(
-    value for value in ACCESSIBILITY_UI_SELECTORS if value != ACCESSIBILITY_CANONICAL_SELECTOR)
-ACCESSIBILITY_UI_SHARDS = {
-    "canonical": (ACCESSIBILITY_CANONICAL_SELECTOR,),
-    "interactions-a": ACCESSIBILITY_INTERACTION_SELECTORS[::2],
-    "interactions-b": ACCESSIBILITY_INTERACTION_SELECTORS[1::2],
-}
-ACCESSIBILITY_UI_STRATEGY = {
-    "fail-fast": False, "max-parallel": 3,
-    "matrix": {"include": [
-        {"shard": name, "skip-arguments": " ".join(
-            "-skip-testing:" + selector for selector in ACCESSIBILITY_UI_SELECTORS
-            if selector not in members)}
-        for name, members in ACCESSIBILITY_UI_SHARDS.items()
-    ]},
-}
-ACCESSIBILITY_AGGREGATE_JOB = {
-    "name": "Accessibility UI contracts", "needs": "accessibility",
-    "if": "${{ always() }}", "runs-on": "ubuntu-latest", "timeout-minutes": 5,
-    "steps": [{"name": "Require all accessibility shards",
-        "shell": "/bin/bash --noprofile --norc -e -o pipefail {0}",
-        "run": "test '${{ needs.accessibility.result }}' = 'success'"}],
-}
 
 TESTFLIGHT_PUBLISHER_JOB = "testflight-publisher"
 TESTFLIGHT_PUBLISHER_RUNNER = "ubuntu-latest"
@@ -264,52 +105,6 @@ def setup_uv_step(*, identifier: str) -> dict[str, object]:
             "enable-cache": False,
         },
     }
-
-
-ACCESSIBILITY_SIMULATOR_CREATE_STEP = {
-    "name": "Create isolated accessibility simulator",
-    "id": "accessibility_simulator",
-    "shell": "/bin/bash --noprofile --norc -e -o pipefail {0}",
-    "env": {"BASH_ENV": "", "ENV": ""},
-    "run": """simulator_name='CREG-accessibility-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}'
-udid="$(/usr/bin/xcrun simctl create "$simulator_name" com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro com.apple.CoreSimulator.SimRuntime.iOS-27-0)"
-printf 'udid=%s\\n' "$udid" >> "$GITHUB_OUTPUT"
-""",
-}
-ACCESSIBILITY_SIMULATOR_CLEANUP_STEP = {
-    "name": "Delete isolated accessibility simulator",
-    "if": "${{ always() }}",
-    "shell": ACCESSIBILITY_UI_SHELL,
-    "run": """udid='${{ steps.accessibility_simulator.outputs.udid }}'
-if [ -n "$udid" ]; then
-  /usr/bin/xcrun simctl shutdown "$udid" || true
-  /usr/bin/xcrun simctl delete "$udid"
-fi
-""",
-}
-
-
-def accessibility_ui_bootstrap_steps() -> tuple[dict[str, object], ...]:
-    return (
-        {
-            "name": "Check out repository",
-            "uses": CHECKOUT_ACTION,
-            "with": {"persist-credentials": False},
-        },
-        {
-            "name": METAL_TOOLCHAIN_STEP["name"],
-            "run": METAL_TOOLCHAIN_STEP["run"],
-        },
-        {
-            "name": "Cache Swift and Xcode build artifacts",
-            "uses": ACCESSIBILITY_CACHE_ACTION,
-            "with": {
-                "path": ACCESSIBILITY_CACHE_PATHS,
-                "key": ACCESSIBILITY_CACHE_KEY,
-            },
-        },
-        dict(ACCESSIBILITY_SIMULATOR_CREATE_STEP),
-    )
 
 
 def testflight_publisher_bootstrap_steps() -> tuple[dict[str, object], ...]:
@@ -685,20 +480,7 @@ def exact_command_mismatch(
     return None
 
 
-def has_unquoted_value_after_flag(
-    command_tokens: Sequence[str], *, flag: str, value: str
-) -> bool:
-    """Recognize an expected value split into unquoted shell tokens."""
-    unquoted_tokens = tuple(shlex.split(value, comments=False, posix=True))
-    width = len(unquoted_tokens)
-    return any(
-        tuple(command_tokens[index + 1 : index + 1 + width]) == unquoted_tokens
-        for index, token in enumerate(command_tokens)
-        if token == flag
-    )
-
-
-def accessibility_workflows(
+def ci_workflows(
     workflows: Sequence[LoadedWorkflow] | None = None,
 ) -> list[tuple[Path, object]]:
     loaded = load_workflows() if workflows is None else workflows
@@ -706,7 +488,7 @@ def accessibility_workflows(
         (path, workflow)
         for path, _, workflow in loaded
         if isinstance(workflow, dict)
-        and workflow.get("name") == ACCESSIBILITY_WORKFLOW_NAME
+        and workflow.get("name") == CI_WORKFLOW_NAME
     ]
 
 
@@ -743,117 +525,6 @@ def checkout_credential_failures(
                     f"{step_number} persists credentials"
                 )
     return failures
-
-
-def _accessibility_ui_job_contract_failures(
-    path: Path, workflow: object, *, root: Path | None = None
-) -> list[str]:
-    prefix = f"{display_path(path, root)}: accessibility UI contract"
-    job, steps, failures = workflow_job_steps(
-        workflow, job_name=ACCESSIBILITY_UI_JOB, prefix=prefix
-    )
-    if job is None or steps is None:
-        return list(dict.fromkeys(failures))
-
-    if workflow.get("jobs", {}).get("accessibility-contracts") != ACCESSIBILITY_AGGREGATE_JOB:
-        failures.append(f"{prefix} aggregate check must require all shards and run after failures")
-    if job.get("name") != "Accessibility UI contracts (${{ matrix.shard }})":
-        failures.append(f"{prefix} shard check name is incorrect")
-    ui_build, build_failures = named_step(steps, name="Build focused accessibility UI contracts", prefix=prefix)
-    failures.extend(build_failures)
-    ui_test, test_failures = named_step(steps, name="Test focused accessibility UI contracts", prefix=prefix)
-    failures.extend(test_failures)
-    build_bootstrap_valid = True
-    for step, step_name, command_tokens, quoted_arguments, label in (
-        (ui_build, "Build focused accessibility UI contracts", ACCESSIBILITY_UI_BUILD_COMMAND,
-         ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS[:2], "build"),
-        (ui_test, "Test focused accessibility UI contracts", ACCESSIBILITY_UI_TEST_COMMAND,
-         ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS, "test"),
-    ):
-        if step is None:
-            continue
-        bootstrap = accessibility_ui_bootstrap_steps()
-        if step is ui_test and ui_build is not None:
-            # The preceding build is independently validated by this loop.
-            bootstrap = (*bootstrap, ui_build)
-        bootstrap_failures = reviewed_bootstrap_failures(
-            steps, step, bootstrap, step_name=step_name, prefix=prefix)
-        if step is ui_build:
-            build_bootstrap_valid = not bootstrap_failures
-        if step is ui_build or build_bootstrap_valid:
-            failures.extend(bootstrap_failures)
-        failures.extend(reviewed_run_context_failures(
-            job, step, job_name=ACCESSIBILITY_UI_JOB, step_name=step_name, prefix=prefix,
-            expected_runner=ACCESSIBILITY_UI_RUNNER, expected_shell=ACCESSIBILITY_UI_SHELL,
-            expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY, expected_job_timeout=105, expected_strategy=ACCESSIBILITY_UI_STRATEGY))
-        expected_timeout = 30 if step is ui_build else 60
-        if step.get("timeout-minutes") != expected_timeout:
-            failures.append(f"{prefix} UI {label} timeout must be {expected_timeout} minutes")
-        run = step.get("run")
-        if not isinstance(run, str):
-            failures.append(f"{prefix} UI {label} step must contain a shell command")
-            continue
-        try:
-            command = _parse_single_shell_command(run)
-        except ValueError as error:
-            failures.append(f"{prefix} UI {label} shell command is malformed: {error}")
-            continue
-        if command.tokens[:2] != command_tokens[:2]:
-            failures.append(f"{prefix} UI {label} step must run xcodebuild {command_tokens[1]} directly")
-            continue
-        mismatch = exact_command_mismatch(command.tokens, command_tokens)
-        misquoted_values = [
-            value for flag, value in quoted_arguments
-            if command.double_quoted_words.count(value) != 1
-            and (mismatch is None or has_unquoted_value_after_flag(command.tokens, flag=flag, value=value))
-        ]
-        if misquoted_values:
-            failures.append(f"{prefix} UI {label} runner paths must be double-quoted: " + ", ".join(misquoted_values))
-        elif mismatch is not None:
-            failures.append(f"{prefix} UI {label} command argument errors: {mismatch}")
-
-    cleanup, cleanup_failures = named_step(steps,
-        name=ACCESSIBILITY_SIMULATOR_CLEANUP_STEP["name"], prefix=prefix)
-    failures.extend(cleanup_failures)
-    if cleanup is not None:
-        if cleanup != ACCESSIBILITY_SIMULATOR_CLEANUP_STEP:
-            failures.append(f"{prefix} must always shut down and delete only the shard simulator UDID")
-        if ui_test is not None and steps.index(cleanup) <= steps.index(ui_test):
-            failures.append(f"{prefix} simulator cleanup must follow testing")
-
-    upload, step_failures = named_step(
-        steps,
-        name="Upload accessibility UI test results",
-        prefix=prefix,
-    )
-    failures.extend(step_failures)
-    if upload is not None:
-        if upload.get("uses") != ACCESSIBILITY_UPLOAD_ACTION:
-            failures.append(f"{prefix} upload action is not pinned to the reviewed SHA")
-        condition = upload.get("if")
-        normalized_condition = (
-            "".join(condition.split()) if isinstance(condition, str) else None
-        )
-        if normalized_condition not in {"always()", "${{always()}}"}:
-            failures.append(f"{prefix} result upload must run even after test failure")
-        inputs = upload.get("with")
-        if not isinstance(inputs, dict) or inputs.get("name") != "accessibility-ui-test-results-${{ matrix.shard }}":
-            failures.append(f"{prefix} each shard must upload a distinct result artifact")
-        if not isinstance(inputs, dict) or inputs.get("path") != (
-            "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult"
-        ):
-            failures.append(f"{prefix} result upload path is incorrect")
-
-    return list(dict.fromkeys(failures))
-
-
-def accessibility_ui_contract_failures(
-    path: Path, workflow: object, *, root: Path | None = None
-) -> list[str]:
-    return [
-        *reviewed_workflow_context_failures(path, workflow, root=root),
-        *_accessibility_ui_job_contract_failures(path, workflow, root=root),
-    ]
 
 
 def _testflight_publisher_job_contract_failures(
@@ -1053,17 +724,101 @@ def metal_toolchain_job_failures(
     return failures
 
 
+def _executes_apple_tests(source: str) -> bool:
+    lexer = shlex.shlex(source.replace("\\\n", ""), posix=True, punctuation_chars=";&|\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    for index, token in enumerate(tokens):
+        executable = token.rsplit("/", 1)[-1]
+        arguments = []
+        for argument in tokens[index + 1 :]:
+            if argument and all(character in ";&|\n" for character in argument):
+                break
+            arguments.append(argument)
+        if (
+            executable == "swift" and "test" in arguments
+            or executable == "xcodebuild"
+            and any(a in {"test", "test-without-building", "build-for-testing"} for a in arguments)
+            or executable == "xcodebuildmcp"
+            and any(a in {"swift-package", "simulator", "device", "macos"} for a in arguments)
+            and "test" in arguments
+        ):
+            return True
+        if executable in {"bash", "sh", "zsh"} and "-c" in arguments:
+            script_index = arguments.index("-c") + 1
+            if script_index < len(arguments) and _executes_apple_tests(arguments[script_index]):
+                return True
+    return False
+
+
+def local_apple_test_policy_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    """Keep Apple test execution local in every workflow, including renamed jobs."""
+    if not isinstance(workflow, dict) or not isinstance(workflow.get("jobs"), dict):
+        return []
+    prefix = f"{display_path(path, root)}: local Apple testing policy"
+    failures = []
+    for job_name, job in workflow["jobs"].items():
+        if job_name in {"accessibility", "accessibility-contracts"}:
+            failures.append(f"{prefix} forbids removed job {job_name}")
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                continue
+            try:
+                apple_test = _executes_apple_tests(step["run"])
+            except ValueError:
+                # A malformed shell step cannot establish compliance.
+                failures.append(f"{prefix} job {job_name} has malformed shell syntax")
+                continue
+            if apple_test:
+                failures.append(f"{prefix} job {job_name} executes Apple tests; use local XcodeBuildMCP")
+    return failures
+
+
+def swift_dependency_contract_failures(
+    path: Path, workflow: object, *, root: Path | None = None
+) -> list[str]:
+    prefix = f"{display_path(path, root)}: Swift dependency contract"
+    job, steps, failures = workflow_job_steps(workflow, job_name="swift", prefix=prefix)
+    if job is None or steps is None:
+        return failures
+    if job.get("name") != "Swift dependency checks" or job.get("runs-on") != "xcode-27":
+        failures.append(f"{prefix} must retain Swift dependency checks on xcode-27")
+    expected_commands = {
+        "Verify AutoTableCharts pin agreement": "python3 fine-tuning/tools/check_swift_package_pins.py",
+        "Verify checked-in Swift package resolutions": (
+            "swift package --package-path CREGKit resolve "
+            "xcodebuild -resolvePackageDependencies -project CREG.xcodeproj -scheme CREG "
+            '-clonedSourcePackagesDirPath "${RUNNER_TEMP}/creg-source-packages" '
+            "git diff --exit-code -- CREGKit/Package.resolved "
+            "CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+        ),
+    }
+    for name, expected in expected_commands.items():
+        step, step_failures = named_step(steps, name=name, prefix=prefix)
+        failures.extend(step_failures)
+        if step is not None:
+            command = step.get("run", "")
+            normalized = " ".join(command.replace("\\\n", "").split()) if isinstance(command, str) else None
+            if normalized != expected:
+                failures.append(f"{prefix} {name} command changed")
+    return failures
+
+
 def reviewed_ci_contract_failures(
     path: Path, workflow: object, *, root: Path | None = None
 ) -> list[str]:
     """Compose all reviewed workflow contracts without duplicate context errors."""
     return [
         *reviewed_workflow_context_failures(path, workflow, root=root),
-        *metal_toolchain_job_failures(
-            path, workflow, job_name="swift", build_step_name="Test Swift packages",
-            root=root,
-        ),
-        *_accessibility_ui_job_contract_failures(path, workflow, root=root),
+        *swift_dependency_contract_failures(path, workflow, root=root),
         *_testflight_publisher_job_contract_failures(path, workflow, root=root),
         *_security_checker_job_contract_failures(path, workflow, root=root),
     ]
@@ -1091,17 +846,18 @@ def main(
         failures.extend(
             checkout_credential_failures(path, workflow, root=effective_root)
         )
+        failures.extend(local_apple_test_policy_failures(path, workflow, root=effective_root))
         if isinstance(workflow, dict) and workflow.get("name") == "Documentation":
             failures.extend(metal_toolchain_job_failures(
                 path, workflow, job_name="build",
                 build_step_name="Generate static documentation", root=effective_root,
             ))
-    matches = accessibility_workflows(workflows)
+    matches = ci_workflows(workflows)
     if len(matches) != 1:
         failures.append(
             f"{display_path(effective_workflows, effective_root)}: "
-            "accessibility UI contract requires "
-            f"exactly one workflow named {ACCESSIBILITY_WORKFLOW_NAME!r}"
+            "CI contract requires "
+            f"exactly one workflow named {CI_WORKFLOW_NAME!r}"
         )
     else:
         path, workflow = matches[0]

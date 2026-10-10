@@ -1371,3 +1371,38 @@ import Testing
     #expect(failure?.details?.contains("decoder weights unavailable") == false)
   }
 }
+
+extension DiagnosticsAndFailurePresentationTests {
+  @Test func preferenceAndDraftFailuresKeepCopyAndSeparateCodesForUnavailableHistory() async throws {
+    let ordinary = DiagnosticsTestError.failed("save")
+    let history = HistoryClient.recoverable(open: { throw ordinary })
+    let unavailable: HistoryStoreUnavailableError
+    do { _ = try await history.bootstrap(); Issue.record("Expected unavailable store"); return }
+    catch let error as HistoryStoreUnavailableError { unavailable = error }
+    let message = FailurePresentation.history(operation: .messageSave, error: ordinary)
+    let preference = FailurePresentation.resultPreferenceSave(error: ordinary)
+    let draft = FailurePresentation.history(operation: .draftSave, error: ordinary)
+    #expect(preference.code == "history_result_preference_save_failed")
+    #expect(preference.code != message.code)
+    #expect(preference.title == "Display choice not saved")
+    #expect(preference.message.contains("Retry saving before closing the app."))
+    #expect(draft.title == "Draft not saved")
+    #expect(draft.message.contains("Retry saving or copy it before closing the app."))
+    for operation in [HistoryFailureOperation.draftSave, .resultPreferenceSave, .messageSave, .rename, .summaryLoad] {
+      let normal = FailurePresentation.history(operation: operation, error: ordinary)
+      let wrapped = FailurePresentation.history(operation: operation, error: unavailable)
+      #expect(wrapped.code == normal.code)
+      #expect(wrapped.cause == .historyStoreUnavailable)
+      #expect(wrapped.recovery == .retryHistory)
+      #expect(normal.cause == nil)
+      #expect(normal.recovery == (operation == .summaryLoad ? .retryHistory : nil))
+      if operation == .draftSave || operation == .resultPreferenceSave {
+        #expect(wrapped.title == normal.title)
+        #expect(wrapped.message == normal.message)
+      } else {
+        #expect(wrapped.title == "History unavailable")
+        #expect(wrapped.message == "CREG couldn’t open your conversation history. Tap Retry history to try again.")
+      }
+    }
+  }
+}

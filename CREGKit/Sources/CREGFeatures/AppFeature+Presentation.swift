@@ -93,7 +93,7 @@ extension AppFeature {
       state.conversationExports.removeValue(forKey: conversationID)
       return handleConversationWriteFailure(
         state: &state, conversationID: conversationID,
-        failure: failure, owner: .conversationOperation(conversationID, .export))
+        failure: failure, owner: .conversationOperation(conversationID, .export), newOccurrence: true)
     case .success(let url):
       guard state.conversationDeletions[conversationID]?.phase != .committed else {
         state.conversationExports.removeValue(forKey: conversationID)

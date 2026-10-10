@@ -727,3 +727,173 @@ struct PR158RegressionFixTests {
     }
   }
 }
+
+extension PR158RegressionFixTests {
+  @Test func missingPreferenceFallbackFailsWithoutAccessingStorage() async {
+    var initial = initialState()
+    let messageID = initial.chat!.messages.last!.id
+    let target = AppFeature.ConversationWriteTarget.resultPresentation(messageID)
+    let owner = AppFeature.FailureOwner.conversationOperation(a, .resultPresentation)
+    let oldFailure = FailurePresentation.resultPreferenceSave(error: DiagnosticsTestError.failed("old"))
+    initial.conversationEdits[a] = [target: .init(value: .resultPresentation(.table), revision: 1, phase: .failed(oldFailure))]
+    initial.storeFailure(oldFailure, owner: owner)
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.updateResultPresentation = { _, _ in writes.record("unexpected storage access") }
+    let store = store(initial, history: history)
+    await store.send(.retryConversationWrites(owner))
+    #expect(store.state.conversationEdits[a]?[target]?.phase == .saving)
+    await store.receive(\.conversationWriteSettled)
+    #expect(store.state.conversationEdits[a]?[target]?.phase.isFailed == true)
+    #expect(store.state.retryableConversationWriteOwners.contains(owner))
+    #expect(store.state.failures.last?.owner == owner)
+    #expect(store.state.failures.last?.failure.diagnostic.contains("no fallback message") == true)
+    #expect(writes.recorded.isEmpty)
+    await store.finish()
+  }
+
+  @Test(arguments: ["  hello\n\t world  ", "  " + String(repeating: "👩🏽‍💻 ", count: 500) + "\n tail", " \n\t "])
+  func directRenameDelegateNormalizesBeforeOptimisticDisplay(title: String) async {
+    let writes = CallRecorder()
+    var history = HistoryClient.noop()
+    history.renameConversation = { _, title in writes.record(title) }
+    let initial = initialState()
+    let store = store(initial, history: history)
+    let normalized = HistoryStore.normalizedRenameTitle(from: title)
+    await store.send(.chat(.delegate(.renameRequested(a, title))))
+    #expect(store.state.conversations[id: a]?.title == (normalized.isEmpty ? initial.conversations[id: a]?.title : normalized))
+    await store.finish()
+    #expect(writes.recorded == (normalized.isEmpty ? [] : [normalized]))
+    #expect(normalized.count <= 80)
+    if normalized.isEmpty { #expect(store.state.summaryWrites.isEmpty) }
+  }
+
+  @Test(arguments: ["rename", "export", "feedback"])
+  func freshIdenticalAttemptMovesNoticeAndDuplicateDeliveryDoesNot(operation: String) async {
+    let error = DiagnosticsTestError.failed("same attempt failure")
+    let failure = FailurePresentation.history(operation: operation == "rename" ? .rename : operation == "export" ? .export : .feedbackSave, error: error)
+    let kind: AppFeature.ConversationOperation = operation == "rename" ? .rename : operation == "export" ? .export : .feedback
+    let owner = AppFeature.FailureOwner.conversationOperation(a, kind)
+    var initial = initialState()
+    initial.storeFailure(failure, owner: owner)
+    let original = initial.failures.last!.id
+    let other = FailurePresentation(code: "other", title: "Other failure", message: "Other", diagnostic: "Other")
+    initial.storeFailure(other, owner: .global)
+    let otherID = initial.failures.last!.id
+    var history = HistoryClient.noop()
+    history.renameConversation = { _, _ in throw error }
+    history.exportJSONL = { _ in throw error }
+    history.clearFeedback = { _, _ in throw error }
+    let store = store(initial, history: history)
+    var operationID: UUID?
+    var requestID: UUID?
+    if operation == "rename" {
+      await store.send(.chat(.delegate(.renameRequested(a, "Name"))))
+      operationID = store.state.summaryWrites.keys.first!
+      await store.receive(\.summaryWriteSettled)
+    } else if operation == "export" {
+      await store.send(.chat(.delegate(.exportRequested(a))))
+      requestID = store.state.conversationExports[a]!.requestID
+      await store.receive(\.conversationExportFinished)
+    } else {
+      await store.send(.chat(.delegate(.feedbackWriteRequested(conversationID: a, write: .clear(UUID())))))
+    }
+    await store.receive(\.operationFailed)
+    let fresh = store.state.failures.last!.id
+    #expect(fresh != original)
+    #expect(store.state.failures.map(\.id) == [otherID, fresh])
+    #expect(store.state.presentedFailure == failure)
+    if let operationID { await store.send(.summaryWriteSettled(operationID, failure)) }
+    if let requestID { await store.send(.conversationExportFinished(a, requestID: requestID, .failure(failure))) }
+    await store.send(.operationFailed(failure, owner: owner))
+    #expect(store.state.failures.map(\.id) == [otherID, fresh])
+    await store.send(.binding(.set(\.presentedFailure, nil)))
+    #expect(store.state.failures.map(\.id) == [otherID])
+    #expect(store.state.presentedFailure == other)
+    await store.finish()
+  }
+
+  @Test(arguments: ["draft", "preference", "rename", "export", "feedback"], ["undo", "failed", "committed"])
+  func freshHeldFailureKeepsOccurrenceIntentThroughDeletion(operation: String, outcome: String) async throws {
+    let error = DiagnosticsTestError.failed("held failure")
+    let kind: AppFeature.ConversationOperation = operation == "draft" ? .draft : operation == "preference" ? .resultPresentation : operation == "rename" ? .rename : operation == "export" ? .export : .feedback
+    let failure = FailurePresentation.history(operation: operation == "draft" ? .draftSave : operation == "preference" ? .resultPreferenceSave : operation == "rename" ? .rename : operation == "export" ? .export : .feedbackSave, error: error)
+    let owner = AppFeature.FailureOwner.conversationOperation(a, kind)
+    var initial = initialState()
+    initial.storeFailure(failure, owner: owner)
+    let oldID = initial.failures.last!.id
+    let other = FailurePresentation(code: "other", title: "Other", message: "Keep", diagnostic: "Keep")
+    initial.storeFailure(other, owner: .historySummaries(77))
+    let otherID = initial.failures.last!.id
+    let answer = initial.chat!.messages.last!
+    let gate = RegressionWriteGate(.init(summary: initial.conversations[id: a]!, messages: Array(initial.chat!.messages)))
+    var history = HistoryClient.noop()
+    let summaries = initial.conversations
+    history.loadConversation = { id in .init(summary: summaries[id: id]!) }
+    history.saveDraft = { _, _ in await gate.hold(); throw error }
+    history.updateResultPresentation = { _, _ in await gate.hold(); throw error }
+    history.renameConversation = { _, _ in await gate.hold(); throw error }
+    history.exportJSONL = { _ in await gate.hold(); throw error }
+    history.clearFeedback = { _, _ in await gate.hold(); throw error }
+    if outcome == "failed" { history.deleteConversation = { _ in throw DiagnosticsTestError.failed("delete") } }
+    let clock = TestClock()
+    let recorder = DiagnosticEventRecorder()
+    let store = store(initial, history: history, clock: clock, recorder: recorder)
+    switch operation {
+    case "draft":
+      await store.send(.chat(.binding(.set(\.composerText, "new"))))
+      await clock.advance(by: .milliseconds(500))
+      await store.receive(\.draftSaveDue)
+    case "preference": await store.send(.chat(.resultPresentationChanged(messageID: answer.id, preference: .table)))
+    case "rename": await store.send(.chat(.delegate(.renameRequested(a, "New"))))
+    case "export": await store.send(.chat(.delegate(.exportRequested(a))))
+    default: await store.send(.chat(.delegate(.feedbackWriteRequested(conversationID: a, write: .clear(answer.id)))))
+    }
+    try await gate.wait()
+    await store.send(.deleteConversationTapped(a))
+    await store.receive(\.conversationLoaded)
+    await gate.finish()
+    switch operation {
+    case "draft", "preference": await store.receive(\.conversationWriteSettled)
+    case "rename": await store.receive(\.summaryWriteSettled)
+    case "export": await store.receive(\.conversationExportFinished)
+    default: await store.receive(\.operationFailed)
+    }
+    #expect(store.state.conversationDeletions[a]?.deferredNewOccurrenceOwners == [owner])
+    #expect(store.state.failures.first { $0.owner == owner }?.id == oldID)
+    if outcome == "undo" { await store.send(.undoDeleteTapped) }
+    else {
+      await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
+      await store.receive(\.conversationDeletionFinished)
+    }
+    await store.finish()
+    if outcome == "committed" {
+      #expect(!store.state.failures.contains { $0.owner == owner })
+      #expect(recorder.events.contains { $0.code == "conversation_write_failed_after_deletion" })
+    } else {
+      let restored = try #require(store.state.failures.first { $0.owner == owner })
+      #expect(restored.id != oldID)
+      #expect(store.state.failures.first { $0.owner == .historySummaries(77) }?.id == otherID)
+      #expect(store.state.failures.last?.owner == owner)
+    }
+  }
+
+  @Test func freshDeferredFailureReplacesOwnerAndMovesAfterOtherDeferredFailures() async {
+    var initial = initialState()
+    initial.conversationDeletions[a] = .init(token: UUID(), summary: initial.conversations[id: a]!)
+    initial.undoDeletionID = a
+    let first = AppFeature.FailureOwner.conversationOperation(a, .rename)
+    let second = AppFeature.FailureOwner.conversationOperation(a, .feedback)
+    let failure = FailurePresentation.history(operation: .rename, error: DiagnosticsTestError.failed("same"))
+    let store = store(initial)
+    await store.send(.operationFailed(failure, owner: first, newOccurrence: true))
+    await store.send(.operationFailed(failure, owner: second, newOccurrence: true))
+    await store.send(.operationFailed(failure, owner: first))
+    #expect(store.state.conversationDeletions[a]?.deferredOperationFailures.map(\.owner) == [first, second])
+    await store.send(.operationFailed(failure, owner: first, newOccurrence: true))
+    #expect(store.state.conversationDeletions[a]?.deferredOperationFailures.map(\.owner) == [second, first])
+    await store.send(.undoDeleteTapped)
+    #expect(store.state.failures.map(\.owner) == [second, first])
+    await store.finish()
+  }
+}

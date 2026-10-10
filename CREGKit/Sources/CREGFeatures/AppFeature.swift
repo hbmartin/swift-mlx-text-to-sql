@@ -631,7 +631,7 @@ public struct AppFeature: Sendable {
     case appIconLoaded(AppIconVariant, supportsAlternates: Bool)
     case appIconSelected(AppIconVariant)
     case appearanceSelected(AppearancePreference)
-    case operationFailed(FailurePresentation, owner: FailureOwner = .global)
+    case operationFailed(FailurePresentation, owner: FailureOwner = .global, newOccurrence: Bool = false)
     case dismissFailure
   }
 
@@ -1223,7 +1223,8 @@ public struct AppFeature: Sendable {
           presentFailure(state: &state, primary: first, secondary: Array(pending.deferredFailures.dropFirst()))
         }
         for owned in pending.deferredOperationFailures {
-          presentFailure(state: &state, primary: owned.failure, owner: owned.owner)
+          presentFailure(state: &state, primary: owned.failure, owner: owned.owner,
+            newOccurrence: pending.deferredNewOccurrenceOwners.contains(owned.owner))
         }
         return .cancel(id: DeletionCountdownID(token: pending.token))
 
@@ -1246,7 +1247,8 @@ public struct AppFeature: Sendable {
           syncSchedulerProjection(into: &state)
           presentFailure(state: &state, primary: failure, secondary: deferredFailures)
           for owned in deletion.deferredOperationFailures {
-            presentFailure(state: &state, primary: owned.failure, owner: owned.owner)
+            presentFailure(state: &state, primary: owned.failure, owner: owned.owner,
+              newOccurrence: deletion.deferredNewOccurrenceOwners.contains(owned.owner))
           }
           return .none
         }
@@ -1260,6 +1262,7 @@ public struct AppFeature: Sendable {
         }
         state.conversationDeletions[id]?.deferredFailures = []
         state.conversationDeletions[id]?.deferredOperationFailures = []
+        state.conversationDeletions[id]?.deferredNewOccurrenceOwners = []
         state.conversationDeletions[id]?.phase = .committed
         state.conversations.remove(id: id)
         state.queue.removeAll { $0.conversationID == id }
@@ -2184,7 +2187,7 @@ public struct AppFeature: Sendable {
             }
           } catch {
             await send(.operationFailed(.history(operation: .feedbackSave, error: error),
-              owner: .conversationOperation(id, .feedback)))
+              owner: .conversationOperation(id, .feedback), newOccurrence: true))
           }
         }
 
@@ -2214,12 +2217,15 @@ public struct AppFeature: Sendable {
           }
           return .none
         case .rename:
-          if let failure { return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure, owner: .conversationOperation(id, .rename)) }
+          if let failure { return handleConversationWriteFailure(state: &state, conversationID: id,
+            failure: failure, owner: .conversationOperation(id, .rename), newOccurrence: true) }
           return .none
         }
 
       case .chat(.delegate(.renameRequested(let id, let title))):
         guard state.isConversationLive(id) else { return .none }
+        let title = HistoryStore.normalizedRenameTitle(from: title)
+        guard !title.isEmpty else { return .none }
         state.conversations[id: id]?.title = title
         state.conversations[id: id]?.isManuallyTitled = true
         let operationID = uuid()
@@ -2481,21 +2487,22 @@ public struct AppFeature: Sendable {
         case .create: return beginConversationCreation(state: &state)
         }
 
-      case .operationFailed(let failure, let owner):
+      case .operationFailed(let failure, let owner, let newOccurrence):
         let operationConversationID: UUID?
         switch owner {
         case .conversation(let id), .conversationOperation(let id, _): operationConversationID = id
         default: operationConversationID = nil
         }
         if let id = operationConversationID, !state.isConversationLive(id) {
-          return handleConversationWriteFailure(state: &state, conversationID: id, failure: failure, owner: owner)
+          return handleConversationWriteFailure(state: &state, conversationID: id,
+            failure: failure, owner: owner, newOccurrence: newOccurrence)
         }
         if case .retry(let conversationID, let journalID, let generation) = owner {
           guard state.isConversationLive(conversationID),
             state.retryJournals[journalID]?.requestGeneration == generation,
             !state.dismissedRetryJournalIDs.contains(journalID) else { return .none }
         }
-        presentFailure(state: &state, primary: failure, owner: owner)
+        presentFailure(state: &state, primary: failure, owner: owner, newOccurrence: newOccurrence)
         return .none
 
       case .dismissOwnedFailure(let owner):

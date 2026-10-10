@@ -31,8 +31,8 @@ def run_materializer(environment: dict[str, str]) -> subprocess.CompletedProcess
     )
 
 
-def accessibility_workflow() -> tuple[Path, dict[str, object]]:
-    matches = check_ci_contracts.accessibility_workflows()
+def ci_workflow() -> tuple[Path, dict[str, object]]:
+    matches = check_ci_contracts.ci_workflows()
     assert len(matches) == 1
     path, workflow = matches[0]
     assert isinstance(workflow, dict)
@@ -40,11 +40,6 @@ def accessibility_workflow() -> tuple[Path, dict[str, object]]:
 
 
 REVIEWED_RUN_CONTRACTS = (
-    (
-        check_ci_contracts.accessibility_ui_contract_failures,
-        check_ci_contracts.ACCESSIBILITY_UI_JOB,
-        "Test focused accessibility UI contracts",
-    ),
     (
         check_ci_contracts.testflight_publisher_contract_failures,
         check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB,
@@ -57,7 +52,6 @@ REVIEWED_RUN_CONTRACTS = (
     ),
 )
 REVIEWED_RUNNERS = {
-    check_ci_contracts.ACCESSIBILITY_UI_JOB: check_ci_contracts.ACCESSIBILITY_UI_RUNNER,
     check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB: (
         check_ci_contracts.TESTFLIGHT_PUBLISHER_RUNNER
     ),
@@ -135,13 +129,13 @@ def test_workflow_discovery_includes_yml_and_yaml(tmp_path):
         check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
 
 
-def test_accessibility_workflow_discovery_accepts_yaml_extension(tmp_path):
-    source_path, _ = accessibility_workflow()
+def test_ci_workflow_discovery_accepts_yaml_extension(tmp_path):
+    source_path, _ = ci_workflow()
     (tmp_path / "renamed.yaml").write_text(source_path.read_text())
     check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
 
 
-def test_accessibility_workflow_discovery_rejects_missing_workflow(tmp_path):
+def test_ci_workflow_discovery_rejects_missing_workflow(tmp_path):
     with pytest.raises(SystemExit) as error:
         check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
 
@@ -151,57 +145,10 @@ def test_accessibility_workflow_discovery_rejects_missing_workflow(tmp_path):
     assert not diagnostic.startswith(".:")
 
 
-def test_accessibility_ui_ci_pins_runtime_and_preserves_result_bundle():
-    path, workflow = accessibility_workflow()
-
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
-
-
-def test_accessibility_ui_contract_requires_signing_disabled():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_ALLOWED=YES"
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "UI test command argument errors" in failures[0]
-
-
 def test_real_workflow_passes_every_reviewed_ci_contract():
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
 
     assert check_ci_contracts.reviewed_ci_contract_failures(path, workflow) == []
-
-
-@pytest.mark.parametrize("job_name,build_step", [
-    ("swift", "Test Swift packages"),
-    ("accessibility", "Test focused accessibility UI contracts"),
-])
-@pytest.mark.parametrize("mutation", ["remove", "change"])
-def test_ci_metal_toolchain_bootstrap_is_required(job_name, build_step, mutation):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][job_name]["steps"]
-    install = next(step for step in steps if step.get("name") == "Install Metal Toolchain")
-    if mutation == "remove":
-        steps.remove(install)
-    else:
-        install["run"] = "xcodebuild -version"
-    contract = (
-        check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-        if job_name == "accessibility"
-        else check_ci_contracts.metal_toolchain_job_failures(
-            path, workflow, job_name=job_name, build_step_name=build_step
-        )
-    )
-    assert contract
 
 
 @pytest.mark.parametrize("mutation", ["remove", "change"])
@@ -236,7 +183,7 @@ def test_documentation_metal_toolchain_bootstrap_is_required(mutation):
 def test_reviewed_run_contracts_reject_step_execution_overrides(
     field, value, validator, job_name, step_name
 ):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     step = next(
         candidate
         for candidate in workflow["jobs"][job_name]["steps"]
@@ -272,7 +219,7 @@ def test_reviewed_run_contracts_reject_step_execution_overrides(
 def test_reviewed_run_contracts_reject_job_execution_overrides(
     field, value, validator, job_name, step_name
 ):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     workflow["jobs"][job_name][field] = value
 
     failures = validator(path, workflow)
@@ -294,7 +241,7 @@ def test_reviewed_run_contracts_reject_job_execution_overrides(
 def test_reviewed_run_contracts_reject_workflow_execution_overrides(
     field, value, validator, job_name, step_name
 ):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     workflow[field] = value
 
     failures = validator(path, workflow)
@@ -311,7 +258,7 @@ def test_reviewed_run_contracts_reject_workflow_execution_overrides(
     ],
 )
 def test_main_reports_a_workflow_context_override_once(tmp_path, field, value):
-    _, workflow = accessibility_workflow()
+    _, workflow = ci_workflow()
     workflow[field] = value
     (tmp_path / "ci.yml").write_text(yaml.safe_dump(workflow, sort_keys=False))
 
@@ -329,7 +276,7 @@ def test_main_reports_a_workflow_context_override_once(tmp_path, field, value):
     ],
 )
 def test_contract_checker_cannot_inherit_workflow_level_bypasses(field, value):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     workflow[field] = value
     checker = next(
         step
@@ -356,7 +303,7 @@ def test_contract_checker_cannot_inherit_workflow_level_bypasses(field, value):
     ("validator", "job_name", "step_name"), REVIEWED_RUN_CONTRACTS
 )
 def test_reviewed_run_contracts_pin_the_runner(validator, job_name, step_name):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     expected_runner = REVIEWED_RUNNERS[job_name]
     workflow["jobs"][job_name]["runs-on"] = "decoy-runner"
 
@@ -392,7 +339,7 @@ def test_reviewed_run_contracts_pin_the_runner(validator, job_name, step_name):
 def test_reviewed_run_contracts_reject_unreviewed_predecessors(
     predecessor, validator, job_name, step_name
 ):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][job_name]["steps"]
     target_index = next(
         index for index, step in enumerate(steps) if step.get("name") == step_name
@@ -411,7 +358,7 @@ def test_reviewed_run_contracts_reject_unreviewed_predecessors(
 def test_reviewed_run_contracts_allow_post_target_steps(
     validator, job_name, step_name
 ):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][job_name]["steps"]
     target_index = next(
         index for index, step in enumerate(steps) if step.get("name") == step_name
@@ -429,7 +376,7 @@ def test_reviewed_run_contracts_allow_post_target_steps(
     [("version", "latest"), ("checksum", "0" * 64)],
 )
 def test_testflight_bootstrap_pins_the_setup_uv_download(field, value):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB]["steps"]
     setup_uv = next(step for step in steps if step.get("name") == "Install uv")
     setup_uv["with"][field] = value
@@ -447,7 +394,7 @@ def test_testflight_bootstrap_pins_the_setup_uv_download(field, value):
     [("version", "latest"), ("checksum", "0" * 64)],
 )
 def test_security_bootstrap_pins_the_setup_uv_download(field, value):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
     setup_uv = next(
         step for step in steps if step.get("id") == "setup-security-uv"
@@ -455,33 +402,6 @@ def test_security_bootstrap_pins_the_setup_uv_download(field, value):
     setup_uv["with"][field] = value
 
     failures = check_ci_contracts.security_checker_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "unreviewed bootstrap" in failures[0]
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("uses", "actions/cache@" + "0" * 40),
-        ("path", "${{ runner.temp }}/decoy\n"),
-        ("key", "decoy-cache-key"),
-    ],
-)
-def test_accessibility_bootstrap_pins_the_cache_contract(field, value):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    cache = next(
-        step
-        for step in steps
-        if step.get("name") == "Cache Swift and Xcode build artifacts"
-    )
-    if field == "uses":
-        cache[field] = value
-    else:
-        cache["with"][field] = value
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
 
     assert len(failures) == 1
     assert "unreviewed bootstrap" in failures[0]
@@ -498,429 +418,6 @@ def test_reviewed_bootstrap_factories_do_not_share_mutable_state():
     assert second[1]["with"]["version"] == "0.12.7"
     with pytest.raises(TypeError):
         check_ci_contracts.SETUP_UV_ENV["PATH"] = "/tmp/decoy"
-
-
-def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    fragment = "CREG_ACCESSIBILITY_HARNESS_BUILD=YES"
-    final_continuation = " " + "\\" + "\n  " + fragment + "\n"
-    ui_test["run"] = ui_test["run"].replace(
-        final_continuation, "\n"
-    )
-    steps.append({"name": "Unrelated documentation", "run": f"echo {fragment}"})
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "UI test command argument errors" in failures[0]
-    assert fragment in failures[0]
-
-
-@pytest.mark.parametrize(
-    ("reviewed", "replacement", "expected"),
-    [
-        (
-            "-project CREG.xcodeproj",
-            "-project Decoy.xcodeproj",
-            "CREG.xcodeproj",
-        ),
-        (
-            "-project CREG.xcodeproj",
-            "-project CREG.xcodeproj.backup",
-            "CREG.xcodeproj",
-        ),
-        ("-scheme CREG", "-scheme Decoy", "CREG"),
-        ("-scheme CREG", "-scheme CREGPreview", "CREG"),
-        (
-            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
-            "platform=macOS,name=iPhone 18 Pro,OS=27.0",
-            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
-        ),
-        (
-            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
-            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
-            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
-        ),
-    ],
-)
-def test_accessibility_ui_contract_pins_project_scheme_and_destination(
-    reviewed, replacement, expected
-):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(reviewed, replacement)
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert f"must be {expected!r}" in failures[0]
-
-
-def test_accessibility_ui_contract_accepts_a_wrapped_flag_value_pair():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        "-project CREG.xcodeproj", "-project \\\n            CREG.xcodeproj"
-    )
-
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
-
-
-def test_accessibility_ui_contract_rejects_a_crlf_wrapped_flag_value_pair():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        "-project CREG.xcodeproj", "-project \\\r\n            CREG.xcodeproj"
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "must contain exactly one shell command" in failures[0]
-
-
-def test_accessibility_ui_contract_accepts_a_wrapped_former_fragment_pair():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        '-derivedDataPath "${{ runner.temp }}/creg-derived-data"',
-        '-derivedDataPath \\\n            "${{ runner.temp }}/creg-derived-data"',
-    )
-
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
-
-
-@pytest.mark.parametrize("decoy_kind", ["comment", "quoted argument"])
-def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    inert_fragments = " ".join(
-        (
-            '-clonedSourcePackagesDirPath "${{ runner.temp }}/creg-source-packages"',
-            '-derivedDataPath "${{ runner.temp }}/creg-derived-data"',
-            '-resultBundlePath "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult"',
-            "-skipPackagePluginValidation",
-            "-only-testing:CREGUITests/AccessibilityUITests/"
-            "testHighestRiskScreensAtAX5Landscape",
-            "-only-testing:CREGUITests/AccessibilityUITests/"
-            "testMalformedConfigurationRendersInvalidConfigurationScreen",
-            "-only-testing:CREGUITests/AccessibilityUITests/"
-            "testChartPreparationHasDistinctIdentityInProductionPresentation",
-            "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
-        )
-    )
-    reviewed_prefix = (
-        "/usr/bin/xcodebuild test-without-building -project CREG.xcodeproj -scheme CREG "
-        "-destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}'"
-    )
-    ui_test["run"] = (
-        f"{reviewed_prefix} # {inert_fragments}"
-        if decoy_kind == "comment"
-        else f"{reviewed_prefix} '{inert_fragments}'"
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "UI test command argument errors" in failures[0]
-    assert "-clonedSourcePackagesDirPath" in failures[0]
-
-
-@pytest.mark.parametrize(
-    ("reviewed", "duplicate", "flag"),
-    [
-        ("-project CREG.xcodeproj", "-project Decoy.xcodeproj", "-project"),
-        ("-scheme CREG", "-scheme Decoy", "-scheme"),
-        (
-            "-destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}'",
-            "-destination 'platform=macOS'",
-            "-destination",
-        ),
-    ],
-)
-def test_accessibility_ui_contract_rejects_duplicate_pinned_arguments(
-    reviewed, duplicate, flag
-):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        reviewed, f"{reviewed} {duplicate}"
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert f"found {flag!r}" in failures[0]
-
-
-@pytest.mark.parametrize("method", [
-    "testAnswerActionsAreAtLeast44Points",
-    "testKnownIconControlsAreAtLeast44Points",
-    "testAnswerActionAccessibilitySemantics",
-    "testSharingReturnsToAnswerWithMoreClosed",
-    "testCancellingSharingReturnsToAnswerWithMoreClosed",
-    "testMoreClosesWhenAnswerActionLayoutChanges",
-    "testMoreActionsRemainAccessibleInConstrainedHeight",
-    "testSimpleChartValuesAreAccessible",
-])
-def test_accessibility_ui_contract_requires_answer_action_targets(method):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        "-only-testing:CREGUITests/AccessibilityUITests/"
-        + method,
-        "",
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "UI test command argument errors" in failures[0]
-
-
-def test_accessibility_ui_contract_requires_a_direct_xcodebuild_invocation():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        "/usr/bin/xcodebuild test-without-building", "env /usr/bin/xcodebuild test-without-building", 1
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "must run xcodebuild test-without-building directly" in failures[0]
-
-
-@pytest.mark.parametrize(
-    ("suffix", "diagnostic"),
-    [
-        (" $(printf inert)", "shell command substitutions"),
-        (" `printf inert`", "shell command substitutions"),
-        (" > build.log", "shell redirections"),
-        ("\N{NO-BREAK SPACE}# ; printf second-command", "shell control operators"),
-        (
-            " CREG_ACCESSIBILITY_HARNESS_BUILD=NO",
-            "UI test command argument errors",
-        ),
-        (
-            " -skip-testing:CREGUITests/AccessibilityUITests/"
-            "testHighestRiskScreensAtAX5Landscape",
-            "UI test command argument errors",
-        ),
-    ],
-)
-def test_accessibility_ui_contract_rejects_unsafe_or_unreviewed_suffixes(
-    suffix, diagnostic
-):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].rstrip() + suffix
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert diagnostic in failures[0]
-
-
-@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
-def test_accessibility_ui_contract_rejects_a_command_after_a_continued_comment(
-    line_ending,
-):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = (
-        ui_test["run"].rstrip()
-        + f" # \\{line_ending}printf second-command"
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "must contain exactly one shell command" in failures[0]
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "${{ runner.temp }}/creg-source-packages",
-        "${{ runner.temp }}/creg-derived-data",
-        "${{ runner.temp }}/creg-accessibility-ui-tests.xcresult",
-    ],
-)
-def test_accessibility_ui_contract_requires_quoted_runner_paths(value):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(f'"{value}"', value)
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "runner paths must be double-quoted" in failures[0]
-    assert value in failures[0]
-
-
-def test_inert_comment_cannot_satisfy_the_runner_path_quote_contract():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    value = "${{ runner.temp }}/creg-derived-data"
-    ui_test["run"] = (
-        ui_test["run"].replace(f'"{value}"', f"'{value}'").rstrip()
-        + f' # "{value}"'
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "runner paths must be double-quoted" in failures[0]
-
-
-def test_accessibility_quote_contract_accepts_a_continued_quoted_value():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    value = "${{ runner.temp }}/creg-derived-data"
-    ui_test["run"] = ui_test["run"].replace(
-        f'"{value}"', '"${{ runner.temp }}\\\n/creg-derived-data"'
-    )
-
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
-
-
-def test_accessibility_quote_contract_accepts_adjacent_double_quoted_fragments():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        '"${{ runner.temp }}/creg-derived-data"',
-        '"${{ runner.temp }}""/creg-derived-data"',
-    )
-
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
-
-
-def test_accessibility_quote_contract_ignores_a_second_comment_mention():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    value = "${{ runner.temp }}/creg-derived-data"
-    ui_test["run"] = ui_test["run"].rstrip() + f' # "{value}"'
-
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
-
-
-def test_changed_quoted_runner_path_reports_the_argument_mismatch():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].replace(
-        '"${{ runner.temp }}/creg-derived-data"',
-        '"${{ runner.temp }}/other-derived-data"',
-    )
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "UI test command argument errors" in failures[0]
-    assert "runner paths must be double-quoted" not in failures[0]
-
-
-def test_accessibility_ui_contract_reports_a_missing_final_flag_value():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = "/usr/bin/xcodebuild test-without-building -project"
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "missing token 4" in failures[0]
-    assert "CREG.xcodeproj" in failures[0]
 
 
 @pytest.mark.parametrize("operator", [";", "&", "|"])
@@ -982,54 +479,8 @@ def test_shell_parser_reports_unterminated_multiline_quote():
         check_ci_contracts._parse_single_shell_command("printf 'first\nsecond")
 
 
-def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    reviewed_arguments = (
-        "/usr/bin/xcodebuild test-without-building -project CREG.xcodeproj -scheme CREG "
-        "-destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}'"
-    )
-    decoy_command = (
-        ui_test["run"]
-        .replace("CREG.xcodeproj", "Decoy.xcodeproj")
-        .replace("-scheme CREG", "-scheme Decoy")
-        .replace(
-            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
-            "platform=macOS",
-        )
-    )
-    ui_test["run"] = f": {reviewed_arguments}; {decoy_command}"
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "shell command is malformed" in failures[0]
-
-
-def test_accessibility_ui_contract_reports_only_the_shell_parse_failure():
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    ui_test = next(
-        step
-        for step in steps
-        if step.get("name") == "Test focused accessibility UI contracts"
-    )
-    ui_test["run"] = ui_test["run"].rstrip() + "'"
-
-    failures = check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-    assert len(failures) == 1
-    assert "shell command is malformed" in failures[0]
-    assert "No closing quotation" in failures[0]
-
-
 def test_ci_runs_testflight_publisher_contract_tests_with_python_3_13():
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
 
     assert check_ci_contracts.testflight_publisher_contract_failures(
         path, workflow
@@ -1037,7 +488,7 @@ def test_ci_runs_testflight_publisher_contract_tests_with_python_3_13():
 
 
 def test_testflight_publisher_contract_requires_a_quoted_discovery_pattern():
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB]["steps"]
     publisher_test = next(
         step
@@ -1057,7 +508,7 @@ def test_testflight_publisher_contract_requires_a_quoted_discovery_pattern():
 
 
 def test_testflight_publisher_contract_rejects_a_continued_comment_command():
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB]["steps"]
     publisher_test = next(
         step
@@ -1100,7 +551,7 @@ def test_testflight_publisher_contract_rejects_a_continued_comment_command():
 def test_testflight_publisher_contract_rejects_unreviewed_commands(
     reviewed, replacement, diagnostic
 ):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB]["steps"]
     publisher_test = next(
         step
@@ -1119,7 +570,7 @@ def test_testflight_publisher_contract_rejects_unreviewed_commands(
 
 
 def test_testflight_publisher_contract_rejects_a_missing_step():
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     job = workflow["jobs"][check_ci_contracts.TESTFLIGHT_PUBLISHER_JOB]
     steps = job["steps"]
     job["steps"] = [
@@ -1137,7 +588,7 @@ def test_testflight_publisher_contract_rejects_a_missing_step():
 
 
 def test_security_checker_contract_rejects_command_drift():
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
     checker = next(
         step for step in steps if step.get("name") == "Verify workflow action pins"
@@ -1158,7 +609,7 @@ def test_security_checker_contract_rejects_command_drift():
     ],
 )
 def test_security_checker_contract_requires_quoted_runner_values(value):
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
     checker = next(
         step for step in steps if step.get("name") == "Verify workflow action pins"
@@ -1173,7 +624,7 @@ def test_security_checker_contract_requires_quoted_runner_values(value):
 
 
 def test_security_contract_requires_recursive_semgrep_fixture_coverage():
-    path, workflow = accessibility_workflow()
+    path, workflow = ci_workflow()
     steps = workflow["jobs"][check_ci_contracts.SECURITY_CHECKER_JOB]["steps"]
     fixture_test = next(
         step for step in steps if step.get("name") == "Test Semgrep rules"
@@ -1189,20 +640,6 @@ def test_security_contract_requires_recursive_semgrep_fixture_coverage():
     assert check_ci_contracts.SEMGREP_FIXTURE_TEST_RUN in failures[0]
     assert "actual fixture_test=" in failures[0]
     assert "semgrep-tests/*.py" in failures[0]
-
-
-@pytest.mark.parametrize("condition", ["always()", "${{ always() }}"])
-def test_accessibility_ui_contract_accepts_equivalent_always_conditions(condition):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"][check_ci_contracts.ACCESSIBILITY_UI_JOB]["steps"]
-    upload = next(
-        step
-        for step in steps
-        if step.get("name") == "Upload accessibility UI test results"
-    )
-    upload["if"] = condition
-
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow) == []
 
 
 @pytest.mark.parametrize("enabled_value", ["1", "YES", "true", "ON"])
@@ -1407,144 +844,63 @@ def test_xcode_app_is_iphone_only():
     assert '"idiom" : "ipad"' not in app_icons
 
 
-@pytest.mark.parametrize("step_name,reviewed_budget", [
-    ("Build focused accessibility UI contracts", 30),
-    ("Test focused accessibility UI contracts", 60),
+
+
+@pytest.mark.parametrize("command", [
+    "swift test",
+    "bash -c 'swift test'",
+    "/usr/bin/swift test --filter ConversationNoticeTests",
+    "xcrun swift --package-path CREGKit test",
+    "xcodebuild test -scheme CREG",
+    "/usr/bin/xcodebuild -scheme CREG test-without-building",
+    "xcodebuild build-for-testing -scheme CREG",
+    "xcodebuildmcp simulator test --scheme CREG",
+    "xcodebuildmcp swift-package test --filter ConversationNoticeTests",
+    "xcodebuild \\\n  -scheme CREG \\\n  test",
 ])
-@pytest.mark.parametrize("offset", [None, -1, 1])
-def test_accessibility_commands_each_require_the_reviewed_budget(step_name, reviewed_budget, offset):
-    path, workflow = accessibility_workflow()
-    step = next(item for item in workflow["jobs"]["accessibility"]["steps"] if item.get("name") == step_name)
-    if offset is None:
-        step.pop("timeout-minutes")
-    else:
-        step["timeout-minutes"] = reviewed_budget + offset
-    assert any(f"timeout must be {reviewed_budget}" in failure for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
+def test_every_workflow_rejects_apple_test_execution(tmp_path, command):
+    source_path, _ = ci_workflow()
+    (tmp_path / "ci.yml").write_text(source_path.read_text())
+    (tmp_path / "extra.yaml").write_text(yaml.safe_dump({
+        "name": "Additional validation", "jobs": {"renamed-tests": {"steps": [{"run": command}]}}
+    }))
+    with pytest.raises(SystemExit, match="extra.yaml: local Apple testing policy.*executes Apple tests"):
+        check_ci_contracts.main(root=tmp_path, workflow_directory=tmp_path)
 
 
-@pytest.mark.parametrize("budget,expected_message", [
-    (None, "accessibility job timeout-minutes must be 105"),
-    (104, "accessibility job must not override reviewed run context: timeout-minutes"),
-    (106, "accessibility job must not override reviewed run context: timeout-minutes"),
+@pytest.mark.parametrize("job_name", ["accessibility", "accessibility-contracts"])
+def test_ci_rejects_restoring_removed_accessibility_jobs(job_name):
+    path, workflow = ci_workflow()
+    workflow["jobs"][job_name] = {"steps": []}
+    assert any(f"forbids removed job {job_name}" in failure for failure in
+               check_ci_contracts.local_apple_test_policy_failures(path, workflow))
+
+
+@pytest.mark.parametrize("command", [
+    "swift package --package-path CREGKit resolve",
+    "xcodebuild -resolvePackageDependencies -project CREG.xcodeproj",
+    "xcodebuild docbuild -scheme CREGKit",
+    "# swift test\npython -m pytest",
+    "uv run python -m unittest discover",
+    "swift package resolve\npython test",
+    "echo 'swift test'",
 ])
-def test_accessibility_job_requires_the_reviewed_budget(budget, expected_message):
-    path, workflow = accessibility_workflow()
-    job = workflow["jobs"]["accessibility"]
-    if budget is None:
-        job.pop("timeout-minutes")
-    else:
-        job["timeout-minutes"] = budget
-    assert any(failure.endswith(expected_message) for failure in check_ci_contracts.accessibility_ui_contract_failures(path, workflow))
+def test_local_testing_policy_allows_retained_ci_work(command):
+    assert check_ci_contracts.local_apple_test_policy_failures(Path("fixture.yml"), {
+        "jobs": {"checks": {"steps": [{"run": command}]}}
+    }) == []
 
 
-def test_accessibility_shards_cover_every_selector_exactly_once():
-    shards = check_ci_contracts.ACCESSIBILITY_UI_SHARDS
-    members = [selector for group in shards.values() for selector in group]
-    assert sorted(members) == list(check_ci_contracts.ACCESSIBILITY_UI_SELECTORS)
-    assert len(members) == len(set(members))
-    assert shards["canonical"] == (check_ci_contracts.ACCESSIBILITY_CANONICAL_SELECTOR,)
-    assert shards["interactions-a"] == check_ci_contracts.ACCESSIBILITY_INTERACTION_SELECTORS[::2]
-    assert shards["interactions-b"] == check_ci_contracts.ACCESSIBILITY_INTERACTION_SELECTORS[1::2]
-
-
-@pytest.mark.parametrize("mutation", ["missing", "fail-fast", "duplicate", "membership", "order", "skip-command"])
-def test_accessibility_shard_strategy_cannot_silently_drop_coverage(mutation):
-    path, workflow = accessibility_workflow()
-    job = workflow["jobs"]["accessibility"]
-    strategy = job["strategy"]
-    rows = strategy["matrix"]["include"]
+@pytest.mark.parametrize("step_name", [
+    "Verify AutoTableCharts pin agreement", "Verify checked-in Swift package resolutions"
+])
+@pytest.mark.parametrize("mutation", ["missing", "changed"])
+def test_swift_dependency_checks_remain_required(step_name, mutation):
+    path, workflow = ci_workflow()
+    steps = workflow["jobs"]["swift"]["steps"]
+    step = next(step for step in steps if step.get("name") == step_name)
     if mutation == "missing":
-        job.pop("strategy")
-    elif mutation == "fail-fast":
-        strategy["fail-fast"] = True
-    elif mutation == "duplicate":
-        rows[1] = rows[0].copy()
-    elif mutation == "membership":
-        rows[0]["skip-arguments"] = rows[0]["skip-arguments"].split(" ", 1)[1]
-    elif mutation == "order":
-        rows.reverse()
-    else:
-        step = next(item for item in job["steps"] if item.get("name") == "Test focused accessibility UI contracts")
-        step["run"] = step["run"].replace("${{ matrix.skip-arguments }}", "")
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-
-@pytest.mark.parametrize("mutation", ["missing", "name", "needs", "always", "accept-failure", "artifact"])
-def test_accessibility_aggregate_and_artifacts_are_required(mutation):
-    path, workflow = accessibility_workflow()
-    aggregate = workflow["jobs"]["accessibility-contracts"]
-    if mutation == "missing":
-        workflow["jobs"].pop("accessibility-contracts")
-    elif mutation == "name":
-        aggregate["name"] = "Different required check"
-    elif mutation == "needs":
-        aggregate["needs"] = "build"
-    elif mutation == "always":
-        aggregate.pop("if")
-    elif mutation == "accept-failure":
-        aggregate["steps"][0]["run"] += " || true"
-    else:
-        upload = next(item for item in workflow["jobs"]["accessibility"]["steps"] if "upload-artifact@" in item.get("uses", ""))
-        upload["with"]["name"] = "results"
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-
-@pytest.mark.parametrize("mutation", ["action", "path", "shell", "operator", "missing"])
-def test_accessibility_build_command_is_independently_checked(mutation):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"]["accessibility"]["steps"]
-    build = next(item for item in steps if item.get("name") == "Build focused accessibility UI contracts")
-    if mutation == "action":
-        build["run"] = build["run"].replace("build-for-testing", "test")
-    elif mutation == "path":
-        build["run"] = build["run"].replace("creg-derived-data", "other-derived-data")
-    elif mutation == "shell":
-        build["shell"] = "/bin/bash {0}"
-    elif mutation == "operator":
-        build["run"] += " && true"
-    else:
-        steps.remove(build)
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-
-@pytest.mark.parametrize("mutation", ["id", "run_id", "attempt", "shard", "device", "runtime", "output"])
-def test_accessibility_simulator_creation_is_isolated_and_exports_udid(mutation):
-    path, workflow = accessibility_workflow()
-    step = next(step for step in workflow["jobs"]["accessibility"]["steps"]
-                if step.get("name") == "Create isolated accessibility simulator")
-    if mutation == "id":
-        step["id"] = "wrong_simulator"
-    else:
-        value = {"run_id": "${{ github.run_id }}", "attempt": "${{ github.run_attempt }}",
-                 "shard": "${{ matrix.shard }}", "device": "iPhone-18-Pro",
-                 "runtime": "iOS-27-0", "output": "$GITHUB_OUTPUT"}[mutation]
-        step["run"] = step["run"].replace(value, "removed")
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-
-@pytest.mark.parametrize("mutation", ["condition", "shutdown", "delete", "udid", "order"])
-def test_accessibility_simulator_cleanup_runs_after_failed_tests(mutation):
-    path, workflow = accessibility_workflow()
-    steps = workflow["jobs"]["accessibility"]["steps"]
-    step = next(step for step in steps if step.get("name") == "Delete isolated accessibility simulator")
-    if mutation == "condition":
-        step["if"] = "${{ success() }}"
-    elif mutation == "order":
         steps.remove(step)
-        steps.insert(0, step)
     else:
-        value = {"shutdown": "simctl shutdown", "delete": "simctl delete",
-                 "udid": "steps.accessibility_simulator.outputs.udid"}[mutation]
-        step["run"] = step["run"].replace(value, "removed")
-    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
-
-
-def test_accessibility_shards_cover_write_recovery_drawer_and_notice_selectors_once():
-    selectors = [selector for members in check_ci_contracts.ACCESSIBILITY_UI_SHARDS.values()
-                 for selector in members]
-    assert len(selectors) == len(set(selectors))
-    assert set(selectors) == set(check_ci_contracts.ACCESSIBILITY_UI_SELECTORS)
-    for method in ["testConversationWriteRecoveryOffersRetryInNoticesAndSettings",
-                   "testDrawerCancellationAllowsTheFirstFollowingSwipe",
-                   "testNoticeTechnicalDetailsKeepFailureIdentity"]:
-        assert any(selector.endswith("/" + method) for selector in selectors)
+        step["run"] = "true"
+    assert check_ci_contracts.swift_dependency_contract_failures(path, workflow)
