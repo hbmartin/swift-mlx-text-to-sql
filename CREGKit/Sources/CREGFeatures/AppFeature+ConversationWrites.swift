@@ -39,6 +39,10 @@ extension AppFeature {
       case debouncing, saving, saved
       case failed(FailurePresentation)
       var isFailed: Bool { if case .failed = self { true } else { false } }
+      var isRetryable: Bool {
+        if case .failed(let failure) = self { failure.allowsConversationWriteRetry }
+        else { false }
+      }
     }
     var value: Value
     var revision: UInt64
@@ -166,7 +170,7 @@ extension AppFeature {
     guard case .conversationOperation(let id, let operation) = owner,
       state.isConversationLive(id) else { return .none }
     let failed = (state.conversationEdits[id] ?? [:]).filter {
-      $0.key.operation == operation && $0.value.phase.isFailed
+      $0.key.operation == operation && $0.value.phase.isRetryable
     }.sorted { $0.value.revision < $1.value.revision }
     return .merge(failed.map { target, previous in
       var edit = previous
@@ -195,7 +199,7 @@ extension AppFeature.State {
     Set(conversationEdits.flatMap { id, edits in
       guard isConversationLive(id) else { return [AppFeature.FailureOwner]() }
       return edits.compactMap { target, edit in
-        edit.phase.isFailed ? .conversationOperation(id, target.operation) : nil
+        edit.phase.isRetryable ? .conversationOperation(id, target.operation) : nil
       }
     })
   }

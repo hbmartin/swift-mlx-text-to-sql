@@ -35,6 +35,8 @@ import Synchronization
       case transientBanners = "transient-banners"
       case conversationNotices = "conversation-notices"
       case noticeOccurrences = "notice-occurrences"
+      case conversationWriteInvariant = "conversation-write-invariant"
+      case conversationWriteInvariantWithRetryableSibling = "conversation-write-invariant-with-retryable-sibling"
       case retainedExport = "retained-export"
       case browserRefresh = "browser-refresh"
       case browserPerformance = "browser-performance"
@@ -403,8 +405,8 @@ import Synchronization
         SettingsView(
           store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
 
-      case .noticeOccurrences:
-        NoticeOccurrenceAccessibilityHarness()
+      case .noticeOccurrences, .conversationWriteInvariant, .conversationWriteInvariantWithRetryableSibling:
+        NoticeOccurrenceAccessibilityHarness(scenario: scenario)
       case .conversationNotices, .retainedExport, .browserRefresh, .browserPerformance, .appleIntelligenceDisabled,
         .exportMore, .browserLongPreviews, .compactJump, .historyProgress, .historyProgressUnavailable,
         .drawerGestureCancellation:
@@ -436,6 +438,7 @@ import Synchronization
     private let scenario: AccessibilityUITestConfiguration.Scenario
     @State private var drawerReduceMotion = false
     @State private var drawerMotionProbe: DrawerMotionProbe?
+    @State private var drawerRowProbe: DrawerRowProbe?
     private let selectedID: UUID
     private let otherID: UUID
     init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationNotices,
@@ -465,9 +468,8 @@ import Synchronization
       selectedID = id
       otherID = initial.conversations.first(where: { $0.id != id })!.id
       _drawerMotionProbe = State(initialValue: scenario == .drawerGestureCancellation ? DrawerMotionProbe() : nil)
+      _drawerRowProbe = State(initialValue: scenario == .browserPerformance ? DrawerRowProbe() : nil)
       if scenario == .browserPerformance {
-        DrawerRowProbe.enabled = true
-        DrawerRowProbe.realized = []; DrawerRowProbe.renders = [:]
         initial.conversations = IdentifiedArray(uniqueElements: (0..<1000).map { index in
           ConversationSummary(id: UUID(), title: "Saved conversation \(index)", startedAt: PreviewFixtures.now,
             lastActivityAt: PreviewFixtures.now, latestMessagePreview: "Saved question")
@@ -563,6 +565,7 @@ import Synchronization
         AppRootView(store: store, now: PreviewFixtures.now)
       }
       .environment(\.cregDrawerMotionProbe, drawerMotionProbe)
+      .environment(\.cregDrawerRowProbe, drawerRowProbe)
       .environment(\.cregUITestReduceMotion, scenario == .recovery || scenario == .compactJump ? true : scenario == .drawerGestureCancellation ? drawerReduceMotion : nil)
       .task {
         if scenario == .retainedExport || scenario == .exportMore {
@@ -587,28 +590,45 @@ import Synchronization
     private static let failure = FailurePresentation(code: "same_code", title: "Save failed",
       message: "An unrelated save needs attention.", diagnostic: "occurrence-original")
 
-    init() {
+    init(scenario: AccessibilityUITestConfiguration.Scenario = .noticeOccurrences) {
       var initial = PreviewFixtures.appState(revealed: false, chat: PreviewFixtures.answeredChatState())
       initial.$developerMode = Shared(value: true)
       let id = initial.chat!.conversationID
       if initial.conversations[id: id] == nil {
         initial.conversations.append(.init(id: id, title: "Recovery", startedAt: PreviewFixtures.now, lastActivityAt: PreviewFixtures.now))
       }
-      initial.storeFailure(Self.failure, owner: .global)
-      var second = Self.failure; second.diagnostic = "occurrence-survivor"
-      initial.storeFailure(second, owner: .historySummaries(2))
       let draftFailure = FailurePresentation.history(operation: .draftSave, error: NSError(domain: "Fixture", code: 1))
-      initial.storeFailure(draftFailure, owner: .conversationOperation(id, .draft))
       var answer = initial.chat!.messages.last!
       answer.resultPresentation = .table
-      let preferenceFailure = FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 2))
+      let invariant = scenario != .noticeOccurrences
+      let preferenceFailure = invariant
+        ? FailurePresentation.resultPreferenceSave(error: AppFeature.ConversationWriteInvariantError.missingResultPresentationMessage)
+        : FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 2))
+      if !invariant {
+        initial.storeFailure(Self.failure, owner: .global)
+        var second = Self.failure; second.diagnostic = "occurrence-survivor"
+        initial.storeFailure(second, owner: .historySummaries(2))
+        initial.storeFailure(draftFailure, owner: .conversationOperation(id, .draft))
+      }
       initial.storeFailure(preferenceFailure, owner: .conversationOperation(id, .resultPresentation))
       initial.conversationWriteSequence = 2
       initial.conversationEdits[id] = [
-        .draft: .init(value: .draft("Retained fixture draft"), revision: 1, phase: .failed(draftFailure)),
         .resultPresentation(answer.id): .init(value: .resultPresentation(.table), revision: 2,
-          phase: .failed(preferenceFailure), fallbackMessage: answer),
+          phase: .failed(preferenceFailure), fallbackMessage: invariant ? nil : answer),
       ]
+      if !invariant {
+        initial.conversationEdits[id]?[.draft] = .init(value: .draft("Retained fixture draft"),
+          revision: 1, phase: .failed(draftFailure))
+      }
+      if scenario == .conversationWriteInvariantWithRetryableSibling {
+        var sibling = answer
+        sibling.id = UUID()
+        initial.chat?.messages.append(sibling)
+        let failure = FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 3))
+        initial.conversationWriteSequence = 3
+        initial.conversationEdits[id]?[.resultPresentation(sibling.id)] = .init(
+          value: .resultPresentation(.table), revision: 3, phase: .failed(failure), fallbackMessage: sibling)
+      }
       initial.overlayConversationEdits()
       _store = State(initialValue: Store(initialState: initial) { AppFeature() } withDependencies: {
         $0.historyClient = .noop()

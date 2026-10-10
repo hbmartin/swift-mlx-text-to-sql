@@ -31,16 +31,27 @@
     }
   }
 
-  @MainActor enum DrawerRowProbe {
-    static var enabled = false
-    static var realized: Set<UUID> = []
-    static var renders: [UUID: Int] = [:]
-    static func render(_ id: UUID) { if enabled { renders[id, default: 0] += 1 } }
-    static func appear(_ id: UUID) { if enabled { realized.insert(id) } }
+  private struct DrawerRowProbeKey: EnvironmentKey {
+    static let defaultValue: DrawerRowProbe? = nil
+  }
+  extension EnvironmentValues {
+    var cregDrawerRowProbe: DrawerRowProbe? {
+      get { self[DrawerRowProbeKey.self] }
+      set { self[DrawerRowProbeKey.self] = newValue }
+    }
+  }
+
+  @MainActor final class DrawerRowProbe {
+    var realized: Set<UUID> = []
+    var renders: [UUID: Int] = [:]
+    func render(_ id: UUID) { renders[id, default: 0] += 1 }
+    func appear(_ id: UUID) { realized.insert(id) }
+    func reset() { realized = []; renders = [:] }
   }
 
   struct DrawerPerformanceProbe: View {
     let store: StoreOf<AppFeature>
+    @Environment(\.cregDrawerRowProbe) private var probe
     @State private var realized = 0
     @State private var renders = 0
     @State private var pendingCheck = false
@@ -61,8 +72,8 @@
       }
       .task {
         while !Task.isCancelled {
-          realized = DrawerRowProbe.realized.count
-          renders = DrawerRowProbe.renders.values.reduce(0, +)
+          realized = probe?.realized.count ?? 0
+          renders = probe?.renders.values.reduce(0, +) ?? 0
           if pendingCheck { settled = true }
           try? await Task.sleep(for: .milliseconds(200))
         }

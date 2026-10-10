@@ -185,10 +185,13 @@ struct ConversationRow: View, Equatable {
   let select: () -> Void
   let delete: () -> Void
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  #if DEBUG
+    @Environment(\.cregDrawerRowProbe) private var rowProbe
+  #endif
 
   var body: some View {
     #if DEBUG
-      let _ = DrawerRowProbe.render(summary.id)
+      let _ = rowProbe?.render(summary.id)
     #endif
     Button(action: select) {
       CREGAccessibilityActionLayout(
@@ -255,7 +258,7 @@ struct ConversationRow: View, Equatable {
     }
     .accessibilityElement(children: .combine)
     #if DEBUG
-      .onAppear { DrawerRowProbe.appear(summary.id) }
+      .onAppear { rowProbe?.appear(summary.id) }
     #endif
   }
 

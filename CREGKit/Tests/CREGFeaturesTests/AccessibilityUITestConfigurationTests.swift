@@ -44,6 +44,8 @@ import Testing
         "transient-banners",
         "conversation-notices",
         "notice-occurrences",
+        "conversation-write-invariant",
+        "conversation-write-invariant-with-retryable-sibling",
         "retained-export",
         "browser-refresh",
         "browser-performance",

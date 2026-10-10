@@ -1,5 +1,62 @@
 # History recovery and notice presentation validation
 
+## Review-comment follow-up (October 10, 2026)
+
+Implemented against `8c68a224a52f4711e5d547934ea72e2d41ffc70b`. CI contracts now inspect clustered shell command options (`-lc`, `-ec`, `-fc`) and reject simulator create/boot commands, including supported shell wrappers. Both Swift dependency steps explicitly use `bash` in `${{ github.workspace }}`; their contracts reject reviewed job/step context overrides and report a shared job violation once. README build guidance now describes local XcodeBuildMCP validation.
+
+`FailurePresentation.allowsConversationWriteRetry` defaults to true and is preserved conservatively when failures combine. A missing result-presentation fallback uses `history_result_preference_message_missing` with permanent recovery copy and retry eligibility false. Retry filtering and the owner projection use the same eligibility. Repeated retries and duplicate settlements preserve the blocked edit, revision, session preference, and notice occurrence without storage access. A fresh selection, including selection of the same display option, captures a valid message and can save. Retryable sibling targets remain eligible; their action on a permanent owner's notice is labeled “Retry other display choices.” Settlement/action shapes, persisted formats, title normalization, and existing duplicate-delivery behavior are unchanged.
+
+Drawer row capture is now a non-observable MainActor reference owned by the performance fixture and injected through a DEBUG environment value defaulting to nil. Counters, accessibility identifiers, and the 200 ms polling interval are preserved. Independent instances using the same row ID and reset isolation have package coverage. The existing UI performance selector realized **20 rows**, recorded **21 initial row bodies**, and verified that an unrelated error did not change the render count.
+
+The focused package run passed **135 tests in six suites** (`PR158RegressionFixTests`, `ConversationNoticeTests`, `HistoryRecoveryRegressionTests`, `DiagnosticsAndFailurePresentationTests`, `FeatureFailureDiagnosticsTests`, and `AccessibilityUITestConfigurationTests`; 43.482 seconds of test execution, 122.9 seconds through XcodeBuildMCP). New regressions cover permanent copy/combined eligibility, no-storage repeated retries, fresh selection recovery, mixed preference targets, Undo/failed/committed deletion, fixture isolation, and the two explicitly reviewed harness scenarios.
+
+The initial four-selector UI run passed **3 tests** and failed the new mixed-owner selector at its post-retry lookup: XCTest's identifier shorthand rejects strings longer than 128 characters. The lookup now uses an exact identifier predicate, retaining the same disappearance assertion and product identifier. The affected selector passed its focused retest (**1 test, 0 failures**, 72.2 seconds through XcodeBuildMCP), covering both notices and Settings at AX5 with the existing accessible-control assertions. All four selected UI tests therefore passed across the initial run and retest. This was a new test-query failure, not an existing baseline failure.
+
+The CI contract checker, package-pin checker, and whitespace check pass. **169 Python CI-contract tests pass** (2.01 seconds), including shell/simulator rejection, retained-work acceptance, both required steps' skipped/missing/changed mutations, and reviewed Swift job/step context overrides. No existing baseline failures occurred in the selected checks. The four historical chart assertions remain untouched and were not rerun. Compiler warnings remain in the build logs; no assertion was suppressed or weakened.
+
+Before testing, CLI help, tool-specific help, repository/session-default loading, and simulator inventory were inspected. No repository `.xcodebuildmcp/config.yaml` was present; package/project paths and the selected scheme, configuration, and simulator were explicit. The existing iPhone 18 Pro / iOS 27 simulator (`31B09574-9781-45A7-816D-6A1916E1BA16`) was reused and preserved. No full Apple suite or canonical accessibility matrix was run, and no Apple execution or simulator provisioning was added to CI.
+
+Commands were run from `/Users/haroldmartin/Downloads/creg/swift-mlx-text-to-sql`:
+
+```sh
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_ci_contracts.py
+uv run --project fine-tuning --no-sync python -m pytest fine-tuning/tests/test_ci_contracts.py -q
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_swift_package_pins.py
+git diff --check
+
+xcodebuildmcp swift-package test --package-path "$PWD/CREGKit" --filter 'PR158RegressionFixTests|ConversationNoticeTests|HistoryRecoveryRegressionTests|DiagnosticsAndFailurePresentationTests|FeatureFailureDiagnosticsTests|AccessibilityUITestConfigurationTests' --parallel false
+
+xcodebuildmcp simulator test \
+  --project-path "$PWD/CREG.xcodeproj" --scheme CREG --configuration Debug \
+  --simulator-id 31B09574-9781-45A7-816D-6A1916E1BA16 \
+  --extra-args \
+  '-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteInvariantHasNoRetryInNoticesAndSettings' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteInvariantAllowsRetryOfOtherDisplayChoices' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows' \
+  '-skipPackagePluginValidation' '-skipMacroValidation' \
+  'CODE_SIGNING_ALLOWED=NO' 'CREG_ACCESSIBILITY_HARNESS_BUILD=YES'
+
+xcodebuildmcp simulator test \
+  --project-path "$PWD/CREG.xcodeproj" --scheme CREG --configuration Debug \
+  --simulator-id 31B09574-9781-45A7-816D-6A1916E1BA16 \
+  --extra-args \
+  '-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteInvariantAllowsRetryOfOtherDisplayChoices' \
+  '-skipPackagePluginValidation' '-skipMacroValidation' \
+  'CODE_SIGNING_ALLOWED=NO' 'CREG_ACCESSIBILITY_HARNESS_BUILD=YES'
+```
+
+| Run | Retained artifact |
+| --- | --- |
+| Focused package build/test | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-10T22-17-00-468Z_pid47114_463f5428.log` |
+| Package test detail | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_parser-debug_2026-10-10T22-19-03-384Z_pid47114_f7c5a1cb.log` |
+| Initial four-selector UI result | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/result-bundles/test_sim_2026-10-10T22-17-48-829Z_pid52921_adc04113.xcresult` |
+| Initial UI build/test log | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/test_sim_2026-10-10T22-17-48-829Z_pid52921_22bc2b94.log` |
+| Mixed-owner UI retest result | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/result-bundles/test_sim_2026-10-10T22-21-36-418Z_pid76693_9cc70e70.xcresult` |
+| Retest build/test log | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/test_sim_2026-10-10T22-21-36-418Z_pid76693_857915b5.log` |
+| Package/UI CLI summaries | `/tmp/creg-review-fixes-2026-10-10-package-tests.log`, `/tmp/creg-review-fixes-2026-10-10-ui-tests.log`, `/tmp/creg-review-fixes-2026-10-10-ui-retest.log` |
+| CI checker, Python tests, package pins, whitespace | `/tmp/creg-review-fixes-2026-10-10-ci-contract-check.log`, `/tmp/creg-review-fixes-2026-10-10-ci-contract-tests.log`, `/tmp/creg-review-fixes-2026-10-10-package-pins.log`, `/tmp/creg-review-fixes-2026-10-10-whitespace.log` |
+
 
 ## Local Apple testing policy and conversation recovery (October 10, 2026)
 

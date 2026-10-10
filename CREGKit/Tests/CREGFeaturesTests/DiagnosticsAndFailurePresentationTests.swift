@@ -1373,6 +1373,23 @@ import Testing
 }
 
 extension DiagnosticsAndFailurePresentationTests {
+  @Test func preferenceInvariantHasPermanentRecoveryCopyAndCombiningPreservesEligibility() {
+    let failure = FailurePresentation.resultPreferenceSave(error: AppFeature.ConversationWriteInvariantError.missingResultPresentationMessage)
+    let transient = FailurePresentation.resultPreferenceSave(error: DiagnosticsTestError.failed("save"))
+    #expect(failure.code == "history_result_preference_message_missing")
+    #expect(failure.title == "Display choice not saved")
+    #expect(failure.message == "CREG couldn’t save your result display choice. Your choice is kept while CREG remains open. Choose a display option again to try saving it.")
+    #expect(!failure.allowsConversationWriteRetry)
+    #expect(failure.cause == nil)
+    #expect(failure.recovery == nil)
+    #expect(failure.technicalDetails(developerMode: false) == nil)
+    #expect(failure.technicalDetails(developerMode: true)?.contains("no fallback message") == true)
+    #expect(transient.allowsConversationWriteRetry)
+    #expect(!failure.combining(transient).allowsConversationWriteRetry)
+    #expect(!transient.combining(failure).allowsConversationWriteRetry)
+    #expect(transient.combining(transient).allowsConversationWriteRetry)
+  }
+
   @Test func preferenceAndDraftFailuresKeepCopyAndSeparateCodesForUnavailableHistory() async throws {
     let ordinary = DiagnosticsTestError.failed("save")
     let history = HistoryClient.recoverable(open: { throw ordinary })

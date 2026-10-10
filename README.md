@@ -215,9 +215,11 @@ The Xcode build phase normally runs the model materializer through the frozen
 `uv` environment and writes the exact bundled manifest into the app.
 
 - `CREG_ACCESSIBILITY_HARNESS_BUILD` is declared `NO` in every app
-  configuration. CI may override it with a conventional true value only for a
-  Debug iOS Simulator build that launches the inert accessibility harness. The
-  bypass still stamps the current source revision and dirty state, removes any
+  configuration. Local XcodeBuildMCP validation may override it with a
+  conventional true value only for a Debug iOS Simulator build that launches
+  the inert accessibility harness. Apple tests and simulator provisioning run
+  locally, outside CI. The bypass still stamps the current source revision and
+  dirty state, removes any
   stale `SQLModel`, manifest, or receipt from incremental build products, and
   rejects unknown Boolean values and every device, Beta, or Release build. The
   resulting app is a UI-test fixture, not a model-bearing development build.
