@@ -43,12 +43,15 @@ struct ConversationUnavailableView: View {
   var historyIsSlow = false
   var ownedFailures: [AppFeature.OwnedFailure] = []
   var dismissOwnedFailure: (AppFeature.FailureOwner) -> Void = { _ in }
+  var retryableWriteOwners: Set<AppFeature.FailureOwner> = []
+  var retrySaving: (AppFeature.FailureOwner) -> Void = { _ in }
 
   var body: some View {
     ScrollView {
       VStack(spacing: 16) {
         if !ownedFailures.isEmpty {
-          OwnedFailureBanners(failures: ownedFailures, developerMode: developerMode, dismiss: dismissOwnedFailure)
+          OwnedFailureBanners(failures: ownedFailures, developerMode: developerMode, dismiss: dismissOwnedFailure,
+            retryableWriteOwners: retryableWriteOwners, retrySaving: retrySaving)
         } else if let failure {
           FailureBanner(failure: failure, developerMode: developerMode, dismiss: dismissFailure)
             .accessibilityIdentifier("conversation-recovery-failure")
@@ -94,10 +97,13 @@ struct OwnedFailureBanners: View {
   let failures: [AppFeature.OwnedFailure]
   let developerMode: Bool
   let dismiss: (AppFeature.FailureOwner) -> Void
+  var retryableWriteOwners: Set<AppFeature.FailureOwner> = []
+  var retrySaving: (AppFeature.FailureOwner) -> Void = { _ in }
 
   var body: some View {
-    ForEach(failures, id: \.owner) { owned in
-      FailureBanner(failure: owned.failure, developerMode: developerMode, dismiss: { dismiss(owned.owner) })
+    ForEach(failures) { owned in
+      FailureBanner(failure: owned.failure, developerMode: developerMode, dismiss: { dismiss(owned.owner) },
+        retrySaving: retryableWriteOwners.contains(owned.owner) ? { retrySaving(owned.owner) } : nil, identity: owned.id)
     }
   }
 }
@@ -127,6 +133,11 @@ struct FailureBanner: View {
   let failure: FailurePresentation
   let developerMode: Bool
   let dismiss: () -> Void
+  var retrySaving: (() -> Void)?
+  var identity: AppFeature.OwnedFailure.ID?
+  private var identifier: String {
+    identity.map { "\(failure.code)-\($0.accessibilityToken)" } ?? failure.code
+  }
   private var isError: Bool { failure.isError }
   private var tint: Color { isError ? .orange : .secondary }
 
@@ -149,7 +160,7 @@ struct FailureBanner: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(failure.dismissalLabel)
-        .accessibilityIdentifier("failure-dismiss-\(failure.code)")
+        .accessibilityIdentifier("failure-dismiss-\(identifier)")
         .cregLargeContentViewer(LocalizedStringKey(failure.dismissalLabel), systemImage: "xmark")
       }
 
@@ -157,11 +168,16 @@ struct FailureBanner: View {
         .font(.subheadline)
         .fixedSize(horizontal: false, vertical: true)
 
+      if let retrySaving {
+        Button(action: retrySaving) { Text("Retry saving").cregTextButtonLabelTarget() }
+          .accessibilityIdentifier("failure-retry-saving-\(identifier)")
+      }
+
       if let details = failure.technicalDetails(
         developerMode: developerMode)
       {
         TechnicalDetailsView(details: details)
-          .accessibilityIdentifier("failure-details-\(failure.code)")
+          .accessibilityIdentifier("failure-details-\(identifier)")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

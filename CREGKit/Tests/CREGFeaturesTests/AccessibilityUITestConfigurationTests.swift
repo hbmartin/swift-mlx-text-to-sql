@@ -43,6 +43,7 @@ import Testing
         "result-chart-unresolved-selection",
         "transient-banners",
         "conversation-notices",
+        "notice-occurrences",
         "retained-export",
         "browser-refresh",
         "browser-performance",

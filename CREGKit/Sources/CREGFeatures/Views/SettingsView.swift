@@ -19,7 +19,9 @@ struct SettingsView: View {
         if !store.visibleFailures.isEmpty {
           Section {
             OwnedFailureBanners(failures: store.visibleFailures, developerMode: store.developerMode,
-              dismiss: { store.send(.dismissOwnedFailure($0)) })
+              dismiss: { store.send(.dismissOwnedFailure($0)) },
+              retryableWriteOwners: store.retryableConversationWriteOwners,
+              retrySaving: { store.send(.retryConversationWrites($0)) })
             if store.visibleFailures.contains(where: { $0.failure.recovery == .retryHistory }) {
               RetryHistoryButton(isLoading: store.historySummaryPhase.isLoading,
                 retry: { store.send(.retryHistoryTapped) }, isRetry: store.historyLoadIsRetry, isSlow: store.slowHistoryRequestID != nil)

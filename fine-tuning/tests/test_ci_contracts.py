@@ -538,14 +538,14 @@ def test_accessibility_ui_contract_rejects_fragments_in_unrelated_steps():
         ("-scheme CREG", "-scheme Decoy", "CREG"),
         ("-scheme CREG", "-scheme CREGPreview", "CREG"),
         (
-            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
             "platform=macOS,name=iPhone 18 Pro,OS=27.0",
-            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
         ),
         (
+            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
             "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
-            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0beta",
-            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
         ),
     ],
 )
@@ -642,7 +642,7 @@ def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
     )
     reviewed_prefix = (
         "/usr/bin/xcodebuild test-without-building -project CREG.xcodeproj -scheme CREG "
-        "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'"
+        "-destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}'"
     )
     ui_test["run"] = (
         f"{reviewed_prefix} # {inert_fragments}"
@@ -663,7 +663,7 @@ def test_accessibility_ui_contract_rejects_inert_required_fragments(decoy_kind):
         ("-project CREG.xcodeproj", "-project Decoy.xcodeproj", "-project"),
         ("-scheme CREG", "-scheme Decoy", "-scheme"),
         (
-            "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'",
+            "-destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}'",
             "-destination 'platform=macOS'",
             "-destination",
         ),
@@ -992,14 +992,14 @@ def test_accessibility_ui_contract_rejects_arguments_in_a_decoy_command():
     )
     reviewed_arguments = (
         "/usr/bin/xcodebuild test-without-building -project CREG.xcodeproj -scheme CREG "
-        "-destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0'"
+        "-destination 'platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}'"
     )
     decoy_command = (
         ui_test["run"]
         .replace("CREG.xcodeproj", "Decoy.xcodeproj")
         .replace("-scheme CREG", "-scheme Decoy")
         .replace(
-            "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+            "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
             "platform=macOS",
         )
     )
@@ -1505,3 +1505,46 @@ def test_accessibility_build_command_is_independently_checked(mutation):
     else:
         steps.remove(build)
     assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+
+@pytest.mark.parametrize("mutation", ["id", "run_id", "attempt", "shard", "device", "runtime", "output"])
+def test_accessibility_simulator_creation_is_isolated_and_exports_udid(mutation):
+    path, workflow = accessibility_workflow()
+    step = next(step for step in workflow["jobs"]["accessibility"]["steps"]
+                if step.get("name") == "Create isolated accessibility simulator")
+    if mutation == "id":
+        step["id"] = "wrong_simulator"
+    else:
+        value = {"run_id": "${{ github.run_id }}", "attempt": "${{ github.run_attempt }}",
+                 "shard": "${{ matrix.shard }}", "device": "iPhone-18-Pro",
+                 "runtime": "iOS-27-0", "output": "$GITHUB_OUTPUT"}[mutation]
+        step["run"] = step["run"].replace(value, "removed")
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+
+@pytest.mark.parametrize("mutation", ["condition", "shutdown", "delete", "udid", "order"])
+def test_accessibility_simulator_cleanup_runs_after_failed_tests(mutation):
+    path, workflow = accessibility_workflow()
+    steps = workflow["jobs"]["accessibility"]["steps"]
+    step = next(step for step in steps if step.get("name") == "Delete isolated accessibility simulator")
+    if mutation == "condition":
+        step["if"] = "${{ success() }}"
+    elif mutation == "order":
+        steps.remove(step)
+        steps.insert(0, step)
+    else:
+        value = {"shutdown": "simctl shutdown", "delete": "simctl delete",
+                 "udid": "steps.accessibility_simulator.outputs.udid"}[mutation]
+        step["run"] = step["run"].replace(value, "removed")
+    assert check_ci_contracts.accessibility_ui_contract_failures(path, workflow)
+
+
+def test_accessibility_shards_cover_write_recovery_drawer_and_notice_selectors_once():
+    selectors = [selector for members in check_ci_contracts.ACCESSIBILITY_UI_SHARDS.values()
+                 for selector in members]
+    assert len(selectors) == len(set(selectors))
+    assert set(selectors) == set(check_ci_contracts.ACCESSIBILITY_UI_SELECTORS)
+    for method in ["testConversationWriteRecoveryOffersRetryInNoticesAndSettings",
+                   "testDrawerCancellationAllowsTheFirstFollowingSwipe",
+                   "testNoticeTechnicalDetailsKeepFailureIdentity"]:
+        assert any(selector.endswith("/" + method) for selector in selectors)

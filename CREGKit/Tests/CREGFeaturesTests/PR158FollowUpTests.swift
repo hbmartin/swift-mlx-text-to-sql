@@ -232,7 +232,7 @@ struct PR158FollowUpTests {
     await unleased.finish()
     #expect(unleased.state.conversationExports[a] == nil)
     #expect(!FileManager.default.fileExists(atPath: url.path))
-    #expect(unleased.state.failures == [.init(owner: .conversationOperation(a, .rename), failure: failure)])
+    #expect(unleased.state.failures == initial.failures)
   }
 
   @Test func interruptionDiagnosticOwnershipSurvivesJournalSeeding() async throws {

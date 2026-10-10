@@ -277,21 +277,3 @@ actor MessageUpdateQueue {
     next.resume()
   }
 }
-
-/// Reducers allocate revisions synchronously, before their effects can be
-/// scheduled out of order. The process-wide counter also stays monotonic when
-/// a conversation is unloaded and later reconstructed from history.
-let resultPresentationSaveRevisionCounter = MessageUpdateRevisionCounter()
-let draftSaveRevisionCounter = MessageUpdateRevisionCounter()
-
-final class MessageUpdateRevisionCounter: @unchecked Sendable {
-  private let lock = NSLock()
-  private var value: UInt64 = 0
-
-  func next() -> UInt64 {
-    lock.lock()
-    defer { lock.unlock() }
-    value &+= 1
-    return value
-  }
-}

@@ -252,9 +252,9 @@ extension AppFeature {
 
   func presentFailure(
     state: inout State, primary: FailurePresentation, secondary: [FailurePresentation] = [],
-    owner: FailureOwner = .global
+    owner: FailureOwner = .global, newOccurrence: Bool = false
   ) {
-    state.storeFailure(secondary.reduce(primary) { $0.combining($1) }, owner: owner)
+    state.storeFailure(secondary.reduce(primary) { $0.combining($1) }, owner: owner, newOccurrence: newOccurrence)
     for failure in [primary] + secondary { recordFailure(failure) }
   }
 

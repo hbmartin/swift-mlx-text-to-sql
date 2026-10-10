@@ -5,6 +5,8 @@ import Foundation
 /// User-facing recovery copy plus a stable developer diagnostic kept outside
 /// the normal UI unless Developer Mode is enabled.
 public struct FailurePresentation: Error, Sendable, Equatable {
+  public enum Severity: Equatable, Sendable { case informational, error }
+  public var severity: Severity
   public enum Cause: Equatable, Sendable { case historyStoreUnavailable }
   public enum Recovery: Equatable, Sendable { case retryHistory }
   public var code: String
@@ -13,7 +15,7 @@ public struct FailurePresentation: Error, Sendable, Equatable {
   public var diagnostic: String
   public var cause: Cause?
   public var recovery: Recovery?
-  public var isError: Bool { code != "history_summary_timed_out" }
+  public var isError: Bool { severity == .error }
   public var dismissalLabel: String { isError ? "Dismiss error" : "Dismiss notice" }
 
   public init(
@@ -22,8 +24,10 @@ public struct FailurePresentation: Error, Sendable, Equatable {
     message: String,
     diagnostic: String,
     cause: Cause? = nil,
-    recovery: Recovery? = nil
+    recovery: Recovery? = nil,
+    severity: Severity = .error
   ) {
+    self.severity = severity
     self.code = code
     self.title = title
     self.message = message
@@ -42,7 +46,8 @@ public struct FailurePresentation: Error, Sendable, Equatable {
       code: code, title: title, message: message + "\n\n" + secondary.message,
       diagnostic: "\(diagnostic)\n\n[\(secondary.code)] \(secondary.diagnostic)",
       cause: cause == secondary.cause ? cause : nil,
-      recovery: recovery ?? secondary.recovery)
+      recovery: recovery ?? secondary.recovery,
+      severity: isError || secondary.isError ? .error : .informational)
   }
 }
 
@@ -218,13 +223,22 @@ extension FailurePresentation {
       diagnostic: DiagnosticDetails.describe(error))
   }
 
+  private static let draftSaveMessage = "CREG couldn’t save your latest draft. It is kept while CREG remains open. Retry saving or copy it before closing the app."
+
+  static func resultPreferenceSave(error: any Error) -> Self {
+    var failure = history(operation: .messageSave, error: error)
+    failure.title = "Display choice not saved"
+    failure.message = "CREG couldn’t save your result display choice. It is kept while CREG remains open. Retry saving before closing the app."
+    return failure
+  }
+
   static func history(
     operation: HistoryFailureOperation,
     error: any Error
   ) -> FailurePresentation {
     if error is HistoryStoreUnavailableError {
-      return FailurePresentation(code: operation.code, title: "History unavailable",
-        message: "CREG couldn’t open your conversation history. Tap Retry history to try again.",
+      return FailurePresentation(code: operation.code, title: operation == .draftSave ? "Draft not saved" : "History unavailable",
+        message: operation == .draftSave ? draftSaveMessage : "CREG couldn’t open your conversation history. Tap Retry history to try again.",
         diagnostic: DiagnosticDetails.describe(error),
         cause: .historyStoreUnavailable, recovery: .retryHistory)
     }
@@ -240,7 +254,7 @@ extension FailurePresentation {
         "CREG couldn’t load your saved conversation. Try opening it again or start a new chat."
     case .draftSave:
       title = "Draft not saved"
-      message = "CREG couldn’t save your unsent draft. Keep a copy before leaving this conversation."
+      message = draftSaveMessage
     case .messageSave, .eventSave:
       title = "Conversation not saved"
       message =

@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 struct ChatNotice {
   enum ID: Hashable {
-    case failure(AppFeature.FailureOwner)
+    case failure(AppFeature.OwnedFailure.ID)
     case genericFailure(String)
     case history, opening, sql, intelligence, export
     case interrupted(UUID?, UUID?, Date, String)
@@ -24,7 +24,7 @@ struct ChatNotice {
   var isError = false
   var id: ID {
     switch kind {
-    case .failure(let owned): .failure(owned.owner)
+    case .failure(let owned): .failure(owned.id)
     case .genericFailure(let failure): .genericFailure(failure.code)
     case .history: .history
     case .opening: .opening
@@ -177,7 +177,9 @@ struct ChatNoticesContent: View {
         case .failure(let owned):
           FailureBanner(
             failure: owned.failure, developerMode: chrome.developerMode,
-            dismiss: { chrome.dismissOwnedFailure(owned.owner) })
+            dismiss: { chrome.dismissOwnedFailure(owned.owner) },
+            retrySaving: chrome.retryableWriteOwners.contains(owned.owner) ? { chrome.retrySaving(owned.owner) } : nil,
+            identity: owned.id)
           if owned.failure.recovery == .retryHistory { historyControl }
           if case .conversationOpening = owned.owner { openingControl }
         case .genericFailure(let failure):

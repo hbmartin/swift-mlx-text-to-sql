@@ -48,9 +48,28 @@ extension AppFeature {
     case retry(conversationID: UUID, journalID: UUID, generation: Int)
   }
 
-  public struct OwnedFailure: Equatable, Sendable {
+  public struct OwnedFailure: Equatable, Sendable, Identifiable {
+    public struct ID: Hashable, Sendable {
+      public var owner: FailureOwner
+      public var occurrence: UInt64
+      var accessibilityToken: String {
+        let scope: String
+        switch owner {
+        case .global: scope = "global"
+        case .historySummaries(let request): scope = "history-\(request)"
+        case .conversationOpening(let request): scope = "opening-\(request)"
+        case .conversation(let id): scope = "conversation-\(id)"
+        case .conversationOperation(let id, let operation): scope = "operation-\(id)-\(operation)"
+        case .turnPersistence(let id): scope = "turn-\(id)"
+        case .retry(let id, let journal, let generation): scope = "retry-\(id)-\(journal)-\(generation)"
+        }
+        return "\(scope)-\(occurrence)"
+      }
+    }
     public var owner: FailureOwner
     public var failure: FailurePresentation
+    public var occurrence: UInt64 = 0
+    public var id: ID { .init(owner: owner, occurrence: occurrence) }
   }
 
   func bootstrapHistory(state: inout State, restart: Bool = false) -> Effect<Action> {
@@ -234,14 +253,20 @@ extension AppFeature.State {
     }
   }
 
-  mutating func storeFailure(_ failure: FailurePresentation, owner: AppFeature.FailureOwner) {
+  mutating func storeFailure(_ failure: FailurePresentation, owner: AppFeature.FailureOwner,
+    newOccurrence: Bool = false
+  ) {
+    if !newOccurrence, failures.contains(where: { $0.owner == owner && $0.failure == failure }) { return }
+    failureOccurrenceSequence += 1
     failures.removeAll { $0.owner == owner }
-    failures.append(.init(owner: owner, failure: failure))
+    failures.append(.init(owner: owner, failure: failure, occurrence: failureOccurrenceSequence))
   }
 
   mutating func markHistoryStoreAvailable() {
     historyStoreAvailability = .available
-    failures.removeAll { $0.failure.cause == .historyStoreUnavailable }
+    let protected = Set(failures.filter { hasOutstandingConversationWrites(owner: $0.owner) }.map(\.owner))
+    failures.removeAll { $0.failure.cause == .historyStoreUnavailable
+      && !protected.contains($0.owner) }
   }
 
   mutating func clearSummaryFailures() {

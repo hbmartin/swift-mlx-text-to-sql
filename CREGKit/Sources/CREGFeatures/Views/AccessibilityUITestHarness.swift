@@ -34,6 +34,7 @@ import Synchronization
       case resultChartUnresolvedSelection = "result-chart-unresolved-selection"
       case transientBanners = "transient-banners"
       case conversationNotices = "conversation-notices"
+      case noticeOccurrences = "notice-occurrences"
       case retainedExport = "retained-export"
       case browserRefresh = "browser-refresh"
       case browserPerformance = "browser-performance"
@@ -402,6 +403,8 @@ import Synchronization
         SettingsView(
           store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
 
+      case .noticeOccurrences:
+        NoticeOccurrenceAccessibilityHarness()
       case .conversationNotices, .retainedExport, .browserRefresh, .browserPerformance, .appleIntelligenceDisabled,
         .exportMore, .browserLongPreviews, .compactJump, .historyProgress, .historyProgressUnavailable,
         .drawerGestureCancellation:
@@ -431,6 +434,7 @@ import Synchronization
     @State private var store: StoreOf<AppFeature>
     @State private var heldExport: HeldUITestExport
     private let scenario: AccessibilityUITestConfiguration.Scenario
+    @State private var drawerReduceMotion = false
     private let selectedID: UUID
     private let otherID: UUID
     init(scenario: AccessibilityUITestConfiguration.Scenario = .conversationNotices,
@@ -459,6 +463,7 @@ import Synchronization
       let id = initial.chat!.conversationID
       selectedID = id
       otherID = initial.conversations.first(where: { $0.id != id })!.id
+      if scenario == .drawerGestureCancellation { DrawerMotionCaptureState.enabled = true }
       if scenario == .browserPerformance {
         DrawerRowProbe.enabled = true
         DrawerRowProbe.realized = []; DrawerRowProbe.renders = [:]
@@ -486,7 +491,7 @@ import Synchronization
         initial.slowHistoryRequestID = 42
         initial.storeFailure(.init(code: "history_summary_timed_out",
           title: "History is taking longer than expected", message: "CREG is still loading your conversations.",
-          diagnostic: "Slow history fixture", recovery: .retryHistory), owner: .historySummaries(42))
+          diagnostic: "Slow history fixture", recovery: .retryHistory, severity: .informational), owner: .historySummaries(42))
         if scenario == .historyProgressUnavailable { initial.chat = nil }
       }
       if scenario == .conversationNotices {
@@ -520,6 +525,12 @@ import Synchronization
     var body: some View {
       VStack(spacing: 0) {
         if scenario == .drawerGestureCancellation {
+          HStack {
+            Button("Reset motion capture") { DrawerMotionCaptureState.reset() }
+              .accessibilityIdentifier("reset-drawer-motion").frame(minHeight: 44)
+            Button("Reduce Motion") { drawerReduceMotion.toggle() }
+              .accessibilityIdentifier("toggle-drawer-motion").frame(minHeight: 44)
+          }
           Button("Interrupt drawer drag") {
             Task { @MainActor in
               try? await Task.sleep(for: .milliseconds(1500))
@@ -550,7 +561,7 @@ import Synchronization
         }
         AppRootView(store: store, now: PreviewFixtures.now)
       }
-      .environment(\.cregUITestReduceMotion, scenario == .recovery || scenario == .compactJump ? true : nil)
+      .environment(\.cregUITestReduceMotion, scenario == .recovery || scenario == .compactJump ? true : scenario == .drawerGestureCancellation ? drawerReduceMotion : nil)
       .task {
         if scenario == .retainedExport || scenario == .exportMore {
           store.send(.chat(.delegate(.exportRequested(selectedID))))
@@ -563,6 +574,79 @@ import Synchronization
           if !Task.isCancelled { await heldExport.finish() }
         }
       }
+    }
+  }
+
+  @MainActor
+  private struct NoticeOccurrenceAccessibilityHarness: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var store: StoreOf<AppFeature>
+    @State private var settings = false
+    private static let failure = FailurePresentation(code: "same_code", title: "Save failed",
+      message: "An unrelated save needs attention.", diagnostic: "occurrence-original")
+
+    init() {
+      var initial = PreviewFixtures.appState(revealed: false, chat: PreviewFixtures.answeredChatState())
+      initial.$developerMode = Shared(value: true)
+      let id = initial.chat!.conversationID
+      if initial.conversations[id: id] == nil {
+        initial.conversations.append(.init(id: id, title: "Recovery", startedAt: PreviewFixtures.now, lastActivityAt: PreviewFixtures.now))
+      }
+      initial.storeFailure(Self.failure, owner: .global)
+      var second = Self.failure; second.diagnostic = "occurrence-survivor"
+      initial.storeFailure(second, owner: .historySummaries(2))
+      let draftFailure = FailurePresentation.history(operation: .draftSave, error: NSError(domain: "Fixture", code: 1))
+      initial.storeFailure(draftFailure, owner: .conversationOperation(id, .draft))
+      var answer = initial.chat!.messages.last!
+      answer.resultPresentation = .table
+      let preferenceFailure = FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 2))
+      initial.storeFailure(preferenceFailure, owner: .conversationOperation(id, .resultPresentation))
+      initial.conversationWriteSequence = 2
+      initial.conversationEdits[id] = [
+        .draft: .init(value: .draft("Retained fixture draft"), revision: 1, phase: .failed(draftFailure)),
+        .resultPresentation(answer.id): .init(value: .resultPresentation(.table), revision: 2,
+          phase: .failed(preferenceFailure), fallbackMessage: answer),
+      ]
+      initial.overlayConversationEdits()
+      _store = State(initialValue: Store(initialState: initial) { AppFeature() } withDependencies: {
+        $0.historyClient = .noop()
+        $0.haptics = .noop
+      })
+    }
+
+    var body: some View {
+      VStack {
+        HStack {
+          Button("Duplicate") { store.send(.operationFailed(Self.failure)) }
+            .accessibilityIdentifier("notice-duplicate").frame(minHeight: 44)
+          Button("Replace") {
+            var failure = Self.failure; failure.diagnostic = "occurrence-replacement"
+            store.send(.operationFailed(failure))
+          }.accessibilityIdentifier("notice-replace").frame(minHeight: 44)
+          Button("Settings") { settings = true }.frame(minHeight: 44)
+        }.accessibilityHidden(settings)
+        ScrollView {
+          if let chat = store.scope(state: \.chat, action: \.chat) {
+            ChatNoticesContent(store: chat, chrome: chrome).padding(16)
+          }
+        }.accessibilityIdentifier("conversation-notices-scroll")
+          .accessibilityHidden(settings)
+      }
+      .sheet(isPresented: $settings) {
+        SettingsView(store: store).cregPresentedSurfaceProbe().environment(\.dynamicTypeSize, dynamicTypeSize)
+      }
+    }
+
+    private var chrome: ChatChrome {
+      var value = PreviewFixtures.chrome
+      value.modelReadiness = .ready
+      value.fmAvailability = .available
+      value.developerMode = true
+      value.ownedFailures = store.visibleFailures
+      value.dismissOwnedFailure = { store.send(.dismissOwnedFailure($0)) }
+      value.retryableWriteOwners = store.retryableConversationWriteOwners
+      value.retrySaving = { store.send(.retryConversationWrites($0)) }
+      return value
     }
   }
 

@@ -80,7 +80,7 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "-scheme",
     "CREG",
     "-destination",
-    "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+    "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
     *(
         token
         for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS
@@ -155,6 +155,7 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
     "-only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity",
     "-only-testing:CREGUITests/AccessibilityUITests/testHistoryProgressWarningsAreNeutralOnEverySurface",
     "-only-testing:CREGUITests/AccessibilityUITests/testDrawerCancellationAllowsTheFirstFollowingSwipe",
+    "-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings",
     "${{", "matrix.skip-arguments", "}}",
     "CODE_SIGNING_ALLOWED=NO",
     "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
@@ -162,7 +163,7 @@ ACCESSIBILITY_UI_TEST_COMMAND = (
 ACCESSIBILITY_UI_BUILD_COMMAND = (
     "/usr/bin/xcodebuild", "build-for-testing",
     "-project", "CREG.xcodeproj", "-scheme", "CREG",
-    "-destination", "platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0",
+    "-destination", "platform=iOS Simulator,id=${{ steps.accessibility_simulator.outputs.udid }}",
     *(token for argument in ACCESSIBILITY_UI_DOUBLE_QUOTED_ARGUMENTS[:2] for token in argument),
     "-skipPackagePluginValidation", "-skipMacroValidation",
     "CODE_SIGNING_ALLOWED=NO", "CREG_ACCESSIBILITY_HARNESS_BUILD=YES",
@@ -265,6 +266,29 @@ def setup_uv_step(*, identifier: str) -> dict[str, object]:
     }
 
 
+ACCESSIBILITY_SIMULATOR_CREATE_STEP = {
+    "name": "Create isolated accessibility simulator",
+    "id": "accessibility_simulator",
+    "shell": "/bin/bash --noprofile --norc -e -o pipefail {0}",
+    "env": {"BASH_ENV": "", "ENV": ""},
+    "run": """simulator_name='CREG-accessibility-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}'
+udid="$(/usr/bin/xcrun simctl create "$simulator_name" com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro com.apple.CoreSimulator.SimRuntime.iOS-27-0)"
+printf 'udid=%s\\n' "$udid" >> "$GITHUB_OUTPUT"
+""",
+}
+ACCESSIBILITY_SIMULATOR_CLEANUP_STEP = {
+    "name": "Delete isolated accessibility simulator",
+    "if": "${{ always() }}",
+    "shell": ACCESSIBILITY_UI_SHELL,
+    "run": """udid='${{ steps.accessibility_simulator.outputs.udid }}'
+if [ -n "$udid" ]; then
+  /usr/bin/xcrun simctl shutdown "$udid" || true
+  /usr/bin/xcrun simctl delete "$udid"
+fi
+""",
+}
+
+
 def accessibility_ui_bootstrap_steps() -> tuple[dict[str, object], ...]:
     return (
         {
@@ -284,6 +308,7 @@ def accessibility_ui_bootstrap_steps() -> tuple[dict[str, object], ...]:
                 "key": ACCESSIBILITY_CACHE_KEY,
             },
         },
+        dict(ACCESSIBILITY_SIMULATOR_CREATE_STEP),
     )
 
 
@@ -786,6 +811,15 @@ def _accessibility_ui_job_contract_failures(
             failures.append(f"{prefix} UI {label} runner paths must be double-quoted: " + ", ".join(misquoted_values))
         elif mismatch is not None:
             failures.append(f"{prefix} UI {label} command argument errors: {mismatch}")
+
+    cleanup, cleanup_failures = named_step(steps,
+        name=ACCESSIBILITY_SIMULATOR_CLEANUP_STEP["name"], prefix=prefix)
+    failures.extend(cleanup_failures)
+    if cleanup is not None:
+        if cleanup != ACCESSIBILITY_SIMULATOR_CLEANUP_STEP:
+            failures.append(f"{prefix} must always shut down and delete only the shard simulator UDID")
+        if ui_test is not None and steps.index(cleanup) <= steps.index(ui_test):
+            failures.append(f"{prefix} simulator cleanup must follow testing")
 
     upload, step_failures = named_step(
         steps,

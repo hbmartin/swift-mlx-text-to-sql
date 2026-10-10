@@ -494,40 +494,112 @@ final class AccessibilityUITests: XCTestCase {
   }
 
   func testDrawerCancellationAllowsTheFirstFollowingSwipe() {
-    let app = launch(scenario: "drawer-gesture-cancellation", dynamicType: "large")
-    let origin = app.coordinate(withNormalizedOffset: .zero)
-    let start = origin.withOffset(CGVector(dx: 20, dy: app.frame.midY))
-    let end = origin.withOffset(CGVector(dx: app.frame.width - 30, dy: app.frame.midY))
-    app.buttons["interrupt-drawer-drag"].tap()
-    // Present Settings while a recognized drag is still moving. SwiftUI
-    // cancels the underlying gesture rather than delivering a release.
-    start.press(forDuration: 0.05, thenDragTo: end,
-      withVelocity: XCUIGestureVelocity(rawValue: 50), thenHoldForDuration: 0)
-    XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
-    app.buttons["Done"].tap()
-    XCTAssertLessThan(app.buttons["sidebar.leading"].frame.minX, 100)
-    start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
-    XCTAssertTrue(app.buttons["Close conversation browser"].waitForExistence(timeout: 5),
-      "The first edge swipe after cancellation must open the drawer")
-    app.terminate()
+    for reduceMotion in [false, true] {
+      let app = launch(scenario: "drawer-gesture-cancellation", dynamicType: "large")
+      if reduceMotion { app.buttons["toggle-drawer-motion"].tap() }
+      let origin = app.coordinate(withNormalizedOffset: .zero)
+      let start = origin.withOffset(CGVector(dx: 20, dy: app.frame.midY))
+      let end = origin.withOffset(CGVector(dx: app.frame.width - 30, dy: app.frame.midY))
+      app.buttons["reset-drawer-motion"].tap()
+      start.press(forDuration: 0.05,
+        thenDragTo: origin.withOffset(CGVector(dx: 110, dy: app.frame.midY)),
+        withVelocity: XCUIGestureVelocity(rawValue: 50), thenHoldForDuration: 0.3)
+      XCTAssertLessThan(app.buttons["sidebar.leading"].frame.minX, 100)
+      let opening = app.descendants(matching: .any)["drawer-rollback-frames"].firstMatch.label
+      XCTAssertGreaterThan(Int(opening.split(separator: "|")[0].split(separator: ",")[0]) ?? 0, 1,
+        "Short opening rollback must interpolate, Reduce Motion: \(reduceMotion)")
+      print("Drawer opening rollback Reduce Motion \(reduceMotion): \(opening)")
+      let attachment = XCTAttachment(screenshot: app.screenshot())
+      attachment.name = "Drawer rollback Reduce Motion \(reduceMotion)"
+      attachment.lifetime = .keepAlways; add(attachment)
+      start.press(forDuration: 0.05,
+        thenDragTo: origin.withOffset(CGVector(dx: 100, dy: app.frame.midY + 160)),
+        withVelocity: .slow, thenHoldForDuration: 0.1)
+      XCTAssertLessThan(app.buttons["sidebar.leading"].frame.minX, 100)
+      start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+      XCTAssertTrue(app.buttons["Close conversation browser"].waitForExistence(timeout: 5))
+      app.buttons["reset-drawer-motion"].tap()
+      end.press(forDuration: 0.05,
+        thenDragTo: origin.withOffset(CGVector(dx: app.frame.width - 110, dy: app.frame.midY)),
+        withVelocity: XCUIGestureVelocity(rawValue: 50), thenHoldForDuration: 0.3)
+      XCTAssertTrue(app.buttons["Close conversation browser"].exists)
+      let closing = app.descendants(matching: .any)["drawer-rollback-frames"].firstMatch.label
+      XCTAssertGreaterThan(Int(closing.split(separator: "|")[0].split(separator: ",")[1]) ?? 0, 1,
+        "Short closing rollback must interpolate, Reduce Motion: \(reduceMotion)")
+      print("Drawer closing rollback Reduce Motion \(reduceMotion): \(closing)")
+      end.press(forDuration: 0.05, thenDragTo: start, withVelocity: .fast, thenHoldForDuration: 0)
+      app.buttons["interrupt-drawer-drag"].tap()
+      start.press(forDuration: 0.05, thenDragTo: end,
+        withVelocity: XCUIGestureVelocity(rawValue: 50), thenHoldForDuration: 0)
+      XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+      app.buttons["Done"].tap()
+      XCTAssertLessThan(app.buttons["sidebar.leading"].frame.minX, 100)
+      start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+      XCTAssertTrue(app.buttons["Close conversation browser"].waitForExistence(timeout: 5),
+        "The first edge swipe after cancellation must open the drawer")
+      app.terminate()
+    }
   }
 
   func testNoticeTechnicalDetailsKeepFailureIdentity() {
     let app = launch(scenario: "conversation-notices", dynamicType: "large", developerMode: true)
     app.buttons["conversation-notices"].tap()
     XCTAssertTrue(app.buttons["conversation-notices-done"].waitForExistence(timeout: 5), app.debugDescription)
-    let details = app.descendants(matching: .any)["failure-details-notice_fixture_1"].firstMatch
+    let details = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-details-notice_fixture_1-")).firstMatch
     XCTAssertTrue(details.waitForExistence(timeout: 5), app.debugDescription)
     details.tap()
     let expanded = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'notice-details-1'")).firstMatch
     XCTAssertTrue(expanded.waitForExistence(timeout: 5))
-    app.buttons["failure-dismiss-notice_fixture_0"].tap()
+    app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-dismiss-notice_fixture_0-")).firstMatch.tap()
     XCTAssertTrue(expanded.isHittable, "The expanded section must remain with failure 1 after failure 0 is removed")
-    app.buttons["failure-dismiss-notice_fixture_1"].tap()
+    app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-dismiss-notice_fixture_1-")).firstMatch.tap()
     XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'notice-details-2'")).firstMatch.isHittable,
       "Expansion must not move to the next failure")
     app.buttons["conversation-notices-done"].tap()
     app.terminate()
+
+    let occurrences = launch(scenario: "notice-occurrences", dynamicType: "large", developerMode: true)
+    let matching = occurrences.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-details-same_code-"))
+    let original = matching.matching(NSPredicate(format: "identifier CONTAINS 'global' ")).firstMatch
+    let survivor = matching.matching(NSPredicate(format: "identifier CONTAINS 'history-2' ")).firstMatch
+    XCTAssertTrue(original.waitForExistence(timeout: 5))
+    XCTAssertNotEqual(original.identifier, survivor.identifier)
+    original.tap(); survivor.tap()
+    let oldDetails = occurrences.staticTexts.matching(NSPredicate(format: "label CONTAINS 'occurrence-original'")).firstMatch
+    let survivorDetails = occurrences.staticTexts.matching(NSPredicate(format: "label CONTAINS 'occurrence-survivor'")).firstMatch
+    XCTAssertTrue(oldDetails.isHittable)
+    occurrences.buttons["notice-duplicate"].tap()
+    XCTAssertTrue(oldDetails.isHittable, "Duplicate delivery preserves expansion")
+    occurrences.buttons["notice-replace"].tap()
+    XCTAssertFalse(oldDetails.exists)
+    let replacementDetails = occurrences.staticTexts.matching(NSPredicate(format: "label CONTAINS 'occurrence-replacement'")).firstMatch
+    XCTAssertFalse(replacementDetails.isHittable, "Replacement begins collapsed")
+    XCTAssertTrue(survivorDetails.isHittable, "Surviving failure retains expansion")
+    matching.matching(NSPredicate(format: "identifier CONTAINS 'global'")).firstMatch.tap()
+    XCTAssertTrue(replacementDetails.isHittable)
+    occurrences.terminate()
+  }
+
+  func testConversationWriteRecoveryOffersRetryInNoticesAndSettings() throws {
+    for settings in [false, true] {
+      let app = launch(scenario: "notice-occurrences", dynamicType: "ax5", developerMode: true)
+      if settings {
+        app.buttons["Settings"].tap()
+        assertEffectiveDynamicType("accessibility5", in: app)
+      }
+      for code in ["history_draft_save_failed", "history_message_save_failed"] {
+        let retry = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-retry-saving-" + code + "-")).firstMatch
+        _ = scrollToControl("Retry saving", in: app)
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        let identity = retry.identifier
+        assertAccessibleControl(retry, label: "Retry saving")
+        XCTAssertTrue(retry.isHittable)
+        retry.tap()
+        XCTAssertTrue(app.buttons[identity].waitForNonExistence(timeout: 5))
+      }
+      XCTAssertFalse(app.staticTexts["Draft not saved"].exists)
+      app.terminate()
+    }
   }
 
   func testAccessibleHeadersWrapAtLargeTextSizes() throws {

@@ -2045,6 +2045,8 @@ private func waitForReadyChart(
     state.messages.append(message)
     var root = AppFeature.State()
     root.chat = state
+    root.conversations = [.init(id: state.conversationID, title: "Chart",
+      startedAt: Date(timeIntervalSince1970: 0), lastActivityAt: Date(timeIntervalSince1970: 0))]
     let store = TestStore(initialState: root) {
       AppFeature()
     } withDependencies: {
@@ -2105,6 +2107,8 @@ private func waitForReadyChart(
     state.messages.append(message)
     var root = AppFeature.State()
     root.chat = state
+    root.conversations = [.init(id: state.conversationID, title: "Chart",
+      startedAt: Date(timeIntervalSince1970: 0), lastActivityAt: Date(timeIntervalSince1970: 0))]
     let store = TestStore(initialState: root) {
       AppFeature()
     } withDependencies: {
@@ -2121,7 +2125,6 @@ private func waitForReadyChart(
     ) {
       $0.chat?.messages[id: message.id]?.resultPresentation = firstPreference
     }
-    await store.receive(\.chat.delegate)
     await gate.waitUntilFirstSaveStarts()
     store.exhaustivity = .off
     await store.send(
