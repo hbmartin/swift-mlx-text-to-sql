@@ -169,7 +169,10 @@ struct FailureBanner: View {
         .fixedSize(horizontal: false, vertical: true)
 
       if let retrySaving {
-        Button(action: retrySaving) { Text("Retry saving").cregTextButtonLabelTarget() }
+        Button(action: retrySaving) {
+          Text(failure.allowsConversationWriteRetry ? "Retry saving" : "Retry other display choices")
+            .cregTextButtonLabelTarget()
+        }
           .accessibilityIdentifier("failure-retry-saving-\(identifier)")
       }
 

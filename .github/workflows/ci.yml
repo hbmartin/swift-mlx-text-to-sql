@@ -25,6 +25,8 @@ jobs:
           persist-credentials: false
 
       - name: Verify AutoTableCharts pin agreement
+        shell: bash
+        working-directory: ${{ github.workspace }}
         run: python3 fine-tuning/tools/check_swift_package_pins.py
 
       - name: Cache Swift and Xcode build artifacts
@@ -37,6 +39,8 @@ jobs:
           key: swift-xcode-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('CREGKit/Package.resolved', 'CREG.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       - name: Verify checked-in Swift package resolutions
+        shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
           swift package --package-path CREGKit resolve
           xcodebuild -resolvePackageDependencies \

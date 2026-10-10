@@ -743,19 +743,25 @@ def _executes_apple_tests(source: str) -> bool:
             or executable == "xcodebuildmcp"
             and any(a in {"swift-package", "simulator", "device", "macos"} for a in arguments)
             and "test" in arguments
+            or executable == "xcrun"
+            and len(arguments) >= 2
+            and arguments[0] == "simctl"
+            and arguments[1] in {"create", "boot"}
         ):
             return True
-        if executable in {"bash", "sh", "zsh"} and "-c" in arguments:
-            script_index = arguments.index("-c") + 1
-            if script_index < len(arguments) and _executes_apple_tests(arguments[script_index]):
-                return True
+        if executable in {"bash", "sh", "zsh"}:
+            for argument_index, argument in enumerate(arguments):
+                if re.fullmatch(r"-[a-zA-Z]+", argument) and "c" in argument[1:]:
+                    script_index = argument_index + 1
+                    if script_index < len(arguments) and _executes_apple_tests(arguments[script_index]):
+                        return True
     return False
 
 
 def local_apple_test_policy_failures(
     path: Path, workflow: object, *, root: Path | None = None
 ) -> list[str]:
-    """Keep Apple test execution local in every workflow, including renamed jobs."""
+    """Keep Apple tests and simulator provisioning local in every workflow."""
     if not isinstance(workflow, dict) or not isinstance(workflow.get("jobs"), dict):
         return []
     prefix = f"{display_path(path, root)}: local Apple testing policy"
@@ -778,7 +784,7 @@ def local_apple_test_policy_failures(
                 failures.append(f"{prefix} job {job_name} has malformed shell syntax")
                 continue
             if apple_test:
-                failures.append(f"{prefix} job {job_name} executes Apple tests; use local XcodeBuildMCP")
+                failures.append(f"{prefix} job {job_name} executes Apple tests or provisions simulators; use local XcodeBuildMCP")
     return failures
 
 
@@ -805,11 +811,16 @@ def swift_dependency_contract_failures(
         step, step_failures = named_step(steps, name=name, prefix=prefix)
         failures.extend(step_failures)
         if step is not None:
+            failures.extend(reviewed_run_context_failures(
+                job, step, job_name="swift", step_name=name, prefix=prefix,
+                expected_runner="xcode-27", expected_shell="bash",
+                expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY,
+            ))
             command = step.get("run", "")
             normalized = " ".join(command.replace("\\\n", "").split()) if isinstance(command, str) else None
             if normalized != expected:
                 failures.append(f"{prefix} {name} command changed")
-    return failures
+    return list(dict.fromkeys(failures))
 
 
 def reviewed_ci_contract_failures(

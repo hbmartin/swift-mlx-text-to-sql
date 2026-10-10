@@ -849,6 +849,15 @@ def test_xcode_app_is_iphone_only():
 @pytest.mark.parametrize("command", [
     "swift test",
     "bash -c 'swift test'",
+    "bash -lc 'swift test'",
+    "sh -ec 'xcodebuild test -scheme CREG'",
+    "zsh -fc 'swift test'",
+    "bash --norc -c 'swift test'",
+    "xcrun simctl create fixture com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro",
+    "xcrun simctl boot fixture",
+    "/usr/bin/xcrun simctl boot fixture",
+    "bash -lc 'xcrun simctl create fixture com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro'",
+    "sh -ec 'xcrun simctl boot fixture'",
     "/usr/bin/swift test --filter ConversationNoticeTests",
     "xcrun swift --package-path CREGKit test",
     "xcodebuild test -scheme CREG",
@@ -884,6 +893,10 @@ def test_ci_rejects_restoring_removed_accessibility_jobs(job_name):
     "uv run python -m unittest discover",
     "swift package resolve\npython test",
     "echo 'swift test'",
+    "echo 'xcrun simctl create fixture'",
+    "bash --norc 'swift test'",
+    "bash -lc 'swift package --package-path CREGKit resolve'",
+    "sh -ec 'xcodebuild -resolvePackageDependencies -project CREG.xcodeproj'",
 ])
 def test_local_testing_policy_allows_retained_ci_work(command):
     assert check_ci_contracts.local_apple_test_policy_failures(Path("fixture.yml"), {
@@ -894,13 +907,68 @@ def test_local_testing_policy_allows_retained_ci_work(command):
 @pytest.mark.parametrize("step_name", [
     "Verify AutoTableCharts pin agreement", "Verify checked-in Swift package resolutions"
 ])
-@pytest.mark.parametrize("mutation", ["missing", "changed"])
+@pytest.mark.parametrize("mutation", ["missing", "changed", "skipped"])
 def test_swift_dependency_checks_remain_required(step_name, mutation):
     path, workflow = ci_workflow()
     steps = workflow["jobs"]["swift"]["steps"]
     step = next(step for step in steps if step.get("name") == step_name)
     if mutation == "missing":
         steps.remove(step)
+    elif mutation == "skipped":
+        step["if"] = False
     else:
         step["run"] = "true"
     assert check_ci_contracts.swift_dependency_contract_failures(path, workflow)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("container", "ubuntu:latest"),
+    ("continue-on-error", True),
+    ("defaults", {"run": {"shell": "/bin/echo {0}"}}),
+    ("env", {"PATH": "/tmp/decoy"}),
+    ("if", False),
+    ("needs", "skipped-job"),
+    ("permissions", {"contents": "none"}),
+    ("services", {"decoy": {"image": "example.invalid/decoy"}}),
+    ("strategy", {"matrix": {"include": []}}),
+    ("timeout-minutes", 1),
+    ("timeout-minutes", None),
+])
+def test_swift_dependency_checks_reject_job_context_overrides_once(field, value):
+    path, workflow = ci_workflow()
+    workflow["jobs"]["swift"][field] = value
+    failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
+    assert len(failures) == 1
+    assert field in failures[0]
+
+
+@pytest.mark.parametrize("step_name", [
+    "Verify AutoTableCharts pin agreement", "Verify checked-in Swift package resolutions"
+])
+@pytest.mark.parametrize("field,value", [
+    ("continue-on-error", True),
+    ("env", {"PATH": "/tmp/decoy"}),
+    ("if", False),
+    ("shell", "/bin/echo {0}"),
+    ("working-directory", "decoy"),
+])
+def test_swift_dependency_checks_reject_step_context_overrides(step_name, field, value):
+    path, workflow = ci_workflow()
+    step = next(step for step in workflow["jobs"]["swift"]["steps"] if step.get("name") == step_name)
+    step[field] = value
+    failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
+    assert len(failures) == 1
+    assert field in failures[0]
+
+
+@pytest.mark.parametrize("step_name", [
+    "Verify AutoTableCharts pin agreement", "Verify checked-in Swift package resolutions"
+])
+@pytest.mark.parametrize("field", ["shell", "working-directory"])
+def test_swift_dependency_checks_require_explicit_execution_context(step_name, field):
+    path, workflow = ci_workflow()
+    step = next(step for step in workflow["jobs"]["swift"]["steps"] if step.get("name") == step_name)
+    del step[field]
+    failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
+    assert len(failures) == 1
+    assert field in failures[0]

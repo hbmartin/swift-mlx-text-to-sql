@@ -136,6 +136,27 @@ import Testing
 }
 
 extension ConversationNoticeTests {
+  @Test func drawerRowProbesAreFixtureOwnedAndResetIndependently() {
+    #expect(EnvironmentValues().cregDrawerRowProbe == nil)
+    let first = DrawerRowProbe(), second = DrawerRowProbe()
+    let id = UUID()
+    first.render(id)
+    first.render(id)
+    first.appear(id)
+    first.appear(id)
+    #expect(first.realized == [id])
+    #expect(first.renders == [id: 2])
+    #expect(second.realized.isEmpty)
+    #expect(second.renders.isEmpty)
+    second.render(id)
+    second.appear(id)
+    first.reset()
+    #expect(first.realized.isEmpty)
+    #expect(first.renders.isEmpty)
+    #expect(second.realized == [id])
+    #expect(second.renders == [id: 1])
+  }
+
   @Test func drawerMotionProbesAreFixtureOwnedBoundedAndResettable() {
     #expect(EnvironmentValues().cregDrawerMotionProbe == nil)
     let first = DrawerMotionProbe(), second = DrawerMotionProbe()

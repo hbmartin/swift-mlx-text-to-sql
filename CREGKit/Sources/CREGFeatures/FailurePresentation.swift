@@ -15,6 +15,7 @@ public struct FailurePresentation: Error, Sendable, Equatable {
   public var diagnostic: String
   public var cause: Cause?
   public var recovery: Recovery?
+  public var allowsConversationWriteRetry: Bool
   public var isError: Bool { severity == .error }
   public var dismissalLabel: String { isError ? "Dismiss error" : "Dismiss notice" }
 
@@ -25,7 +26,8 @@ public struct FailurePresentation: Error, Sendable, Equatable {
     diagnostic: String,
     cause: Cause? = nil,
     recovery: Recovery? = nil,
-    severity: Severity = .error
+    severity: Severity = .error,
+    allowsConversationWriteRetry: Bool = true
   ) {
     self.severity = severity
     self.code = code
@@ -34,6 +36,7 @@ public struct FailurePresentation: Error, Sendable, Equatable {
     self.diagnostic = diagnostic
     self.cause = cause
     self.recovery = recovery
+    self.allowsConversationWriteRetry = allowsConversationWriteRetry
   }
 
   public func technicalDetails(developerMode: Bool) -> String? {
@@ -47,7 +50,8 @@ public struct FailurePresentation: Error, Sendable, Equatable {
       diagnostic: "\(diagnostic)\n\n[\(secondary.code)] \(secondary.diagnostic)",
       cause: cause == secondary.cause ? cause : nil,
       recovery: recovery ?? secondary.recovery,
-      severity: isError || secondary.isError ? .error : .informational)
+      severity: isError || secondary.isError ? .error : .informational,
+      allowsConversationWriteRetry: allowsConversationWriteRetry && secondary.allowsConversationWriteRetry)
   }
 }
 
@@ -224,7 +228,15 @@ extension FailurePresentation {
   }
 
   static func resultPreferenceSave(error: any Error) -> Self {
-    history(operation: .resultPreferenceSave, error: error)
+    if error is AppFeature.ConversationWriteInvariantError {
+      return .init(
+        code: "history_result_preference_message_missing",
+        title: "Display choice not saved",
+        message: "CREG couldn’t save your result display choice. Your choice is kept while CREG remains open. Choose a display option again to try saving it.",
+        diagnostic: DiagnosticDetails.describe(error),
+        allowsConversationWriteRetry: false)
+    }
+    return history(operation: .resultPreferenceSave, error: error)
   }
 
   static func history(
