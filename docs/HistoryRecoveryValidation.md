@@ -337,3 +337,75 @@ xcodebuildmcp simulator test \
 | UI build/test log | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/test_sim_2026-10-10T23-54-40-880Z_pid19888_a16dc92c.log` |
 | Package/UI CLI summaries | `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/package-tests.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/package-tests-final.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/ui-tests.log` |
 | CI checker, Python tests, package pins, whitespace | `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/ci-contract-check.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/ci-contract-tests.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/package-pin-check.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/whitespace-check.log` |
+
+## Shell policy review fixes and chart dependency update (October 11, 2026)
+
+Implemented against `592aa306136b4f74ea7887bb226204c9a4e70e71`. The local Apple policy checker retains its self-contained scanner and separate strict publisher/security parser. It inspects nested command substitutions before normalizing arguments or removing assignments, preserves single-quoted/escaped examples, and tracks heredoc delimiters and bodies. Literal heredocs are data; unquoted heredoc substitutions execute, and heredocs directly supplied to supported shells are inspected as shell input. Unterminated constructs report malformed syntax. Wrapper-specific options cover `time`, `nice`, `timeout`/`gtimeout`, `stdbuf`/`gstdbuf`, and the existing wrappers, including attached operands and `env -S`. Single-dash `xcrun` long aliases are distinguished from short-option clusters. Help flags are interpreted per executable after consuming option operands. Installed XcodeBuildMCP/yargs parsing was inspected separately: known help flags after array arguments remain help requests, attached values remain data, and explicitly disabled help/version booleans do not exempt execution. Simulator clone/reboot/bootstatus-with-boot, runtime installation, and Xcode platform download/import operations are covered. Runtime inspection, printed examples, package resolution, DocC, and the MetalToolchain download remain allowed. The checker does not resolve arbitrary scripts, aliases, or dynamically constructed executable names.
+
+The conversation settlement guard directly matches `.pending(_, .saving)`. Its removed `isSaving` helper is replaced by the same state assertion in the existing regression test. The result-preference failure passthrough is removed from production and test callers; mapping continues through the shared history operation. Public APIs and persisted state are unchanged. AutoTableCharts is pinned to `bcb6697b5abe6e6a867d6bd166580126136bd984`, which includes retained-request observation and release-audit fixes. Both resolution commands regenerated their files. Only AutoTableCharts revisions and generated origin hashes changed; unrelated dependency pins remain fixed.
+
+The pre-update chart baseline ran **124 tests in four suites** and reproduced **four assertions in the same three documented tests**:
+
+- `tentativePreferenceRestorationIsAttemptedOnlyOnce`: the session preference was not restored to `.table`.
+- `newerPreferenceWinsDuringRetryRestorationCallback`: retry application was not `.superseded`.
+- `retainedStalePreferenceWithSameReplacementIsReconciled`: session restarts and restoration-attempt expectations failed.
+
+The final combined package run executed **184 tests in six suites** in **14.375 seconds** (**27.4 seconds** through XcodeBuildMCP). It reported exactly the same four chart assertions, at the same source locations, with no new assertion failures. `PR158RegressionFixTests`, `DiagnosticsAndFailurePresentationTests`, and the other three chart suites passed. These baseline assertions remain intact.
+
+The first post-change package build failed because `rapidReturnWhileSavingShowsLatestEdit` still referenced the removed `isSaving` helper. This was a new compile failure, corrected by matching the optional edit's pending/saving status directly and retaining the subsequent checks and gate cleanup. Its initial failure log is retained below. After the final assertion rewrite, a separate focused rerun passed that parameterized test for both draft and preference cases (**0.062 seconds** test execution; **12.1 seconds** through XcodeBuildMCP).
+
+The five requested UI selectors passed with **zero failures or skips**, in **144.374 seconds** test execution (**193.5 seconds** through XcodeBuildMCP). The final Python contract/pin run passed **370 tests in 3.14 seconds**. The CI checker, package-pin checker, and whitespace check passed. No assertions or build warnings were suppressed. Existing Swift deprecation/build-system warnings remain in the logs. The inert Debug UI fixture intentionally omits model materialization and stamps source provenance.
+
+CLI help, test-tool help, repository configuration availability, CLI default loading/merging, and simulator inventory were inspected. No repository `.xcodebuildmcp/config.yaml` was present; explicit package/project paths, configuration, filter, scheme, and simulator overrides were used. The existing iPhone 18 Pro / iOS 27 simulator (`31B09574-9781-45A7-816D-6A1916E1BA16`) was reused and preserved. No full Apple suite or canonical accessibility matrix ran. CI job structure is unchanged and Apple execution remains local.
+
+Commands ran from `/Users/haroldmartin/Downloads/creg/swift-mlx-text-to-sql`. The six-suite command ran first with the stale test caller and again after correction; the final single-test selector verifies the final assertion source.
+
+```sh
+swift package --package-path "$PWD/CREGKit" resolve
+xcodebuild -resolvePackageDependencies \
+  -project "$PWD/CREG.xcodeproj" -scheme CREG \
+  -clonedSourcePackagesDirPath /Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/DerivedData/CREG-a077b4222233/SourcePackages
+
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_ci_contracts.py
+uv run --project fine-tuning --no-sync python -m pytest fine-tuning/tests/test_ci_contracts.py fine-tuning/tests/test_swift_package_pins.py -q
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_swift_package_pins.py
+git diff --check
+
+xcodebuildmcp swift-package test \
+  --package-path "$PWD/CREGKit" --configuration Debug \
+  --filter 'CREGChartAdapterTests|CREGSemanticSelectionTests|ResultPresentationPersistenceTests|ResultPresentationMigrationHandlerTests' \
+  --parallel false
+
+xcodebuildmcp swift-package test \
+  --package-path "$PWD/CREGKit" --configuration Debug \
+  --filter 'CREGChartAdapterTests|CREGSemanticSelectionTests|ResultPresentationPersistenceTests|ResultPresentationMigrationHandlerTests|PR158RegressionFixTests|DiagnosticsAndFailurePresentationTests' \
+  --parallel false
+
+xcodebuildmcp swift-package test \
+  --package-path "$PWD/CREGKit" --configuration Debug \
+  --filter 'rapidReturnWhileSavingShowsLatestEdit' --parallel false
+
+xcodebuildmcp simulator test \
+  --project-path "$PWD/CREG.xcodeproj" --scheme CREG --configuration Debug \
+  --simulator-id 31B09574-9781-45A7-816D-6A1916E1BA16 \
+  --extra-args \
+  '-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testSimpleChartValuesAreAccessible' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testChartExplorerExposesStableControlsAndTableFallback' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testRejectedChartRetryPreservesTheOriginalSelection' \
+  '-skipPackagePluginValidation' '-skipMacroValidation' \
+  'CODE_SIGNING_ALLOWED=NO' 'CREG_ACCESSIBILITY_HARNESS_BUILD=YES'
+```
+
+| Run | Retained artifact |
+| --- | --- |
+| Pre-update chart baseline | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-11T13-51-23-236Z_pid66555_e0d09254.log` |
+| Initial post-change build, stale test caller | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-11T14-01-43-579Z_pid79697_8faee04b.log` |
+| Final six-suite package run | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-11T14-02-51-542Z_pid80012_7cf8ca3e.log` |
+| Final saving-state assertion rerun | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-11T14-03-41-245Z_pid80162_39ee4fec.log` |
+| Five-selector UI result | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/result-bundles/test_sim_2026-10-11T14-04-23-395Z_pid80416_f3ffa30b.xcresult` |
+| UI build/test log | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/test_sim_2026-10-11T14-04-23-395Z_pid80416_e9d86774.log` |
+| Resolution commands | `/tmp/creg-reviewed-fixes.1xcKzi/swift-resolution.log`, `/tmp/creg-reviewed-fixes.1xcKzi/xcode-resolution.log` |
+| Package/UI CLI summaries | `/tmp/creg-reviewed-fixes.1xcKzi/chart-baseline.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-final-repaired.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-saving-assertion.log`, `/tmp/creg-reviewed-fixes.1xcKzi/ui-selected.log` |
+| CI checker, Python tests, package pins, whitespace | `/tmp/creg-reviewed-fixes.1xcKzi/ci-contract-check-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/python-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-pin-check-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/whitespace-check.log` |
