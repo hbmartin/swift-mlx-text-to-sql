@@ -308,7 +308,7 @@ struct PR158RegressionFixTests {
     await store.send(.conversationSelected(b)); await store.receive(\.conversationLoaded)
     await store.send(.conversationSelected(a)); await store.receive(\.conversationLoaded)
     let target: AppFeature.ConversationWriteTarget = write == "draft" ? .draft : .resultPresentation(answer.id)
-    #expect(store.state.conversationEdits[a]?[target]?.phase == .saving)
+    #expect(store.state.conversationEdits[a]?[target]?.isSaving == true)
     if write == "draft" { #expect(store.state.chat?.composerText == "latest") }
     else { #expect(store.state.chat?.messages[id: answer.id]?.resultPresentation == .table) }
     await gate.finish(); await store.receive(\.conversationWriteSettled); await store.finish()
@@ -365,7 +365,7 @@ struct PR158RegressionFixTests {
     } else {
       #expect(store.state.chat?.messages[id: answer.id]?.resultPresentation == .table)
       #expect(store.state.chat?.messages[id: answer.id]?.createdAt == Date(timeIntervalSince1970: 999))
-      #expect(store.state.conversationEdits[a]?[.resultPresentation(answer.id)]?.fallbackMessage == nil)
+      #expect(store.state.conversationEdits[a]?[.resultPresentation(answer.id)]?.status == .saved(.resultPresentation(.table)))
       #expect(await writeGate.load().messages.last?.resultPresentation == .table)
     }
   }
@@ -388,7 +388,7 @@ struct PR158RegressionFixTests {
     await store.send(.chat(.binding(.set(\.composerText, "new"))))
     await gate.finish()
     await store.receive(\.conversationWriteSettled)
-    #expect(store.state.conversationEdits[a]?[.draft]?.phase == .debouncing)
+    #expect(store.state.conversationEdits[a]?[.draft]?.status == .pending(.draft("new"), .debouncing))
     #expect(!store.state.failures.contains { $0.owner == .conversationOperation(a, .draft) })
     await gate.setFailure(false)
     await clock.advance(by: .milliseconds(500))
@@ -456,7 +456,7 @@ struct PR158RegressionFixTests {
     await store.send(.retryConversationWrites(owner))
     await store.finish()
     #expect(await gate.attemptCount() == 3)
-    #expect(store.state.conversationEdits[a]?[target]?.phase == .saved)
+    #expect(store.state.conversationEdits[a]?[target]?.isSaved == true)
     #expect(!store.state.failures.contains { $0.owner == owner })
     if write == "draft" { #expect(await gate.load().draft == "latest") }
     else { #expect(await gate.load().messages.last?.resultPresentation == .table) }
@@ -489,11 +489,16 @@ struct PR158RegressionFixTests {
   @Test func onePreferenceSuccessKeepsAnotherMessagesRecoveryNotice() async {
     var initial = initialState()
     let failure = FailurePresentation.history(operation: .messageSave, error: DiagnosticsTestError.failed("save"))
-    let first = UUID(), second = UUID()
+    var firstMessage = initial.chat!.messages.last!
+    firstMessage.id = UUID()
+    firstMessage.resultPresentation = .table
+    var secondMessage = firstMessage
+    secondMessage.id = UUID()
+    let first = firstMessage.id, second = secondMessage.id
     let owner = AppFeature.FailureOwner.conversationOperation(a, .resultPresentation)
     initial.conversationEdits[a] = [
-      .resultPresentation(first): .init(value: .resultPresentation(.table), revision: 1, phase: .saving),
-      .resultPresentation(second): .init(value: .resultPresentation(.table), revision: 2, phase: .saving),
+      .resultPresentation(first): .init(revision: 1, status: .pending(.resultPresentation(firstMessage), .saving)),
+      .resultPresentation(second): .init(revision: 2, status: .pending(.resultPresentation(secondMessage), .saving)),
     ]
     initial.storeFailure(failure, owner: owner)
     let store = store(initial)
@@ -510,7 +515,7 @@ struct PR158RegressionFixTests {
     let failure = FailurePresentation(code: "history_draft_save_failed", title: "Draft not saved",
       message: "Retry", diagnostic: "store unavailable", cause: .historyStoreUnavailable, recovery: .retryHistory)
     let owner = AppFeature.FailureOwner.conversationOperation(a, .draft)
-    state.conversationEdits[a] = [.draft: .init(value: .draft("latest"), revision: 1, phase: .failed(failure))]
+    state.conversationEdits[a] = [.draft: .init(revision: 1, status: .pending(.draft("latest"), .failed(failure)))]
     state.storeFailure(failure, owner: owner)
     state.markHistoryStoreAvailable()
     #expect(state.failures.contains { $0.owner == owner })
@@ -729,119 +734,77 @@ struct PR158RegressionFixTests {
 }
 
 extension PR158RegressionFixTests {
-  @Test func missingPreferenceFallbackIsNonretryableUntilFreshSelection() async throws {
+  @Test func groupedPreferenceRetryKeepsFailedSiblingUntilItsNextSave() async throws {
     var initial = initialState()
-    let messageID = initial.chat!.messages.last!.id
-    let target = AppFeature.ConversationWriteTarget.resultPresentation(messageID)
-    let owner = AppFeature.FailureOwner.conversationOperation(a, .resultPresentation)
-    let oldFailure = FailurePresentation.resultPreferenceSave(error: DiagnosticsTestError.failed("old"))
-    initial.conversationEdits[a] = [target: .init(value: .resultPresentation(.table), revision: 1, phase: .failed(oldFailure))]
-    initial.conversationWriteSequence = 1
-    initial.storeFailure(oldFailure, owner: owner)
-    initial.overlayConversationEdits()
-    let writes = CallRecorder()
-    var history = HistoryClient.noop()
-    history.updateResultPresentation = { _, _ in writes.record("saved") }
-    let store = store(initial, history: history)
-    await store.send(.retryConversationWrites(owner))
-    #expect(store.state.conversationEdits[a]?[target]?.phase == .saving)
-    await store.receive(\.conversationWriteSettled)
-    #expect(store.state.conversationEdits[a]?[target]?.phase.isFailed == true)
-    #expect(!store.state.retryableConversationWriteOwners.contains(owner))
-    #expect(store.state.failures.last?.owner == owner)
-    #expect(store.state.failures.last?.failure.diagnostic.contains("no fallback message") == true)
-    let failure = try #require(store.state.failures.last?.failure)
-    #expect(failure.code == "history_result_preference_message_missing")
-    #expect(!failure.allowsConversationWriteRetry)
-    let failedEdit = store.state.conversationEdits[a]?[target]
-    let occurrence = store.state.failures.last?.id
-    let revision = try #require(failedEdit?.revision)
-    await store.send(.retryConversationWrites(owner))
-    await store.send(.retryConversationWrites(owner))
-    await store.send(.conversationWriteSettled(conversationID: a, target: target,
-      revision: revision, settlement: .failed(failure)))
-    #expect(store.state.conversationEdits[a]?[target] == failedEdit)
-    #expect(store.state.failures.last?.id == occurrence)
-    #expect(store.state.chat?.messages[id: messageID]?.resultPresentation == .table)
-    #expect(writes.recorded.isEmpty)
-    await store.send(.chat(.resultPresentationChanged(messageID: messageID, preference: .table)))
-    await store.receive(\.conversationWriteSettled)
-    await store.finish()
-    #expect(writes.recorded == ["saved"])
-    #expect(store.state.conversationEdits[a]?[target]?.phase == .saved)
-    #expect(!store.state.failures.contains { $0.owner == owner })
-  }
-
-  @Test func retrySkipsPermanentPreferenceFailureAndSavesItsRetryableSibling() async {
-    var initial = initialState()
-    let answer = initial.chat!.messages.last!
-    var sibling = answer
+    var first = initial.chat!.messages.last!
+    var sibling = first
     sibling.id = UUID()
     initial.chat?.messages.append(sibling)
-    let blocked = AppFeature.ConversationWriteTarget.resultPresentation(answer.id)
-    let retryable = AppFeature.ConversationWriteTarget.resultPresentation(sibling.id)
+    let firstTarget = AppFeature.ConversationWriteTarget.resultPresentation(first.id)
+    let siblingTarget = AppFeature.ConversationWriteTarget.resultPresentation(sibling.id)
     let owner = AppFeature.FailureOwner.conversationOperation(a, .resultPresentation)
-    let invariant = FailurePresentation.resultPreferenceSave(error: AppFeature.ConversationWriteInvariantError.missingResultPresentationMessage)
-    let transient = FailurePresentation.resultPreferenceSave(error: DiagnosticsTestError.failed("save"))
-    initial.conversationEdits[a] = [
-      blocked: .init(value: .resultPresentation(.table), revision: 1, phase: .failed(invariant)),
-      retryable: .init(value: .resultPresentation(.table), revision: 2, phase: .failed(transient), fallbackMessage: sibling),
-    ]
-    initial.conversationWriteSequence = 2
-    initial.storeFailure(invariant, owner: owner)
-    initial.overlayConversationEdits()
-    let blockedEdit = initial.conversationEdits[a]?[blocked]
-    let occurrence = initial.failures.last?.id
-    let writes = CallRecorder()
+    let snapshot = ConversationSnapshot(summary: initial.conversations[id: a]!,
+      messages: Array(initial.chat!.messages))
+    let firstGate = RegressionWriteGate(snapshot), siblingGate = RegressionWriteGate(snapshot)
+    let persistenceGate = RegressionWriteGate(snapshot)
+    await firstGate.setFailure(true)
+    await siblingGate.setFailure(true)
+    await persistenceGate.finish()
+    let firstID = first.id
     var history = HistoryClient.noop()
-    history.updateResultPresentation = { _, message in writes.record(message.id.uuidString) }
+    history.updateResultPresentation = { _, message in
+      let gate = message.id == firstID ? firstGate : siblingGate
+      await persistenceGate.hold()
+      try await gate.attempt()
+      await persistenceGate.savePreference(message)
+    }
     let store = store(initial, history: history)
+    await store.send(.chat(.resultPresentationChanged(messageID: first.id, preference: .table)))
+    await store.receive(\.conversationWriteSettled)
+    await store.send(.chat(.resultPresentationChanged(messageID: sibling.id, preference: .table)))
+    await store.receive(\.conversationWriteSettled)
+    first.resultPresentation = .table
+    sibling.resultPresentation = .table
+    #expect(store.state.failures.filter { $0.owner == owner }.count == 1)
     #expect(store.state.retryableConversationWriteOwners.contains(owner))
+    let originalNotice = try #require(store.state.failures.first { $0.owner == owner })
+
+    await firstGate.setFailure(false)
+    await persistenceGate.reset()
     await store.send(.retryConversationWrites(owner))
+    await store.send(.retryConversationWrites(owner))
+    try await persistenceGate.wait()
+    #expect(store.state.conversationEdits[a]?[firstTarget]?.status == .pending(.resultPresentation(first), .saving))
+    #expect(store.state.conversationEdits[a]?[siblingTarget]?.status == .pending(.resultPresentation(sibling), .saving))
+    await persistenceGate.finish()
+    await store.receive(\.conversationWriteSettled)
+    await store.receive(\.conversationWriteSettled)
+    #expect(store.state.conversationEdits[a]?[firstTarget]?.status == .saved(.resultPresentation(.table)))
+    let retryNotice = try #require(store.state.failures.first { $0.owner == owner })
+    #expect(retryNotice.id != originalNotice.id)
+    #expect(store.state.failures.filter { $0.owner == owner }.count == 1)
+    #expect(store.state.conversationEdits[a]?[siblingTarget]?.status == .pending(.resultPresentation(sibling), .failed(retryNotice.failure)))
+    #expect(store.state.retryableConversationWriteOwners.contains(owner))
+    #expect(await firstGate.attemptCount() == 2)
+    #expect(await siblingGate.attemptCount() == 2)
+    #expect(await persistenceGate.load().messages.first { $0.id == firstID }?.resultPresentation == .table)
+
+    await siblingGate.setFailure(false)
+    await persistenceGate.reset()
+    await store.send(.retryConversationWrites(owner))
+    await store.send(.retryConversationWrites(owner))
+    try await persistenceGate.wait()
+    await persistenceGate.finish()
     await store.receive(\.conversationWriteSettled)
     await store.send(.retryConversationWrites(owner))
     await store.finish()
-    #expect(writes.recorded == [sibling.id.uuidString])
-    #expect(store.state.conversationEdits[a]?[retryable]?.phase == .saved)
-    #expect(store.state.conversationEdits[a]?[blocked] == blockedEdit)
-    #expect(store.state.failures.last?.id == occurrence)
+    #expect(await firstGate.attemptCount() == 2)
+    #expect(await siblingGate.attemptCount() == 3)
+    #expect(await persistenceGate.load().messages.first { $0.id == sibling.id }?.resultPresentation == .table)
+    #expect(store.state.conversationEdits[a]?[firstTarget]?.status == .saved(.resultPresentation(.table)))
+    #expect(store.state.conversationEdits[a]?[siblingTarget]?.status == .saved(.resultPresentation(.table)))
     #expect(!store.state.retryableConversationWriteOwners.contains(owner))
-  }
-
-  @Test(arguments: ["undo", "failed", "committed"])
-  func deletionPreservesPermanentPreferenceFailureEligibility(outcome: String) async throws {
-    var initial = initialState()
-    let target = AppFeature.ConversationWriteTarget.resultPresentation(initial.chat!.messages.last!.id)
-    let owner = AppFeature.FailureOwner.conversationOperation(a, .resultPresentation)
-    let failure = FailurePresentation.resultPreferenceSave(error: AppFeature.ConversationWriteInvariantError.missingResultPresentationMessage)
-    initial.conversationEdits[a] = [target: .init(value: .resultPresentation(.table), revision: 1, phase: .failed(failure))]
-    initial.storeFailure(failure, owner: owner)
-    let edit = initial.conversationEdits[a]?[target]
-    let occurrence = initial.failures.last?.id
-    let summaries = initial.conversations
-    var history = HistoryClient.noop()
-    history.loadConversation = { id in .init(summary: summaries[id: id]!) }
-    if outcome == "failed" { history.deleteConversation = { _ in throw DiagnosticsTestError.failed("delete") } }
-    let store = store(initial, history: history)
-    await store.send(.deleteConversationTapped(a))
-    await store.receive(\.conversationLoaded)
-    if outcome == "undo" { await store.send(.undoDeleteTapped) }
-    else {
-      await store.send(.deleteCountdownFinished(store.state.pendingDeletion!.token))
-      await store.receive(\.conversationDeletionFinished)
-    }
-    await store.send(.retryConversationWrites(owner))
-    await store.finish()
-    #expect(!store.state.retryableConversationWriteOwners.contains(owner))
-    if outcome == "committed" {
-      #expect(store.state.conversationEdits[a] == nil)
-      #expect(!store.state.failures.contains { $0.owner == owner })
-    } else {
-      #expect(store.state.conversationEdits[a]?[target] == edit)
-      let restored = try #require(store.state.failures.first { $0.owner == owner })
-      #expect(restored.id == occurrence)
-      #expect(!restored.failure.allowsConversationWriteRetry)
-    }
+    #expect(!store.state.failures.contains { $0.owner == owner })
   }
 
   @Test(arguments: ["  hello\n\t world  ", "  " + String(repeating: "👩🏽‍💻 ", count: 500) + "\n tail", " \n\t "])

@@ -46,7 +46,6 @@
     var renders: [UUID: Int] = [:]
     func render(_ id: UUID) { renders[id, default: 0] += 1 }
     func appear(_ id: UUID) { realized.insert(id) }
-    func reset() { realized = []; renders = [:] }
   }
 
   struct DrawerPerformanceProbe: View {

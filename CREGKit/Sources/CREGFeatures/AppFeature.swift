@@ -2160,10 +2160,10 @@ public struct AppFeature: Sendable {
 
       case .draftSaveDue(let id, let revision):
         guard var edit = state.conversationEdits[id]?[.draft],
-          edit.revision == revision, edit.phase == .debouncing else { return .none }
-        edit.phase = .saving
+          edit.revision == revision, case .pending(let write, .debouncing) = edit.status else { return .none }
+        edit.status = .pending(write, .saving)
         state.conversationEdits[id]?[.draft] = edit
-        return saveConversationEdit(conversationID: id, target: .draft, edit: edit)
+        return saveConversationEdit(conversationID: id, target: .draft, revision: revision, write: write)
 
       case .conversationWriteSettled(let id, let target, let revision, let settlement):
         return settleConversationEdit(state: &state, conversationID: id, target: target,

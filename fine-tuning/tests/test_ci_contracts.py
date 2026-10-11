@@ -10,6 +10,16 @@ import yaml
 from tools import check_ci_contracts
 
 
+def assert_context_field(failure: str, field: str) -> None:
+    """Check the diagnostic field, excluding names and paths in its prefix."""
+    if field in {"shell", "working-directory"}:
+        assert f" step {field} must be " in failure
+    else:
+        marker = "override reviewed run context: "
+        assert marker in failure
+        assert failure.split(marker, 1)[1].split(", ") == [field]
+
+
 def failures(source: str) -> list[str]:
     path = check_ci_contracts.ROOT / ".github" / "workflows" / "fixture.yml"
     return check_ci_contracts.checkout_credential_failures(
@@ -194,7 +204,7 @@ def test_reviewed_run_contracts_reject_step_execution_overrides(
     failures = validator(path, workflow)
 
     assert len(failures) == 1
-    assert field in failures[0]
+    assert_context_field(failures[0], field)
 
 
 @pytest.mark.parametrize(
@@ -225,7 +235,7 @@ def test_reviewed_run_contracts_reject_job_execution_overrides(
     failures = validator(path, workflow)
 
     assert len(failures) == 1
-    assert field in failures[0]
+    assert_context_field(failures[0], field)
 
 
 @pytest.mark.parametrize(
@@ -247,7 +257,7 @@ def test_reviewed_run_contracts_reject_workflow_execution_overrides(
     failures = validator(path, workflow)
 
     assert len(failures) == 1
-    assert field in failures[0]
+    assert_context_field(failures[0], field)
 
 
 @pytest.mark.parametrize(
@@ -847,6 +857,34 @@ def test_xcode_app_is_iphone_only():
 
 
 @pytest.mark.parametrize("command", [
+    "xcodebuildmcp --socket /tmp/fixture.sock simulator boot --simulator-id fixture",
+    "echo '#'; swift test",
+    "bash -c -l 'swift test'",
+    "bash -c -e 'swift test'",
+    "sh -c -e 'swift test'",
+    "zsh -c -f 'swift test'",
+    "bash -lec 'swift test'",
+    "bash -c -o pipefail 'swift test'",
+    "bash -oc pipefail 'swift test'",
+    "bash -c -O extglob 'swift test'",
+    "bash --noprofile --norc -c -e -- 'swift test'",
+    'bash -c -e "sh -c -e \'xcodebuild test -scheme CREG\'"',
+    "env CREG_FIXTURE=1 bash -c -e 'swift test'",
+    'command /usr/bin/swift test',
+    'if true; then swift test; fi',
+    '(swift test)',
+    'simctl create fixture type',
+    '/usr/bin/simctl boot fixture',
+    "simctl --set '/tmp/fixture devices' boot fixture",
+    'xcrun --run simctl create fixture type',
+    'xcrun --sdk iphonesimulator simctl boot fixture',
+    'xcrun --toolchain default --run simctl boot fixture',
+    'xcrun --sdk=iphonesimulator simctl boot fixture',
+    "bash -c -e 'xcrun --run simctl boot fixture'",
+    'xcodebuildmcp simulator boot --simulator-id fixture',
+    'xcodebuildmcp simulator-management boot --simulator-id fixture',
+    'xcodebuildmcp simulator build-and-run --scheme CREG',
+    'xcodebuildmcp --style minimal simulator-management boot --simulator-id fixture',
     "swift test",
     "bash -c 'swift test'",
     "bash -lc 'swift test'",
@@ -886,6 +924,32 @@ def test_ci_rejects_restoring_removed_accessibility_jobs(job_name):
 
 
 @pytest.mark.parametrize("command", [
+    "echo ';' swift test",
+    "printf '%s' ';' swift test",
+    "swift --version test",
+    "command -pv swift test",
+    "xcrun -vf simctl boot fixture",
+    'echo swift test',
+    "printf '%s' 'xcrun simctl boot fixture'",
+    "bash -c -e 'swift package --package-path CREGKit resolve'",
+    "bash -c -o pipefail -- 'xcodebuild docbuild -scheme CREGKit'",
+    "bash -c 'echo swift test'",
+    "bash -c true 'swift test'",
+    "bash '/tmp/fixture-script' -c 'swift test'",
+    "bash --help -c 'swift test'",
+    'xcrun --find simctl',
+    'xcrun --find simctl boot fixture',
+    'xcrun --sdk iphonesimulator --find swift test',
+    'xcrun --show-sdk-path simctl boot fixture',
+    'simctl help boot',
+    'simctl boot --help',
+    'swift test --help',
+    'xcodebuild -help test',
+    'xcodebuildmcp simulator boot --help',
+    'xcodebuildmcp simulator-management boot --help',
+    'xcodebuildmcp --help simulator boot',
+    "xcodebuildmcp -v simulator boot",
+    'command -v swift test',
     "swift package --package-path CREGKit resolve",
     "xcodebuild -resolvePackageDependencies -project CREG.xcodeproj",
     "xcodebuild docbuild -scheme CREGKit",
@@ -939,7 +1003,7 @@ def test_swift_dependency_checks_reject_job_context_overrides_once(field, value)
     workflow["jobs"]["swift"][field] = value
     failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
     assert len(failures) == 1
-    assert field in failures[0]
+    assert_context_field(failures[0], field)
 
 
 @pytest.mark.parametrize("step_name", [
@@ -958,7 +1022,7 @@ def test_swift_dependency_checks_reject_step_context_overrides(step_name, field,
     step[field] = value
     failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
     assert len(failures) == 1
-    assert field in failures[0]
+    assert_context_field(failures[0], field)
 
 
 @pytest.mark.parametrize("step_name", [
@@ -971,4 +1035,41 @@ def test_swift_dependency_checks_require_explicit_execution_context(step_name, f
     del step[field]
     failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
     assert len(failures) == 1
-    assert field in failures[0]
+    assert_context_field(failures[0], field)
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, 20, 60, True, 30.0, "30"])
+def test_swift_dependency_job_requires_reviewed_integer_timeout(value):
+    path, workflow = ci_workflow()
+    workflow["jobs"]["swift"]["timeout-minutes"] = value
+    failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
+    assert len(failures) == 1
+    assert_context_field(failures[0], "timeout-minutes")
+
+
+def test_swift_dependency_job_requires_timeout_and_accepts_reviewed_budget():
+    path, workflow = ci_workflow()
+    assert workflow["jobs"]["swift"]["timeout-minutes"] == 30
+    assert check_ci_contracts.swift_dependency_contract_failures(path, workflow) == []
+    del workflow["jobs"]["swift"]["timeout-minutes"]
+    failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
+    assert len(failures) == 1
+    assert failures[0].endswith("swift job timeout-minutes must be 30")
+
+
+def test_swift_dependency_job_reports_runner_mismatch_once():
+    path, workflow = ci_workflow()
+    workflow["jobs"]["swift"]["runs-on"] = "macos-26"
+    failures = check_ci_contracts.swift_dependency_contract_failures(path, workflow)
+    assert len(failures) == 1
+    assert failures[0].endswith("swift job must run on xcode-27")
+
+
+@pytest.mark.parametrize("step_name", [
+    "Verify AutoTableCharts pin agreement", "Verify checked-in Swift package resolutions"
+])
+def test_context_field_assertion_rejects_verify_name_false_positive(step_name):
+    message = f"fixture: {step_name!r} step must not override reviewed run context: UNKNOWN_FIELD"
+    with pytest.raises(AssertionError):
+        assert_context_field(message, "if")
+    assert_context_field(message.replace("UNKNOWN_FIELD", "if"), "if")

@@ -35,8 +35,6 @@ import Synchronization
       case transientBanners = "transient-banners"
       case conversationNotices = "conversation-notices"
       case noticeOccurrences = "notice-occurrences"
-      case conversationWriteInvariant = "conversation-write-invariant"
-      case conversationWriteInvariantWithRetryableSibling = "conversation-write-invariant-with-retryable-sibling"
       case retainedExport = "retained-export"
       case browserRefresh = "browser-refresh"
       case browserPerformance = "browser-performance"
@@ -405,8 +403,8 @@ import Synchronization
         SettingsView(
           store: PreviewFixtures.appStore(PreviewFixtures.settingsState()))
 
-      case .noticeOccurrences, .conversationWriteInvariant, .conversationWriteInvariantWithRetryableSibling:
-        NoticeOccurrenceAccessibilityHarness(scenario: scenario)
+      case .noticeOccurrences:
+        NoticeOccurrenceAccessibilityHarness()
       case .conversationNotices, .retainedExport, .browserRefresh, .browserPerformance, .appleIntelligenceDisabled,
         .exportMore, .browserLongPreviews, .compactJump, .historyProgress, .historyProgressUnavailable,
         .drawerGestureCancellation:
@@ -590,7 +588,7 @@ import Synchronization
     private static let failure = FailurePresentation(code: "same_code", title: "Save failed",
       message: "An unrelated save needs attention.", diagnostic: "occurrence-original")
 
-    init(scenario: AccessibilityUITestConfiguration.Scenario = .noticeOccurrences) {
+    init() {
       var initial = PreviewFixtures.appState(revealed: false, chat: PreviewFixtures.answeredChatState())
       initial.$developerMode = Shared(value: true)
       let id = initial.chat!.conversationID
@@ -600,35 +598,18 @@ import Synchronization
       let draftFailure = FailurePresentation.history(operation: .draftSave, error: NSError(domain: "Fixture", code: 1))
       var answer = initial.chat!.messages.last!
       answer.resultPresentation = .table
-      let invariant = scenario != .noticeOccurrences
-      let preferenceFailure = invariant
-        ? FailurePresentation.resultPreferenceSave(error: AppFeature.ConversationWriteInvariantError.missingResultPresentationMessage)
-        : FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 2))
-      if !invariant {
-        initial.storeFailure(Self.failure, owner: .global)
-        var second = Self.failure; second.diagnostic = "occurrence-survivor"
-        initial.storeFailure(second, owner: .historySummaries(2))
-        initial.storeFailure(draftFailure, owner: .conversationOperation(id, .draft))
-      }
+      let preferenceFailure = FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 2))
+      initial.storeFailure(Self.failure, owner: .global)
+      var second = Self.failure; second.diagnostic = "occurrence-survivor"
+      initial.storeFailure(second, owner: .historySummaries(2))
+      initial.storeFailure(draftFailure, owner: .conversationOperation(id, .draft))
       initial.storeFailure(preferenceFailure, owner: .conversationOperation(id, .resultPresentation))
       initial.conversationWriteSequence = 2
       initial.conversationEdits[id] = [
-        .resultPresentation(answer.id): .init(value: .resultPresentation(.table), revision: 2,
-          phase: .failed(preferenceFailure), fallbackMessage: invariant ? nil : answer),
+        .resultPresentation(answer.id): .init(revision: 2,
+          status: .pending(.resultPresentation(answer), .failed(preferenceFailure))),
+        .draft: .init(revision: 1, status: .pending(.draft("Retained fixture draft"), .failed(draftFailure))),
       ]
-      if !invariant {
-        initial.conversationEdits[id]?[.draft] = .init(value: .draft("Retained fixture draft"),
-          revision: 1, phase: .failed(draftFailure))
-      }
-      if scenario == .conversationWriteInvariantWithRetryableSibling {
-        var sibling = answer
-        sibling.id = UUID()
-        initial.chat?.messages.append(sibling)
-        let failure = FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 3))
-        initial.conversationWriteSequence = 3
-        initial.conversationEdits[id]?[.resultPresentation(sibling.id)] = .init(
-          value: .resultPresentation(.table), revision: 3, phase: .failed(failure), fallbackMessage: sibling)
-      }
       initial.overlayConversationEdits()
       _store = State(initialValue: Store(initialState: initial) { AppFeature() } withDependencies: {
         $0.historyClient = .noop()
