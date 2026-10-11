@@ -409,3 +409,38 @@ xcodebuildmcp simulator test \
 | Resolution commands | `/tmp/creg-reviewed-fixes.1xcKzi/swift-resolution.log`, `/tmp/creg-reviewed-fixes.1xcKzi/xcode-resolution.log` |
 | Package/UI CLI summaries | `/tmp/creg-reviewed-fixes.1xcKzi/chart-baseline.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-final-repaired.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-saving-assertion.log`, `/tmp/creg-reviewed-fixes.1xcKzi/ui-selected.log` |
 | CI checker, Python tests, package pins, whitespace | `/tmp/creg-reviewed-fixes.1xcKzi/ci-contract-check-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/python-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/package-pin-check-final.log`, `/tmp/creg-reviewed-fixes.1xcKzi/whitespace-check.log` |
+
+## Shell policy case, pipeline, and ANSI-C review fixes (October 11, 2026)
+
+Implemented against `a51338a3abd1aa747ae8289cc04b9d11ce69c359`. The local Apple testing policy scanner now recognizes unquoted `case`/`esac` in grammar positions, tracks nested cases and pattern/body context, and keeps case-pattern parentheses from ending enclosing substitutions or groups. Pattern alternatives, optional opening parentheses, extended patterns, and clause terminators are covered. Printed or quoted keywords remain data, while unmatched parentheses in command bodies and incomplete cases remain malformed syntax.
+
+Heredocs retain their owning command and pipeline. Bodies are inspected as scripts when the owning command or a downstream supported shell reads stdin, including quoted delimiters, wrappers, intermediate pipeline segments, and consumers written after the heredoc's physical newline. Logical operators and command-list boundaries end pipeline membership. Unquoted bodies also receive a separate expansion scan because the outer shell expands them before a downstream shell reads them, even when the body contains apparent single quotes.
+
+ANSI-C literals are decoded and safely requoted before `shlex` tokenization, preserving escaped apostrophes, backslashes, numeric escapes, and adjacent word fragments. This closes both hidden-command and quoted-executable/argument gaps. ANSI-C syntax is recognized only outside ordinary quotes and heredoc data mode; literal examples remain allowed and unterminated literals remain malformed. The existing comment-continuation example that prints `swift test` stays in the allowed list; its executable counterpart is added to the rejection list.
+
+The static checker still does not resolve arbitrary script files, aliases, or dynamically expanded executable names. Pipeline inspection conservatively treats heredoc text as potential shell input for a downstream supported shell.
+
+The pre-change focused baseline passed **216 tests**. Adding the initial 72 fixture cases to the original scanner reproduced **44 failures covering existing parser gaps**: **244 passed, 44 failed, 151 deselected** in **3.06 seconds**. The first implementation passed all **288 focused cases**, with **151 deselected**, in **2.66 seconds**. Additional boundary cases brought the regression additions to **91**. The final complete CI contract test file passed **458 tests in 6.03 seconds**. The CI contract checker, package-pin checker, and final whitespace check passed. The initial whitespace check caught an extra blank line at the end of this new validation record; it was removed before the final check. No existing assertions were weakened. No Apple code changed, and no Apple tests or simulator commands ran.
+
+Commands ran from `/Users/haroldmartin/Downloads/creg/swift-mlx-text-to-sql`. The filtered command ran against the new fixtures before and after the initial implementation; the complete contract test command validates the final scanner and fixture additions.
+
+```sh
+uv run --project fine-tuning --no-sync python -m pytest fine-tuning/tests/test_ci_contracts.py \
+  -k 'test_every_workflow_rejects_apple_test_execution or test_local_testing_policy_allows_retained_ci_work or test_local_testing_policy_reports_malformed_substitutions_and_heredocs' \
+  -q --tb=short
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_ci_contracts.py
+uv run --project fine-tuning --no-sync python -m pytest fine-tuning/tests/test_ci_contracts.py -q
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_swift_package_pins.py
+git diff --check
+```
+
+| Run | Retained artifact |
+| --- | --- |
+| Pre-change focused baseline | `/tmp/codex-ci-comment-triage-a51338a/pytest.log` |
+| Initial regression fixtures against original scanner | `/var/folders/zk/m1t80b0n64z5sphqvc6kkmzc0000gn/T/creg-shell-policy-2026-10-11.ia9owq0g/regression-baseline.log` |
+| First implementation focused CLI summary | `/var/folders/zk/m1t80b0n64z5sphqvc6kkmzc0000gn/T/creg-shell-policy-2026-10-11.ia9owq0g/focused-regression-tests.log` |
+| Final CI contract checker | `/var/folders/zk/m1t80b0n64z5sphqvc6kkmzc0000gn/T/creg-shell-policy-2026-10-11.ia9owq0g/ci-contract-check.log` |
+| Final CI contract tests | `/var/folders/zk/m1t80b0n64z5sphqvc6kkmzc0000gn/T/creg-shell-policy-2026-10-11.ia9owq0g/ci-contract-tests.log` |
+| Final package-pin checker | `/var/folders/zk/m1t80b0n64z5sphqvc6kkmzc0000gn/T/creg-shell-policy-2026-10-11.ia9owq0g/package-pin-check.log` |
+| Initial whitespace check, extra blank line in validation record | `/var/folders/zk/m1t80b0n64z5sphqvc6kkmzc0000gn/T/creg-shell-policy-2026-10-11.ia9owq0g/whitespace-check-initial.log` |
+| Final whitespace check | `/var/folders/zk/m1t80b0n64z5sphqvc6kkmzc0000gn/T/creg-shell-policy-2026-10-11.ia9owq0g/whitespace-check.log` |

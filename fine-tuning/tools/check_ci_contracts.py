@@ -1079,6 +1079,65 @@ def _heredoc_delimiter(source: str, index: int) -> tuple[str, bool, int]:
     return words[0], quoted, index
 
 
+def _ansi_c_quoted_string(source: str, index: int) -> tuple[str, int]:
+    """Decode a literal $'...' word without evaluating shell expansions."""
+    index += 2
+    parts: list[str] = []
+    escapes = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f",
+               "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\",
+               "'": "'", '"': '"', "?": "?"}
+    while index < len(source):
+        character = source[index]
+        index += 1
+        if character == "'":
+            # Bash strings end at the first decoded NUL, but the remainder of
+            # the quoted source must still be consumed as literal data.
+            return "".join(parts).split("\0", 1)[0], index
+        if character != "\\":
+            parts.append(character)
+            continue
+        if index == len(source):
+            break
+        escaped = source[index]
+        index += 1
+        if escaped in escapes:
+            parts.append(escapes[escaped])
+        elif escaped in "01234567":
+            digits = re.match(r"[0-7]{0,2}", source[index:])[0]
+            parts.append(chr(int(escaped + digits, 8) & 0xff))
+            index += len(digits)
+        elif escaped in "xuU":
+            limit = {"x": 2, "u": 4, "U": 8}[escaped]
+            digits = re.match(rf"[0-9a-fA-F]{{0,{limit}}}", source[index:])[0]
+            parts.append(chr(int(digits, 16)) if digits else "\\" + escaped)
+            index += len(digits)
+        elif escaped == "c" and index < len(source) and source[index] != "'":
+            control = source[index]
+            parts.append(chr(ord(control) & 0x1f))
+            index += 1
+            if control == "\\" and index < len(source) and source[index] == "\\":
+                index += 1
+        else:
+            parts.append("\\" + escaped)
+    raise ValueError("unterminated ANSI-C shell quote")
+
+
+@dataclass
+class _PolicyCase:
+    phase: str = "word"
+    pattern_started: bool = False
+    pattern_depth: int = 0
+
+
+@dataclass
+class _PolicyHeredoc:
+    delimiter: str
+    quoted: bool
+    tabs: bool
+    pipeline: list[list[str]]
+    owner_index: int
+
+
 def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = None,
                        data: bool = False) -> tuple[list[list[str]], int]:
     """Inspect commands/expansions while retaining shell quote and heredoc context."""
@@ -1086,27 +1145,102 @@ def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = Non
     parts: list[str] = []
     quote: str | None = None
     word_start = True
+    word_index: int | None = None
+    command_start = True
+    time_option = False
     arithmetic_depth = 0
-    # Each queued heredoc is attached to the command that owns its redirection.
-    pending: list[tuple[str, bool, bool, list[str]]] = []
-    owned_docs: list[int] = []
+    cases: list[_PolicyCase] = []
+    pipeline: list[list[str]] = []
+    pipeline_continues = False
+    pending: list[_PolicyHeredoc] = []
+    heredoc_bodies: list[tuple[_PolicyHeredoc, str]] = []
 
-    def flush() -> None:
+    def finish_word() -> None:
+        nonlocal word_index, command_start, time_option
+        if word_index is None:
+            return
+        # Reserved words must be unquoted and occur in a grammar position,
+        # rather than merely appearing as an argument or a decoded literal.
+        word = source[word_index:index].replace("\\\n", "")
+        word_index = None
+        if not word:
+            return
+        if cases and cases[-1].phase == "word":
+            cases[-1].phase = "in"
+        elif cases and cases[-1].phase == "in":
+            if word != "in":
+                raise ValueError("missing case 'in' keyword")
+            cases[-1].phase = "pattern"
+            parts.clear()
+        elif cases and cases[-1].phase == "pattern":
+            if word == "esac" and not cases[-1].pattern_started:
+                cases.pop()
+                parts.clear()
+                command_start = False
+            else:
+                cases[-1].pattern_started = True
+        elif command_start and word == "case":
+            cases.append(_PolicyCase())
+            command_start = False
+            time_option = False
+        elif command_start and word == "esac" and cases:
+            cases.pop()
+            parts.clear()
+            command_start = False
+        elif command_start and word == "time":
+            time_option = True
+        elif command_start and time_option and word == "-p":
+            time_option = False
+        elif command_start and (
+            word in {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
+            or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", word)
+        ):
+            time_option = False
+        else:
+            command_start = False
+            time_option = False
+
+    def flush(separator: str | None = None) -> None:
+        nonlocal pipeline, pipeline_continues, command_start, time_option
         tokens = shlex.split("".join(parts), posix=True)
         commands.append(tokens)
-        for doc_index in owned_docs:
-            delimiter, quoted, tabs, _ = pending[doc_index]
-            pending[doc_index] = (delimiter, quoted, tabs, tokens)
-        owned_docs.clear()
+        if tokens or not pipeline_continues:
+            pipeline.append(tokens)
         parts.clear()
+        if separator in {"|", "|&"}:
+            pipeline_continues = True
+        elif not (separator == "\n" and not tokens and pipeline_continues):
+            pipeline = []
+            pipeline_continues = False
+        command_start = True
+        time_option = False
+
+    def scan_heredoc_bodies() -> None:
+        for doc, body in heredoc_bodies:
+            # Unquoted bodies expand in the outer shell even when their text
+            # also becomes a script for a downstream shell.
+            if not doc.quoted:
+                commands.extend(_scan_policy_shell(body, data=True)[0])
+            if any(_shell_reads_stdin(command) for command in doc.pipeline[doc.owner_index:]):
+                commands.extend(_shell_commands(body))
 
     while index < len(source):
         character = source[index]
-        if quote is None and closing and source.startswith(closing, index) and arithmetic_depth == 0:
+        if not data and quote is None:
+            if character in " \t\r\n;&|()<>":
+                finish_word()
+            elif word_index is None:
+                word_index = index
+        case_pattern = bool(cases and cases[-1].phase == "pattern")
+        if (quote is None and closing and source.startswith(closing, index)
+                and arithmetic_depth == 0 and not (closing == ")" and cases)):
+            if cases:
+                raise ValueError("unterminated shell case")
             if not data:
                 flush()
             if pending:
                 raise ValueError("unterminated heredoc")
+            scan_heredoc_bodies()
             return commands, index + len(closing)
         if closing == "`" and source.startswith("\\`", index) and quote != "'":
             nested, index = _scan_policy_shell(source, index + 2, closing="\\`")
@@ -1118,6 +1252,13 @@ def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = Non
             if not data and source[index:index + 2] != "\\\n":
                 parts.append(source[index:index + 2])
             index += 2
+            word_start = False
+            continue
+        if quote is None and not data and source.startswith("$'", index):
+            literal, index = _ansi_c_quoted_string(source, index)
+            # shlex does not implement ANSI-C quoting; give it an ordinary
+            # safely quoted word while preserving adjacent word fragments.
+            parts.append(shlex.quote(literal))
             word_start = False
             continue
         expansion_start = index + 1
@@ -1152,6 +1293,7 @@ def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = Non
             quote = character
             parts.append(character)
         elif character == "#" and word_start:
+            word_index = None
             newline = source.find("\n", index)
             index = len(source) if newline < 0 else newline
             continue
@@ -1161,10 +1303,30 @@ def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = Non
             while index < len(source) and source[index] in " \t":
                 index += 1
             delimiter, quoted, index = _heredoc_delimiter(source, index)
-            owned_docs.append(len(pending))
-            pending.append((delimiter, quoted, tabs, []))
+            pending.append(_PolicyHeredoc(delimiter, quoted, tabs, pipeline, len(pipeline)))
             parts.append(" ")
             word_start = True
+            continue
+        elif case_pattern and character == "(":
+            if cases[-1].pattern_started:
+                cases[-1].pattern_depth += 1
+            cases[-1].pattern_started = True
+            parts.append(character)
+        elif case_pattern and character == ")":
+            if cases[-1].pattern_depth:
+                cases[-1].pattern_depth -= 1
+                parts.append(character)
+            else:
+                cases[-1].phase = "body"
+                parts.clear()
+                command_start = True
+            word_start = True
+            index += 1
+            continue
+        elif case_pattern and character == "|":
+            parts.append(character)
+            word_start = True
+            index += 1
             continue
         elif character == "(" or source.startswith(("<(", ">("), index):
             flush()
@@ -1175,11 +1337,23 @@ def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = Non
         elif character == ")":
             raise ValueError("unmatched shell parenthesis")
         elif character in ";&|\n":
-            flush()
+            separator = next((operator for operator in (";;&", ";;", ";&", "&&", "||", "|&")
+                              if source.startswith(operator, index)), character)
+            if separator in {";;", ";&", ";;&"}:
+                if not cases or cases[-1].phase != "body":
+                    raise ValueError("unexpected shell case terminator")
+                flush(separator)
+                cases[-1] = _PolicyCase(phase="pattern")
+            elif case_pattern:
+                if separator != "\n":
+                    raise ValueError("unexpected operator in case pattern")
+                parts.clear()
+            else:
+                flush(separator)
             word_start = True
-            index += 1
+            index += len(separator)
             if character == "\n":
-                for delimiter, quoted, tabs, owner in pending:
+                for doc in pending:
                     body: list[str] = []
                     while True:
                         if index >= len(source):
@@ -1188,28 +1362,30 @@ def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = Non
                         end = len(source) if newline < 0 else newline + 1
                         line = source[index:end]
                         index = end
-                        if tabs:
+                        if doc.tabs:
                             line = line.lstrip("\t")
-                        if line.removesuffix("\n") == delimiter:
+                        if line.removesuffix("\n") == doc.delimiter:
                             break
                         body.append(line)
-                    body_source = "".join(body)
-                    if _shell_reads_stdin(owner):
-                        commands.extend(_shell_commands(body_source))
-                    elif not quoted:
-                        commands.extend(_scan_policy_shell(body_source, data=True)[0])
+                    # A pipeline may continue after this physical newline and
+                    # heredoc. Inspect the body once all consumers are known.
+                    heredoc_bodies.append((doc, "".join(body)))
                 pending.clear()
             continue
         else:
             parts.append(character)
         word_start = quote is None and character in " \t\r"
         index += 1
+    finish_word()
     if closing:
         raise ValueError("unterminated shell substitution or group")
     if pending:
         raise ValueError("unterminated heredoc")
+    if cases:
+        raise ValueError("unterminated shell case")
     if not data:
         flush()
+    scan_heredoc_bodies()
     return commands, index
 
 
