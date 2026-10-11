@@ -789,13 +789,204 @@ def _shell_command_string(arguments: list[str]) -> str | None:
     return arguments[index] if command_mode and index < len(arguments) else None
 
 
-def _invocation_executes_apple_tests(tokens: list[str]) -> bool:
-    """Inspect known executables and wrappers, without running shell source."""
+def _short_option_flags(argument: str, values: str) -> str:
+    if argument.startswith("--"):
+        return ""
+    for offset, flag in enumerate(argument[1:], start=1):
+        if flag in values:
+            return argument[1:offset + 1]
+    return argument[1:]
+
+
+def _option_end(arguments: list[str], index: int, values: set[str],
+                short_values: str = "") -> int:
+    """Skip one option, including its operand or an attached operand."""
+    argument = arguments[index]
+    if argument in values:
+        return index + 2
+    if "=" in argument or argument.startswith("--"):
+        return index + 1
+    for offset, flag in enumerate(argument[1:], start=1):
+        if flag in short_values:
+            return index + (2 if offset == len(argument) - 1 else 1)
+    return index + 1
+
+
+def _policy_arguments(arguments: list[str], values: set[str], *,
+                      short_values: str = "", arrays: frozenset[str] | set[str] = frozenset(),
+                      cli_help: bool = False
+                      ) -> tuple[list[str], set[str]]:
+    """Separate command operands from options, never interpreting option values."""
+    operands: list[str] = []
+    options: set[str] = set()
+    help_flags = {"-h", "--help", "-v", "--version"}
+
+    def is_help_option(argument: str) -> bool:
+        return (argument.split("=", 1)[0] in help_flags
+                or not argument.startswith("--") and argument.startswith(("-h", "-v")))
+
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            operands.extend(arguments[index + 1:])
+            break
+        if not argument.startswith("-") or argument == "-":
+            operands.append(argument)
+            index += 1
+            continue
+        option = argument.split("=", 1)[0]
+        if cli_help and option in help_flags:
+            # yargs help/version booleans can explicitly be disabled.
+            if "=" in argument:
+                if argument.split("=", 1)[1] == "true":
+                    options.add(option)
+                index += 1
+            elif index + 1 < len(arguments) and arguments[index + 1] in {"true", "false"}:
+                if arguments[index + 1] == "true":
+                    options.add(option)
+                index += 2
+            else:
+                options.add(option)
+                index += 1
+            continue
+        if cli_help and is_help_option(argument):
+            options.add(argument[:2])
+            index += 1
+            continue
+        options.add(option)
+        if option in arrays:
+            index += 1
+            while (index < len(arguments)
+                   and arguments[index].split("=", 1)[0] not in values
+                   and not (cli_help and is_help_option(arguments[index]))):
+                index += 1
+        elif (cli_help and argument in values and index + 1 < len(arguments)
+              and is_help_option(arguments[index + 1])):
+            # A separate known boolean flag is not a yargs string operand.
+            index += 1
+        else:
+            index = _option_end(arguments, index, values, short_values)
+    return operands, options
+
+
+POLICY_WRAPPERS = {"env", "command", "exec", "nohup", "sudo", "time", "nice",
+                   "timeout", "gtimeout", "stdbuf", "gstdbuf", "xcrun"}
+WRAPPER_VALUE_OPTIONS = {
+    "env": ({"-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string", "--argv0"}, "uCPS"),
+    "command": (set(), ""),
+    "exec": ({"-a"}, "a"),
+    "nohup": (set(), ""),
+    "sudo": ({"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
+              "-D", "--chdir", "-R", "--chroot", "-T", "--command-timeout", "-C",
+              "--close-from", "-U", "--other-user", "-r", "--role", "-t", "--type"}, "ughpDRTCUrt"),
+    "time": ({"-f", "--format", "-o", "--output"}, "fo"),
+    "nice": ({"-n", "--adjustment"}, "n"),
+    "timeout": ({"-s", "--signal", "-k", "--kill-after"}, "sk"),
+    "stdbuf": ({"-i", "--input", "-o", "--output", "-e", "--error"}, "ioe"),
+    "xcrun": ({"-sdk", "--sdk", "-toolchain", "--toolchain"}, ""),
+}
+
+
+def _wrapper_command(executable: str, arguments: list[str]) -> list[str] | None:
+    executable = {"gtimeout": "timeout", "gstdbuf": "stdbuf"}.get(executable, executable)
+    values, short_values = WRAPPER_VALUE_OPTIONS[executable]
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            index += 1
+            break
+        if executable == "env" and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", argument):
+            index += 1
+            continue
+        if not argument.startswith("-") or argument == "-":
+            break
+        option = argument.split("=", 1)[0]
+        if option in {"--help", "--version"}:
+            return None
+        if executable == "xcrun":
+            if option in {"-find", "--find", "-help", "-version"} or option.startswith(("--show-", "-show-")):
+                return None
+            # Single-dash long aliases are not clusters of short options.
+            if option not in values | {"-no-cache", "-kill-cache", "-verbose", "-log", "-run"}:
+                flags = argument[1:]
+                if flags and set(flags) <= set("hvlfrnk") and set(flags) & {"h", "f"}:
+                    return None
+        elif executable == "command" and set(_short_option_flags(argument, "")) & {"v", "V"}:
+            return None
+        elif executable == "sudo":
+            if option in {"--list", "--validate", "--edit", "--remove-timestamp"} or set(_short_option_flags(argument, short_values)) & {"l", "v", "V", "e", "K"}:
+                return None
+        if executable == "env" and (option == "--split-string" or "S" in _short_option_flags(argument, short_values)):
+            if argument.startswith("--") and "=" in argument:
+                script = argument.split("=", 1)[1]
+                following = index + 1
+            elif option == "--split-string" or argument.endswith("S"):
+                if index + 1 >= len(arguments):
+                    return None
+                script = arguments[index + 1]
+                following = index + 2
+            else:
+                script = argument[argument.index("S") + 1:]
+                following = index + 1
+            return shlex.split(script) + arguments[following:]
+        index = _option_end(arguments, index, values, short_values)
+    if executable == "timeout":
+        index += 1  # Duration precedes the command.
+    return arguments[index:]
+
+
+def _policy_command_head(tokens: list[str]) -> list[str]:
     while tokens and (
         re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", tokens[0])
         or tokens[0] in {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
     ):
         tokens = tokens[1:]
+    while tokens and tokens[0].rsplit("/", 1)[-1] in POLICY_WRAPPERS:
+        tokens = _wrapper_command(tokens[0].rsplit("/", 1)[-1], tokens[1:]) or []
+        while tokens and (
+            re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", tokens[0])
+            or tokens[0] in {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
+        ):
+            tokens = tokens[1:]
+    return tokens
+
+
+SWIFT_VALUE_OPTIONS = {
+    "--package-path", "--cache-path", "--config-path", "--security-path", "--scratch-path",
+    "--swift-sdks-path", "--toolset", "--pkg-config-path", "--manifest-cache", "--netrc-file",
+    "--resolver-fingerprint-checking", "--resolver-signing-entity-checking", "--default-registry-url",
+    "-c", "--configuration", "-Xcc", "-Xswiftc", "-Xlinker", "-Xcxx", "--triple", "--sdk",
+    "--toolchain", "--swift-sdk", "--sanitize", "-j", "--jobs", "--traits", "--arch",
+    "--explicit-target-dependency-import-check", "--build-system", "-debug-info-format",
+    "--experimental-codesize-profile-output-dir", "--attachments-path", "--filter", "--skip",
+    "--num-workers", "--test-product", "--xunit-output", "--destination",
+}
+XCODEBUILD_VALUE_OPTIONS = {
+    "-project", "-workspace", "-scheme", "-target", "-configuration", "-sdk", "-toolchain",
+    "-arch", "-destination", "-destination-timeout", "-jobs", "-derivedDataPath",
+    "-resultBundlePath", "-resultBundleVersion", "-resultStreamPath", "-archivePath",
+    "-xcconfig", "-xctestrun", "-testPlan", "-testProductsPath", "-clonedSourcePackagesDirPath",
+    "-packageCachePath", "-parallel-testing-worker-count", "-maximum-concurrent-test-simulator-destinations",
+    "-maximum-concurrent-test-device-destinations", "-test-timeouts-enabled", "-test-iterations",
+    "-default-test-execution-time-allowance", "-maximum-test-execution-time-allowance",
+    "-parallel-testing-enabled", "-enableCodeCoverage", "-only-testing", "-skip-testing",
+    "-downloadPlatform", "-importPlatform", "-downloadComponent", "-exportPath", "-buildVersion",
+    "-architectureVariant", "-exportOptionsPlist", "-localizationPath", "-exportLanguage", "-authenticationKeyPath",
+    "-authenticationKeyID", "-authenticationKeyIssuerID",
+}
+XCODEBUILDMCP_VALUE_OPTIONS = {
+    "--log-level", "--style", "--file-path-render-style", "--socket", "--profile", "--json",
+    "--output", "--project-path", "--workspace-path", "--scheme", "--simulator-id",
+    "--simulator-name", "--configuration", "--derived-data-path", "--package-path", "--filter",
+    "--test-product", "--bundle-id", "--device-id", "--extra-args", "--launch-args",
+}
+
+
+def _invocation_executes_apple_tests(tokens: list[str]) -> bool:
+    """Inspect known executables and wrappers, without running shell source."""
+    tokens = _policy_command_head(tokens)
     if not tokens:
         return False
     executable = tokens[0].rsplit("/", 1)[-1]
@@ -803,67 +994,29 @@ def _invocation_executes_apple_tests(tokens: list[str]) -> bool:
     if executable in {"bash", "sh", "zsh"}:
         script = _shell_command_string(arguments)
         return script is not None and _executes_apple_tests(script)
-    if executable in {"env", "command", "exec", "nohup", "sudo"}:
-        index = 0
-        while index < len(arguments):
-            argument = arguments[index]
-            if argument == "--":
-                index += 1
-                break
-            if (
-                argument in {"--help", "--version"}
-                or executable == "command" and argument.startswith("-")
-                and any(flag in argument[1:] for flag in "vV")
-            ):
-                return False
-            if argument in {"-u", "--unset", "-C", "--chdir", "--user", "-g", "--group", "-a"}:
-                index += 2
-            elif argument.startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", argument):
-                index += 1
-            else:
-                break
-        return _invocation_executes_apple_tests(arguments[index:])
-    if executable == "xcrun":
-        index = 0
-        while index < len(arguments) and arguments[index].startswith("-"):
-            argument = arguments[index]
-            if argument == "--":
-                index += 1
-                break
-            if (
-                argument in {"--find", "--help", "--version"} or argument.startswith("--show-")
-                or not argument.startswith("--") and any(flag in argument[1:] for flag in "fh")
-            ):
-                return False
-            index += 2 if argument in {"--sdk", "--toolchain"} else 1
-        return _invocation_executes_apple_tests(arguments[index:])
-    if any(argument in {"-h", "--help", "-help", "--version", "-version"} for argument in arguments):
-        return False
     if executable == "simctl":
-        index = 0
-        while index < len(arguments) and arguments[index].startswith("-"):
-            argument = arguments[index]
-            if argument == "--":
-                index += 1
-                break
-            index += 2 if argument in {"--set", "--profiles"} else 1
-        return index < len(arguments) and arguments[index] in {"create", "boot"}
-    if executable == "swift":
-        return "test" in arguments
-    if executable == "xcodebuild":
-        return any(a in {"test", "test-without-building", "build-for-testing"} for a in arguments)
-    if executable == "xcodebuildmcp":
-        if "-v" in arguments:
+        operands, options = _policy_arguments(arguments, {"--set", "--profiles"})
+        if options & {"-h", "--help"} or not operands:
             return False
-        # Global CLI flags may precede the workflow; inspect command positions.
-        index = 0
-        while index < len(arguments) and arguments[index].startswith("-"):
-            argument = arguments[index]
-            if argument == "--":
-                index += 1
-                break
-            index += 2 if argument in {"--log-level", "--style", "--file-path-render-style", "--socket"} else 1
-        command = arguments[index:index + 2]
+        return (operands[0] in {"create", "clone", "boot", "reboot"}
+                or operands[0] == "bootstatus" and "-b" in options
+                or operands[:2] in [["runtime", "add"], ["runtime", "scan-and-mount"]])
+    if executable == "swift":
+        operands, options = _policy_arguments(arguments, SWIFT_VALUE_OPTIONS, short_values="cj")
+        return not options & {"-h", "--help", "--version"} and operands[:1] == ["test"]
+    if executable == "xcodebuild":
+        operands, options = _policy_arguments(arguments, XCODEBUILD_VALUE_OPTIONS)
+        # Xcode's -version takes precedence even when supplied as an option value.
+        if "-version" in arguments or "-help" in options:
+            return False
+        return (bool(options & {"-downloadPlatform", "-downloadAllPlatforms", "-importPlatform"})
+                or any(a in {"test", "test-without-building", "build-for-testing"} for a in operands))
+    if executable == "xcodebuildmcp":
+        operands, options = _policy_arguments(arguments, XCODEBUILDMCP_VALUE_OPTIONS,
+                                             arrays={"--extra-args", "--launch-args"}, cli_help=True)
+        if options & {"-h", "--help", "-v", "--version"}:
+            return False
+        command = operands[:2]
         return len(command) == 2 and (
             command[0] in {"swift-package", "simulator", "device", "macos"} and command[1] == "test"
             or command[0] in {"simulator", "simulator-management"} and command[1] == "boot"
@@ -872,41 +1025,196 @@ def _invocation_executes_apple_tests(tokens: list[str]) -> bool:
     return False
 
 
-def _shell_commands(source: str) -> list[list[str]]:
-    """Split unquoted controls before shlex removes word-quoting information."""
-    source = source.replace("\\\n", "")
-    commands: list[list[str]] = []
+def _shell_reads_stdin(tokens: list[str]) -> bool:
+    tokens = _policy_command_head(tokens)
+    if not tokens or tokens[0].rsplit("/", 1)[-1] not in {"bash", "sh", "zsh"}:
+        return False
+    arguments = tokens[1:]
+    index = 0
+    stdin_mode = False
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in {"--help", "--version"}:
+            return False
+        if argument == "--":
+            index += 1
+            break
+        if argument in {"--rcfile", "--init-file"}:
+            index += 2
+            continue
+        if not argument.startswith(("-", "+")) or argument == "-":
+            break
+        if not argument.startswith("--"):
+            if argument.startswith("-") and "c" in argument[1:]:
+                return False
+            stdin_mode |= "s" in argument[1:]
+            index += 2 if set(argument[1:]) & {"o", "O"} else 1
+        else:
+            index += 1
+    return stdin_mode or index == len(arguments) or arguments[index:] == ["-"]
+
+
+def _heredoc_delimiter(source: str, index: int) -> tuple[str, bool, int]:
+    start = index
     quote: str | None = None
-    start = index = 0
-    word_start = True
+    quoted = False
     while index < len(source):
         character = source[index]
         if character == "\\" and quote != "'":
+            quoted = True
             index += 2
-            word_start = False
             continue
         if quote is not None:
             if character == quote:
                 quote = None
         elif character in "'\"":
             quote = character
-        elif character == "#" and word_start:
-            commands.append(shlex.split(source[start:index], posix=True))
-            newline = source.find("\n", index)
-            index = len(source) if newline < 0 else newline + 1
-            start = index
-            word_start = True
+            quoted = True
+        elif character in " \t\r\n;&|<>()":
+            break
+        index += 1
+    words = shlex.split(source[start:index])
+    if len(words) != 1:
+        raise ValueError("missing heredoc delimiter")
+    return words[0], quoted, index
+
+
+def _scan_policy_shell(source: str, index: int = 0, *, closing: str | None = None,
+                       data: bool = False) -> tuple[list[list[str]], int]:
+    """Inspect commands/expansions while retaining shell quote and heredoc context."""
+    commands: list[list[str]] = []
+    parts: list[str] = []
+    quote: str | None = None
+    word_start = True
+    arithmetic_depth = 0
+    # Each queued heredoc is attached to the command that owns its redirection.
+    pending: list[tuple[str, bool, bool, list[str]]] = []
+    owned_docs: list[int] = []
+
+    def flush() -> None:
+        tokens = shlex.split("".join(parts), posix=True)
+        commands.append(tokens)
+        for doc_index in owned_docs:
+            delimiter, quoted, tabs, _ = pending[doc_index]
+            pending[doc_index] = (delimiter, quoted, tabs, tokens)
+        owned_docs.clear()
+        parts.clear()
+
+    while index < len(source):
+        character = source[index]
+        if quote is None and closing and source.startswith(closing, index) and arithmetic_depth == 0:
+            if not data:
+                flush()
+            if pending:
+                raise ValueError("unterminated heredoc")
+            return commands, index + len(closing)
+        if closing == "`" and source.startswith("\\`", index) and quote != "'":
+            nested, index = _scan_policy_shell(source, index + 2, closing="\\`")
+            commands.extend(nested)
+            if not data:
+                parts.append("_CREG_SUBSTITUTION_")
             continue
-        elif character in ";&|()\n":
-            commands.append(shlex.split(source[start:index], posix=True))
-            start = index + 1
-            word_start = True
+        if character == "\\" and quote != "'":
+            if not data and source[index:index + 2] != "\\\n":
+                parts.append(source[index:index + 2])
+            index += 2
+            word_start = False
+            continue
+        expansion_start = index + 1
+        if character == "$":
+            while source.startswith("\\\n", expansion_start):
+                expansion_start += 2
+        substitution = character == "$" and source.startswith("(", expansion_start)
+        if quote != "'" and (substitution or character == "`"):
+            arithmetic = substitution and source.startswith("((", expansion_start)
+            backtick = character == "`"
+            nested, index = _scan_policy_shell(
+                source, index + 1 if backtick else expansion_start + (2 if arithmetic else 1),
+                closing="`" if backtick else "))" if arithmetic else ")", data=arithmetic)
+            commands.extend(nested)
+            if not data:
+                parts.append("_CREG_SUBSTITUTION_")
+            word_start = False
+            continue
+        if data:
+            if closing == "))":
+                if character == "(":
+                    arithmetic_depth += 1
+                elif character == ")" and arithmetic_depth:
+                    arithmetic_depth -= 1
             index += 1
             continue
+        if quote is not None:
+            parts.append(character)
+            if character == quote:
+                quote = None
+        elif character in "'\"":
+            quote = character
+            parts.append(character)
+        elif character == "#" and word_start:
+            newline = source.find("\n", index)
+            index = len(source) if newline < 0 else newline
+            continue
+        elif source.startswith("<<", index) and not source.startswith("<<<", index):
+            tabs = source.startswith("<<-", index)
+            index += 3 if tabs else 2
+            while index < len(source) and source[index] in " \t":
+                index += 1
+            delimiter, quoted, index = _heredoc_delimiter(source, index)
+            owned_docs.append(len(pending))
+            pending.append((delimiter, quoted, tabs, []))
+            parts.append(" ")
+            word_start = True
+            continue
+        elif character == "(" or source.startswith(("<(", ">("), index):
+            flush()
+            nested, index = _scan_policy_shell(source, index + (1 if character == "(" else 2), closing=")")
+            commands.extend(nested)
+            word_start = True
+            continue
+        elif character == ")":
+            raise ValueError("unmatched shell parenthesis")
+        elif character in ";&|\n":
+            flush()
+            word_start = True
+            index += 1
+            if character == "\n":
+                for delimiter, quoted, tabs, owner in pending:
+                    body: list[str] = []
+                    while True:
+                        if index >= len(source):
+                            raise ValueError("unterminated heredoc")
+                        newline = source.find("\n", index)
+                        end = len(source) if newline < 0 else newline + 1
+                        line = source[index:end]
+                        index = end
+                        if tabs:
+                            line = line.lstrip("\t")
+                        if line.removesuffix("\n") == delimiter:
+                            break
+                        body.append(line)
+                    body_source = "".join(body)
+                    if _shell_reads_stdin(owner):
+                        commands.extend(_shell_commands(body_source))
+                    elif not quoted:
+                        commands.extend(_scan_policy_shell(body_source, data=True)[0])
+                pending.clear()
+            continue
+        else:
+            parts.append(character)
         word_start = quote is None and character in " \t\r"
         index += 1
-    commands.append(shlex.split(source[start:], posix=True))
-    return commands
+    if closing:
+        raise ValueError("unterminated shell substitution or group")
+    if pending:
+        raise ValueError("unterminated heredoc")
+    if not data:
+        flush()
+    return commands, index
+
+
+def _shell_commands(source: str) -> list[list[str]]:
+    return _scan_policy_shell(source)[0]
 
 
 def _executes_apple_tests(source: str) -> bool:
