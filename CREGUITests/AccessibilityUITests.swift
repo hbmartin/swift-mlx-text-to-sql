@@ -606,48 +606,6 @@ final class AccessibilityUITests: XCTestCase {
     }
   }
 
-  func testConversationWriteInvariantHasNoRetryInNoticesAndSettings() throws {
-    let code = "history_result_preference_message_missing"
-    for settings in [false, true] {
-      let app = launch(scenario: "conversation-write-invariant", dynamicType: "ax5", developerMode: true)
-      if settings {
-        app.buttons["Settings"].tap()
-        assertEffectiveDynamicType("accessibility5", in: app)
-      }
-      _ = scrollToControl("Display choice not saved", in: app)
-      XCTAssertTrue(app.staticTexts["Display choice not saved"].waitForExistence(timeout: 5))
-      let copy = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Choose a display option again to try saving it.")).firstMatch
-      XCTAssertTrue(copy.exists)
-      let retry = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-retry-saving-" + code + "-")).firstMatch
-      XCTAssertFalse(retry.exists)
-      XCTAssertFalse(app.buttons["Retry saving"].exists)
-      app.terminate()
-    }
-  }
-
-  func testConversationWriteInvariantAllowsRetryOfOtherDisplayChoices() throws {
-    let code = "history_result_preference_message_missing"
-    for settings in [false, true] {
-      let app = launch(scenario: "conversation-write-invariant-with-retryable-sibling", dynamicType: "ax5", developerMode: true)
-      if settings {
-        app.buttons["Settings"].tap()
-        assertEffectiveDynamicType("accessibility5", in: app)
-      }
-      _ = scrollToControl("Retry other display choices", in: app)
-      let retry = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "failure-retry-saving-" + code + "-")).firstMatch
-      XCTAssertTrue(retry.waitForExistence(timeout: 5))
-      XCTAssertEqual(retry.label, "Retry other display choices")
-      assertAccessibleControl(retry, label: "Retry other display choices")
-      XCTAssertTrue(retry.isHittable)
-      let identity = retry.identifier
-      retry.tap()
-      XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == %@", identity)).firstMatch.waitForNonExistence(timeout: 5))
-      XCTAssertTrue(app.staticTexts["Display choice not saved"].exists)
-      XCTAssertFalse(app.buttons["Retry saving"].exists)
-      app.terminate()
-    }
-  }
-
   func testAccessibleHeadersWrapAtLargeTextSizes() throws {
     for size in ["ax1", "ax3", "ax5"] {
       for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {

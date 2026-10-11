@@ -287,3 +287,53 @@ CREG_MERGE_BENCHMARK=1 xcodebuildmcp swift-package test \
   --package-path CREGKit --configuration release \
   --filter HistorySummaryMergePerformanceTests --parallel false
 ```
+
+
+## Typed conversation writes and CI guard fixes (October 10, 2026)
+
+Implemented against `6d64654949053010f1401aad089a70c27103ff14`. Pending conversation edits now store their required write payload with their phase: drafts carry text, and result-presentation writes carry the full accepted `ChatMessage`. Saved edits retain only their lightweight draft/preference overlay and revision. Save effects accept the pending payload directly; successful settlement releases the message snapshot. Revision guards, grouped `.conversationOperation` ownership, retry ordering, navigation, and deletion/Undo behavior remain intact. The optional fallback, missing-message invariant error, public presentation retry flag, permanent recovery copy, alternate retry label, and two synthetic invariant scenarios are removed. Failed pending edits expose the ordinary “Retry saving” action. The fixture-owned drawer row probe retains independent counters without an unused reset method.
+
+The new sibling regression creates failures through actual preference-change actions and injected history writes. A grouped retry saves one message while its sibling fails again; the group retains one notice and retry eligibility. The next retry saves only the remaining sibling and clears the group notice. Assertions cover both persisted preferences, required pending snapshots, lightweight saved overlays, notice occurrence changes, and duplicate retry taps while saving. Existing focused tests cover navigation, stale revisions, fresh edits, and Undo/failed/committed deletion.
+
+The CI command guard parses shell invocation options before locating `-c` operands, respects quoted controls and comments, and inspects nested supported wrappers without executing shell source. It rejects direct and wrapped simulator create/boot commands, both XcodeBuildMCP boot aliases, and simulator build-and-run, while preserving dependency resolution, documentation generation, printed examples, and non-executing lookup/help/version forms. Swift dependency checks have a reviewed 30-minute integer job timeout. Job context is checked once, step context is checked per reviewed step, and runner mismatches produce one diagnostic. Context-field assertions now inspect the diagnostic field instead of matching substrings in step names.
+
+The final focused package run passed **132 tests in six suites** in **39.908 seconds** of test execution (**56.6 seconds** through XcodeBuildMCP). The initial run compiled successfully but the new sibling regression timed out waiting for both message gates: the update queue serializes writes within a conversation, so the test had blocked the second write behind the unreleased first write. The test now holds a single shared persistence gate, checks saving state and duplicate taps, releases it, and collects both settlements. The bounded start backstop and suite time limit remain unchanged; no assertion was weakened. This was a new test sequencing failure, and its initial log is retained separately below.
+
+The selected UI run passed **three tests with zero failures or skips** in **108.510 seconds** of test execution (**175.3 seconds** through XcodeBuildMCP). Conversation-write recovery passed in 67.500 seconds, bounded drawer realization passed in 12.277 seconds, and notice technical-detail identity passed in 28.733 seconds. The UI build retains existing actor-isolation warnings in unchanged test helpers; no assertion was suppressed.
+
+The CI contract checker, package-pin checker, and whitespace check pass. All **235 Python contract tests passed in 6.72 seconds**. No baseline assertion failures occurred in the selected checks. Historical chart baseline failures were outside these filters and were not rerun. Package logs retain the existing missing-creator build-system warning for the Cmlx bundle; no error or assertion was suppressed.
+
+CLI help, tool-specific help, repository configuration availability, CLI session-default loading/merging, and simulator inventory were inspected. No repository `.xcodebuildmcp/config.yaml` was present; explicit paths, selectors, scheme, configuration, and simulator overrides were supplied. The existing iPhone 18 Pro / iOS 27 simulator (`31B09574-9781-45A7-816D-6A1916E1BA16`) was reused and preserved. No full Apple suite or canonical accessibility matrix was run. Apple execution and simulator provisioning remain local.
+
+Commands were run from `/Users/haroldmartin/Downloads/creg/swift-mlx-text-to-sql`. The package command ran initially and again after correcting the new test gate; all other commands below describe the final checks.
+
+```sh
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_ci_contracts.py
+uv run --project fine-tuning --no-sync python -m pytest fine-tuning/tests/test_ci_contracts.py -q
+uv run --project fine-tuning --no-sync python fine-tuning/tools/check_swift_package_pins.py
+git diff --check
+
+xcodebuildmcp swift-package test \
+  --package-path "$PWD/CREGKit" \
+  --filter 'PR158RegressionFixTests|ConversationNoticeTests|HistoryRecoveryRegressionTests|DiagnosticsAndFailurePresentationTests|FeatureFailureDiagnosticsTests|AccessibilityUITestConfigurationTests' \
+  --parallel false
+
+xcodebuildmcp simulator test \
+  --project-path "$PWD/CREG.xcodeproj" --scheme CREG --configuration Debug \
+  --simulator-id 31B09574-9781-45A7-816D-6A1916E1BA16 \
+  --extra-args \
+  '-only-testing:CREGUITests/AccessibilityUITests/testConversationWriteRecoveryOffersRetryInNoticesAndSettings' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testNoticeTechnicalDetailsKeepFailureIdentity' \
+  '-only-testing:CREGUITests/AccessibilityUITests/testDrawerRealizationStaysBoundedAndUnrelatedErrorsDoNotRedrawRows' \
+  '-skipPackagePluginValidation' '-skipMacroValidation' \
+  'CODE_SIGNING_ALLOWED=NO' 'CREG_ACCESSIBILITY_HARNESS_BUILD=YES'
+```
+
+| Run | Retained artifact |
+| --- | --- |
+| Initial package run, new test gate failure | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-10T23-49-58-183Z_pid88172_638f2ff3.log` |
+| Final focused package run | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/swift_package_test_2026-10-10T23-53-07-220Z_pid11598_6431b587.log` |
+| Three-selector UI result | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/result-bundles/test_sim_2026-10-10T23-54-40-881Z_pid19888_3ef74bc6.xcresult` |
+| UI build/test log | `/Users/haroldmartin/Library/Developer/XcodeBuildMCP/workspaces/swift-mlx-text-to-sql-364a2f3c2256/logs/test_sim_2026-10-10T23-54-40-880Z_pid19888_a16dc92c.log` |
+| Package/UI CLI summaries | `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/package-tests.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/package-tests-final.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/ui-tests.log` |
+| CI checker, Python tests, package pins, whitespace | `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/ci-contract-check.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/ci-contract-tests.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/package-pin-check.log`, `/tmp/creg-ci-write-fixes-2026-10-10.7giLFC/whitespace-check.log` |

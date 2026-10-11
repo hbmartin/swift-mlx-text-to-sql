@@ -31,6 +31,7 @@ METAL_TOOLCHAIN_STEP: Mapping[str, str] = MappingProxyType(
     {"name": "Install Metal Toolchain", "run": "xcodebuild -downloadComponent MetalToolchain"}
 )
 REVIEWED_RUN_WORKING_DIRECTORY = "${{ github.workspace }}"
+SWIFT_DEPENDENCY_JOB_TIMEOUT = 30
 UBUNTU_REVIEWED_RUN_SHELL = (
     "/usr/bin/env -i HOME=/home/runner "
     "PATH=/usr/bin:/bin:/usr/sbin:/sbin "
@@ -315,20 +316,16 @@ def workflow_job_steps(
     return job, steps, []
 
 
-def reviewed_run_context_failures(
+def reviewed_job_context_failures(
     job: dict[object, object],
-    step: dict[object, object],
     *,
     job_name: str,
-    step_name: str,
     prefix: str,
     expected_runner: str,
-    expected_shell: str,
-    expected_working_directory: str,
     expected_job_timeout: int | None = None,
     expected_strategy: Mapping[str, object] | None = None,
 ) -> list[str]:
-    """Reject job and step metadata that can skip or reinterpret a reviewed run."""
+    """Reject job metadata that can skip or reinterpret a reviewed run."""
     failures: list[str] = []
     job_fields = [
         field
@@ -347,6 +344,7 @@ def reviewed_run_context_failures(
         if field in job and not (
             field == "timeout-minutes"
             and expected_job_timeout is not None
+            and type(job[field]) is int
             and job[field] == expected_job_timeout
         ) and not (field == "strategy" and expected_strategy is not None
                    and job[field] == expected_strategy)
@@ -364,6 +362,19 @@ def reviewed_run_context_failures(
         failures.append(
             f"{prefix} {job_name} job must run on {expected_runner}"
         )
+    return failures
+
+
+def reviewed_step_context_failures(
+    step: dict[object, object],
+    *,
+    step_name: str,
+    prefix: str,
+    expected_shell: str,
+    expected_working_directory: str,
+) -> list[str]:
+    """Reject step metadata that can skip or reinterpret a reviewed run."""
+    failures: list[str] = []
     step_fields = [
         field
         for field in (
@@ -388,6 +399,32 @@ def reviewed_run_context_failures(
             f"{expected_working_directory!r}"
         )
     return failures
+
+
+def reviewed_run_context_failures(
+    job: dict[object, object],
+    step: dict[object, object],
+    *,
+    job_name: str,
+    step_name: str,
+    prefix: str,
+    expected_runner: str,
+    expected_shell: str,
+    expected_working_directory: str,
+    expected_job_timeout: int | None = None,
+    expected_strategy: Mapping[str, object] | None = None,
+) -> list[str]:
+    """Compose job and step checks for a single reviewed run."""
+    return [
+        *reviewed_job_context_failures(
+            job, job_name=job_name, prefix=prefix, expected_runner=expected_runner,
+            expected_job_timeout=expected_job_timeout, expected_strategy=expected_strategy,
+        ),
+        *reviewed_step_context_failures(
+            step, step_name=step_name, prefix=prefix, expected_shell=expected_shell,
+            expected_working_directory=expected_working_directory,
+        ),
+    ]
 
 
 def reviewed_workflow_context_failures(
@@ -724,38 +761,156 @@ def metal_toolchain_job_failures(
     return failures
 
 
-def _executes_apple_tests(source: str) -> bool:
-    lexer = shlex.shlex(source.replace("\\\n", ""), posix=True, punctuation_chars=";&|\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-    for index, token in enumerate(tokens):
-        executable = token.rsplit("/", 1)[-1]
-        arguments = []
-        for argument in tokens[index + 1 :]:
-            if argument and all(character in ";&|\n" for character in argument):
+def _shell_command_string(arguments: list[str]) -> str | None:
+    """Find a shell's -c operand after processing invocation options."""
+    command_mode = False
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            index += 1
+            break
+        if argument in {"--help", "--version"}:
+            return None
+        if argument in {"--rcfile", "--init-file"}:
+            index += 2
+            continue
+        if argument.startswith("--"):
+            index += 1
+            continue
+        if len(argument) > 1 and argument[0] in "-+":
+            flags = argument[1:]
+            if argument[0] == "-" and "c" in flags:
+                command_mode = True
+            # -o/-O take a separate option name even when clustered with -c.
+            index += 2 if any(flag in flags for flag in "oO") else 1
+            continue
+        break
+    return arguments[index] if command_mode and index < len(arguments) else None
+
+
+def _invocation_executes_apple_tests(tokens: list[str]) -> bool:
+    """Inspect known executables and wrappers, without running shell source."""
+    while tokens and (
+        re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", tokens[0])
+        or tokens[0] in {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
+    ):
+        tokens = tokens[1:]
+    if not tokens:
+        return False
+    executable = tokens[0].rsplit("/", 1)[-1]
+    arguments = tokens[1:]
+    if executable in {"bash", "sh", "zsh"}:
+        script = _shell_command_string(arguments)
+        return script is not None and _executes_apple_tests(script)
+    if executable in {"env", "command", "exec", "nohup", "sudo"}:
+        index = 0
+        while index < len(arguments):
+            argument = arguments[index]
+            if argument == "--":
+                index += 1
                 break
-            arguments.append(argument)
-        if (
-            executable == "swift" and "test" in arguments
-            or executable == "xcodebuild"
-            and any(a in {"test", "test-without-building", "build-for-testing"} for a in arguments)
-            or executable == "xcodebuildmcp"
-            and any(a in {"swift-package", "simulator", "device", "macos"} for a in arguments)
-            and "test" in arguments
-            or executable == "xcrun"
-            and len(arguments) >= 2
-            and arguments[0] == "simctl"
-            and arguments[1] in {"create", "boot"}
-        ):
-            return True
-        if executable in {"bash", "sh", "zsh"}:
-            for argument_index, argument in enumerate(arguments):
-                if re.fullmatch(r"-[a-zA-Z]+", argument) and "c" in argument[1:]:
-                    script_index = argument_index + 1
-                    if script_index < len(arguments) and _executes_apple_tests(arguments[script_index]):
-                        return True
+            if (
+                argument in {"--help", "--version"}
+                or executable == "command" and argument.startswith("-")
+                and any(flag in argument[1:] for flag in "vV")
+            ):
+                return False
+            if argument in {"-u", "--unset", "-C", "--chdir", "--user", "-g", "--group", "-a"}:
+                index += 2
+            elif argument.startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", argument):
+                index += 1
+            else:
+                break
+        return _invocation_executes_apple_tests(arguments[index:])
+    if executable == "xcrun":
+        index = 0
+        while index < len(arguments) and arguments[index].startswith("-"):
+            argument = arguments[index]
+            if argument == "--":
+                index += 1
+                break
+            if (
+                argument in {"--find", "--help", "--version"} or argument.startswith("--show-")
+                or not argument.startswith("--") and any(flag in argument[1:] for flag in "fh")
+            ):
+                return False
+            index += 2 if argument in {"--sdk", "--toolchain"} else 1
+        return _invocation_executes_apple_tests(arguments[index:])
+    if any(argument in {"-h", "--help", "-help", "--version", "-version"} for argument in arguments):
+        return False
+    if executable == "simctl":
+        index = 0
+        while index < len(arguments) and arguments[index].startswith("-"):
+            argument = arguments[index]
+            if argument == "--":
+                index += 1
+                break
+            index += 2 if argument in {"--set", "--profiles"} else 1
+        return index < len(arguments) and arguments[index] in {"create", "boot"}
+    if executable == "swift":
+        return "test" in arguments
+    if executable == "xcodebuild":
+        return any(a in {"test", "test-without-building", "build-for-testing"} for a in arguments)
+    if executable == "xcodebuildmcp":
+        if "-v" in arguments:
+            return False
+        # Global CLI flags may precede the workflow; inspect command positions.
+        index = 0
+        while index < len(arguments) and arguments[index].startswith("-"):
+            argument = arguments[index]
+            if argument == "--":
+                index += 1
+                break
+            index += 2 if argument in {"--log-level", "--style", "--file-path-render-style", "--socket"} else 1
+        command = arguments[index:index + 2]
+        return len(command) == 2 and (
+            command[0] in {"swift-package", "simulator", "device", "macos"} and command[1] == "test"
+            or command[0] in {"simulator", "simulator-management"} and command[1] == "boot"
+            or command == ["simulator", "build-and-run"]
+        )
     return False
+
+
+def _shell_commands(source: str) -> list[list[str]]:
+    """Split unquoted controls before shlex removes word-quoting information."""
+    source = source.replace("\\\n", "")
+    commands: list[list[str]] = []
+    quote: str | None = None
+    start = index = 0
+    word_start = True
+    while index < len(source):
+        character = source[index]
+        if character == "\\" and quote != "'":
+            index += 2
+            word_start = False
+            continue
+        if quote is not None:
+            if character == quote:
+                quote = None
+        elif character in "'\"":
+            quote = character
+        elif character == "#" and word_start:
+            commands.append(shlex.split(source[start:index], posix=True))
+            newline = source.find("\n", index)
+            index = len(source) if newline < 0 else newline + 1
+            start = index
+            word_start = True
+            continue
+        elif character in ";&|()\n":
+            commands.append(shlex.split(source[start:index], posix=True))
+            start = index + 1
+            word_start = True
+            index += 1
+            continue
+        word_start = quote is None and character in " \t\r"
+        index += 1
+    commands.append(shlex.split(source[start:], posix=True))
+    return commands
+
+
+def _executes_apple_tests(source: str) -> bool:
+    return any(_invocation_executes_apple_tests(command) for command in _shell_commands(source))
 
 
 def local_apple_test_policy_failures(
@@ -795,8 +950,12 @@ def swift_dependency_contract_failures(
     job, steps, failures = workflow_job_steps(workflow, job_name="swift", prefix=prefix)
     if job is None or steps is None:
         return failures
-    if job.get("name") != "Swift dependency checks" or job.get("runs-on") != "xcode-27":
-        failures.append(f"{prefix} must retain Swift dependency checks on xcode-27")
+    if job.get("name") != "Swift dependency checks":
+        failures.append(f"{prefix} must retain the Swift dependency checks job name")
+    failures.extend(reviewed_job_context_failures(
+        job, job_name="swift", prefix=prefix, expected_runner="xcode-27",
+        expected_job_timeout=SWIFT_DEPENDENCY_JOB_TIMEOUT,
+    ))
     expected_commands = {
         "Verify AutoTableCharts pin agreement": "python3 fine-tuning/tools/check_swift_package_pins.py",
         "Verify checked-in Swift package resolutions": (
@@ -811,16 +970,15 @@ def swift_dependency_contract_failures(
         step, step_failures = named_step(steps, name=name, prefix=prefix)
         failures.extend(step_failures)
         if step is not None:
-            failures.extend(reviewed_run_context_failures(
-                job, step, job_name="swift", step_name=name, prefix=prefix,
-                expected_runner="xcode-27", expected_shell="bash",
+            failures.extend(reviewed_step_context_failures(
+                step, step_name=name, prefix=prefix, expected_shell="bash",
                 expected_working_directory=REVIEWED_RUN_WORKING_DIRECTORY,
             ))
             command = step.get("run", "")
             normalized = " ".join(command.replace("\\\n", "").split()) if isinstance(command, str) else None
             if normalized != expected:
                 failures.append(f"{prefix} {name} command changed")
-    return list(dict.fromkeys(failures))
+    return failures
 
 
 def reviewed_ci_contract_failures(
