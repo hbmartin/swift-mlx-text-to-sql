@@ -223,10 +223,6 @@ extension FailurePresentation {
       diagnostic: DiagnosticDetails.describe(error))
   }
 
-  static func resultPreferenceSave(error: any Error) -> Self {
-    history(operation: .resultPreferenceSave, error: error)
-  }
-
   static func history(
     operation: HistoryFailureOperation,
     error: any Error

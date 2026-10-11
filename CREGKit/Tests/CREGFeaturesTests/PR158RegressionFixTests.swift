@@ -308,7 +308,10 @@ struct PR158RegressionFixTests {
     await store.send(.conversationSelected(b)); await store.receive(\.conversationLoaded)
     await store.send(.conversationSelected(a)); await store.receive(\.conversationLoaded)
     let target: AppFeature.ConversationWriteTarget = write == "draft" ? .draft : .resultPresentation(answer.id)
-    #expect(store.state.conversationEdits[a]?[target]?.isSaving == true)
+    switch store.state.conversationEdits[a]?[target]?.status {
+    case .some(.pending(_, .saving)): break
+    default: Issue.record("The latest edit must still be saving")
+    }
     if write == "draft" { #expect(store.state.chat?.composerText == "latest") }
     else { #expect(store.state.chat?.messages[id: answer.id]?.resultPresentation == .table) }
     await gate.finish(); await store.receive(\.conversationWriteSettled); await store.finish()

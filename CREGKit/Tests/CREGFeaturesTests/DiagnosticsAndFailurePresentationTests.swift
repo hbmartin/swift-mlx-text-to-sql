@@ -1380,7 +1380,7 @@ extension DiagnosticsAndFailurePresentationTests {
     do { _ = try await history.bootstrap(); Issue.record("Expected unavailable store"); return }
     catch let error as HistoryStoreUnavailableError { unavailable = error }
     let message = FailurePresentation.history(operation: .messageSave, error: ordinary)
-    let preference = FailurePresentation.resultPreferenceSave(error: ordinary)
+    let preference = FailurePresentation.history(operation: .resultPreferenceSave, error: ordinary)
     let draft = FailurePresentation.history(operation: .draftSave, error: ordinary)
     #expect(preference.code == "history_result_preference_save_failed")
     #expect(preference.code != message.code)

@@ -58,7 +58,6 @@ extension AppFeature {
       }
     }
     var isSaved: Bool { if case .saved = status { true } else { false } }
-    var isSaving: Bool { if case .pending(_, .saving) = status { true } else { false } }
     var isRetryable: Bool { if case .pending(_, .failed) = status { true } else { false } }
   }
 
@@ -120,7 +119,8 @@ extension AppFeature {
           revision: revision, settlement: .init(outcome)))
       } catch {
         let failure: FailurePresentation = target == .draft
-          ? .history(operation: .draftSave, error: error) : .resultPreferenceSave(error: error)
+          ? .history(operation: .draftSave, error: error)
+          : .history(operation: .resultPreferenceSave, error: error)
         await send(.conversationWriteSettled(conversationID: conversationID, target: target,
           revision: revision, settlement: .failed(failure)))
       }
@@ -138,7 +138,7 @@ extension AppFeature {
       return .none
     }
     guard var edit = state.conversationEdits[conversationID]?[target],
-      edit.revision == revision, edit.isSaving, case .pending(let write, _) = edit.status else {
+      edit.revision == revision, case .pending(let write, .saving) = edit.status else {
       if case .failed(let failure) = settlement { recordFailure(failure) }
       return .none
     }
