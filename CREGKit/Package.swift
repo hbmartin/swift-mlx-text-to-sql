@@ -17,7 +17,7 @@ let package = Package(
     // contract, so CREG deliberately pins the reviewed merged implementation.
     .package(
       url: "https://github.com/hbmartin/AutoTableCharts.git",
-      revision: "59b4080c58467dab72eeb98c2b1dbf291e38bec1"),
+      revision: "bcb6697b5abe6e6a867d6bd166580126136bd984"),
     // The pinned MLX revision includes the upstream Metal command-buffer
     // callback fix. Keep the language-model integration pinned alongside it.
     .package(

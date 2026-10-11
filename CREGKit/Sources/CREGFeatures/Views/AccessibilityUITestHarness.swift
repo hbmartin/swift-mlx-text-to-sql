@@ -598,7 +598,8 @@ import Synchronization
       let draftFailure = FailurePresentation.history(operation: .draftSave, error: NSError(domain: "Fixture", code: 1))
       var answer = initial.chat!.messages.last!
       answer.resultPresentation = .table
-      let preferenceFailure = FailurePresentation.resultPreferenceSave(error: NSError(domain: "Fixture", code: 2))
+      let preferenceFailure = FailurePresentation.history(
+        operation: .resultPreferenceSave, error: NSError(domain: "Fixture", code: 2))
       initial.storeFailure(Self.failure, owner: .global)
       var second = Self.failure; second.diagnostic = "occurrence-survivor"
       initial.storeFailure(second, owner: .historySummaries(2))
