@@ -2,11 +2,6 @@ import ComposableArchitecture
 import Foundation
 
 extension AppFeature {
-  enum ConversationWriteInvariantError: Error, CustomStringConvertible {
-    case missingResultPresentationMessage
-    var description: String { "Result presentation write has no fallback message." }
-  }
-
   public enum ConversationWriteTarget: Hashable, Sendable {
     case draft
     case resultPresentation(UUID)
@@ -36,19 +31,35 @@ extension AppFeature {
       case resultPresentation(ResultPresentationPreference)
     }
     enum Phase: Equatable, Sendable {
-      case debouncing, saving, saved
+      case debouncing, saving
       case failed(FailurePresentation)
-      var isFailed: Bool { if case .failed = self { true } else { false } }
-      var isRetryable: Bool {
-        if case .failed(let failure) = self { failure.allowsConversationWriteRetry }
-        else { false }
+    }
+    enum PendingWrite: Equatable, Sendable {
+      case draft(String)
+      case resultPresentation(ChatMessage)
+
+      var value: Value {
+        switch self {
+        case .draft(let draft): .draft(draft)
+        case .resultPresentation(let message): .resultPresentation(message.resultPresentation)
+        }
       }
     }
-    var value: Value
+    enum Status: Equatable, Sendable {
+      case pending(PendingWrite, Phase)
+      case saved(Value)
+    }
     var revision: UInt64
-    var phase: Phase
-    /// Needed only until the preference is durable, for the store's insert fallback.
-    var fallbackMessage: ChatMessage?
+    var status: Status
+    var value: Value {
+      switch status {
+      case .pending(let write, _): write.value
+      case .saved(let value): value
+      }
+    }
+    var isSaved: Bool { if case .saved = status { true } else { false } }
+    var isSaving: Bool { if case .pending(_, .saving) = status { true } else { false } }
+    var isRetryable: Bool { if case .pending(_, .failed) = status { true } else { false } }
   }
 
   /// Runs before the optional child so a migration's compare-and-set sees
@@ -60,18 +71,20 @@ extension AppFeature {
     else { return .none }
     let revision = state.nextConversationWriteRevision()
     let target = ConversationWriteTarget.resultPresentation(message.id)
-    let edit = ConversationEdit(value: .resultPresentation(message.resultPresentation),
-      revision: revision, phase: .saving, fallbackMessage: message)
+    let write = ConversationEdit.PendingWrite.resultPresentation(message)
+    let edit = ConversationEdit(revision: revision, status: .pending(write, .saving))
     state.conversationEdits[chat.conversationID, default: [:]][target] = edit
-    return saveConversationEdit(conversationID: chat.conversationID, target: target, edit: edit)
+    return saveConversationEdit(conversationID: chat.conversationID, target: target,
+      revision: revision, write: write)
   }
 
   func acceptDraft(state: inout State, conversationID: UUID, draft: String,
     debounce: Bool
   ) -> Effect<Action> {
     let revision = state.nextConversationWriteRevision()
-    let edit = ConversationEdit(value: .draft(draft), revision: revision,
-      phase: debounce ? .debouncing : .saving)
+    let write = ConversationEdit.PendingWrite.draft(draft)
+    let edit = ConversationEdit(revision: revision,
+      status: .pending(write, debounce ? .debouncing : .saving))
     state.conversationEdits[conversationID, default: [:]][.draft] = edit
     if debounce {
       return .run { send in
@@ -81,39 +94,35 @@ extension AppFeature {
     }
     return .concatenate(
       .cancel(id: DraftSaveID(conversationID: conversationID)),
-      saveConversationEdit(conversationID: conversationID, target: .draft, edit: edit))
+      saveConversationEdit(conversationID: conversationID, target: .draft,
+        revision: revision, write: write))
   }
 
   func saveConversationEdit(conversationID: UUID, target: ConversationWriteTarget,
-    edit: ConversationEdit
+    revision: UInt64, write: ConversationEdit.PendingWrite
   ) -> Effect<Action> {
     .run { send in
       do {
         let outcome: MessageUpdateQueue.SaveOutcome
-        switch edit.value {
+        switch write {
         case .draft(let draft):
           outcome = try await messageUpdateQueue.saveDraft(
-            conversationID: conversationID, revision: edit.revision) {
+            conversationID: conversationID, revision: revision) {
               try await history.saveDraft(conversationID, draft)
             }
-        case .resultPresentation(let preference):
-          guard var message = edit.fallbackMessage else {
-            throw ConversationWriteInvariantError.missingResultPresentationMessage
-          }
-          message.resultPresentation = preference
-          let savedMessage = message
+        case .resultPresentation(let savedMessage):
           outcome = try await messageUpdateQueue.save(conversationID: conversationID,
-            messageID: savedMessage.id, revision: edit.revision) {
+            messageID: savedMessage.id, revision: revision) {
               try await history.updateResultPresentation(conversationID, savedMessage)
             }
         }
         await send(.conversationWriteSettled(conversationID: conversationID, target: target,
-          revision: edit.revision, settlement: .init(outcome)))
+          revision: revision, settlement: .init(outcome)))
       } catch {
         let failure: FailurePresentation = target == .draft
           ? .history(operation: .draftSave, error: error) : .resultPreferenceSave(error: error)
         await send(.conversationWriteSettled(conversationID: conversationID, target: target,
-          revision: edit.revision, settlement: .failed(failure)))
+          revision: revision, settlement: .failed(failure)))
       }
     }
   }
@@ -129,15 +138,14 @@ extension AppFeature {
       return .none
     }
     guard var edit = state.conversationEdits[conversationID]?[target],
-      edit.revision == revision, edit.phase == .saving else {
+      edit.revision == revision, edit.isSaving, case .pending(let write, _) = edit.status else {
       if case .failed(let failure) = settlement { recordFailure(failure) }
       return .none
     }
     let owner = FailureOwner.conversationOperation(conversationID, target.operation)
     switch settlement {
     case .saved:
-      edit.phase = .saved
-      edit.fallbackMessage = nil
+      edit.status = .saved(write.value)
       state.conversationEdits[conversationID]?[target] = edit
       state.markHistoryStoreAvailable()
       if !state.hasOutstandingConversationWrites(owner: owner) {
@@ -147,7 +155,7 @@ extension AppFeature {
       }
       return .none
     case .failed(let failure):
-      edit.phase = .failed(failure)
+      edit.status = .pending(write, .failed(failure))
       state.conversationEdits[conversationID]?[target] = edit
       if state.isConversationPendingDeletion(conversationID) {
         return handleConversationWriteFailure(state: &state, conversationID: conversationID,
@@ -169,15 +177,16 @@ extension AppFeature {
   func retryConversationWrites(state: inout State, owner: FailureOwner) -> Effect<Action> {
     guard case .conversationOperation(let id, let operation) = owner,
       state.isConversationLive(id) else { return .none }
-    let failed = (state.conversationEdits[id] ?? [:]).filter {
-      $0.key.operation == operation && $0.value.phase.isRetryable
-    }.sorted { $0.value.revision < $1.value.revision }
-    return .merge(failed.map { target, previous in
-      var edit = previous
-      edit.revision = state.nextConversationWriteRevision()
-      edit.phase = .saving
+    let failed = (state.conversationEdits[id] ?? [:]).compactMap { target, edit
+      -> (target: ConversationWriteTarget, write: ConversationEdit.PendingWrite, revision: UInt64)? in
+      guard target.operation == operation, case .pending(let write, .failed) = edit.status else { return nil }
+      return (target, write, edit.revision)
+    }.sorted { $0.revision < $1.revision }
+    return .merge(failed.map { target, write, _ in
+      let revision = state.nextConversationWriteRevision()
+      let edit = ConversationEdit(revision: revision, status: .pending(write, .saving))
       state.conversationEdits[id]?[target] = edit
-      return saveConversationEdit(conversationID: id, target: target, edit: edit)
+      return saveConversationEdit(conversationID: id, target: target, revision: revision, write: write)
     })
   }
 }
@@ -191,7 +200,7 @@ extension AppFeature.State {
   func hasOutstandingConversationWrites(owner: AppFeature.FailureOwner) -> Bool {
     guard case .conversationOperation(let id, let operation) = owner else { return false }
     return (conversationEdits[id] ?? [:]).contains {
-      $0.key.operation == operation && $0.value.phase != .saved
+      $0.key.operation == operation && !$0.value.isSaved
     }
   }
 
@@ -199,7 +208,7 @@ extension AppFeature.State {
     Set(conversationEdits.flatMap { id, edits in
       guard isConversationLive(id) else { return [AppFeature.FailureOwner]() }
       return edits.compactMap { target, edit in
-        edit.phase.isRetryable ? .conversationOperation(id, target.operation) : nil
+        edit.isRetryable ? .conversationOperation(id, target.operation) : nil
       }
     })
   }
